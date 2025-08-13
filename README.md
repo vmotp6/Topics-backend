@@ -13,6 +13,8 @@
 ```
 Topics-backend/
 ├── api.py              # Python API 後端
+├── start_api.py        # API 啟動腳本
+├── requirements.txt    # Python 依賴套件
 ├── login.php           # 登入頁面
 ├── index.php           # 管理介面
 └── README.md           # 說明文件
@@ -33,25 +35,45 @@ pip install flask flask-cors pymysql
 
 ## 啟動方式
 
-### 1. 啟動 Python API 伺服器
+### 1. 安裝 Python 依賴套件
 ```bash
 cd Topics-backend
+pip install -r requirements.txt
+```
+
+### 2. 啟動 Python API 伺服器
+```bash
+# 方法一：使用啟動腳本（推薦）
+python start_api.py
+
+# 方法二：直接啟動
 python api.py
 ```
 
-### 2. 啟動 XAMPP
+### 3. 啟動 XAMPP
 - 啟動 Apache 服務
 - 啟動 MySQL 服務
 
-### 3. 訪問系統
+
+
+### 4. 訪問系統
 - 登入頁面：`http://localhost/Topics-backend/login.php`
 - 管理介面：`http://localhost/Topics-backend/index.php`
+- API 健康檢查：`http://localhost:5001/health`
 
 ## API 端點
+
+### 健康檢查
+```
+GET /health
+```
 
 ### 管理員登入
 ```
 POST /admin/login
+Content-Type: application/x-www-form-urlencoded
+
+username=admin&password=admin123
 ```
 
 ### 獲取所有使用者
@@ -64,14 +86,31 @@ GET /admin/users
 GET /admin/stats
 ```
 
-### 刪除使用者
-```
-DELETE /admin/users/{user_id}
-```
-
 ### 搜尋使用者
 ```
 GET /admin/users/search?q={query}
+```
+
+### 獲取單一使用者詳細資料
+```
+GET /admin/users/{user_id}
+```
+
+### 更新使用者資料
+```
+PUT /admin/users/{user_id}
+Content-Type: application/json
+
+{
+    "name": "新姓名",
+    "email": "new@email.com",
+    "role": "student"
+}
+```
+
+### 刪除使用者
+```
+DELETE /admin/users/{user_id}
 ```
 
 ## 功能特色
@@ -83,6 +122,10 @@ GET /admin/users/search?q={query}
 - ✅ 使用者統計儀表板
 - ✅ 安全的登入驗證
 - ✅ 前後端分離架構
+- ✅ 完整的 RESTful API
+- ✅ 資料庫連線管理
+- ✅ 錯誤處理機制
+- ✅ CORS 跨域支援
 
 ## 預設管理員帳號
 
@@ -108,4 +151,23 @@ GET /admin/users/search?q={query}
 1. 確保 Python API 伺服器在 `http://localhost:5001` 運行
 2. 確保 XAMPP 的 Apache 和 MySQL 服務已啟動
 3. 確保資料庫連線設定正確
-4. 如果遇到 CORS 錯誤，請檢查 API 伺服器是否正常運行 
+4. 如果遇到 CORS 錯誤，請檢查 API 伺服器是否正常運行
+5. 確保 `topics_good` 資料庫中有 `user` 和 `teacher` 資料表
+6. 建議使用啟動腳本 `start_api.py` 來啟動 API，它會自動檢查環境
+
+## 故障排除
+
+### API 無法啟動
+- 檢查 Python 版本是否為 3.7 或更高
+- 檢查是否已安裝所有依賴套件
+- 檢查端口 5001 是否被佔用
+
+### 資料庫連線失敗
+- 檢查 XAMPP 是否已啟動
+- 檢查 MySQL 服務是否正在運行
+- 檢查資料庫名稱是否為 `topics_good`
+
+### 前端無法連接到 API
+- 檢查 API 是否在正確的端口運行
+- 檢查瀏覽器控制台是否有 CORS 錯誤
+- 檢查 API 健康檢查端點是否正常回應 

@@ -19,24 +19,38 @@ if (isset($_POST['action']) && $_POST['action'] == 'login') {
         'password' => $admin_password
     ]);
     
-    $context = stream_context_create([
-        'http' => [
-            'method' => 'POST',
-            'header' => 'Content-Type: application/x-www-form-urlencoded',
-            'content' => $post_data
-        ]
+    // 使用 cURL 替代 file_get_contents 以更好地處理錯誤
+    $ch = curl_init();
+    curl_setopt($ch, CURLOPT_URL, $api_url);
+    curl_setopt($ch, CURLOPT_POST, true);
+    curl_setopt($ch, CURLOPT_POSTFIELDS, $post_data);
+    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+    curl_setopt($ch, CURLOPT_HTTPHEADER, [
+        'Content-Type: application/x-www-form-urlencoded'
     ]);
+    curl_setopt($ch, CURLOPT_TIMEOUT, 10);
+    curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
     
-    $response = file_get_contents($api_url, false, $context);
-    $result = json_decode($response, true);
+    $response = curl_exec($ch);
+    $http_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    $curl_error = curl_error($ch);
+    curl_close($ch);
     
-    if ($result && isset($result['message']) && $result['message'] === '登入成功') {
-        $_SESSION['admin_logged_in'] = true;
-        $_SESSION['admin_username'] = $admin_username;
-        header("Location: index.php");
-        exit;
+    if ($curl_error) {
+        $error_message = "連接錯誤: " . $curl_error;
     } else {
-        $error_message = $result['message'] ?? "登入失敗，請稍後再試";
+        $result = json_decode($response, true);
+        
+        if ($result === null) {
+            $error_message = "API 響應格式錯誤";
+        } elseif (isset($result['message']) && $result['message'] === '登入成功') {
+            $_SESSION['admin_logged_in'] = true;
+            $_SESSION['admin_username'] = $admin_username;
+            header("Location: index.php");
+            exit;
+        } else {
+            $error_message = $result['message'] ?? "登入失敗，請稍後再試";
+        }
     }
 }
 ?>
