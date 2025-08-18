@@ -13,6 +13,9 @@ if (isset($_GET['action']) && $_GET['action'] == 'logout') {
     header("Location: login.php");
     exit;
 }
+
+// 設置頁面標題
+$page_title = '使用者管理';
 ?>
 
 <!DOCTYPE html>
@@ -42,78 +45,7 @@ if (isset($_GET['action']) && $_GET['action'] == 'logout') {
             min-height: 100vh;
         }
         
-        /* 頂部導航 */
-        .top-nav {
-            background: #fff;
-            padding: 14px 36px;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            box-shadow: 0 1px 4px rgba(0,21,41,0.08);
-            position: sticky;
-            top: 0;
-            z-index: 100;
-            border-bottom: 1px solid #f0f0f0;
-        }
-        
-        .nav-left {
-            display: flex;
-            align-items: center;
-        }
-        
-        .nav-title {
-    font-size: 22px;
-    font-weight: 600;
-    color: #262626;
-}
-        
-        .nav-right {
-            display: flex;
-            align-items: center;
-            gap: 16px;
-        }
-        
-        .notification-badge {
-            position: absolute;
-            top: 4px;
-            right: 4px;
-            background: #ff4d4f;
-            color: white;
-            border-radius: 50%;
-            width: 16px;
-            height: 16px;
-            font-size: 10px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-        }
-        
-        .nav-user {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            cursor: pointer;
-            padding: 8px 12px;
-            border-radius: 6px;
-            transition: background 0.3s;
-        }
-        
-        .nav-user:hover {
-            background: #f5f5f5;
-        }
-        
-        .nav-user-avatar {
-            width: 32px;
-            height: 32px;
-            border-radius: 50%;
-            background: #f5f5f5;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            color: #8c8c8c;
-            font-weight: 500;
-            font-size: 14px;
-        }
+
         
         /* 內容區域 */
         .content {
@@ -463,21 +395,8 @@ if (isset($_GET['action']) && $_GET['action'] == 'logout') {
         
         <!-- 主內容區 -->
         <div class="main-content" id="mainContent">
-            <!-- 頂部導航 -->
-            <div class="top-nav">
-                <div class="nav-left">
-                    <div class="nav-title">使用者管理</div>
-                </div>
-                
-                <div class="nav-right">
-                   
-                    
-                    <div class="nav-user">
-                        <div class="nav-user-avatar">A</div>
-                        <span><?php echo htmlspecialchars($_SESSION['admin_username']); ?></span>
-                    </div>
-                </div>
-            </div>
+            <!-- 引入標題欄 -->
+            <?php include 'header.php'; ?>
             
             <!-- 內容區域 -->
             <div class="content">
@@ -542,7 +461,7 @@ if (isset($_GET['action']) && $_GET['action'] == 'logout') {
     </div>
     
     <script>
-    const API_BASE_URL = 'http://localhost:5001';
+    const API_BASE_URL = 'http://100.79.58.120:5001';
     
     // 載入使用者資料
     async function loadUsers() {

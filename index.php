@@ -13,6 +13,9 @@ if (isset($_GET['action']) && $_GET['action'] == 'logout') {
     header("Location: login.php");
     exit;
 }
+
+// 設置頁面標題
+$page_title = '系統概覽';
 ?>
 
 <!DOCTYPE html>
@@ -40,96 +43,6 @@ if (isset($_GET['action']) && $_GET['action'] == 'logout') {
         .dashboard {
             display: flex;
             min-height: 100vh;
-        }
-        
-        /* 頂部導航 */
-        .top-nav {
-            background: #fff;
-            padding: 16px 24px;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            box-shadow: 0 1px 4px rgba(0,21,41,0.08);
-            position: sticky;
-            top: 0;
-            z-index: 100;
-            border-bottom: 1px solid #f0f0f0;
-        }
-        
-        .nav-left {
-            display: flex;
-            align-items: center;
-        }
-        
-        .nav-title {
-    font-size: 22px;
-    font-weight: 600;
-    color: #262626;
-}
-        
-        .nav-right {
-            display: flex;
-            align-items: center;
-            gap: 16px;
-        }
-        
-        .nav-notifications {
-            position: relative;
-            cursor: pointer;
-            padding: 8px;
-            border-radius: 6px;
-            transition: background 0.3s;
-        }
-        
-        .nav-notifications:hover {
-            background: #f5f5f5;
-        }
-        
-        .nav-notifications i {
-            font-size: 16px;
-            color: #595959;
-        }
-        
-        .notification-badge {
-            position: absolute;
-            top: 4px;
-            right: 4px;
-            background: #ff4d4f;
-            color: white;
-            border-radius: 50%;
-            width: 16px;
-            height: 16px;
-            font-size: 10px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-        }
-        
-        .nav-user {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            cursor: pointer;
-            padding: 8px 12px;
-            border-radius: 6px;
-            transition: background 0.3s;
-        }
-        
-        .nav-user:hover {
-            background: #f5f5f5;
-        }
-        
-        .nav-user-avatar {
-            width: 32px;
-            height: 32px;
-            border-radius: 50%;
-            background: #f5f5f5;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            color: #8c8c8c;
-            font-weight: 500;
-            font-size: 14px;
         }
         
         /* 內容區域 */
@@ -201,106 +114,65 @@ if (isset($_GET['action']) && $_GET['action'] == 'logout') {
     border-radius: 6px;
     margin-bottom: 16px;
     font-weight: 500;
-    font-size: 16px;
 }
-        
-        .message.success {
-            background: #f6ffed;
-            color: #52c41a;
-            border: 1px solid #b7eb8f;
-        }
-        
-        .message.error {
-            background: #fff2f0;
-            color: #ff4d4f;
-            border: 1px solid #ffccc7;
-        }
-        
-        .loading {
+
+.message.success {
+    background: #f6ffed;
+    border: 1px solid #b7eb8f;
+    color: #52c41a;
+}
+
+.message.error {
+    background: #fff2f0;
+    border: 1px solid #ffccc7;
+    color: #ff4d4f;
+}
+
+.loading {
     text-align: center;
     padding: 40px;
     color: #8c8c8c;
     font-size: 16px;
 }
-        
-        /* 歡迎區塊 */
-        .welcome-section {
-            margin-top: 24px;
-        }
-        
-        .welcome-card {
-            background: #fff;
-            border-radius: 8px;
-            box-shadow: 0 1px 2px rgba(0,0,0,0.03);
-            border: 1px solid #f0f0f0;
-            padding: 32px;
-            display: flex;
-            align-items: center;
-            gap: 24px;
-            transition: all 0.3s;
-        }
-        
-        .welcome-card:hover {
-            box-shadow: 0 4px 12px rgba(0,0,0,0.08);
-        }
-        
-        .welcome-icon {
-            width: 72px;
-            height: 72px;
-            border-radius: 50%;
-            background: linear-gradient(135deg, #1890ff, #40a9ff);
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            color: white;
-            font-size: 28px;
-        }
-        
-        .welcome-content {
-            flex: 1;
-        }
-        
-        .welcome-content h2 {
-    font-size: 26px;
-    font-weight: 600;
-    color: #262626;
-    margin-bottom: 12px;
+
+/* 歡迎卡片 */
+.welcome-section {
+    background: #fff;
+    border-radius: 8px;
+    padding: 32px;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.03);
+    border: 1px solid #f0f0f0;
+    margin-top: 24px;
 }
-        
-        .welcome-content p {
+
+.welcome-card {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 24px;
+}
+
+.welcome-text h2 {
+    font-size: 28px;
+    color: #262626;
+    margin-bottom: 8px;
+    font-weight: 600;
+}
+
+.welcome-text p {
     color: #8c8c8c;
-    margin-bottom: 16px;
     font-size: 16px;
     line-height: 1.6;
+    margin-bottom: 20px;
 }
-        
-        .welcome-content ul {
-            list-style: none;
-            padding: 0;
-            margin-bottom: 24px;
-        }
-        
-        .welcome-content li {
-    padding: 6px 0;
-    color: #595959;
-    position: relative;
-    padding-left: 20px;
-    font-size: 16px;
+
+.welcome-actions {
+    display: flex;
+    gap: 12px;
+    flex-wrap: wrap;
 }
-        
-        .welcome-content li:before {
-            content: "✓";
-            position: absolute;
-            left: 0;
-            color: #52c41a;
-            font-weight: bold;
-        }
-        
-        .welcome-actions {
-            margin-top: 16px;
-        }
-        
-        .welcome-actions .btn {
+
+.welcome-actions .btn {
     display: inline-flex;
     align-items: center;
     gap: 8px;
@@ -368,24 +240,8 @@ if (isset($_GET['action']) && $_GET['action'] == 'logout') {
         
         <!-- 主內容區 -->
         <div class="main-content" id="mainContent">
-            <!-- 頂部導航 -->
-            <div class="top-nav">
-                <div class="nav-left">
-                    <div class="nav-title">系統概覽</div>
-                </div>
-                
-                <div class="nav-right">
-                    <div class="nav-notifications">
-                        <i class="fas fa-bell"></i>
-                        <span class="notification-badge">3</span>
-                    </div>
-                    
-                    <div class="nav-user">
-                        <div class="nav-user-avatar">A</div>
-                        <span><?php echo htmlspecialchars($_SESSION['admin_username']); ?></span>
-                    </div>
-                </div>
-            </div>
+            <!-- 引入標題欄 -->
+            <?php include 'header.php'; ?>
             
             <!-- 內容區域 -->
             <div class="content">
@@ -425,7 +281,7 @@ if (isset($_GET['action']) && $_GET['action'] == 'logout') {
     </div>
     
     <script>
-    const API_BASE_URL = 'http://localhost:5001';
+    const API_BASE_URL = 'http://100.79.58.120:5001';
     
     // 載入統計資料
     async function loadStats() {

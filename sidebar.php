@@ -5,12 +5,11 @@ $current_page = basename($_SERVER['PHP_SELF'], '.php');
 
 <!-- 側邊欄 -->
 <div class="sidebar" id="sidebar">
-    <button class="collapse-btn" id="collapseBtn">
-        <i class="fas fa-bars"></i>
-    </button>
-    
     <div class="sidebar-header">
         <div class="sidebar-logo">後台管理系統</div>
+        <button class="collapse-btn" id="collapseBtn" title="收合側邊欄">
+            <i class="fas fa-bars"></i>
+        </button>
     </div>
     
     
@@ -61,16 +60,33 @@ $current_page = basename($_SERVER['PHP_SELF'], '.php');
     background: #fff;
     text-align: center;
     border-bottom: 1px solid #f0f0f0;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    position: relative;
+}
+
+.sidebar.collapsed .sidebar-header {
+    padding: 0;
+    height: 60px;
+    justify-content: center;
+    border-bottom: none;
 }
 
 .sidebar-logo {
     font-size: 26px;
     font-weight: 600;
     color: #1890ff;
+    transition: opacity 0.3s ease;
+    flex: 1;
+    text-align: center;
 }
 
 .sidebar.collapsed .sidebar-logo {
-    font-size: 18px;
+    opacity: 0;
+    visibility: hidden;
+    flex: 0;
+    display: none;
 }
 
 .user-avatar {
@@ -163,11 +179,9 @@ $current_page = basename($_SERVER['PHP_SELF'], '.php');
 
 /* 收合按鈕 */
 .collapse-btn {
-    position: absolute;
-    top: 16px;
-    right: -12px;
-    width: 24px;
-    height: 24px;
+    position: relative;
+    width: 32px;
+    height: 32px;
     background: #fff;
     border: 1px solid #d9d9d9;
     border-radius: 50%;
@@ -176,16 +190,24 @@ $current_page = basename($_SERVER['PHP_SELF'], '.php');
     display: flex;
     align-items: center;
     justify-content: center;
-    font-size: 12px;
+    font-size: 14px;
     transition: all 0.3s;
     z-index: 1001;
-    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+    flex-shrink: 0;
+}
+
+.sidebar.collapsed .collapse-btn {
+    position: absolute;
+    top: 16px;
+    right: 14px;
 }
 
 .collapse-btn:hover {
     background: #f5f5f5;
     border-color: #1890ff;
     color: #1890ff;
+    transform: scale(1.05);
 }
 
 /* 主內容區 */
@@ -225,12 +247,14 @@ document.addEventListener('DOMContentLoaded', function() {
             sidebar.classList.toggle('collapsed');
             mainContent.classList.toggle('expanded');
             
-            // 更新按鈕圖標
+            // 更新按鈕圖標和提示文字
             const icon = this.querySelector('i');
             if (sidebar.classList.contains('collapsed')) {
                 icon.className = 'fas fa-chevron-right';
+                this.title = '開啟側邊欄';
             } else {
                 icon.className = 'fas fa-bars';
+                this.title = '收合側邊欄';
             }
         });
     }

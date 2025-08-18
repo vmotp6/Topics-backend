@@ -255,6 +255,6 @@ def health_check():
 
 if __name__ == '__main__':
     print("🚀 Topics 後台管理 API 啟動中...")
-    print("📍 API 端點：http://localhost:5001")
+    print("📍 API 端點：http://100.79.58.120:5001")
     print("📊 資料庫：topics_good")
     app.run(host='0.0.0.0', port=5001, debug=True)
