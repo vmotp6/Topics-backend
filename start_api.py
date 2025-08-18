@@ -7,6 +7,7 @@ import os
 import sys
 import subprocess
 import time
+from config import DB_CONFIG, API_HOST, API_PORT
 
 def check_python_version():
     """檢查Python版本"""
@@ -30,13 +31,7 @@ def check_database():
     print("🔍 檢查資料庫連線...")
     try:
         import pymysql
-        conn = pymysql.connect(
-            host="localhost",
-            user="root",
-            password="",
-            database="topics_good",
-            charset="utf8mb4"
-        )
+        conn = pymysql.connect(**DB_CONFIG)
         conn.close()
         print("✅ 資料庫連線正常")
     except Exception as e:
@@ -50,14 +45,14 @@ def check_database():
 def start_api():
     """啟動API服務"""
     print("🚀 啟動 Topics 後台管理 API...")
-    print("📍 API 端點：http://localhost:5001")
+    print(f"📍 API 端點：http://{API_HOST}:{API_PORT}")
     print("📊 資料庫：topics_good")
     print("🔑 預設管理員帳號：admin / admin123")
     print("=" * 50)
     
     try:
         from api import app
-        app.run(host='0.0.0.0', port=5001, debug=True)
+        app.run(host=API_HOST, port=API_PORT, debug=True)
     except KeyboardInterrupt:
         print("\n👋 API 服務已停止")
     except Exception as e:

@@ -39,20 +39,12 @@ def get_all_users():
                     u.username,
                     u.name,
                     u.email,
-                    'student' as role,
-                    NOW() as created_at,
-                    NULL as department,
-                    NULL as phone
+                    u.role
                 FROM user u
                 ORDER BY u.id DESC
             """
             cursor.execute(sql)
             users = cursor.fetchall()
-            
-            # 格式化日期
-            for user in users:
-                if user['created_at']:
-                    user['created_at'] = user['created_at'].strftime('%Y-%m-%d %H:%M:%S')
             
             return jsonify({"users": users}), 200
             
@@ -83,10 +75,7 @@ def search_users():
                     u.username,
                     u.name,
                     u.email,
-                    'student' as role,
-                    NOW() as created_at,
-                    NULL as department,
-                    NULL as phone
+                    u.role
                 FROM user u
                 WHERE u.username LIKE %s 
                    OR u.name LIKE %s 
@@ -96,11 +85,6 @@ def search_users():
             search_term = f"%{query}%"
             cursor.execute(sql, (search_term, search_term, search_term))
             users = cursor.fetchall()
-            
-            # 格式化日期
-            for user in users:
-                if user['created_at']:
-                    user['created_at'] = user['created_at'].strftime('%Y-%m-%d %H:%M:%S')
             
             return jsonify({"users": users}), 200
             
@@ -195,10 +179,7 @@ def get_user_detail(user_id):
                     u.username,
                     u.name,
                     u.email,
-                    'student' as role,
-                    NOW() as created_at,
-                    NULL as department,
-                    NULL as phone
+                    u.role
                 FROM user u
                 WHERE u.id = %s
             """
@@ -207,10 +188,6 @@ def get_user_detail(user_id):
             
             if not user:
                 return jsonify({"message": "使用者不存在"}), 404
-            
-            # 格式化日期
-            if user['created_at']:
-                user['created_at'] = user['created_at'].strftime('%Y-%m-%d %H:%M:%S')
             
             return jsonify({"user": user}), 200
             
@@ -242,10 +219,10 @@ def update_user(user_id):
             if not user:
                 return jsonify({"message": "使用者不存在"}), 404
             
-            # 更新使用者基本資料（簡化，不包含role欄位）
+            # 更新使用者基本資料
             cursor.execute(
-                "UPDATE user SET name = %s, email = %s WHERE id = %s",
-                (name, email, user_id)
+                "UPDATE user SET name = %s, email = %s, role = %s WHERE id = %s",
+                (name, email, role, user_id)
             )
             
             conn.commit()

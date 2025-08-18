@@ -1,28 +1,26 @@
-# 資料庫連線設定檔案
-# 請根據您的網路環境修改以下設定
+# 資料庫配置檔案
+# 集中管理所有資料庫連線設定
 
-# 本地開發設定
-LOCAL_DB_CONFIG = {
-    'host': 'localhost',
-    'user': 'root',
-    'password': '',
-    'database': 'topics_good',
-    'charset': 'utf8mb4',
-    'port': 3306
+# 資料庫主機設定
+DB_HOST = '100.79.58.120'  # 使用Tailscale VPN IP，讓其他使用者可以遠端連線
+DB_USER = 'root'
+DB_PASSWORD = ''
+DB_NAME = 'topics_good'
+DB_CHARSET = 'utf8mb4'
+
+# 資料庫連線配置字典
+DB_CONFIG = {
+    'host': DB_HOST,
+    'user': DB_USER,
+    'password': DB_PASSWORD,
+    'database': DB_NAME,
+    'charset': DB_CHARSET
 }
 
-# 遠端連線設定 (請修改為您的電腦 IP 地址)
-REMOTE_DB_CONFIG = {
-    'host': '172.16.222.109',  # 您的電腦 Wi-Fi IP 地址
-    'user': 'root',
-    'password': '',
-    'database': 'topics_good',
-    'charset': 'utf8mb4',
-    'port': 3306
-}
+# API 服務器設定
+API_HOST = '0.0.0.0'  # 允許所有IP連線
+API_PORT = 5001
 
-# 選擇使用哪個設定 (True = 遠端連線, False = 本地連線)
-USE_REMOTE_DB = True
-
-# 根據設定選擇資料庫配置
-DB_CONFIG = REMOTE_DB_CONFIG if USE_REMOTE_DB else LOCAL_DB_CONFIG
+# 前端服務器設定
+FRONTEND_HOST = '0.0.0.0'  # 允許所有IP連線
+FRONTEND_PORT = 5000
