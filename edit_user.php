@@ -34,6 +34,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $name = $_POST['name'] ?? '';
         $email = $_POST['email'] ?? '';
         $role = $_POST['role'] ?? '';
+        $status = $_POST['status'] ?? '1';
         
         try {
             $host = '100.79.58.120';
@@ -45,13 +46,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
             
             // 更新用戶資料
-            $stmt = $pdo->prepare("UPDATE user SET username = ?, name = ?, email = ?, role = ? WHERE id = ?");
-            $stmt->execute([$username, $name, $email, $role, $userId]);
+            $stmt = $pdo->prepare("UPDATE user SET username = ?, name = ?, email = ?, role = ?, status = ? WHERE id = ?");
+            $stmt->execute([$username, $name, $email, $role, $status, $userId]);
             
             $success_message = "用戶資料更新成功！";
             
             // 重新獲取更新後的用戶資料
-            $stmt = $pdo->prepare("SELECT id, username, name, email, role FROM user WHERE id = ?");
+            $stmt = $pdo->prepare("SELECT id, username, name, email, role, status FROM user WHERE id = ?");
             $stmt->execute([$userId]);
             $user = $stmt->fetch(PDO::FETCH_ASSOC);
             
@@ -93,7 +94,7 @@ try {
     $pdo = new PDO("mysql:host=$host;dbname=$dbname;charset=utf8mb4", $db_username, $db_password);
     $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
     
-    $stmt = $pdo->prepare("SELECT id, username, name, email, role FROM user WHERE id = ?");
+    $stmt = $pdo->prepare("SELECT id, username, name, email, role, status FROM user WHERE id = ?");
     $stmt->execute([$userId]);
     $user = $stmt->fetch(PDO::FETCH_ASSOC);
     
@@ -109,7 +110,8 @@ try {
         'username' => 'admin',
         'name' => '張三',
         'email' => 'admin@example.com',
-        'role' => 'admin'
+        'role' => 'admin',
+        'status' => 1
     ];
 }
 ?>
@@ -379,6 +381,16 @@ try {
                                 </select>
                             </div>
                             
+                            <div class="form-group">
+                                <label class="required">狀態</label>
+                                <select name="status" class="form-control" required>
+                                    <option value="0" <?php echo $user['status'] == 0 ? 'selected' : ''; ?>>停用</option>
+                                    <option value="1" <?php echo $user['status'] == 1 ? 'selected' : ''; ?>>啟用</option>
+                                </select>
+                            </div>
+                        </div>
+                        
+                        <div class="form-row">
                             <div class="form-group">
                                 <label class="required">密碼</label>
                                 <div style="display: flex; align-items: center;">

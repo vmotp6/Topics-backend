@@ -18,7 +18,7 @@ def admin_login():
     password = request.form.get('password')
     
     # 預設管理員帳號密碼
-    if username == 'admin' and password == 'admin123':
+    if username == 'a' and password == 'a':
         return jsonify({
             "message": "登入成功",
             "username": username,
@@ -31,22 +31,40 @@ def admin_login():
 @app.route('/admin/users', methods=['GET'])
 def get_all_users():
     try:
+        # 獲取排序參數
+        sort_by = request.args.get('sort_by', 'id')  # 預設按ID排序
+        sort_order = request.args.get('sort_order', 'desc')  # 預設降序
+        
+        # 驗證排序欄位
+        allowed_sort_fields = ['id', 'username', 'name', 'email', 'role', 'status']
+        if sort_by not in allowed_sort_fields:
+            sort_by = 'id'
+        
+        # 驗證排序方向
+        if sort_order not in ['asc', 'desc']:
+            sort_order = 'desc'
+        
         conn = get_db_connection()
         with conn.cursor(pymysql.cursors.DictCursor) as cursor:
-            sql = """
+            sql = f"""
                 SELECT 
                     u.id,
                     u.username,
                     u.name,
                     u.email,
-                    u.role
+                    u.role,
+                    u.status
                 FROM user u
-                ORDER BY u.id DESC
+                ORDER BY u.{sort_by} {sort_order.upper()}
             """
             cursor.execute(sql)
             users = cursor.fetchall()
             
-            return jsonify({"users": users}), 200
+            return jsonify({
+                "users": users,
+                "sort_by": sort_by,
+                "sort_order": sort_order
+            }), 200
             
     except pymysql.Error as e:
         print(f"資料庫查詢錯誤：{e}")
@@ -75,7 +93,8 @@ def search_users():
                     u.username,
                     u.name,
                     u.email,
-                    u.role
+                    u.role,
+                    u.status
                 FROM user u
                 WHERE u.username LIKE %s 
                    OR u.name LIKE %s 
@@ -116,6 +135,13 @@ def get_stats():
             cursor.execute("SELECT COUNT(*) FROM user WHERE role = 'teacher'")
             total_teachers = cursor.fetchone()[0]
             
+            # 狀態統計
+            cursor.execute("SELECT COUNT(*) FROM user WHERE status = 0")
+            disabled_users = cursor.fetchone()[0]
+            
+            cursor.execute("SELECT COUNT(*) FROM user WHERE status = 1")
+            enabled_users = cursor.fetchone()[0]
+            
             # 今日新增使用者（簡化為總數）
             today_new_users = total_users
             
@@ -123,7 +149,9 @@ def get_stats():
                 "total_users": total_users,
                 "total_students": total_students,
                 "total_teachers": total_teachers,
-                "today_new_users": today_new_users
+                "today_new_users": today_new_users,
+                "disabled_users": disabled_users,
+                "enabled_users": enabled_users
             }), 200
             
     except pymysql.Error as e:
@@ -179,7 +207,8 @@ def get_user_detail(user_id):
                     u.username,
                     u.name,
                     u.email,
-                    u.role
+                    u.role,
+                    u.status
                 FROM user u
                 WHERE u.id = %s
             """
@@ -209,6 +238,7 @@ def update_user(user_id):
         name = data.get('name')
         email = data.get('email')
         role = data.get('role')
+        status = data.get('status')
         
         conn = get_db_connection()
         with conn.cursor() as cursor:
@@ -221,8 +251,8 @@ def update_user(user_id):
             
             # 更新使用者基本資料
             cursor.execute(
-                "UPDATE user SET name = %s, email = %s, role = %s WHERE id = %s",
-                (name, email, role, user_id)
+                "UPDATE user SET name = %s, email = %s, role = %s, status = %s WHERE id = %s",
+                (name, email, role, status, user_id)
             )
             
             conn.commit()
@@ -236,6 +266,43 @@ def update_user(user_id):
         conn.rollback()
         print(f"未知錯誤：{e}")
         return jsonify({"message": "更新失敗"}), 500
+    finally:
+        if conn:
+            conn.close()
+
+# 更新使用者狀態
+@app.route('/admin/users/<int:user_id>/status', methods=['PUT'])
+def update_user_status(user_id):
+    try:
+        data = request.get_json()
+        status = data.get('status')
+        
+        if status not in [0, 1]:
+            return jsonify({"message": "無效的狀態值"}), 400
+        
+        conn = get_db_connection()
+        with conn.cursor() as cursor:
+            # 檢查使用者是否存在
+            cursor.execute("SELECT id FROM user WHERE id = %s", (user_id,))
+            user = cursor.fetchone()
+            
+            if not user:
+                return jsonify({"message": "使用者不存在"}), 404
+            
+            # 更新使用者狀態
+            cursor.execute("UPDATE user SET status = %s WHERE id = %s", (status, user_id))
+            conn.commit()
+            
+            return jsonify({"message": "使用者狀態更新成功"}), 200
+            
+    except pymysql.Error as e:
+        conn.rollback()
+        print(f"資料庫操作錯誤：{e}")
+        return jsonify({"message": "狀態更新失敗"}), 500
+    except Exception as e:
+        conn.rollback()
+        print(f"未知錯誤：{e}")
+        return jsonify({"message": "狀態更新失敗"}), 500
     finally:
         if conn:
             conn.close()

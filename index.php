@@ -95,6 +95,15 @@ $page_title = '系統概覽';
         .stat-icon.teachers { 
             background: linear-gradient(135deg, #fa8c16, #ffa940); 
         }
+        .stat-icon.disabled { 
+            background: linear-gradient(135deg, #ff4d4f, #ff7875); 
+        }
+        .stat-icon.enabled { 
+            background: linear-gradient(135deg, #52c41a, #73d13d); 
+        }
+        .stat-icon.pending { 
+            background: linear-gradient(135deg, #1890ff, #40a9ff); 
+        }
         
         .stat-info h3 {
     font-size: 32px;
@@ -252,6 +261,11 @@ $page_title = '系統概覽';
                     <div class="loading">載入中...</div>
                 </div>
                 
+                <!-- 狀態統計卡片 -->
+                <div class="stats-grid" id="statusStatsGrid" style="margin-top: 24px;">
+                    <div class="loading">載入中...</div>
+                </div>
+                
                 <!-- 歡迎訊息 -->
                 <div class="welcome-section">
                     <div class="welcome-card">
@@ -290,6 +304,7 @@ $page_title = '系統概覽';
             const data = await response.json();
             
             if (response.ok) {
+                // 基本統計卡片
                 document.getElementById('statsGrid').innerHTML = `
                     <div class="stat-card">
                         <div class="stat-icon users">
@@ -318,6 +333,29 @@ $page_title = '系統概覽';
                         <div class="stat-info">
                             <h3>${data.total_teachers}</h3>
                             <p>老師數</p>
+                        </div>
+                    </div>
+                `;
+                
+                // 狀態統計卡片
+                document.getElementById('statusStatsGrid').innerHTML = `
+                    <div class="stat-card">
+                        <div class="stat-icon enabled">
+                            <i class="fas fa-check-circle"></i>
+                        </div>
+                        <div class="stat-info">
+                            <h3>${data.enabled_users}</h3>
+                            <p>啟用用戶</p>
+                        </div>
+                    </div>
+                    
+                    <div class="stat-card">
+                        <div class="stat-icon disabled">
+                            <i class="fas fa-ban"></i>
+                        </div>
+                        <div class="stat-info">
+                            <h3>${data.disabled_users}</h3>
+                            <p>停用用戶</p>
                         </div>
                     </div>
                 `;

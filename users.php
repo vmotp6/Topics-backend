@@ -141,6 +141,31 @@ $page_title = '使用者管理';
             color: #262626;
             border-bottom: 1px solid #f0f0f0;
             font-size: 16px;
+            cursor: pointer;
+            user-select: none;
+            position: relative;
+        }
+        
+        .user-table th:hover {
+            background: #f0f0f0;
+        }
+        
+        .sort-icon {
+            margin-left: 8px;
+            font-size: 12px;
+            color: #8c8c8c;
+        }
+        
+        .sort-icon.active {
+            color: #1890ff;
+        }
+        
+        .sort-icon.asc::after {
+            content: "↑";
+        }
+        
+        .sort-icon.desc::after {
+            content: "↓";
         }
         
         .user-table td {
@@ -177,6 +202,31 @@ $page_title = '使用者管理';
             background: #fff2e8;
             color: #fa8c16;
             border: 1px solid #ffd591;
+        }
+        
+        .status-badge {
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 14px;
+            font-weight: 500;
+        }
+        
+        .status-0 {
+            background: #fff2f0;
+            color: #ff4d4f;
+            border: 1px solid #ffccc7;
+        }
+        
+        .status-1 {
+            background: #f6ffed;
+            color: #52c41a;
+            border: 1px solid #b7eb8f;
+        }
+        
+        .status-2 {
+            background: #e6f7ff;
+            color: #1890ff;
+            border: 1px solid #91d5ff;
         }
         
         .action-buttons {
@@ -453,6 +503,10 @@ $page_title = '使用者管理';
                     <label>角色:</label>
                     <input type="text" id="viewRole" readonly>
                 </div>
+                <div class="form-group">
+                    <label>狀態:</label>
+                    <input type="text" id="viewStatus" readonly>
+                </div>
             </div>
             <div class="modal-footer">
                 <button class="btn btn-secondary" onclick="closeModal('viewModal')">關閉</button>
@@ -463,14 +517,21 @@ $page_title = '使用者管理';
     <script>
     const API_BASE_URL = 'http://100.79.58.120:5001';
     
+    // 排序狀態
+    let currentSortBy = 'id';
+    let currentSortOrder = 'desc';
+    
     // 載入使用者資料
-    async function loadUsers() {
+    async function loadUsers(sortBy = 'id', sortOrder = 'desc') {
         try {
-            const response = await fetch(`${API_BASE_URL}/admin/users`);
+            const response = await fetch(`${API_BASE_URL}/admin/users?sort_by=${sortBy}&sort_order=${sortOrder}`);
             const data = await response.json();
             
             if (response.ok) {
+                currentSortBy = data.sort_by;
+                currentSortOrder = data.sort_order;
                 renderUserTable(data.users);
+                updateSortIcons();
             } else {
                 showMessage('載入使用者資料失敗', 'error');
             }
@@ -480,11 +541,38 @@ $page_title = '使用者管理';
         }
     }
     
+    // 排序表格
+    function sortTable(field) {
+        let newSortOrder = 'asc';
+        
+        // 如果點擊的是當前排序欄位，則切換排序方向
+        if (currentSortBy === field) {
+            newSortOrder = currentSortOrder === 'asc' ? 'desc' : 'asc';
+        }
+        
+        loadUsers(field, newSortOrder);
+    }
+    
+    // 更新排序圖標
+    function updateSortIcons() {
+        // 清除所有圖標
+        const icons = document.querySelectorAll('.sort-icon');
+        icons.forEach(icon => {
+            icon.className = 'sort-icon';
+        });
+        
+        // 設置當前排序欄位的圖標
+        const currentIcon = document.getElementById(`sort-${currentSortBy}`);
+        if (currentIcon) {
+            currentIcon.className = `sort-icon active ${currentSortOrder}`;
+        }
+    }
+    
     // 搜尋使用者
     async function searchUsers() {
         const query = document.getElementById('searchInput').value;
         if (query.length < 2) {
-            loadUsers();
+            loadUsers(currentSortBy, currentSortOrder);
             return;
         }
         
@@ -516,11 +604,12 @@ $page_title = '使用者管理';
             <table class="user-table" id="userTable">
                 <thead>
                     <tr>
-                        <th>ID</th>
-                        <th>帳號</th>
-                        <th>姓名</th>
-                        <th>電子郵件</th>
-                        <th>角色</th>
+                        <th onclick="sortTable('id')">ID <span class="sort-icon" id="sort-id"></span></th>
+                        <th onclick="sortTable('username')">帳號 <span class="sort-icon" id="sort-username"></span></th>
+                        <th onclick="sortTable('name')">姓名 <span class="sort-icon" id="sort-name"></span></th>
+                        <th onclick="sortTable('email')">電子郵件 <span class="sort-icon" id="sort-email"></span></th>
+                        <th onclick="sortTable('role')">角色 <span class="sort-icon" id="sort-role"></span></th>
+                        <th onclick="sortTable('status')">狀態 <span class="sort-icon" id="sort-status"></span></th>
                         <th>操作</th>
                     </tr>
                 </thead>
@@ -529,6 +618,7 @@ $page_title = '使用者管理';
         
         users.forEach(user => {
             const roleClass = getRoleClass(user.role);
+            const statusClass = getStatusClass(user.status);
             tableHTML += `
                 <tr>
                     <td>${user.id}</td>
@@ -536,6 +626,7 @@ $page_title = '使用者管理';
                     <td>${user.name}</td>
                     <td>${user.email}</td>
                     <td><span class="role-badge ${roleClass}">${user.role}</span></td>
+                    <td><span class="status-badge ${statusClass}">${user.status === 0 ? '停用' : '啟用'}</span></td>
                     <td>
                         <div class="action-buttons">
                             <button onclick="viewUser(${user.id})" class="btn-view">查看</button>
@@ -559,6 +650,15 @@ $page_title = '使用者管理';
             default: return 'role-student';
         }
     }
+
+    // 獲取狀態樣式類別
+    function getStatusClass(status) {
+        switch (status) {
+            case 0: return 'status-0';
+            case 1: return 'status-1';
+            default: return 'status-0'; // 預設為停用
+        }
+    }
     
     // 查看使用者
     async function viewUser(userId) {
@@ -572,6 +672,7 @@ $page_title = '使用者管理';
                 document.getElementById('viewName').value = data.user.name;
                 document.getElementById('viewEmail').value = data.user.email;
                 document.getElementById('viewRole').value = data.user.role;
+                document.getElementById('viewStatus').value = data.user.status === 0 ? '停用' : '啟用';
                 
                 document.getElementById('viewModal').style.display = 'block';
             } else {
@@ -647,7 +748,7 @@ $page_title = '使用者管理';
     
     // 頁面載入時執行
     document.addEventListener('DOMContentLoaded', function() {
-        loadUsers();
+        loadUsers('id', 'desc');
     });
     </script>
 </body>

@@ -201,8 +201,8 @@ if (isset($_POST['action']) && $_POST['action'] == 'login') {
         </form>
         
         <div class="login-info">
-            預設管理員帳號：admin<br>
-            預設管理員密碼：admin123
+            預設管理員帳號：a<br>
+            預設管理員密碼：a
         </div>
     </div>
 </body>

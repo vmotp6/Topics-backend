@@ -81,6 +81,29 @@ username=admin&password=admin123
 GET /admin/users
 ```
 
+### 獲取所有使用者 (支援排序)
+```
+GET /admin/users?sort_by={field}&sort_order={asc|desc}
+```
+
+支援的排序欄位：
+- `id` - 用戶ID
+- `username` - 帳號
+- `name` - 姓名
+- `email` - 電子郵件
+- `role` - 角色
+- `status` - 狀態
+
+排序方向：
+- `asc` - 升序 (小到大)
+- `desc` - 降序 (大到小)
+
+範例：
+```
+GET /admin/users?sort_by=username&sort_order=asc
+GET /admin/users?sort_by=id&sort_order=desc
+```
+
 ### 獲取統計資料
 ```
 GET /admin/stats
@@ -104,7 +127,18 @@ Content-Type: application/json
 {
     "name": "新姓名",
     "email": "new@email.com",
-    "role": "student"
+    "role": "student",
+    "status": 1
+}
+```
+
+### 更新使用者狀態
+```
+PUT /admin/users/{user_id}/status
+Content-Type: application/json
+
+{
+    "status": 1
 }
 ```
 
@@ -126,11 +160,22 @@ DELETE /admin/users/{user_id}
 - ✅ 資料庫連線管理
 - ✅ 錯誤處理機制
 - ✅ CORS 跨域支援
+- ✅ 用戶狀態管理 (停用/啟用/待審核)
+- ✅ 狀態統計顯示
+- ✅ 快速狀態切換功能
+- ✅ 表格排序功能 (支援所有欄位升序/降序)
 
 ## 預設管理員帳號
 
 - 帳號：`admin`
 - 密碼：`admin123`
+
+## 用戶狀態說明
+
+系統支援兩種用戶狀態：
+
+- **0 = 停用**：用戶無法登入系統
+- **1 = 啟用**：用戶可以正常使用系統
 
 ## 技術特色
 
