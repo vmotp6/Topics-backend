@@ -21,6 +21,10 @@ $current_page = basename($_SERVER['PHP_SELF'], '.php');
             <i class="fas fa-users"></i>
             <span>使用者管理</span>
         </a>
+        <a href="enrollment_list.php" class="menu-item <?php echo $current_page === 'enrollment_list' ? 'active' : ''; ?>">
+            <i class="fas fa-file-signature"></i>
+            <span>就讀意願名單</span>
+        </a>
         <a href="#" class="menu-item">
             <i class="fas fa-chart-bar"></i>
             <span>統計分析</span>
@@ -28,10 +32,6 @@ $current_page = basename($_SERVER['PHP_SELF'], '.php');
         <a href="page_management.php" class="menu-item <?php echo $current_page === 'page_management' ? 'active' : ''; ?>">
             <i class="fas fa-cog"></i>
             <span>頁面管理</span>
-        </a>
-        <a href="database_view.php" class="menu-item <?php echo $current_page === 'database_view' ? 'active' : ''; ?>">
-            <i class="fas fa-database"></i>
-            <span>資料庫</span>
         </a>
         <a href="settings.php" class="menu-item <?php echo $current_page === 'settings' ? 'active' : ''; ?>">
             <i class="fas fa-cog"></i>

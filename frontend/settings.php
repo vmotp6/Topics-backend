@@ -176,6 +176,8 @@ $conn->close();
         .btn-primary:hover { background: #40a9ff; border-color: #40a9ff; }
         .btn-danger { background: var(--danger-color); color: white; border-color: var(--danger-color); }
         .btn-danger:hover { background: #ff7875; border-color: #ff7875; }
+        .btn-info { background: #17a2b8; color: white; border-color: #17a2b8; }
+        .btn-info:hover { background: #138496; border-color: #117a8b; }
         .btn-sm { padding: 4px 10px; font-size: 12px; }
 
         .form-group { margin-bottom: 20px; }
@@ -252,6 +254,7 @@ $conn->close();
                                         <td><span class="status-badge <?php echo $item['is_active'] ? 'status-active' : 'status-inactive'; ?>"><?php echo $item['is_active'] ? '啟用' : '停用'; ?></span></td>
                                         <td>
                                             <button class="btn btn-sm" onclick='editSession(<?php echo json_encode($item); ?>)'>編輯</button>
+                                            <a href="view_registrations.php?session_id=<?php echo $item['id']; ?>" class="btn btn-info btn-sm">查看名單</a>
                                             <form method="POST" style="display:inline;" onsubmit="return confirm('確定要刪除此場次嗎？');">
                                                 <input type="hidden" name="action" value="delete_session">
                                                 <input type="hidden" name="session_id" value="<?php echo $item['id']; ?>">

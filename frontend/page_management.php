@@ -285,32 +285,14 @@ $manageable_pages = [
                         <table class="page-table" id="pageTable">
                             <thead>
                                 <tr>
-                                    <th style="width:60px;">圖示</th>
                                     <th>頁面名稱</th>
-                                    <th style="width:100px;">類型</th>
-                                    <th style="width:100px;">狀態</th>
-                                    <th style="width:100px;">操作</th>
+                                    <th style="width:120px;">操作</th>
                                 </tr>
                             </thead>
                             <tbody>
                                 <?php foreach ($manageable_pages as $page): ?>
-                                <tr data-status="<?php echo $page['status']; ?>" data-name="<?php echo $page['name']; ?>">
-                                    <td>
-                                        <div class="page-icon" style="background: <?php echo $page['color']; ?>">
-                                            <i class="<?php echo $page['icon']; ?>"></i>
-                                        </div>
-                                    </td>
+                                <tr data-name="<?php echo $page['name']; ?>">
                                     <td><?php echo $page['name']; ?></td>
-                                    <td>
-                                        <span class="status-badge <?php echo $page['type'] === 'backend' ? 'status-active' : 'status-inactive'; ?>">
-                                            <?php echo $page['type'] === 'backend' ? '後台' : '前台'; ?>
-                                        </span>
-                                    </td>
-                                    <td>
-                                        <span class="status-badge <?php echo $page['status'] === 'active' ? 'status-active' : 'status-inactive'; ?>">
-                                            <?php echo $page['status'] === 'active' ? '啟用' : '停用'; ?>
-                                        </span>
-                                    </td>
                                     <td>
                                         <a class="btn-action" href="<?php echo $page['url']; ?>">編輯</a>
                                     </td>
@@ -327,33 +309,24 @@ $manageable_pages = [
     <script>
         // 搜尋 & 篩選
         const searchInput = document.getElementById('searchInput');
-        const statusFilter = document.getElementById('statusFilter');
         // 選取表格內容列
         const rows = document.querySelectorAll('#pageTable tbody tr');
 
         function filterTable() {
             const searchText = searchInput.value.toLowerCase();
-            const status = statusFilter.value;
 
             rows.forEach(row => {
                 // 搜尋頁面名稱 (已修改，因為原 HTML 中 name 在 index 1)
-                const name = row.cells[1].innerText.toLowerCase();
-                const rowStatus = row.getAttribute('data-status');
-
-                // 檢查名稱是否包含搜尋文字 (不檢查描述，因為您的頁面資料中沒有明確的描述欄位)
+                const name = row.cells[0].innerText.toLowerCase(); // 頁面名稱現在是第一個 td
                 const matchSearch = name.includes(searchText);
                 
-                // 檢查狀態是否匹配
-                const matchStatus = !status || rowStatus === status;
-
                 // 顯示或隱藏列
-                row.style.display = matchSearch && matchStatus ? '' : 'none';
+                row.style.display = matchSearch ? '' : 'none';
             });
         }
 
         // 綁定事件
         searchInput.addEventListener('input', filterTable);
-        statusFilter.addEventListener('change', filterTable);
     </script>
 </body>
 </html>
