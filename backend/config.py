@@ -2,7 +2,7 @@
 # 集中管理所有資料庫連線設定
 
 # 資料庫主機設定
-DB_HOST = '100.79.58.120'  # 使用Tailscale VPN IP，讓其他使用者可以遠端連線
+DB_HOST = 'localhost'  # 本地資料庫主機
 DB_USER = 'root'
 DB_PASSWORD = ''
 DB_NAME = 'topics_good'

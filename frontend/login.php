@@ -13,7 +13,7 @@ if (isset($_POST['action']) && $_POST['action'] == 'login') {
     $admin_password = $_POST['password'];
     
     // 呼叫Python API進行登入驗證
-    $api_url = 'http://100.79.58.120:5001/admin/login';
+    $api_url = 'http://localhost:5001/admin/login';
     $post_data = http_build_query([
         'username' => $admin_username,
         'password' => $admin_password

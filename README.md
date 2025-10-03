@@ -73,7 +73,7 @@ GET /health
 POST /admin/login
 Content-Type: application/x-www-form-urlencoded
 
-username=admin&password=admin123
+username=a&password=a
 ```
 
 ### 獲取所有使用者
@@ -167,8 +167,8 @@ DELETE /admin/users/{user_id}
 
 ## 預設管理員帳號
 
-- 帳號：`admin`
-- 密碼：`admin123`
+- 帳號：`a`
+- 密碼：`a`
 
 ## 用戶狀態說明
 

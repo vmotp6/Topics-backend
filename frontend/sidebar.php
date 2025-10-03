@@ -12,7 +12,6 @@ $current_page = basename($_SERVER['PHP_SELF'], '.php');
         </button>
     </div>
     
-    
     <div class="sidebar-menu">
         <a href="index.php" class="menu-item <?php echo $current_page === 'index' ? 'active' : ''; ?>">
             <i class="fas fa-home"></i>
@@ -26,9 +25,17 @@ $current_page = basename($_SERVER['PHP_SELF'], '.php');
             <i class="fas fa-chart-bar"></i>
             <span>統計分析</span>
         </a>
-        <a href="#" class="menu-item">
+        <a href="page_management.php" class="menu-item <?php echo $current_page === 'page_management' ? 'active' : ''; ?>">
             <i class="fas fa-cog"></i>
-            <span>系統設定</span>
+            <span>頁面管理</span>
+        </a>
+        <a href="database_view.php" class="menu-item <?php echo $current_page === 'database_view' ? 'active' : ''; ?>">
+            <i class="fas fa-database"></i>
+            <span>資料庫</span>
+        </a>
+        <a href="settings.php" class="menu-item <?php echo $current_page === 'settings' ? 'active' : ''; ?>">
+            <i class="fas fa-cog"></i>
+            <span>場次設定</span>
         </a>
         <a href="?action=logout" class="menu-item">
             <i class="fas fa-sign-out-alt"></i>

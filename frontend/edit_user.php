@@ -37,7 +37,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $status = $_POST['status'] ?? '1';
         
         try {
-            $host = '100.79.58.120';
+            $host = 'localhost';
             $dbname = 'topics_good';
             $db_username = 'root';
             $db_password = '';
@@ -46,8 +46,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
             
             // 更新用戶資料
-            $stmt = $pdo->prepare("UPDATE user SET username = ?, name = ?, email = ?, role = ?, status = ? WHERE id = ?");
-            $stmt->execute([$username, $name, $email, $role, $status, $userId]);
+            $stmt = $pdo->prepare("UPDATE user SET name = ?, email = ?, role = ?, status = ? WHERE id = ?");
+            $stmt->execute([ $name, $email, $role, $status, $userId]);
             
             $success_message = "用戶資料更新成功！";
             
@@ -63,7 +63,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     } elseif ($action === 'reset_password') {
         // 重置密碼
         try {
-            $host = '100.79.58.120';
+            $host = 'localhost';
             $dbname = 'topics_good';
             $db_username = 'root';
             $db_password = '';
@@ -86,7 +86,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
 // 從資料庫獲取用戶資料
 try {
-    $host = '100.79.58.120';
+    $host = 'localhost';
     $dbname = 'topics_good';
     $db_username = 'root';
     $db_password = '';
@@ -355,7 +355,7 @@ try {
                             
                             <div class="form-group">
                                 <label class="required">帳號</label>
-                                <input type="text" name="username" class="form-control" value="<?php echo htmlspecialchars($user['username']); ?>" required>
+                                <input type="text" class="form-control"  value="<?php echo htmlspecialchars($user['username']); ?>" readonly>
                             </div>
                         </div>
                         
@@ -405,7 +405,7 @@ try {
                     <div class="form-section">
                         <div style="display: flex; justify-content: flex-end; gap: 8px;">
                             <button type="button" class="btn btn-secondary" onclick="history.back()">取消</button>
-                            <button type="button" class="btn btn-primary" onclick="submitForm('update')">保存</button>
+                            <button type="button" class="btn btn-primary" onclick="submitForm('update')">儲存</button>
                         </div>
                     </div>
                 </form>

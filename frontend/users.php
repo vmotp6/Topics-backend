@@ -113,21 +113,6 @@ $page_title = '使用者管理';
             box-shadow: 0 0 0 2px rgba(24,144,255,0.2);
         }
         
-        .table-search button {
-            padding: 8px 16px;
-            background: #1890ff;
-            color: white;
-            border: none;
-            border-radius: 6px;
-            cursor: pointer;
-            transition: background 0.3s;
-            font-size: 16px;
-        }
-        
-        .table-search button:hover {
-            background: #40a9ff;
-        }
-        
         .user-table {
             width: 100%;
             border-collapse: collapse;
@@ -463,7 +448,6 @@ $page_title = '使用者管理';
                         <div class="table-title">使用者列表</div>
                         <div class="table-search">
                             <input type="text" id="tableSearchInput" placeholder="搜尋使用者..." onkeyup="filterTable()">
-                            <button onclick="filterTable()">搜尋</button>
                         </div>
                     </div>
                     
@@ -515,7 +499,7 @@ $page_title = '使用者管理';
     </div>
     
     <script>
-    const API_BASE_URL = 'http://100.79.58.120:5001';
+    const API_BASE_URL = 'http://localhost:5001';
     
     // 排序狀態
     let currentSortBy = 'id';
