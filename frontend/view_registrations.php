@@ -34,8 +34,8 @@ if (!$session) {
 }
 
 // 獲取該場次的報名者列表
-$stmt = $conn->prepare("SELECT * FROM admission_applications WHERE session_id = ? ORDER BY application_date DESC");
-$stmt->bind_param("i", $session_id);
+$stmt = $conn->prepare("SELECT * FROM admission_applications WHERE session_id = ? ORDER BY id DESC");
+$stmt->bind_param("i", $session_id); // 這裡的 $session_id 是從 GET 參數來的，對應 session_choice
 $stmt->execute();
 $registrations_result = $stmt->get_result();
 $registrations = $registrations_result->fetch_all(MYSQLI_ASSOC);
@@ -126,11 +126,22 @@ $page_title = '查看報名名單 - ' . htmlspecialchars($session['session_name'
                                     <tr>
                                         <td><?php echo htmlspecialchars($reg['student_name']); ?></td>
                                         <td><?php echo htmlspecialchars($reg['email']); ?></td>
-                                        <td><?php echo htmlspecialchars($reg['phone']); ?></td>
-                                        <td><?php echo htmlspecialchars($reg['current_school']); ?></td>
+                                        <td><?php echo htmlspecialchars($reg['contact_phone']); ?></td>
+                                        <td><?php echo htmlspecialchars($reg['school_name']); ?></td>
                                         <td><?php echo htmlspecialchars($reg['grade']); ?></td>
-                                        <td><?php echo htmlspecialchars($reg['course_interest']); ?></td>
-                                        <td><?php echo date('Y/m/d H:i', strtotime($reg['application_date'])); ?></td>
+                                        <td>
+                                            <?php
+                                            $courses = [];
+                                            if (!empty($reg['course_priority_1'])) {
+                                                $courses[] = '1. ' . htmlspecialchars($reg['course_priority_1']);
+                                            }
+                                            if (!empty($reg['course_priority_2'])) {
+                                                $courses[] = '2. ' . htmlspecialchars($reg['course_priority_2']);
+                                            }
+                                            echo empty($courses) ? '未選擇' : implode('<br>', $courses);
+                                            ?>
+                                        </td>
+                                        <td><?php echo date('Y/m/d H:i', strtotime($reg['email_sent_at'])); ?></td>
                                     </tr>
                                     <?php endforeach; ?>
                                 </tbody>

@@ -120,6 +120,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
 
 // 獲取所有資料
 $sessions = $conn->query("SELECT s.*, COUNT(a.id) as registration_count FROM admission_sessions s LEFT JOIN admission_applications a ON s.id = a.session_choice GROUP BY s.id ORDER BY s.session_date DESC")->fetch_all(MYSQLI_ASSOC);
+$sessions_sql = "
+    SELECT s.*, 
+           COUNT(a.id) as registration_count,
+           (s.max_participants - COUNT(a.id)) as remaining_slots
+    FROM admission_sessions s
+    LEFT JOIN admission_applications a ON s.id = a.session_id GROUP BY s.id ORDER BY s.session_date DESC";
+$sessions = $conn->query($sessions_sql)->fetch_all(MYSQLI_ASSOC);
 $grades = $conn->query("SELECT * FROM admission_grades ORDER BY sort_order, id")->fetch_all(MYSQLI_ASSOC);
 $courses = $conn->query("SELECT * FROM admission_courses ORDER BY sort_order, id")->fetch_all(MYSQLI_ASSOC);
 
@@ -240,8 +247,9 @@ $conn->close();
                                         <th>日期時間</th>
                                         <th>類型</th>
                                         <th>報名/上限</th>
+                                        <th>剩餘名額</th>
                                         <th>狀態</th>
-                                        <th>操作</th>
+                                        <th>操作</th>                                       
                                     </tr>
                                 </thead>
                                 <tbody>
@@ -251,6 +259,19 @@ $conn->close();
                                         <td><?php echo date('Y/m/d H:i', strtotime($item['session_date'])); ?></td>
                                         <td><?php echo htmlspecialchars($item['session_type']); ?></td>
                                         <td><?php echo $item['registration_count']; ?> / <?php echo $item['max_participants'] ?: '無限'; ?></td>
+                                        <td>
+                                            <?php 
+                                            if ($item['max_participants']) {
+                                                if ($item['remaining_slots'] <= 0) {
+                                                    echo ' <span style="color: var(--danger-color);">(已額滿)</span>';
+                                                } else {
+                                                    echo '剩餘 ' . $item['remaining_slots'] . ' 位';
+                                                }
+                                            } else {
+                                                echo '無限';
+                                            }
+                                            ?>
+                                        </td>
                                         <td><span class="status-badge <?php echo $item['is_active'] ? 'status-active' : 'status-inactive'; ?>"><?php echo $item['is_active'] ? '啟用' : '停用'; ?></span></td>
                                         <td>
                                             <button class="btn btn-sm" onclick='editSession(<?php echo json_encode($item); ?>)'>編輯</button>
