@@ -1,5 +1,6 @@
 <?php
-session_start();
+// 引入統一的 session 設定檔
+require_once __DIR__ . '/../../Topics-frontend/frontend/session_config.php';
 
 // 檢查是否已登入
 if (!isset($_SESSION['admin_logged_in']) || !$_SESSION['admin_logged_in']) {

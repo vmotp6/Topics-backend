@@ -104,7 +104,7 @@ $manageable_pages = [
         
         /* 內容區域 - 使用目標頁面的間距 */
         .content {
-            padding: 18px 36px; /* 修改這裡 */
+            padding: 24px;
         }
         
         /* 麵包屑 */

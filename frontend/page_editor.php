@@ -1,5 +1,6 @@
 <?php
-session_start();
+// 引入統一的 session 設定檔
+require_once __DIR__ . '/../../Topics-frontend/frontend/session_config.php';
 
 // 檢查是否已登入，如果沒有登入則跳轉到登入頁面
 if (!isset($_SESSION['admin_logged_in']) || !$_SESSION['admin_logged_in']) {
@@ -81,7 +82,7 @@ $page_title = $current_config['name'] . ' - 頁面編輯';
         
         /* 內容區域 */
         .content {
-            padding: 18px 36px;
+            padding: 24px;
         }
         
         /* 麵包屑 */

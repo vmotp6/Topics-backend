@@ -37,7 +37,11 @@ $current_page = basename($_SERVER['PHP_SELF'], '.php');
             <i class="fas fa-cog"></i>
             <span>場次設定</span>
         </a>
-        <a href="?action=logout" class="menu-item">
+        <a href="activity_records.php" class="menu-item <?php echo $current_page === 'activity_records' ? 'active' : ''; ?>">
+            <i class="fas fa-tasks"></i>
+            <span>活動紀錄管理</span>
+        </a>
+        <a href="index.php?action=logout" class="menu-item">
             <i class="fas fa-sign-out-alt"></i>
             <span>登出</span>
         </a>

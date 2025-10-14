@@ -49,7 +49,7 @@ $page_title = '使用者管理';
         
         /* 內容區域 */
         .content {
-            padding: 18px 36px;;
+            padding: 24px;
         }
         
         /* 麵包屑 */
