@@ -25,8 +25,8 @@ $current_page = basename($_SERVER['PHP_SELF'], '.php');
             <i class="fas fa-file-signature"></i>
             <span>就讀意願名單</span>
         </a>
-        <a href="#" class="menu-item">
-            <i class="fas fa-chart-bar"></i>
+        <a href="activity_records.php" class="menu-item <?php echo $current_page === 'activity_records' ? 'active' : ''; ?>">
+            <i class="fas fa-tasks"></i>
             <span>統計分析</span>
         </a>
         <a href="page_management.php" class="menu-item <?php echo $current_page === 'page_management' ? 'active' : ''; ?>">
@@ -36,10 +36,6 @@ $current_page = basename($_SERVER['PHP_SELF'], '.php');
         <a href="settings.php" class="menu-item <?php echo $current_page === 'settings' ? 'active' : ''; ?>">
             <i class="fas fa-cog"></i>
             <span>場次設定</span>
-        </a>
-        <a href="activity_records.php" class="menu-item <?php echo $current_page === 'activity_records' ? 'active' : ''; ?>">
-            <i class="fas fa-tasks"></i>
-            <span>活動紀錄管理</span>
         </a>
         <a href="continued_admission_list.php" class="menu-item <?php echo in_array($current_page, ['continued_admission_list', 'continued_admission_detail']) ? 'active' : ''; ?>">
             <i class="fas fa-user-plus"></i>

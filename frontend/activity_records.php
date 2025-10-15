@@ -50,6 +50,18 @@ if ($teacher_id > 0) {
                      GROUP BY t.user_id, t.name, t.department
                      ORDER BY record_count DESC, t.name ASC";
     $result = $conn->query($teachers_sql);
+
+    // 為了統計圖表，獲取所有活動記錄
+    $all_activity_records = [];
+    $all_records_sql = "SELECT ar.*, t.name AS teacher_name, t.department AS teacher_department
+                        FROM activity_records ar
+                        LEFT JOIN teacher t ON ar.teacher_id = t.user_id
+                        ORDER BY ar.activity_date DESC, ar.id DESC";
+    $all_records_result = $conn->query($all_records_sql);
+    if ($all_records_result) {
+        $all_activity_records = $all_records_result->fetch_all(MYSQLI_ASSOC);
+    }
+
     if ($result) {
         $teachers_with_records = $result->fetch_all(MYSQLI_ASSOC);
     }
@@ -63,6 +75,8 @@ $conn->close();
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title><?php echo $page_title; ?> - Topics 後台管理系統</title>
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2.0.0"></script>
     <style>
         :root {
             --primary-color: #1890ff;
@@ -126,6 +140,24 @@ $conn->close();
         .modal-body strong { color: var(--text-color); }
         .modal-footer { padding: 16px 24px; border-top: 1px solid var(--border-color); text-align: right; }
         .btn { padding: 8px 16px; border: 1px solid #d9d9d9; border-radius: 6px; cursor: pointer; font-size: 14px; background: #fff; }
+
+        /* Chart styles */
+        .chart-container {
+            position: relative;
+            height: 400px;
+            width: 100%;
+            margin-top: 20px;
+        }
+        .chart-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 24px;
+        }
+        @media (max-width: 992px) {
+            .chart-grid {
+                grid-template-columns: 1fr;
+            }
+        }
     </style>
 </head>
 <body>
@@ -186,6 +218,29 @@ $conn->close();
                         <a href="index.php">首頁</a> / 教師活動紀錄管理
                     </div>
 
+                    <!-- 統計分析區塊 -->
+                    <div class="card">
+                        <div class="card-header">
+                            <h3><i class="fas fa-chart-bar"></i> 招生活動統計分析</h3>
+                        </div>
+                        <div class="card-body">
+                            <div style="display: flex; gap: 12px; margin-bottom: 24px; flex-wrap: wrap;">
+                                <button class="btn-view" onclick="showTeacherStats()"><i class="fas fa-users"></i> 教師活動統計</button>
+                                <button class="btn-view" onclick="showActivityTypeStats()"><i class="fas fa-chart-pie"></i> 活動類型分析</button>
+                                <button class="btn-view" onclick="showTimeStats()"><i class="fas fa-calendar-alt"></i> 時間分布分析</button>
+                                <button class="btn-view" onclick="showSchoolStats()"><i class="fas fa-school"></i> 合作學校統計</button>
+                            </div>
+                            <div id="analyticsContent" style="min-height: 200px;">
+                                <div class="empty-state">
+                                    <i class="fas fa-chart-line fa-3x" style="margin-bottom: 16px;"></i>
+                                    <h4>選擇上方的統計類型來查看詳細分析</h4>
+                                    <p>提供教師活動參與度、活動類型分布、時間趨勢等多維度統計</p>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+
                     <div class="card">
                         <div class="card-header">
                             <h3>教師列表 (共 <?php echo count($teachers_with_records); ?> 位)</h3>
@@ -245,6 +300,10 @@ $conn->close();
     </div>
 
     <script>
+    // 將 PHP 數據傳遞給 JavaScript
+    const activityRecords = <?php echo json_encode($all_activity_records ?? []); ?>;
+    const isTeacherListView = <?php echo $teacher_id > 0 ? 'false' : 'true'; ?>;
+
     document.addEventListener('DOMContentLoaded', function() {
         const searchInput = document.getElementById('searchInput');
         const table = document.getElementById('recordsTable');
@@ -253,8 +312,6 @@ $conn->close();
         if (searchInput) {
             searchInput.addEventListener('keyup', function() {
                 const filter = searchInput.value.toLowerCase();
-                
-                const isTeacherListView = <?php echo $teacher_id > 0 ? 'false' : 'true'; ?>;
 
                 for (let i = 0; i < rows.length; i++) {
                     const cells = rows[i].getElementsByTagName('td');
@@ -312,6 +369,176 @@ $conn->close();
         const modal = document.getElementById('viewModal');
         if (event.target == modal) {
             modal.style.display = "none";
+        }
+    }
+
+    // --- 統計圖表功能 ---
+    if (isTeacherListView) {
+        // 清除特定圖表實例
+        function clearSpecificChart(chartName) {
+            if (window[chartName]) {
+                window[chartName].destroy();
+                window[chartName] = null;
+            }
+        }
+
+        // 教師活動統計
+        function showTeacherStats() {
+            const teacherStats = {};
+            activityRecords.forEach(record => {
+                const teacherName = record.teacher_name || '未知教師';
+                if (!teacherStats[teacherName]) {
+                    teacherStats[teacherName] = { name: teacherName, count: 0 };
+                }
+                teacherStats[teacherName].count++;
+            });
+
+            const sortedTeachers = Object.values(teacherStats).sort((a, b) => b.count - a.count);
+            
+            const content = `
+                <div class="chart-container">
+                    <canvas id="teacherStatsChart"></canvas>
+                </div>
+            `;
+            document.getElementById('analyticsContent').innerHTML = content;
+
+            setTimeout(() => {
+                clearSpecificChart('teacherStatsChartInstance');
+                const ctx = document.getElementById('teacherStatsChart').getContext('2d');
+                window.teacherStatsChartInstance = new Chart(ctx, {
+                    type: 'bar',
+                    data: {
+                        labels: sortedTeachers.map(t => t.name),
+                        datasets: [{
+                            label: '活動次數',
+                            data: sortedTeachers.map(t => t.count),
+                            backgroundColor: 'rgba(24, 144, 255, 0.6)',
+                            borderColor: 'rgba(24, 144, 255, 1)',
+                            borderWidth: 1
+                        }]
+                    },
+                    options: { responsive: true, maintainAspectRatio: false, scales: { y: { beginAtZero: true, ticks: { stepSize: 1 } } } }
+                });
+            }, 100);
+        }
+
+        // 活動類型統計
+        function showActivityTypeStats() {
+            const typeStats = {};
+            activityRecords.forEach(record => {
+                const type = record.activity_type || '未知類型';
+                if (!typeStats[type]) typeStats[type] = 0;
+                typeStats[type]++;
+            });
+
+            const content = `
+                <div class="chart-container" style="height: 350px;">
+                    <canvas id="activityTypeChart"></canvas>
+                </div>
+            `;
+            document.getElementById('analyticsContent').innerHTML = content;
+
+            setTimeout(() => {
+                clearSpecificChart('activityTypeChartInstance');
+                const ctx = document.getElementById('activityTypeChart').getContext('2d');
+                window.activityTypeChartInstance = new Chart(ctx, {
+                    type: 'doughnut',
+                    data: {
+                        labels: Object.keys(typeStats),
+                        datasets: [{
+                            label: '活動類型',
+                            data: Object.values(typeStats),
+                            backgroundColor: ['#1890ff', '#52c41a', '#faad14', '#f5222d', '#722ed1'],
+                        }]
+                    },
+                    options: { responsive: true, maintainAspectRatio: false }
+                });
+            }, 100);
+        }
+
+        // 時間分布統計
+        function showTimeStats() {
+            const monthlyStats = {};
+            activityRecords.forEach(record => {
+                const month = record.activity_date.substring(0, 7); // YYYY-MM
+                if (!monthlyStats[month]) monthlyStats[month] = 0;
+                monthlyStats[month]++;
+            });
+
+            const sortedMonths = Object.keys(monthlyStats).sort();
+
+            const content = `
+                <div class="chart-container">
+                    <canvas id="timeStatsChart"></canvas>
+                </div>
+            `;
+            document.getElementById('analyticsContent').innerHTML = content;
+
+            setTimeout(() => {
+                clearSpecificChart('timeStatsChartInstance');
+                const ctx = document.getElementById('timeStatsChart').getContext('2d');
+                window.timeStatsChartInstance = new Chart(ctx, {
+                    type: 'line',
+                    data: {
+                        labels: sortedMonths,
+                        datasets: [{
+                            label: '每月活動數',
+                            data: sortedMonths.map(month => monthlyStats[month]),
+                            backgroundColor: 'rgba(82, 196, 26, 0.2)',
+                            borderColor: '#52c41a',
+                            borderWidth: 2,
+                            fill: true,
+                            tension: 0.1
+                        }]
+                    },
+                    options: { responsive: true, maintainAspectRatio: false, scales: { y: { beginAtZero: true, ticks: { stepSize: 1 } } } }
+                });
+            }, 100);
+        }
+
+        // 合作學校統計
+        function showSchoolStats() {
+            const schoolStats = {};
+            activityRecords.forEach(record => {
+                const school = record.school_name || '未知學校';
+                if (!schoolStats[school]) schoolStats[school] = 0;
+                schoolStats[school]++;
+            });
+
+            const sortedSchools = Object.entries(schoolStats)
+                .sort(([, a], [, b]) => b - a)
+                .slice(0, 15); // 只顯示前15名
+
+            const content = `
+                <div class="chart-container">
+                    <canvas id="schoolStatsChart"></canvas>
+                </div>
+            `;
+            document.getElementById('analyticsContent').innerHTML = content;
+
+            setTimeout(() => {
+                clearSpecificChart('schoolStatsChartInstance');
+                const ctx = document.getElementById('schoolStatsChart').getContext('2d');
+                window.schoolStatsChartInstance = new Chart(ctx, {
+                    type: 'bar',
+                    data: {
+                        labels: sortedSchools.map(s => s[0]),
+                        datasets: [{
+                            label: '合作次數 (前15名)',
+                            data: sortedSchools.map(s => s[1]),
+                            backgroundColor: 'rgba(250, 173, 20, 0.6)',
+                            borderColor: '#faad14',
+                            borderWidth: 1
+                        }]
+                    },
+                    options: { 
+                        indexAxis: 'y',
+                        responsive: true, 
+                        maintainAspectRatio: false, 
+                        scales: { x: { beginAtZero: true, ticks: { stepSize: 1 } } } 
+                    }
+                });
+            }, 100);
         }
     }
     </script>
