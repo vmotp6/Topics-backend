@@ -37,7 +37,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $status = $_POST['status'] ?? '1';
         
         try {
-            $host = 'localhost';
+            $host = '100.79.58.120';
             $dbname = 'topics_good';
             $db_username = 'root';
             $db_password = '';
@@ -63,7 +63,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     } elseif ($action === 'reset_password') {
         // 重置密碼
         try {
-            $host = 'localhost';
+            $host = '100.79.58.120';
             $dbname = 'topics_good';
             $db_username = 'root';
             $db_password = '';
@@ -86,7 +86,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
 // 從資料庫獲取用戶資料
 try {
-    $host = 'localhost';
+    $host = '100.79.58.120';
     $dbname = 'topics_good';
     $db_username = 'root';
     $db_password = '';
