@@ -672,7 +672,7 @@ $page_title = $current_config['name'] . ' - 頁面編輯';
     </div>
     
     <script>
-    const API_BASE_URL = 'http://localhost:5001';
+    const API_BASE_URL = 'http://100.79.58.120:5001';
     
     // 標籤頁切換
     function switchTab(tabName) {

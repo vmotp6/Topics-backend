@@ -59,7 +59,7 @@ python api.py
 ### 4. 訪問系統
 - 登入頁面：`http://localhost/Topics-backend/login.php`
 - 管理介面：`http://localhost/Topics-backend/index.php`
-- API 健康檢查：`http://localhost:5001/health`
+- API 健康檢查：`http://100.79.58.120:5001/health`
 
 ## API 端點
 
@@ -193,7 +193,7 @@ DELETE /admin/users/{user_id}
 
 ## 注意事項
 
-1. 確保 Python API 伺服器在 `http://localhost:5001` 運行
+1. 確保 Python API 伺服器在 `http://100.79.58.120:5001` 運行
 2. 確保 XAMPP 的 Apache 和 MySQL 服務已啟動
 3. 確保資料庫連線設定正確
 4. 如果遇到 CORS 錯誤，請檢查 API 伺服器是否正常運行

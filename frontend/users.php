@@ -499,7 +499,7 @@ $page_title = '使用者管理';
     </div>
     
     <script>
-    const API_BASE_URL = 'http://localhost:5001';
+    const API_BASE_URL = 'http://100.79.58.120:5001';
     
     // 排序狀態
     let currentSortBy = 'id';

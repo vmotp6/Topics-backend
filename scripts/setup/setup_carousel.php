@@ -5,7 +5,7 @@
  */
 
 // 資料庫配置
-$host = 'localhost';
+$host = '100.79.58.120';
 $username = 'root';
 $password = '';
 $database = 'topics_good';

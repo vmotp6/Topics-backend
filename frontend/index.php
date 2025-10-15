@@ -295,7 +295,7 @@ $page_title = '系統概覽';
     </div>
     
     <script>
-    const API_BASE_URL = 'http://localhost:5001';
+    const API_BASE_URL = 'http://100.79.58.120:5001';
     
     // 載入統計資料
     async function loadStats() {
