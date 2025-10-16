@@ -170,8 +170,10 @@ function getStatusClass($status) {
                                         </td>
                                         <td><?php echo date('Y/m/d H:i', strtotime($item['created_at'])); ?></td>
                                         <td>
-                                            <a href="continued_admission_detail.php?id=<?php echo $item['id']; ?>" class="btn-view">查看</a>
-                                            <a href="continued_admission_detail.php?id=<?php echo $item['id']; ?>&action=review" class="btn-review">審核</a>
+                                            <a href="continued_admission_detail.php?id=<?php echo $item['id']; ?>" class="btn-view">查看詳情</a>
+                                            <?php if ($item['status'] === 'pending'): ?>
+                                                <a href="continued_admission_detail.php?id=<?php echo $item['id']; ?>&action=review" class="btn-review">審核</a>
+                                            <?php endif; ?>
                                         </td>
                                     </tr>
                                     <?php endforeach; ?>
