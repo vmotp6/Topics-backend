@@ -1,4 +1,8 @@
 <?php
+// 開啟錯誤顯示以便調試
+error_reporting(E_ALL);
+ini_set('display_errors', 1);
+
 session_start();
 header('Content-Type: application/json');
 
@@ -16,6 +20,7 @@ require_once '../../Topics-frontend/frontend/config.php';
 $data = json_decode(file_get_contents('php://input'), true);
 $application_id = $data['id'] ?? null;
 $new_status = $data['status'] ?? null;
+$review_notes = $data['review_notes'] ?? '';
 
 // 驗證輸入資料
 $allowed_statuses = ['pending', 'approved', 'rejected', 'waitlist'];
@@ -26,15 +31,30 @@ if (!$application_id || !in_array($new_status, $allowed_statuses)) {
 }
 
 try {
-    $conn = getDatabaseConnection();
-    // 同時更新 status, reviewed_at, reviewed_by
-    $stmt = $conn->prepare("UPDATE continued_admission SET status = ?, reviewed_at = NOW(), reviewed_by = ? WHERE id = ?");
+    // 安全地建立資料庫連接，不使用 die() 函數
+    $conn = new mysqli(DB_HOST, DB_USERNAME, DB_PASSWORD, DB_NAME);
+    
+    if ($conn->connect_error) {
+        throw new Exception('資料庫連接失敗: ' . $conn->connect_error);
+    }
+    
+    $conn->set_charset(DB_CHARSET);
+    
+    // 更新 status, reviewed_at, reviewer_id, review_notes
+    $stmt = $conn->prepare("UPDATE continued_admission SET status = ?, reviewed_at = NOW(), reviewer_id = ?, review_notes = ? WHERE id = ?");
+    if (!$stmt) {
+        throw new Exception('SQL 準備失敗: ' . $conn->error);
+    }
+    
     $admin_username = $_SESSION['admin_username'] ?? 'admin'; // 從 session 獲取管理員名稱
-
-    $stmt->bind_param("ssi", $new_status, $admin_username, $application_id);
+    $stmt->bind_param("sssi", $new_status, $admin_username, $review_notes, $application_id);
     
     if ($stmt->execute()) {
-        echo json_encode(['success' => true, 'message' => '狀態更新成功']);
+        if ($stmt->affected_rows > 0) {
+            echo json_encode(['success' => true, 'message' => '狀態更新成功']);
+        } else {
+            throw new Exception('沒有找到要更新的記錄，ID: ' . $application_id);
+        }
     } else {
         throw new Exception('資料庫更新失敗: ' . $stmt->error);
     }
@@ -43,7 +63,7 @@ try {
     $conn->close();
 } catch (Exception $e) {
     http_response_code(500);
-    error_log("續招狀態更新失敗: " . $e->getMessage()); // 新增錯誤日誌
+    error_log("續招狀態更新失敗: " . $e->getMessage());
     echo json_encode(['success' => false, 'message' => '伺服器錯誤：' . $e->getMessage()]);
 }
 ?>
