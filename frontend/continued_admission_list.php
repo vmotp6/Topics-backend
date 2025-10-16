@@ -108,9 +108,16 @@ function getStatusClass($status) {
         .btn-view {
             padding: 4px 12px; border: 1px solid #1890ff; border-radius: 4px; cursor: pointer;
             font-size: 14px; text-decoration: none; display: inline-block; transition: all 0.3s;
-            background: #fff; color: #1890ff;
+            background: #fff; color: #1890ff; margin-right: 8px;
         }
         .btn-view:hover { background: #1890ff; color: white; }
+        
+        .btn-review {
+            padding: 4px 12px; border: 1px solid #52c41a; border-radius: 4px; cursor: pointer;
+            font-size: 14px; text-decoration: none; display: inline-block; transition: all 0.3s;
+            background: #fff; color: #52c41a;
+        }
+        .btn-review:hover { background: #52c41a; color: white; }
     </style>
 </head>
 <body>
@@ -157,19 +164,14 @@ function getStatusClass($status) {
                                         <td><?php echo htmlspecialchars($item['mobile']); ?></td>
                                         <td><?php echo htmlspecialchars($item['school_name']); ?></td>
                                         <td>
-                                            <select class="status-select" data-id="<?php echo $item['id']; ?>" data-original-status="<?php echo $item['status']; ?>" onchange="updateStatus(this)">
-                                                <option value="pending" <?php echo $item['status'] === 'pending' ? 'selected' : ''; ?>>待審核</option>
-                                                <option value="approved" <?php echo $item['status'] === 'approved' ? 'selected' : ''; ?>>錄取</option>
-                                                <option value="rejected" <?php echo $item['status'] === 'rejected' ? 'selected' : ''; ?>>未錄取</option>
-                                                <option value="waitlist" <?php echo $item['status'] === 'waitlist' ? 'selected' : ''; ?>>備取</option>
-                                            </select>
-                                            <span id="status-badge-<?php echo $item['id']; ?>" class="status-badge <?php echo getStatusClass($item['status']); ?>" style="margin-left: 8px; display: none;">
+                                            <span class="status-badge <?php echo getStatusClass($item['status']); ?>">
                                                 <?php echo getStatusText($item['status']); ?>
                                             </span>
                                         </td>
                                         <td><?php echo date('Y/m/d H:i', strtotime($item['created_at'])); ?></td>
                                         <td>
-                                            <a href="continued_admission_detail.php?id=<?php echo $item['id']; ?>" class="btn-view">查看詳情</a>
+                                            <a href="continued_admission_detail.php?id=<?php echo $item['id']; ?>" class="btn-view">查看</a>
+                                            <a href="continued_admission_detail.php?id=<?php echo $item['id']; ?>&action=review" class="btn-review">審核</a>
                                         </td>
                                     </tr>
                                     <?php endforeach; ?>
@@ -230,46 +232,6 @@ function getStatusClass($status) {
         }
     });
 
-    function updateStatus(selectElement) {
-        const applicationId = selectElement.dataset.id;
-        const newStatus = selectElement.value;
-
-        // 顯示處理中，防止重複點擊
-        selectElement.disabled = true;
-
-        fetch('/Topics-backend/frontend/update_admission_status.php', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ id: applicationId, status: newStatus }),
-        })
-        .then(response => {
-            if (!response.ok) {
-                // 如果伺服器回應不是 2xx，則拋出錯誤，例如 404 或 500
-                throw new Error(`伺服器錯誤: ${response.status} ${response.statusText}`);
-            }
-            return response.json();
-        })
-        .then(data => {
-            if (data.success) {
-                showToast('狀態更新成功！');
-                // 更新成功後，將新的狀態存為原始狀態
-                selectElement.dataset.originalStatus = newStatus;
-            } else {
-                showToast('狀態更新失敗：' + data.message, false);
-                // 如果失敗，將下拉選單恢復到原來的值
-                selectElement.value = selectElement.dataset.originalStatus;
-            }
-        })
-        .catch(error => {
-            // 顯示更詳細的錯誤訊息
-            showToast('前端請求錯誤：' + error.message, false);
-            selectElement.value = selectElement.dataset.originalStatus;
-        })
-        .finally(() => {
-            // 無論成功或失敗，都恢復下拉選單的可用狀態
-            selectElement.disabled = false;
-        });
-    }
     </script>
 </body>
 </html>

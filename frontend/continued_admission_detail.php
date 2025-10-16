@@ -9,6 +9,7 @@ if (!isset($_SESSION['admin_logged_in']) || !$_SESSION['admin_logged_in']) {
 require_once '../../Topics-frontend/frontend/config.php';
 
 $application_id = isset($_GET['id']) ? (int)$_GET['id'] : 0;
+$action = isset($_GET['action']) ? $_GET['action'] : 'view';
 if ($application_id === 0) {
     header("Location: continued_admission_list.php");
     exit;
@@ -28,8 +29,8 @@ if (!$application) {
     exit;
 }
 
-$page_title = '續招報名詳情 - ' . htmlspecialchars($application['name']);
-$current_page = 'continued_admission_detail'; // 新增此行
+$page_title = ($action === 'review') ? '續招報名審核 - ' . htmlspecialchars($application['name']) : '續招報名詳情 - ' . htmlspecialchars($application['name']);
+$current_page = 'continued_admission_detail';
 
 $documents = json_decode($application['documents'], true);
 $choices = json_decode($application['choices'], true);
@@ -128,32 +129,45 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_status'])) {
             <?php include 'header.php'; ?>
             <div class="content">
                 <div class="breadcrumb">
-                    <a href="index.php">首頁</a> / <a href="continued_admission_list.php">續招報名管理</a> / 報名詳情
+                    <a href="index.php">首頁</a> / <a href="continued_admission_list.php">續招報名管理</a> / <?php echo ($action === 'review') ? '報名審核' : '報名詳情'; ?>
                 </div>
 
                 <div class="card">
                     <div class="card-header">
-                        <h3>報名詳情 (編號: <?php echo $application['id']; ?>)</h3>
+                        <h3><?php echo ($action === 'review') ? '報名審核' : '報名詳情'; ?> (編號: <?php echo $application['id']; ?>)</h3>
                         <a href="continued_admission_list.php" class="btn-secondary"><i class="fas fa-arrow-left"></i> 返回列表</a>
                     </div>
                     <div class="card-body">
                         <div class="detail-grid">
-                            <div class="detail-section" style="grid-column: 1 / -1; background: #e6f7ff;">
-                                <h4 style="color: var(--primary-color);"><i class="fas fa-check-circle"></i> 審核操作</h4>
-                                <div style="display: flex; align-items: center; gap: 16px;">
+                            <?php if ($action !== 'review'): ?>
+                            <div class="detail-section" style="grid-column: 1 / -1; background: #f6ffed;">
+                                <h4 style="color: #52c41a;"><i class="fas fa-info-circle"></i> 審核狀態</h4>
+                                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px;">
                                     <div class="detail-item" style="margin: 0;">
                                         <span class="detail-item-label">目前狀態:</span>
-                                        <span class="detail-item-value" id="currentStatusText" style="font-weight: bold;"><?php echo getStatusText($application['status']); ?></span>
+                                        <span class="detail-item-value" style="font-weight: bold; color: #52c41a;"><?php echo getStatusText($application['status']); ?></span>
                                     </div>
-                                    <select id="statusSelector" class="status-select">
-                                        <option value="pending" <?php echo $application['status'] === 'pending' ? 'selected' : ''; ?>>待審核</option>
-                                        <option value="approved" <?php echo $application['status'] === 'approved' ? 'selected' : ''; ?>>錄取</option>
-                                        <option value="rejected" <?php echo $application['status'] === 'rejected' ? 'selected' : ''; ?>>未錄取</option>
-                                        <option value="waitlist" <?php echo $application['status'] === 'waitlist' ? 'selected' : ''; ?>>備取</option>
-                                    </select>
-                                    <button id="updateStatusBtn" class="btn-primary"><i class="fas fa-save"></i> 更新狀態</button>
+                                    <?php if (!empty($application['reviewer_id'])): ?>
+                                    <div class="detail-item" style="margin: 0;">
+                                        <span class="detail-item-label">審核老師:</span>
+                                        <span class="detail-item-value"><?php echo htmlspecialchars($application['reviewer_id']); ?></span>
+                                    </div>
+                                    <?php endif; ?>
+                                    <?php if (!empty($application['reviewed_at'])): ?>
+                                    <div class="detail-item" style="margin: 0;">
+                                        <span class="detail-item-label">審核時間:</span>
+                                        <span class="detail-item-value"><?php echo date('Y/m/d H:i', strtotime($application['reviewed_at'])); ?></span>
+                                    </div>
+                                    <?php endif; ?>
                                 </div>
+                                <?php if (!empty($application['review_notes'])): ?>
+                                <div style="margin-top: 16px;">
+                                    <span class="detail-item-label">審核備註:</span>
+                                    <div style="background: #fff; padding: 12px; border-radius: 6px; border: 1px solid #d9d9d9; margin-top: 8px; white-space: pre-wrap;"><?php echo htmlspecialchars($application['review_notes']); ?></div>
+                                </div>
+                                <?php endif; ?>
                             </div>
+                            <?php endif; ?>
                             <div class="detail-section">
                                 <h4><i class="fas fa-user"></i> 基本資料</h4>
                                 <div class="detail-item"><span class="detail-item-label">姓名:</span> <span class="detail-item-value"><?php echo htmlspecialchars($application['name']); ?></span></div>
@@ -220,6 +234,37 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_status'])) {
                                     <div class="detail-item-value long-text"><?php echo htmlspecialchars($application['skills']); ?></div>
                                 </div>
                             </div>
+                            
+                            <?php if ($action === 'review'): ?>
+                            <div class="detail-section" style="grid-column: 1 / -1; background: #e6f7ff; margin-top: 24px;">
+                                <h4 style="color: var(--primary-color);"><i class="fas fa-check-circle"></i> 審核操作</h4>
+                                <form id="reviewForm">
+                                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 20px;">
+                                        <div class="detail-item" style="margin: 0;">
+                                            <span class="detail-item-label">目前狀態:</span>
+                                            <span class="detail-item-value" id="currentStatusText" style="font-weight: bold;"><?php echo getStatusText($application['status']); ?></span>
+                                        </div>
+                                        <div class="detail-item" style="margin: 0;">
+                                            <span class="detail-item-label">審核決定:</span>
+                                            <select id="statusSelector" class="status-select" name="status" required>
+                                                <option value="">請選擇審核結果</option>
+                                                <option value="approved" <?php echo $application['status'] === 'approved' ? 'selected' : ''; ?>>錄取</option>
+                                                <option value="rejected" <?php echo $application['status'] === 'rejected' ? 'selected' : ''; ?>>不錄取</option>
+                                                <option value="waitlist" <?php echo $application['status'] === 'waitlist' ? 'selected' : ''; ?>>備取</option>
+                                            </select>
+                                        </div>
+                                    </div>
+                                    <div style="margin-bottom: 20px;">
+                                        <label for="reviewNotes" style="display: block; margin-bottom: 8px; font-weight: 500;">審核備註 (選填):</label>
+                                        <textarea id="reviewNotes" name="review_notes" rows="4" style="width: 100%; padding: 8px; border: 1px solid #d9d9d9; border-radius: 6px; font-size: 14px; resize: vertical;" placeholder="請輸入審核意見或備註..."><?php echo htmlspecialchars($application['review_notes'] ?? ''); ?></textarea>
+                                    </div>
+                                    <div style="display: flex; gap: 12px;">
+                                        <button type="submit" class="btn-primary"><i class="fas fa-save"></i> 送出審核結果</button>
+                                        <button type="button" onclick="history.back()" class="btn-secondary"><i class="fas fa-times"></i> 取消</button>
+                                    </div>
+                                </form>
+                            </div>
+                            <?php endif; ?>
                         </div>
                     </div>
                 </div>
@@ -243,39 +288,52 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_status'])) {
         }, 3000);
     }
 
-    document.getElementById('updateStatusBtn').addEventListener('click', function() {
+    <?php if ($action === 'review'): ?>
+    document.getElementById('reviewForm').addEventListener('submit', function(e) {
+        e.preventDefault();
+        
         const applicationId = <?php echo $application_id; ?>;
-        const statusSelector = document.getElementById('statusSelector');
-        const newStatus = statusSelector.value;
+        const formData = new FormData(this);
+        const status = formData.get('status');
+        const reviewNotes = formData.get('review_notes');
+        
+        if (!status) {
+            showToast('請選擇審核結果', false);
+            return;
+        }
 
         fetch('/Topics-backend/frontend/update_admission_status.php', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
             },
-            body: JSON.stringify({ id: applicationId, status: newStatus }),
+            body: JSON.stringify({ 
+                id: applicationId, 
+                status: status,
+                review_notes: reviewNotes
+            }),
         })
         .then(response => {
             if (!response.ok) {
-                // 如果伺服器回應不是 2xx，則拋出錯誤
                 throw new Error(`伺服器錯誤: ${response.status} ${response.statusText}`);
             }
             return response.json();
         })
         .then(data => {
             if (data.success) {
-                showToast('狀態更新成功！');
-                // 更新頁面上的狀態文字
-                const statusTextElement = document.getElementById('currentStatusText');
-                statusTextElement.textContent = statusSelector.options[statusSelector.selectedIndex].text;
+                showToast('審核結果已送出！');
+                setTimeout(() => {
+                    window.location.href = 'continued_admission_list.php';
+                }, 1500);
             } else {
-                showToast('狀態更新失敗：' + (data.message || '未知錯誤'), false);
+                showToast('審核失敗：' + (data.message || '未知錯誤'), false);
             }
         })
         .catch(error => {
             showToast('前端請求錯誤：' + error.message, false);
         });
     });
+    <?php endif; ?>
     </script>
 </body>
 </html>

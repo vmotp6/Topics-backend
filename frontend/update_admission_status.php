@@ -1,4 +1,8 @@
 <?php
+// 開啟錯誤顯示以便調試
+error_reporting(E_ALL);
+ini_set('display_errors', 1);
+
 session_start();
 header('Content-Type: application/json');
 
@@ -19,6 +23,7 @@ $db_password = '';
 $data = json_decode(file_get_contents('php://input'), true);
 $application_id = $data['id'] ?? null;
 $new_status = $data['status'] ?? null;
+$review_notes = $data['review_notes'] ?? '';
 
 // 驗證輸入資料
 $allowed_statuses = ['pending', 'approved', 'rejected', 'waitlist'];
