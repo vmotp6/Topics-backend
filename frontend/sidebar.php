@@ -41,6 +41,10 @@ $current_page = basename($_SERVER['PHP_SELF'], '.php');
             <i class="fas fa-user-plus"></i>
             <span>續招</span>
         </a>
+        <a href="admission_center.php" class="menu-item <?php echo $current_page === 'admission_center' ? 'active' : ''; ?>">
+            <i class="fas fa-graduation-cap"></i>
+            <span>招生中心</span>
+        </a>
         <a href="index.php?action=logout" class="menu-item">
             <i class="fas fa-sign-out-alt"></i>
             <span>登出</span>

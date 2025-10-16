@@ -7,23 +7,28 @@ if (!isset($_SESSION['admin_logged_in']) || !$_SESSION['admin_logged_in']) {
     exit;
 }
 
-// 引入資料庫設定
-require_once '../../Topics-frontend/frontend/config.php';
+// 資料庫連接設定（與招生中心保持一致）
+$host = '100.79.58.120';
+$dbname = 'topics_good';
+$db_username = 'root';
+$db_password = '';
 
 // 設置頁面標題
 $page_title = '續招報名管理';
 $current_page = 'continued_admission_list'; // 新增此行
 
 // 建立資料庫連接
-$conn = getDatabaseConnection();
+try {
+    $pdo = new PDO("mysql:host=$host;dbname=$dbname;charset=utf8mb4", $db_username, $db_password);
+    $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+} catch (PDOException $e) {
+    die("資料庫連接失敗: " . $e->getMessage());
+}
 
 // 獲取所有續招報名資料
-$stmt = $conn->prepare("SELECT id, name, id_number, mobile, school_name, created_at, status FROM continued_admission ORDER BY created_at DESC");
+$stmt = $pdo->prepare("SELECT id, name, id_number, mobile, school_name, created_at, status FROM continued_admission ORDER BY created_at DESC");
 $stmt->execute();
-$result = $stmt->get_result();
-$applications = $result->fetch_all(MYSQLI_ASSOC);
-
-$conn->close();
+$applications = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
 function getStatusText($status) {
     switch ($status) {

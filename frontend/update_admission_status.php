@@ -9,8 +9,11 @@ if (!isset($_SESSION['admin_logged_in']) || !$_SESSION['admin_logged_in']) {
     exit;
 }
 
-// 引入資料庫設定
-require_once '../../Topics-frontend/frontend/config.php';
+// 資料庫連接設定（與招生中心保持一致）
+$host = '100.79.58.120';
+$dbname = 'topics_good';
+$db_username = 'root';
+$db_password = '';
 
 // 獲取從前端發送的 JSON 資料
 $data = json_decode(file_get_contents('php://input'), true);
@@ -26,24 +29,23 @@ if (!$application_id || !in_array($new_status, $allowed_statuses)) {
 }
 
 try {
-    $conn = getDatabaseConnection();
-    // 同時更新 status, reviewed_at, reviewed_by
-    $stmt = $conn->prepare("UPDATE continued_admission SET status = ?, reviewed_at = NOW(), reviewed_by = ? WHERE id = ?");
-    $admin_username = $_SESSION['admin_username'] ?? 'admin'; // 從 session 獲取管理員名稱
-
-    $stmt->bind_param("ssi", $new_status, $admin_username, $application_id);
+    $pdo = new PDO("mysql:host=$host;dbname=$dbname;charset=utf8mb4", $db_username, $db_password);
+    $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
     
-    if ($stmt->execute()) {
+    // 更新 status 和 reviewed_at
+    $stmt = $pdo->prepare("UPDATE continued_admission SET status = ?, reviewed_at = NOW() WHERE id = ?");
+
+    $stmt->execute([$new_status, $application_id]);
+    
+    if ($stmt->rowCount() > 0) {
         echo json_encode(['success' => true, 'message' => '狀態更新成功']);
     } else {
-        throw new Exception('資料庫更新失敗: ' . $stmt->error);
+        echo json_encode(['success' => false, 'message' => '沒有找到要更新的記錄']);
     }
     
-    $stmt->close();
-    $conn->close();
-} catch (Exception $e) {
+} catch (PDOException $e) {
     http_response_code(500);
-    error_log("續招狀態更新失敗: " . $e->getMessage()); // 新增錯誤日誌
+    error_log("續招狀態更新失敗: " . $e->getMessage());
     echo json_encode(['success' => false, 'message' => '伺服器錯誤：' . $e->getMessage()]);
 }
 ?>
