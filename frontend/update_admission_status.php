@@ -37,10 +37,20 @@ try {
     $pdo = new PDO("mysql:host=$host;dbname=$dbname;charset=utf8mb4", $db_username, $db_password);
     $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
     
-    // 更新 status 和 reviewed_at
-    $stmt = $pdo->prepare("UPDATE continued_admission SET status = ?, reviewed_at = NOW() WHERE id = ?");
-
-    $stmt->execute([$new_status, $application_id]);
+    // 檢查是否有 review_notes 欄位
+    $stmt = $pdo->prepare("SHOW COLUMNS FROM continued_admission LIKE 'review_notes'");
+    $stmt->execute();
+    $has_review_notes = $stmt->rowCount() > 0;
+    
+    if ($has_review_notes) {
+        // 如果有 review_notes 欄位，則更新包含備註
+        $stmt = $pdo->prepare("UPDATE continued_admission SET status = ?, reviewed_at = NOW(), review_notes = ? WHERE id = ?");
+        $stmt->execute([$new_status, $review_notes, $application_id]);
+    } else {
+        // 如果沒有 review_notes 欄位，則只更新狀態和時間
+        $stmt = $pdo->prepare("UPDATE continued_admission SET status = ?, reviewed_at = NOW() WHERE id = ?");
+        $stmt->execute([$new_status, $application_id]);
+    }
     
     if ($stmt->rowCount() > 0) {
         echo json_encode(['success' => true, 'message' => '狀態更新成功']);
