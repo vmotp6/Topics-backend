@@ -139,35 +139,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_status'])) {
                     </div>
                     <div class="card-body">
                         <div class="detail-grid">
-                            <?php if ($action !== 'review'): ?>
-                            <div class="detail-section" style="grid-column: 1 / -1; background: #f6ffed;">
-                                <h4 style="color: #52c41a;"><i class="fas fa-info-circle"></i> 審核狀態</h4>
-                                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px;">
-                                    <div class="detail-item" style="margin: 0;">
-                                        <span class="detail-item-label">目前狀態:</span>
-                                        <span class="detail-item-value" style="font-weight: bold; color: #52c41a;"><?php echo getStatusText($application['status']); ?></span>
-                                    </div>
-                                    <?php if (!empty($application['reviewer_id'])): ?>
-                                    <div class="detail-item" style="margin: 0;">
-                                        <span class="detail-item-label">審核老師:</span>
-                                        <span class="detail-item-value"><?php echo htmlspecialchars($application['reviewer_id']); ?></span>
-                                    </div>
-                                    <?php endif; ?>
-                                    <?php if (!empty($application['reviewed_at'])): ?>
-                                    <div class="detail-item" style="margin: 0;">
-                                        <span class="detail-item-label">審核時間:</span>
-                                        <span class="detail-item-value"><?php echo date('Y/m/d H:i', strtotime($application['reviewed_at'])); ?></span>
-                                    </div>
-                                    <?php endif; ?>
-                                </div>
-                                <?php if (!empty($application['review_notes'])): ?>
-                                <div style="margin-top: 16px;">
-                                    <span class="detail-item-label">審核備註:</span>
-                                    <div style="background: #fff; padding: 12px; border-radius: 6px; border: 1px solid #d9d9d9; margin-top: 8px; white-space: pre-wrap;"><?php echo htmlspecialchars($application['review_notes']); ?></div>
-                                </div>
-                                <?php endif; ?>
-                            </div>
-                            <?php endif; ?>
                             <div class="detail-section">
                                 <h4><i class="fas fa-user"></i> 基本資料</h4>
                                 <div class="detail-item"><span class="detail-item-label">姓名:</span> <span class="detail-item-value"><?php echo htmlspecialchars($application['name']); ?></span></div>
@@ -235,6 +206,34 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_status'])) {
                                 </div>
                             </div>
                             
+                            <?php if ($action !== 'review' && $application['status'] !== 'pending'): ?>
+                            <div class="detail-section" style="grid-column: 1 / -1; background: #f6ffed; margin-top: 24px;">
+                                <h4 style="color: #52c41a;"><i class="fas fa-info-circle"></i> 審核結果</h4>
+                                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px;">
+                                    <div class="detail-item" style="margin: 0;">
+                                        <span class="detail-item-label">審核結果:</span>
+                                        <span class="detail-item-value" style="font-weight: bold; color: #52c41a;"><?php echo getStatusText($application['status']); ?></span>
+                                    </div>
+                                    <?php if (!empty($application['reviewer_id'])): ?>
+                                    <div class="detail-item" style="margin: 0;">
+                                        <span class="detail-item-label">審核老師:</span>
+                                        <span class="detail-item-value"><?php echo htmlspecialchars($application['reviewer_id']); ?></span>
+                                    </div>
+                                    <?php endif; ?>
+                                    <?php if (!empty($application['reviewed_at'])): ?>
+                                    <div class="detail-item" style="margin: 0;">
+                                        <span class="detail-item-label">審核時間:</span>
+                                        <span class="detail-item-value"><?php echo date('Y/m/d H:i', strtotime($application['reviewed_at'])); ?></span>
+                                    </div>
+                                    <?php endif; ?>
+                                </div>
+                                <div style="margin-top: 16px;">
+                                    <span class="detail-item-label" style="display: block; text-align: left; margin-bottom: 8px;">審核備註:</span>
+                                    <div style="background: #fff; padding: 12px; border-radius: 6px; border: 1px solid #d9d9d9; white-space: pre-wrap;"><?php echo htmlspecialchars($application['review_notes'] ?: '無'); ?></div>
+                                </div>
+                            </div>
+                            <?php endif; ?>
+
                             <?php if ($action === 'review'): ?>
                             <div class="detail-section" style="grid-column: 1 / -1; background: #e6f7ff; margin-top: 24px;">
                                 <h4 style="color: var(--primary-color);"><i class="fas fa-check-circle"></i> 審核操作</h4>
