@@ -461,9 +461,6 @@ $conn->close();
                                 <button class="btn-view" onclick="showActivityTypeStats()"><i class="fas fa-chart-pie"></i> 活動類型分析</button>
                                 <button class="btn-view" onclick="showTimeStats()"><i class="fas fa-calendar-alt"></i> 時間分布分析</button>
                                 <button class="btn-view" onclick="showSchoolStats()"><i class="fas fa-school"></i> 合作學校統計</button>
-                                <button class="btn-view" onclick="exportActivityStatsToExcel()" style="background: #28a745; color: white; border-color: #28a745;">
-                                    <i class="fas fa-file-csv"></i> 匯出CSV
-                                </button>
                             <button class="btn-view" onclick="clearActivityCharts()" style="background: #dc3545; color: white; border-color: #dc3545;">
                                 <i class="fas fa-arrow-up"></i> 收回圖表
                             </button>
@@ -502,9 +499,6 @@ $conn->close();
                                 <button class="btn-view" onclick="showEnrollmentMonthlyStats()">
                                     <i class="fas fa-calendar-alt"></i> 月度趨勢分析
                                 </button>
-                                <button class="btn-view" onclick="exportEnrollmentStatsToExcel()" style="background: #28a745; color: white; border-color: #28a745;">
-                                    <i class="fas fa-file-csv"></i> 匯出CSV
-                                </button>
                                 <button class="btn-view" onclick="clearEnrollmentCharts()" style="background: #dc3545; color: white; border-color: #dc3545;">
                                     <i class="fas fa-arrow-up"></i> 收回圖表
                                 </button>
@@ -540,9 +534,6 @@ $conn->close();
                                 </button>
                                 <button class="btn-view" onclick="showContinuedAdmissionStatusStats()">
                                     <i class="fas fa-clipboard-check"></i> 審核狀態分析
-                                </button>
-                                <button class="btn-view" onclick="exportContinuedAdmissionStatsToExcel()" style="background: #28a745; color: white; border-color: #28a745;">
-                                    <i class="fas fa-file-csv"></i> 匯出CSV
                                 </button>
                                 <button class="btn-view" onclick="clearContinuedAdmissionCharts()" style="background: #dc3545; color: white; border-color: #dc3545;">
                                     <i class="fas fa-arrow-up"></i> 收回圖表
@@ -583,9 +574,6 @@ $conn->close();
                                 <button class="btn-view" onclick="showAdmissionReceiveInfoStats()">
                                     <i class="fas fa-envelope"></i> 資訊接收分析
                                 </button>
-                                <button class="btn-view" onclick="exportAdmissionStatsToExcel()" style="background: #28a745; color: white; border-color: #28a745;">
-                                    <i class="fas fa-file-csv"></i> 匯出CSV
-                                </button>
                                 <button class="btn-view" onclick="clearAdmissionCharts()" style="background: #dc3545; color: white; border-color: #dc3545;">
                                     <i class="fas fa-arrow-up"></i> 收回圖表
                                 </button>
@@ -598,6 +586,48 @@ $conn->close();
                                 <i class="fas fa-graduation-cap fa-3x" style="margin-bottom: 16px;"></i>
                                 <h4>選擇上方的統計類型來查看詳細分析</h4>
                                 <p>提供年級分布、學校分布、場次分布、課程選擇、月度趨勢、資訊接收等多維度統計</p>
+                            </div>
+                        </div>
+                        
+                        <!-- 招生推薦報名統計按鈕組 -->
+                        <div style="border-top: 1px solid #f0f0f0; padding-top: 20px; margin-top: 20px;">
+                            <h4 style="color: #667eea; margin-bottom: 15px; display: flex; align-items: center; gap: 10px;">
+                                <i class="fas fa-user-friends"></i> 招生推薦報名統計分析
+                            </h4>
+                            <div style="display: flex; gap: 12px; margin-bottom: 24px; flex-wrap: wrap;">
+                                <button class="btn-view" onclick="showRecommendStatusStats()">
+                                    <i class="fas fa-clipboard-check"></i> 推薦狀態分析
+                                </button>
+                                <button class="btn-view" onclick="showRecommendDepartmentStats()">
+                                    <i class="fas fa-graduation-cap"></i> 推薦人科系分析
+                                </button>
+                                <button class="btn-view" onclick="showRecommendGradeStats()">
+                                    <i class="fas fa-users"></i> 推薦人年級分析
+                                </button>
+                                <button class="btn-view" onclick="showRecommendSchoolStats()">
+                                    <i class="fas fa-school"></i> 被推薦學校分析
+                                </button>
+                                <button class="btn-view" onclick="showRecommendStudentGradeStats()">
+                                    <i class="fas fa-child"></i> 被推薦學生年級分析
+                                </button>
+                                <button class="btn-view" onclick="showRecommendMonthlyStats()">
+                                    <i class="fas fa-calendar-alt"></i> 月度趨勢分析
+                                </button>
+                                <button class="btn-view" onclick="showRecommendInterestStats()">
+                                    <i class="fas fa-heart"></i> 學生興趣領域科系分析
+                                </button>
+                                <button class="btn-view" onclick="clearRecommendCharts()" style="background: #dc3545; color: white; border-color: #dc3545;">
+                                    <i class="fas fa-arrow-up"></i> 收回圖表
+                                </button>
+                            </div>
+                        </div>
+                        
+                        <!-- 招生推薦報名統計內容區域 -->
+                        <div id="recommendAnalyticsContent" style="min-height: 200px;">
+                            <div class="empty-state">
+                                <i class="fas fa-user-friends fa-3x" style="margin-bottom: 16px;"></i>
+                                <h4>選擇上方的統計類型來查看詳細分析</h4>
+                                <p>提供推薦狀態、推薦人科系、推薦人年級、被推薦學校、被推薦學生年級、月度趨勢等多維度統計</p>
                             </div>
                         </div>
                         </div>
@@ -3148,141 +3178,795 @@ $conn->close();
         `;
     }
     
-    // ========== Excel 匯出功能 ==========
+    // ========== 招生推薦報名統計 ==========
     
-    // 招生活動統計 CSV 匯出
-    function exportActivityStatsToExcel() {
-        console.log('開始匯出招生活動統計CSV...');
+    // 招生推薦報名統計 - 推薦狀態分析
+    function showRecommendStatusStats() {
+        console.log('showRecommendStatusStats 被調用');
         
-        // 顯示載入提示
-        showLoadingMessage('正在生成招生活動統計CSV檔案...');
+        fetch('../../Topics-frontend/frontend/api/recommend_stats_api.php?action=status')
+            .then(response => response.json())
+            .then(data => {
+                if (data.error) {
+                    document.getElementById('recommendAnalyticsContent').innerHTML = `
+                        <div style="text-align: center; padding: 40px; color: #dc3545;">
+                            <i class="fas fa-exclamation-triangle fa-3x" style="margin-bottom: 16px;"></i>
+                            <h4>數據載入失敗</h4>
+                            <p>${data.error}</p>
+                        </div>
+                    `;
+                    return;
+                }
+                
+                const content = `
+                    <div style="margin-bottom: 20px;">
+                        <h4 style="color: #667eea; margin-bottom: 15px;">
+                            <i class="fas fa-clipboard-check"></i> 推薦狀態分析
+                        </h4>
+                        
+                        <div class="chart-card">
+                            <div class="chart-title">推薦狀態分布</div>
+                            <div class="chart-container">
+                                <canvas id="recommendStatusChart"></canvas>
+                            </div>
+                        </div>
+                        
+                        <div style="background: #f8f9fa; padding: 20px; border-radius: 10px; margin-top: 20px;">
+                            <h5 style="color: #333; margin-bottom: 15px;">狀態詳細統計</h5>
+                            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px;">
+                                ${data.map((item, index) => {
+                                    const colors = ['#ffc107', '#28a745', '#17a2b8', '#dc3545'];
+                                    const color = colors[index % colors.length];
+                                    const total = data.reduce((sum, d) => sum + d.value, 0);
+                                    const percentage = ((item.value / total) * 100).toFixed(1);
+                                    return `
+                                        <div style="background: white; padding: 15px; border-radius: 8px; border-left: 4px solid ${color};">
+                                            <div style="font-weight: bold; color: #333; margin-bottom: 5px;">${item.name}</div>
+                                            <div style="font-size: 1.5em; font-weight: bold; color: ${color};">${item.value}筆</div>
+                                            <div style="font-size: 0.9em; color: #666;">${percentage}%</div>
+                                        </div>
+                                    `;
+                                }).join('')}
+                            </div>
+                        </div>
+                    </div>
+                `;
+                
+                document.getElementById('recommendAnalyticsContent').innerHTML = content;
+                
+                // 創建圓餅圖
+                setTimeout(() => {
+                    const canvasElement = document.getElementById('recommendStatusChart');
+                    if (!canvasElement) return;
+                    
+                    const ctx = canvasElement.getContext('2d');
+                    new Chart(ctx, {
+                        type: 'pie',
+                        data: {
+                            labels: data.map(item => item.name),
+                            datasets: [{
+                                data: data.map(item => item.value),
+                                backgroundColor: ['#ffc107', '#28a745', '#17a2b8', '#dc3545'],
+                                borderWidth: 2,
+                                borderColor: '#fff'
+                            }]
+                        },
+                        options: {
+                            responsive: true,
+                            maintainAspectRatio: false,
+                            plugins: {
+                                legend: {
+                                    position: 'bottom',
+                                    labels: {
+                                        padding: 20,
+                                        usePointStyle: true,
+                                        font: { size: 16 }
+                                    }
+                                },
+                                tooltip: {
+                                    enabled: true,
+                                    callbacks: {
+                                        label: function(context) {
+                                            const label = context.label || '';
+                                            const value = context.parsed;
+                                            const total = context.dataset.data.reduce((a, b) => a + b, 0);
+                                            const percentage = ((value / total) * 100).toFixed(1);
+                                            return `${label}: ${value}筆 (${percentage}%)`;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    });
+                }, 100);
+            })
+            .catch(error => {
+                console.error('載入推薦狀態統計數據失敗:', error);
+                document.getElementById('recommendAnalyticsContent').innerHTML = `
+                    <div style="text-align: center; padding: 40px; color: #dc3545;">
+                        <i class="fas fa-exclamation-triangle fa-3x" style="margin-bottom: 16px;"></i>
+                        <h4>數據載入失敗</h4>
+                        <p>無法連接到統計API</p>
+                    </div>
+                `;
+            });
+    }
+    
+    // 招生推薦報名統計 - 推薦人科系分析
+    function showRecommendDepartmentStats() {
+        console.log('showRecommendDepartmentStats 被調用');
         
-        // 創建多個下載連結，分別下載不同的圖表數據
-        const chartTypes = [
-            { type: 'teacher', name: '教師統計' },
-            { type: 'type', name: '類型分布' }
-        ];
+        fetch('../../Topics-frontend/frontend/api/recommend_stats_api.php?action=department')
+            .then(response => response.json())
+            .then(data => {
+                if (data.error) {
+                    document.getElementById('recommendAnalyticsContent').innerHTML = `
+                        <div style="text-align: center; padding: 40px; color: #dc3545;">
+                            <i class="fas fa-exclamation-triangle fa-3x" style="margin-bottom: 16px;"></i>
+                            <h4>數據載入失敗</h4>
+                            <p>${data.error}</p>
+                        </div>
+                    `;
+                    return;
+                }
+                
+                const content = `
+                    <div style="margin-bottom: 20px;">
+                        <h4 style="color: #667eea; margin-bottom: 15px;">
+                            <i class="fas fa-graduation-cap"></i> 推薦人科系分析
+                        </h4>
+                        
+                        <div class="chart-card">
+                            <div class="chart-title">推薦人科系分布</div>
+                            <div class="chart-container">
+                                <canvas id="recommendDepartmentChart"></canvas>
+                            </div>
+                        </div>
+                        
+                        <div style="background: #f8f9fa; padding: 20px; border-radius: 10px; margin-top: 20px;">
+                            <h5 style="color: #333; margin-bottom: 15px;">科系詳細統計</h5>
+                            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px;">
+                                ${data.map((item, index) => {
+                                    const colors = ['#667eea', '#28a745', '#ffc107', '#dc3545', '#17a2b8'];
+                                    const color = colors[index % colors.length];
+                                    const total = data.reduce((sum, d) => sum + d.value, 0);
+                                    const percentage = ((item.value / total) * 100).toFixed(1);
+                                    return `
+                                        <div style="background: white; padding: 15px; border-radius: 8px; border-left: 4px solid ${color};">
+                                            <div style="font-weight: bold; color: #333; margin-bottom: 5px;">${item.name}</div>
+                                            <div style="font-size: 1.5em; font-weight: bold; color: ${color};">${item.value}筆</div>
+                                            <div style="font-size: 0.9em; color: #666;">${percentage}%</div>
+                                        </div>
+                                    `;
+                                }).join('')}
+                            </div>
+                        </div>
+                    </div>
+                `;
+                
+                document.getElementById('recommendAnalyticsContent').innerHTML = content;
+                
+                // 創建長條圖
+                setTimeout(() => {
+                    const canvasElement = document.getElementById('recommendDepartmentChart');
+                    if (!canvasElement) return;
+                    
+                    const ctx = canvasElement.getContext('2d');
+                    new Chart(ctx, {
+                        type: 'bar',
+                        data: {
+                            labels: data.map(item => item.name),
+                            datasets: [{
+                                label: '推薦筆數',
+                                data: data.map(item => item.value),
+                                backgroundColor: '#667eea',
+                                borderColor: '#5a6fd8',
+                                borderWidth: 1
+                            }]
+                        },
+                        options: {
+                            responsive: true,
+                            maintainAspectRatio: false,
+                            plugins: {
+                                legend: {
+                                    display: false
+                                }
+                            },
+                            scales: {
+                                y: {
+                                    beginAtZero: true,
+                                    ticks: {
+                                        stepSize: 1
+                                    }
+                                }
+                            }
+                        }
+                    });
+                }, 100);
+            })
+            .catch(error => {
+                console.error('載入推薦人科系統計數據失敗:', error);
+                document.getElementById('recommendAnalyticsContent').innerHTML = `
+                    <div style="text-align: center; padding: 40px; color: #dc3545;">
+                        <i class="fas fa-exclamation-triangle fa-3x" style="margin-bottom: 16px;"></i>
+                        <h4>數據載入失敗</h4>
+                        <p>無法連接到統計API</p>
+                    </div>
+                `;
+            });
+    }
+    
+    // 招生推薦報名統計 - 推薦人年級分析
+    function showRecommendGradeStats() {
+        console.log('showRecommendGradeStats 被調用');
         
-        chartTypes.forEach((chart, index) => {
-            setTimeout(() => {
-                const link = document.createElement('a');
-                link.href = `../../Topics-frontend/frontend/api/export_activity_charts_csv.php?type=${chart.type}`;
-                link.download = `招生活動_${chart.name}_${new Date().toISOString().slice(0, 10)}.csv`;
-                link.style.display = 'none';
-                document.body.appendChild(link);
-                link.click();
-                document.body.removeChild(link);
-            }, index * 500); // 每個檔案間隔500ms下載
+        fetch('../../Topics-frontend/frontend/api/recommend_stats_api.php?action=grade')
+            .then(response => response.json())
+            .then(data => {
+                if (data.error) {
+                    document.getElementById('recommendAnalyticsContent').innerHTML = `
+                        <div style="text-align: center; padding: 40px; color: #dc3545;">
+                            <i class="fas fa-exclamation-triangle fa-3x" style="margin-bottom: 16px;"></i>
+                            <h4>數據載入失敗</h4>
+                            <p>${data.error}</p>
+                        </div>
+                    `;
+                    return;
+                }
+                
+                const content = `
+                    <div style="margin-bottom: 20px;">
+                        <h4 style="color: #667eea; margin-bottom: 15px;">
+                            <i class="fas fa-users"></i> 推薦人年級分析
+                        </h4>
+                        
+                        <div class="chart-card">
+                            <div class="chart-title">推薦人年級分布</div>
+                            <div class="chart-container">
+                                <canvas id="recommendGradeChart"></canvas>
+                            </div>
+                        </div>
+                        
+                        <div style="background: #f8f9fa; padding: 20px; border-radius: 10px; margin-top: 20px;">
+                            <h5 style="color: #333; margin-bottom: 15px;">年級詳細統計</h5>
+                            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px;">
+                                ${data.map((item, index) => {
+                                    const colors = ['#667eea', '#28a745', '#ffc107', '#dc3545', '#17a2b8'];
+                                    const color = colors[index % colors.length];
+                                    const total = data.reduce((sum, d) => sum + d.value, 0);
+                                    const percentage = ((item.value / total) * 100).toFixed(1);
+                                    return `
+                                        <div style="background: white; padding: 15px; border-radius: 8px; border-left: 4px solid ${color};">
+                                            <div style="font-weight: bold; color: #333; margin-bottom: 5px;">${item.name}</div>
+                                            <div style="font-size: 1.5em; font-weight: bold; color: ${color};">${item.value}筆</div>
+                                            <div style="font-size: 0.9em; color: #666;">${percentage}%</div>
+                                        </div>
+                                    `;
+                                }).join('')}
+                            </div>
+                        </div>
+                    </div>
+                `;
+                
+                document.getElementById('recommendAnalyticsContent').innerHTML = content;
+                
+                // 創建長條圖
+                setTimeout(() => {
+                    const canvasElement = document.getElementById('recommendGradeChart');
+                    if (!canvasElement) return;
+                    
+                    const ctx = canvasElement.getContext('2d');
+                    new Chart(ctx, {
+                        type: 'bar',
+                        data: {
+                            labels: data.map(item => item.name),
+                            datasets: [{
+                                label: '推薦筆數',
+                                data: data.map(item => item.value),
+                                backgroundColor: '#28a745',
+                                borderColor: '#1e7e34',
+                                borderWidth: 1
+                            }]
+                        },
+                        options: {
+                            responsive: true,
+                            maintainAspectRatio: false,
+                            plugins: {
+                                legend: {
+                                    display: false
+                                }
+                            },
+                            scales: {
+                                y: {
+                                    beginAtZero: true,
+                                    ticks: {
+                                        stepSize: 1
+                                    }
+                                }
+                            }
+                        }
+                    });
+                }, 100);
+            })
+            .catch(error => {
+                console.error('載入推薦人年級統計數據失敗:', error);
+                document.getElementById('recommendAnalyticsContent').innerHTML = `
+                    <div style="text-align: center; padding: 40px; color: #dc3545;">
+                        <i class="fas fa-exclamation-triangle fa-3x" style="margin-bottom: 16px;"></i>
+                        <h4>數據載入失敗</h4>
+                        <p>無法連接到統計API</p>
+                    </div>
+                `;
+            });
+    }
+    
+    // 招生推薦報名統計 - 被推薦學校分析
+    function showRecommendSchoolStats() {
+        console.log('showRecommendSchoolStats 被調用');
+        
+        fetch('../../Topics-frontend/frontend/api/recommend_stats_api.php?action=school')
+            .then(response => response.json())
+            .then(data => {
+                if (data.error) {
+                    document.getElementById('recommendAnalyticsContent').innerHTML = `
+                        <div style="text-align: center; padding: 40px; color: #dc3545;">
+                            <i class="fas fa-exclamation-triangle fa-3x" style="margin-bottom: 16px;"></i>
+                            <h4>數據載入失敗</h4>
+                            <p>${data.error}</p>
+                        </div>
+                    `;
+                    return;
+                }
+                
+                const content = `
+                    <div style="margin-bottom: 20px;">
+                        <h4 style="color: #667eea; margin-bottom: 15px;">
+                            <i class="fas fa-school"></i> 被推薦學校分析
+                        </h4>
+                        
+                        <div class="chart-card">
+                            <div class="chart-title">被推薦學校分布（前10名）</div>
+                            <div class="chart-container">
+                                <canvas id="recommendSchoolChart"></canvas>
+                            </div>
+                        </div>
+                        
+                        <div style="background: #f8f9fa; padding: 20px; border-radius: 10px; margin-top: 20px;">
+                            <h5 style="color: #333; margin-bottom: 15px;">學校詳細統計</h5>
+                            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px;">
+                                ${data.map((item, index) => {
+                                    const colors = ['#667eea', '#28a745', '#ffc107', '#dc3545', '#17a2b8'];
+                                    const color = colors[index % colors.length];
+                                    const total = data.reduce((sum, d) => sum + d.value, 0);
+                                    const percentage = ((item.value / total) * 100).toFixed(1);
+                                    return `
+                                        <div style="background: white; padding: 15px; border-radius: 8px; border-left: 4px solid ${color};">
+                                            <div style="font-weight: bold; color: #333; margin-bottom: 5px;">${item.name}</div>
+                                            <div style="font-size: 1.5em; font-weight: bold; color: ${color};">${item.value}筆</div>
+                                            <div style="font-size: 0.9em; color: #666;">${percentage}%</div>
+                                        </div>
+                                    `;
+                                }).join('')}
+                            </div>
+                        </div>
+                    </div>
+                `;
+                
+                document.getElementById('recommendAnalyticsContent').innerHTML = content;
+                
+                // 創建長條圖
+                setTimeout(() => {
+                    const canvasElement = document.getElementById('recommendSchoolChart');
+                    if (!canvasElement) return;
+                    
+                    const ctx = canvasElement.getContext('2d');
+                    new Chart(ctx, {
+                        type: 'bar',
+                        data: {
+                            labels: data.map(item => item.name),
+                            datasets: [{
+                                label: '推薦筆數',
+                                data: data.map(item => item.value),
+                                backgroundColor: '#ffc107',
+                                borderColor: '#e0a800',
+                                borderWidth: 1
+                            }]
+                        },
+                        options: {
+                            responsive: true,
+                            maintainAspectRatio: false,
+                            plugins: {
+                                legend: {
+                                    display: false
+                                }
+                            },
+                            scales: {
+                                y: {
+                                    beginAtZero: true,
+                                    ticks: {
+                                        stepSize: 1
+                                    }
+                                }
+                            }
+                        }
+                    });
+                }, 100);
+            })
+            .catch(error => {
+                console.error('載入被推薦學校統計數據失敗:', error);
+                document.getElementById('recommendAnalyticsContent').innerHTML = `
+                    <div style="text-align: center; padding: 40px; color: #dc3545;">
+                        <i class="fas fa-exclamation-triangle fa-3x" style="margin-bottom: 16px;"></i>
+                        <h4>數據載入失敗</h4>
+                        <p>無法連接到統計API</p>
+                    </div>
+                `;
+            });
+    }
+    
+    // 招生推薦報名統計 - 被推薦學生年級分析
+    function showRecommendStudentGradeStats() {
+        console.log('showRecommendStudentGradeStats 被調用');
+        
+        fetch('../../Topics-frontend/frontend/api/recommend_stats_api.php?action=student_grade')
+            .then(response => response.json())
+            .then(data => {
+                if (data.error) {
+                    document.getElementById('recommendAnalyticsContent').innerHTML = `
+                        <div style="text-align: center; padding: 40px; color: #dc3545;">
+                            <i class="fas fa-exclamation-triangle fa-3x" style="margin-bottom: 16px;"></i>
+                            <h4>數據載入失敗</h4>
+                            <p>${data.error}</p>
+                        </div>
+                    `;
+                    return;
+                }
+                
+                const content = `
+                    <div style="margin-bottom: 20px;">
+                        <h4 style="color: #667eea; margin-bottom: 15px;">
+                            <i class="fas fa-child"></i> 被推薦學生年級分析
+                        </h4>
+                        
+                        <div class="chart-card">
+                            <div class="chart-title">被推薦學生年級分布</div>
+                            <div class="chart-container">
+                                <canvas id="recommendStudentGradeChart"></canvas>
+                            </div>
+                        </div>
+                        
+                        <div style="background: #f8f9fa; padding: 20px; border-radius: 10px; margin-top: 20px;">
+                            <h5 style="color: #333; margin-bottom: 15px;">年級詳細統計</h5>
+                            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px;">
+                                ${data.map((item, index) => {
+                                    const colors = ['#667eea', '#28a745', '#ffc107', '#dc3545'];
+                                    const color = colors[index % colors.length];
+                                    const total = data.reduce((sum, d) => sum + d.value, 0);
+                                    const percentage = ((item.value / total) * 100).toFixed(1);
+                                    return `
+                                        <div style="background: white; padding: 15px; border-radius: 8px; border-left: 4px solid ${color};">
+                                            <div style="font-weight: bold; color: #333; margin-bottom: 5px;">${item.name}</div>
+                                            <div style="font-size: 1.5em; font-weight: bold; color: ${color};">${item.value}筆</div>
+                                            <div style="font-size: 0.9em; color: #666;">${percentage}%</div>
+                                        </div>
+                                    `;
+                                }).join('')}
+                            </div>
+                        </div>
+                    </div>
+                `;
+                
+                document.getElementById('recommendAnalyticsContent').innerHTML = content;
+                
+                // 創建圓餅圖
+                setTimeout(() => {
+                    const canvasElement = document.getElementById('recommendStudentGradeChart');
+                    if (!canvasElement) return;
+                    
+                    const ctx = canvasElement.getContext('2d');
+                    new Chart(ctx, {
+                        type: 'pie',
+                        data: {
+                            labels: data.map(item => item.name),
+                            datasets: [{
+                                data: data.map(item => item.value),
+                                backgroundColor: ['#667eea', '#28a745', '#ffc107', '#dc3545'],
+                                borderWidth: 2,
+                                borderColor: '#fff'
+                            }]
+                        },
+                        options: {
+                            responsive: true,
+                            maintainAspectRatio: false,
+                            plugins: {
+                                legend: {
+                                    position: 'bottom',
+                                    labels: {
+                                        padding: 20,
+                                        usePointStyle: true,
+                                        font: { size: 16 }
+                                    }
+                                },
+                                tooltip: {
+                                    enabled: true,
+                                    callbacks: {
+                                        label: function(context) {
+                                            const label = context.label || '';
+                                            const value = context.parsed;
+                                            const total = context.dataset.data.reduce((a, b) => a + b, 0);
+                                            const percentage = ((value / total) * 100).toFixed(1);
+                                            return `${label}: ${value}筆 (${percentage}%)`;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    });
+                }, 100);
+            })
+            .catch(error => {
+                console.error('載入被推薦學生年級統計數據失敗:', error);
+                document.getElementById('recommendAnalyticsContent').innerHTML = `
+                    <div style="text-align: center; padding: 40px; color: #dc3545;">
+                        <i class="fas fa-exclamation-triangle fa-3x" style="margin-bottom: 16px;"></i>
+                        <h4>數據載入失敗</h4>
+                        <p>無法連接到統計API</p>
+                    </div>
+                `;
+            });
+    }
+    
+    // 招生推薦報名統計 - 月度趨勢分析
+    function showRecommendMonthlyStats() {
+        console.log('showRecommendMonthlyStats 被調用');
+        
+        fetch('../../Topics-frontend/frontend/api/recommend_stats_api.php?action=monthly')
+            .then(response => response.json())
+            .then(data => {
+                if (data.error) {
+                    document.getElementById('recommendAnalyticsContent').innerHTML = `
+                        <div style="text-align: center; padding: 40px; color: #dc3545;">
+                            <i class="fas fa-exclamation-triangle fa-3x" style="margin-bottom: 16px;"></i>
+                            <h4>數據載入失敗</h4>
+                            <p>${data.error}</p>
+                        </div>
+                    `;
+                    return;
+                }
+                
+                const content = `
+                    <div style="margin-bottom: 20px;">
+                        <h4 style="color: #667eea; margin-bottom: 15px;">
+                            <i class="fas fa-calendar-alt"></i> 月度趨勢分析
+                        </h4>
+                        
+                        <div class="chart-card">
+                            <div class="chart-title">月度推薦趨勢</div>
+                            <div class="chart-container">
+                                <canvas id="recommendMonthlyChart"></canvas>
+                            </div>
+                        </div>
+                        
+                        <div style="background: #f8f9fa; padding: 20px; border-radius: 10px; margin-top: 20px;">
+                            <h5 style="color: #333; margin-bottom: 15px;">月度詳細統計</h5>
+                            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px;">
+                                ${data.map((item, index) => {
+                                    const colors = ['#667eea', '#28a745', '#ffc107', '#dc3545', '#17a2b8'];
+                                    const color = colors[index % colors.length];
+                                    const total = data.reduce((sum, d) => sum + d.value, 0);
+                                    const percentage = ((item.value / total) * 100).toFixed(1);
+                                    return `
+                                        <div style="background: white; padding: 15px; border-radius: 8px; border-left: 4px solid ${color};">
+                                            <div style="font-weight: bold; color: #333; margin-bottom: 5px;">${item.name}</div>
+                                            <div style="font-size: 1.5em; font-weight: bold; color: ${color};">${item.value}筆</div>
+                                            <div style="font-size: 0.9em; color: #666;">${percentage}%</div>
+                                        </div>
+                                    `;
+                                }).join('')}
+                            </div>
+                        </div>
+                    </div>
+                `;
+                
+                document.getElementById('recommendAnalyticsContent').innerHTML = content;
+                
+                // 創建線圖
+                setTimeout(() => {
+                    const canvasElement = document.getElementById('recommendMonthlyChart');
+                    if (!canvasElement) return;
+                    
+                    const ctx = canvasElement.getContext('2d');
+                    new Chart(ctx, {
+                        type: 'line',
+                        data: {
+                            labels: data.map(item => item.name),
+                            datasets: [{
+                                label: '推薦筆數',
+                                data: data.map(item => item.value),
+                                borderColor: '#667eea',
+                                backgroundColor: 'rgba(102, 126, 234, 0.1)',
+                                borderWidth: 3,
+                                fill: true,
+                                tension: 0.4,
+                                pointBackgroundColor: '#667eea',
+                                pointBorderColor: '#fff',
+                                pointBorderWidth: 2,
+                                pointRadius: 6
+                            }]
+                        },
+                        options: {
+                            responsive: true,
+                            maintainAspectRatio: false,
+                            plugins: {
+                                legend: {
+                                    display: false
+                                }
+                            },
+                            scales: {
+                                y: {
+                                    beginAtZero: true,
+                                    ticks: {
+                                        stepSize: 1
+                                    }
+                                }
+                            }
+                        }
+                    });
+                }, 100);
+            })
+            .catch(error => {
+                console.error('載入月度統計數據失敗:', error);
+                document.getElementById('recommendAnalyticsContent').innerHTML = `
+                    <div style="text-align: center; padding: 40px; color: #dc3545;">
+                        <i class="fas fa-exclamation-triangle fa-3x" style="margin-bottom: 16px;"></i>
+                        <h4>數據載入失敗</h4>
+                        <p>無法連接到統計API</p>
+                    </div>
+                `;
+            });
+    }
+    
+    // 招生推薦報名統計 - 學生興趣領域科系分析
+    function showRecommendInterestStats() {
+        console.log('showRecommendInterestStats 被調用');
+        
+        fetch('../../Topics-frontend/frontend/api/recommend_stats_api.php?action=interest')
+            .then(response => response.json())
+            .then(data => {
+                if (data.error) {
+                    document.getElementById('recommendAnalyticsContent').innerHTML = `
+                        <div style="text-align: center; padding: 40px; color: #dc3545;">
+                            <i class="fas fa-exclamation-triangle fa-3x" style="margin-bottom: 16px;"></i>
+                            <h4>數據載入失敗</h4>
+                            <p>${data.error}</p>
+                        </div>
+                    `;
+                    return;
+                }
+                
+                const content = `
+                    <div style="margin-bottom: 20px;">
+                        <h4 style="color: #667eea; margin-bottom: 15px;">
+                            <i class="fas fa-heart"></i> 學生興趣領域科系分析
+                        </h4>
+                        
+                        <div class="chart-card">
+                            <div class="chart-title">學生興趣領域科系分布</div>
+                            <div class="chart-container">
+                                <canvas id="recommendInterestChart"></canvas>
+                            </div>
+                        </div>
+                        
+                        <div style="background: #f8f9fa; padding: 20px; border-radius: 10px; margin-top: 20px;">
+                            <h5 style="color: #333; margin-bottom: 15px;">興趣領域詳細統計</h5>
+                            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px;">
+                                ${data.map((item, index) => {
+                                    const colors = ['#667eea', '#28a745', '#ffc107', '#dc3545', '#17a2b8', '#6f42c1', '#fd7e14'];
+                                    const color = colors[index % colors.length];
+                                    const total = data.reduce((sum, d) => sum + d.value, 0);
+                                    const percentage = ((item.value / total) * 100).toFixed(1);
+                                    return `
+                                        <div style="background: white; padding: 15px; border-radius: 8px; border-left: 4px solid ${color};">
+                                            <div style="font-weight: bold; color: #333; margin-bottom: 5px;">${item.name}</div>
+                                            <div style="font-size: 1.5em; font-weight: bold; color: ${color};">${item.value}筆</div>
+                                            <div style="font-size: 0.9em; color: #666;">${percentage}%</div>
+                                        </div>
+                                    `;
+                                }).join('')}
+                            </div>
+                        </div>
+                    </div>
+                `;
+                
+                document.getElementById('recommendAnalyticsContent').innerHTML = content;
+                
+                // 創建圓餅圖
+                setTimeout(() => {
+                    const canvasElement = document.getElementById('recommendInterestChart');
+                    if (!canvasElement) return;
+                    
+                    const ctx = canvasElement.getContext('2d');
+                    new Chart(ctx, {
+                        type: 'pie',
+                        data: {
+                            labels: data.map(item => item.name),
+                            datasets: [{
+                                data: data.map(item => item.value),
+                                backgroundColor: [
+                                    '#667eea', '#28a745', '#ffc107', '#dc3545', 
+                                    '#17a2b8', '#6f42c1', '#fd7e14', '#20c997'
+                                ],
+                                borderWidth: 2,
+                                borderColor: '#fff'
+                            }]
+                        },
+                        options: {
+                            responsive: true,
+                            maintainAspectRatio: false,
+                            plugins: {
+                                legend: {
+                                    position: 'bottom',
+                                    labels: {
+                                        padding: 20,
+                                        usePointStyle: true,
+                                        font: { size: 16 }
+                                    }
+                                },
+                                tooltip: {
+                                    enabled: true,
+                                    callbacks: {
+                                        label: function(context) {
+                                            const label = context.label || '';
+                                            const value = context.parsed;
+                                            const total = context.dataset.data.reduce((a, b) => a + b, 0);
+                                            const percentage = ((value / total) * 100).toFixed(1);
+                                            return `${label}: ${value}筆 (${percentage}%)`;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    });
+                }, 100);
+            })
+            .catch(error => {
+                console.error('載入學生興趣領域科系統計數據失敗:', error);
+                document.getElementById('recommendAnalyticsContent').innerHTML = `
+                    <div style="text-align: center; padding: 40px; color: #dc3545;">
+                        <i class="fas fa-exclamation-triangle fa-3x" style="margin-bottom: 16px;"></i>
+                        <h4>數據載入失敗</h4>
+                        <p>無法連接到統計API</p>
+                    </div>
+                `;
+            });
+    }
+    
+    function clearRecommendCharts() {
+        console.log('clearRecommendCharts 被調用');
+        
+        // 清除所有招生推薦報名相關的Chart.js實例
+        Chart.helpers.each(Chart.instances, function(instance) {
+            if (instance.canvas.id.includes('recommendStatusChart') || 
+                instance.canvas.id.includes('recommendDepartmentChart') ||
+                instance.canvas.id.includes('recommendGradeChart') ||
+                instance.canvas.id.includes('recommendSchoolChart') ||
+                instance.canvas.id.includes('recommendStudentGradeChart') ||
+                instance.canvas.id.includes('recommendMonthlyChart') ||
+                instance.canvas.id.includes('recommendInterestChart')) {
+                instance.destroy();
+            }
         });
         
-        // 隱藏載入提示
-        setTimeout(() => {
-            hideLoadingMessage();
-        }, 2000);
-    }
-    
-    // 就讀意願統計 CSV 匯出
-    function exportEnrollmentStatsToExcel() {
-        console.log('開始匯出就讀意願統計CSV...');
-        
-        showLoadingMessage('正在生成就讀意願統計CSV檔案...');
-        
-        // 創建多個下載連結，分別下載不同的圖表數據
-        const chartTypes = [
-            { type: 'enrollment_department', name: '科系分布' },
-            { type: 'enrollment_system', name: '學制分布' },
-            { type: 'enrollment_gender', name: '性別分布' }
-        ];
-        
-        chartTypes.forEach((chart, index) => {
-            setTimeout(() => {
-                const link = document.createElement('a');
-                link.href = `../../Topics-frontend/frontend/api/export_chart_data_csv.php?type=${chart.type}`;
-                link.download = `就讀意願_${chart.name}_${new Date().toISOString().slice(0, 10)}.csv`;
-                link.style.display = 'none';
-                document.body.appendChild(link);
-                link.click();
-                document.body.removeChild(link);
-            }, index * 500); // 每個檔案間隔500ms下載
-        });
-        
-        setTimeout(() => {
-            hideLoadingMessage();
-        }, 2000);
-    }
-    
-    // 續招報名統計 CSV 匯出
-    function exportContinuedAdmissionStatsToExcel() {
-        console.log('開始匯出續招報名統計CSV...');
-        
-        showLoadingMessage('正在生成續招報名統計CSV檔案...');
-        
-        const link = document.createElement('a');
-        link.href = '../../Topics-frontend/frontend/api/export_continued_admission_stats_csv.php';
-        link.download = '續招報名統計_' + new Date().toISOString().slice(0, 10) + '.csv';
-        link.style.display = 'none';
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
-        
-        setTimeout(() => {
-            hideLoadingMessage();
-        }, 2000);
-    }
-    
-    // 五專入學說明會統計 CSV 匯出
-    function exportAdmissionStatsToExcel() {
-        console.log('開始匯出五專入學說明會統計CSV...');
-        
-        showLoadingMessage('正在生成五專入學說明會統計CSV檔案...');
-        
-        const link = document.createElement('a');
-        link.href = '../../Topics-frontend/frontend/api/export_admission_stats_csv.php';
-        link.download = '五專入學說明會統計_' + new Date().toISOString().slice(0, 10) + '.csv';
-        link.style.display = 'none';
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
-        
-        setTimeout(() => {
-            hideLoadingMessage();
-        }, 2000);
-    }
-    
-    // 顯示載入訊息
-    function showLoadingMessage(message) {
-        // 創建載入提示元素
-        const loadingDiv = document.createElement('div');
-        loadingDiv.id = 'loadingMessage';
-        loadingDiv.style.cssText = `
-            position: fixed;
-            top: 50%;
-            left: 50%;
-            transform: translate(-50%, -50%);
-            background: rgba(0, 0, 0, 0.8);
-            color: white;
-            padding: 20px 30px;
-            border-radius: 10px;
-            z-index: 10000;
-            font-size: 16px;
-            display: flex;
-            align-items: center;
-            gap: 10px;
+        document.getElementById('recommendAnalyticsContent').innerHTML = `
+            <div class="empty-state">
+                <i class="fas fa-user-friends fa-3x" style="margin-bottom: 16px;"></i>
+                <h4>選擇上方的統計類型來查看詳細分析</h4>
+                <p>提供推薦狀態、推薦人科系、推薦人年級、被推薦學校、被推薦學生年級、月度趨勢、學生興趣領域科系等多維度統計</p>
+            </div>
         `;
-        loadingDiv.innerHTML = `
-            <i class="fas fa-spinner fa-spin"></i>
-            ${message}
-        `;
-        document.body.appendChild(loadingDiv);
     }
     
-    // 隱藏載入訊息
-    function hideLoadingMessage() {
-        const loadingDiv = document.getElementById('loadingMessage');
-        if (loadingDiv) {
-            loadingDiv.remove();
-        }
-    }
+    
     
     // ========== 其他必要函數 ==========
     
