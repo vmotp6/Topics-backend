@@ -26,9 +26,43 @@ try {
 }
 
 // 獲取所有續招報名資料
-$stmt = $pdo->prepare("SELECT id, name, id_number, mobile, school_name, created_at, status FROM continued_admission ORDER BY created_at DESC");
+$stmt = $pdo->prepare("SELECT id, name, id_number, mobile, school_name, created_at, status, choices FROM continued_admission ORDER BY created_at DESC");
 $stmt->execute();
 $applications = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+// 獲取科系名額資料（檢查資料表是否存在）
+$department_stats = [];
+$departments = [];
+
+try {
+    // 檢查 department_quotas 資料表是否存在
+    $stmt = $pdo->prepare("SHOW TABLES LIKE 'department_quotas'");
+    $stmt->execute();
+    $tableExists = $stmt->rowCount() > 0;
+    
+    if ($tableExists) {
+        $stmt = $pdo->prepare("SELECT * FROM department_quotas WHERE is_active = 1 ORDER BY department_name");
+        $stmt->execute();
+        $departments = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        
+        // 計算各科系已錄取人數
+        foreach ($departments as $dept) {
+            $stmt = $pdo->prepare("SELECT COUNT(*) as count FROM continued_admission WHERE status = 'approved' AND JSON_CONTAINS(choices, JSON_QUOTE(?))");
+            $stmt->execute([$dept['department_name']]);
+            $result = $stmt->fetch(PDO::FETCH_ASSOC);
+            $department_stats[$dept['department_code']] = [
+                'name' => $dept['department_name'],
+                'total_quota' => $dept['total_quota'],
+                'current_enrolled' => $result['count'],
+                'remaining' => $dept['total_quota'] - $result['count']
+            ];
+        }
+    }
+} catch (PDOException $e) {
+    // 如果資料表不存在或其他錯誤，設定為空陣列
+    $departments = [];
+    $department_stats = [];
+}
 
 function getStatusText($status) {
     switch ($status) {
@@ -118,6 +152,31 @@ function getStatusClass($status) {
             background: #fff; color: #52c41a;
         }
         .btn-review:hover { background: #52c41a; color: white; }
+
+        /* 科系名額管理樣式 */
+        .quota-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 20px; }
+        .quota-card { background: #fff; border: 1px solid var(--border-color); border-radius: 8px; padding: 20px; transition: all 0.3s; }
+        .quota-card:hover { box-shadow: 0 4px 12px rgba(0,0,0,0.1); transform: translateY(-2px); }
+        .quota-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
+        .quota-header h4 { font-size: 16px; font-weight: 600; color: var(--text-color); margin: 0; }
+        .quota-code { background: var(--primary-color); color: white; padding: 4px 8px; border-radius: 4px; font-size: 12px; font-weight: 500; }
+        .quota-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 16px; }
+        .stat-item { text-align: center; }
+        .stat-label { display: block; font-size: 12px; color: var(--text-secondary-color); margin-bottom: 4px; }
+        .stat-value { display: block; font-size: 18px; font-weight: 600; }
+        .stat-value.total { color: var(--primary-color); }
+        .stat-value.enrolled { color: var(--success-color); }
+        .stat-value.remaining { color: var(--warning-color); }
+        .stat-value.remaining.full { color: var(--danger-color); }
+        .quota-progress { margin-top: 12px; }
+        .progress-bar { width: 100%; height: 8px; background: #f0f0f0; border-radius: 4px; overflow: hidden; }
+        .progress-fill { height: 100%; background: linear-gradient(90deg, var(--success-color), var(--warning-color)); transition: width 0.3s; }
+
+        /* 志願選擇顯示樣式 */
+        .choices-display { display: flex; flex-direction: column; gap: 4px; }
+        .choice-item { padding: 4px 8px; border-radius: 4px; font-size: 12px; background: #f5f5f5; color: var(--text-color); }
+        .choice-item.first-choice { background: var(--primary-color); color: white; font-weight: 500; }
+        .no-choices { color: var(--text-secondary-color); font-style: italic; }
     </style>
 </head>
 <body>
@@ -128,6 +187,66 @@ function getStatusClass($status) {
             <div class="content">
                 <div class="breadcrumb">
                     <a href="index.php">首頁</a> / <?php echo $page_title; ?>
+                </div>
+
+                <!-- 科系名額管理卡片 -->
+                <div class="card">
+                    <div class="card-header">
+                        <h3><i class="fas fa-graduation-cap"></i> 科系名額管理</h3>
+                        <?php if (!empty($department_stats)): ?>
+                            <a href="department_quota_management.php" class="btn-secondary">
+                                <i class="fas fa-cog"></i> 管理名額
+                            </a>
+                        <?php else: ?>
+                            <a href="setup_department_quotas.php" class="btn-primary">
+                                <i class="fas fa-database"></i> 設定名額
+                            </a>
+                        <?php endif; ?>
+                    </div>
+                    <div class="card-body" id="quotaManagementContent">
+                        <?php if (!empty($department_stats)): ?>
+                            <div class="quota-grid">
+                                <?php foreach ($department_stats as $code => $stats): ?>
+                                <div class="quota-card">
+                                    <div class="quota-header">
+                                        <h4><?php echo htmlspecialchars($stats['name']); ?></h4>
+                                        <span class="quota-code"><?php echo htmlspecialchars($code); ?></span>
+                                    </div>
+                                    <div class="quota-stats">
+                                        <div class="stat-item">
+                                            <span class="stat-label">總名額</span>
+                                            <span class="stat-value total"><?php echo $stats['total_quota']; ?></span>
+                                        </div>
+                                        <div class="stat-item">
+                                            <span class="stat-label">已錄取</span>
+                                            <span class="stat-value enrolled"><?php echo $stats['current_enrolled']; ?></span>
+                                        </div>
+                                        <div class="stat-item">
+                                            <span class="stat-label">剩餘名額</span>
+                                            <span class="stat-value remaining <?php echo $stats['remaining'] <= 0 ? 'full' : ''; ?>"><?php echo max(0, $stats['remaining']); ?></span>
+                                        </div>
+                                    </div>
+                                    <div class="quota-progress">
+                                        <div class="progress-bar">
+                                            <div class="progress-fill" style="width: <?php echo $stats['total_quota'] > 0 ? min(100, ($stats['current_enrolled'] / $stats['total_quota']) * 100) : 0; ?>%"></div>
+                                        </div>
+                                    </div>
+                                </div>
+                                <?php endforeach; ?>
+                            </div>
+                        <?php else: ?>
+                            <div class="empty-state">
+                                <i class="fas fa-graduation-cap fa-3x" style="margin-bottom: 16px; color: var(--text-secondary-color);"></i>
+                                <h4 style="margin-bottom: 12px;">科系名額管理尚未設定</h4>
+                                <p style="margin-bottom: 20px; color: var(--text-secondary-color);">
+                                    您需要先建立科系名額資料表，才能使用名額管理功能。
+                                </p>
+                                <a href="setup_department_quotas.php" class="btn-primary">
+                                    <i class="fas fa-database"></i> 立即設定科系名額
+                                </a>
+                            </div>
+                        <?php endif; ?>
+                    </div>
                 </div>
 
                 <div class="card">
@@ -150,6 +269,7 @@ function getStatusClass($status) {
                                         <th>身分證字號</th>
                                         <th>行動電話</th>
                                         <th>就讀國中</th>
+                                        <th>志願選擇</th>
                                         <th>審核狀態</th>
                                         <th>報名日期</th>
                                         <th>操作</th>
@@ -163,6 +283,22 @@ function getStatusClass($status) {
                                         <td><?php echo htmlspecialchars($item['id_number']); ?></td>
                                         <td><?php echo htmlspecialchars($item['mobile']); ?></td>
                                         <td><?php echo htmlspecialchars($item['school_name']); ?></td>
+                                        <td>
+                                            <?php 
+                                            $choices = json_decode($item['choices'], true);
+                                            if (!empty($choices) && is_array($choices)): 
+                                            ?>
+                                                <div class="choices-display">
+                                                    <?php foreach ($choices as $index => $choice): ?>
+                                                        <span class="choice-item <?php echo $index === 0 ? 'first-choice' : ''; ?>">
+                                                            <?php echo ($index + 1) . '. ' . htmlspecialchars($choice); ?>
+                                                        </span>
+                                                    <?php endforeach; ?>
+                                                </div>
+                                            <?php else: ?>
+                                                <span class="no-choices">未選擇</span>
+                                            <?php endif; ?>
+                                        </td>
                                         <td>
                                             <span class="status-badge <?php echo getStatusClass($item['status']); ?>">
                                                 <?php echo getStatusText($item['status']); ?>
@@ -201,6 +337,7 @@ function getStatusClass($status) {
             setTimeout(() => { toast.style.display = 'none'; }, 500);
         }, 3000);
     }
+
 
     document.addEventListener('DOMContentLoaded', function() {
         const searchInput = document.getElementById('searchInput');
