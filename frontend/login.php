@@ -8,49 +8,60 @@ if (isset($_SESSION['admin_logged_in']) && $_SESSION['admin_logged_in']) {
 }
 
 // 處理登入
-if (isset($_POST['action']) && $_POST['action'] == 'login') {
-    $admin_username = $_POST['username'];
-    $admin_password = $_POST['password'];
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] == 'login') {
+    $username = $_POST['username'];
+    $password = $_POST['password'];
     
-    // 呼叫Python API進行登入驗證
-    $api_url = 'http://100.79.58.120:5001/admin/login';
-    $post_data = http_build_query([
-        'username' => $admin_username,
-        'password' => $admin_password
-    ]);
-    
-    // 使用 cURL 替代 file_get_contents 以更好地處理錯誤
-    $ch = curl_init();
-    curl_setopt($ch, CURLOPT_URL, $api_url);
-    curl_setopt($ch, CURLOPT_POST, true);
-    curl_setopt($ch, CURLOPT_POSTFIELDS, $post_data);
-    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-    curl_setopt($ch, CURLOPT_HTTPHEADER, [
-        'Content-Type: application/x-www-form-urlencoded'
-    ]);
-    curl_setopt($ch, CURLOPT_TIMEOUT, 10);
-    curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
-    
-    $response = curl_exec($ch);
-    $http_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-    $curl_error = curl_error($ch);
-    curl_close($ch);
-    
-    if ($curl_error) {
-        $error_message = "連接錯誤: " . $curl_error;
-    } else {
-        $result = json_decode($response, true);
-        
-        if ($result === null) {
-            $error_message = "API 響應格式錯誤";
-        } elseif (isset($result['message']) && $result['message'] === '登入成功') {
-            $_SESSION['admin_logged_in'] = true;
-            $_SESSION['admin_username'] = $admin_username;
-            header("Location: index.php");
-            exit;
+    // 資料庫連接設定
+    $host = '100.79.58.120';
+    $dbname = 'topics_good';
+    $db_username = 'root';
+    $db_password = '';
+
+    try {
+        $pdo = new PDO("mysql:host=$host;dbname=$dbname;charset=utf8mb4", $db_username, $db_password);
+        $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+
+        // 查詢用戶
+        $stmt = $pdo->prepare("SELECT * FROM user WHERE username = ?");
+        $stmt->execute([$username]);
+        $user = $stmt->fetch(PDO::FETCH_ASSOC);
+
+        // 驗證密碼 (注意：這裡假設密碼是明文儲存，強烈建議未來改用 password_hash 和 password_verify)
+        if ($user && $password === $user['password'] && $user['role'] !== 'student' && $user['role'] !== '學生') {
+            // 登入成功，但需檢查帳號是否啟用
+            if ($user['status'] == 1) {
+                // 根據角色設定 Session
+                $_SESSION['admin_logged_in'] = true; // 保持登入狀態
+                $_SESSION['user_id'] = $user['id'];
+                $_SESSION['username'] = $user['username'];
+                $_SESSION['role'] = $user['role']; // 儲存角色
+
+                // 根據角色跳轉到不同頁面
+                switch ($user['role']) {
+                    case 'admin':
+                    case '招生中心': // 假設 '招生中心' 也是管理員角色
+                        header("Location: index.php");
+                        break;
+                    case 'teacher':
+                        // 如果老師有特定的儀表板，可以跳轉到那裡
+                        header("Location: activity_records.php");
+                        break;
+                    default:
+                        // 其他角色預設跳轉到首頁
+                        header("Location: index.php");
+                        break;
+                }
+                exit;
+            }
+            // 如果帳號被停用，則顯示停用訊息
+            $error_message = "您的帳號已被停用，請聯繫管理員。";
         } else {
-            $error_message = $result['message'] ?? "登入失敗，請稍後再試";
+            // 帳號密碼錯誤，或使用者為學生，都顯示相同的錯誤訊息
+            $error_message = "帳號或密碼錯誤。";
         }
+    } catch (PDOException $e) {
+        $error_message = "資料庫連接失敗: " . $e->getMessage();
     }
 }
 ?>
