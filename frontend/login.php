@@ -27,21 +27,49 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         $stmt->execute([$username]);
         $user = $stmt->fetch(PDO::FETCH_ASSOC);
 
-        // 1. 驗證使用者是否存在及密碼是否正確
-        // (注意：這裡假設密碼是明文儲存，強烈建議未來改用 password_hash 和 password_verify)
-        if (!$user || $password !== $user['password']) {
+        $login_successful = false;
+
+        // 1. 驗證使用者是否存在
+        if (!$user) {
             $error_message = "帳號或密碼錯誤。";
         }
-        // 2. 檢查帳號狀態是否被停用
-        elseif ($user['status'] != 1) {
-            $error_message = "您的帳號已被停用，請聯繫管理員。";
-        }
-        // 3. 檢查角色是否允許登入後台 (學生不允許)
-        elseif ($user['role'] === 'student' || $user['role'] === '學生') {
-            $error_message = "帳號或密碼錯誤。"; // 對學生顯示一樣的錯誤訊息，避免透露帳號存在
-        }
-        // 4. 登入成功
+        // 2. 驗證密碼
         else {
+            // 優先使用 password_verify 驗證已雜湊的密碼
+            if (password_verify($password, $user['password'])) {
+                $login_successful = true;
+                // 如果需要，重新雜湊密碼以升級演算法
+                if (password_needs_rehash($user['password'], PASSWORD_DEFAULT)) {
+                    $new_hash = password_hash($password, PASSWORD_DEFAULT);
+                    $update_stmt = $pdo->prepare("UPDATE user SET password = ? WHERE id = ?");
+                    $update_stmt->execute([$new_hash, $user['id']]);
+                }
+            }
+            // 兼容舊的明文密碼，登入成功後立即雜湊更新
+            elseif ($password === $user['password']) {
+                $login_successful = true;
+                $new_hash = password_hash($password, PASSWORD_DEFAULT);
+                $update_stmt = $pdo->prepare("UPDATE user SET password = ? WHERE id = ?");
+                $update_stmt->execute([$new_hash, $user['id']]);
+            } else {
+                $error_message = "帳號或密碼錯誤。";
+            }
+
+            // 如果密碼驗證成功，繼續檢查帳號狀態和角色
+            if ($login_successful) {
+                // 優先檢查角色是否不允許登入 (學生)
+                if ($user['role'] === 'student' || $user['role'] === '學生') {
+                    $error_message = "帳號或密碼錯誤。"; // 對學生顯示一樣的錯誤訊息，避免透露帳號存在
+                    $login_successful = false;
+                } elseif ($user['status'] != 1) { // 然後才檢查帳號是否被停用
+                    $error_message = "您的帳號已被停用，請聯繫管理員。";
+                    $login_successful = false;
+                }
+            }
+        }
+        
+        // 3. 登入成功
+        if ($login_successful && !isset($error_message)) {
             // 根據角色設定 Session
             $_SESSION['admin_logged_in'] = true; // 保持登入狀態
             $_SESSION['user_id'] = $user['id'];
@@ -49,16 +77,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             $_SESSION['role'] = $user['role']; // 儲存角色
             $_SESSION['name'] = $user['name']; // 儲存使用者姓名
 
-            // 根據角色跳轉到不同頁面
-            switch ($user['role']) {
-                case 'admin':
-                case '招生中心': // 假設 '招生中心' 也是管理員角色
-                    header("Location: index.php");
-                    break;
-                case 'teacher':
-                    header("Location: activity_records.php");
-                    break;
-            }
+            // 統一跳轉到首頁
+            header("Location: index.php");
             exit;
         }
     } catch (PDOException $e) {
