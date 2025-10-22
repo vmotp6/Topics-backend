@@ -36,6 +36,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                 $_SESSION['user_id'] = $user['id'];
                 $_SESSION['username'] = $user['username'];
                 $_SESSION['role'] = $user['role']; // 儲存角色
+                $_SESSION['name'] = $user['name']; // 儲存使用者姓名
 
                 // 根據角色跳轉到不同頁面
                 switch ($user['role']) {
