@@ -72,6 +72,18 @@ if ($current_user && in_array($current_user['role'], ['teacher', '老師'])) {
     }
 }
 
+// 獲取所有可用的科系列表
+$departments = [];
+if ($current_user && in_array($current_user['role'], ['teacher', '老師'])) {
+    try {
+        $stmt = $pdo->prepare("SELECT course_name FROM admission_courses WHERE is_active = 1 ORDER BY sort_order, course_name");
+        $stmt->execute();
+        $departments = $stmt->fetchAll(PDO::FETCH_COLUMN);
+    } catch (PDOException $e) {
+        // 如果 admission_courses 表不存在，優雅地忽略，讓下拉選單為空
+    }
+}
+
 $page_title = '個人資料';
 ?>
 <!DOCTYPE html>
@@ -175,7 +187,18 @@ $page_title = '個人資料';
                                 <?php if (in_array($current_user['role'], ['teacher', '老師'])): ?>
                                 <div class="form-group">
                                     <label for="department">科系</label>
-                                    <input type="text" id="department" name="department" class="form-control" value="<?php echo htmlspecialchars($current_user['department'] ?? ''); ?>" readonly required>
+                                    <select id="department" name="department" class="form-control" disabled required>
+                                        <option value="">請選擇科系</option>
+                                        <?php foreach ($departments as $dept_name): ?>
+                                            <option value="<?php echo htmlspecialchars($dept_name); ?>" <?php echo (isset($current_user['department']) && $current_user['department'] === $dept_name) ? 'selected' : ''; ?>>
+                                                <?php echo htmlspecialchars($dept_name); ?>
+                                            </option>
+                                        <?php endforeach; ?>
+                                        <?php // 如果老師目前的科系不在標準列表中，也將其作為一個選項加入，以確保能正確顯示
+                                        if (isset($current_user['department']) && !empty($current_user['department']) && !in_array($current_user['department'], $departments)): ?>
+                                            <option value="<?php echo htmlspecialchars($current_user['department']); ?>" selected><?php echo htmlspecialchars($current_user['department']); ?> (目前)</option>
+                                        <?php endif; ?>
+                                    </select>
                                 </div>
                                 <div class="form-group">
                                     <label for="phone">聯絡電話</label>
@@ -213,10 +236,10 @@ $page_title = '個人資料';
         };
 
         function enterEditMode() {
-            nameInput.readOnly = false;
-            emailInput.readOnly = false;
-            if (departmentInput) departmentInput.readOnly = false;
-            if (phoneInput) phoneInput.readOnly = false;
+            nameInput.removeAttribute('readonly');
+            emailInput.removeAttribute('readonly');
+            if (departmentInput) departmentInput.disabled = false;
+            if (phoneInput) phoneInput.removeAttribute('readonly');
 
             formActions.style.display = 'flex';
             editBtn.style.display = 'none';
@@ -224,16 +247,16 @@ $page_title = '個人資料';
         }
 
         function exitEditMode() {
-            nameInput.readOnly = true;
-            emailInput.readOnly = true;
+            nameInput.setAttribute('readonly', true);
+            emailInput.setAttribute('readonly', true);
             nameInput.value = originalValues.name;
             emailInput.value = originalValues.email;
             if (departmentInput) {
-                departmentInput.readOnly = true;
+                departmentInput.disabled = true;
                 departmentInput.value = originalValues.department;
             }
             if (phoneInput) {
-                phoneInput.readOnly = true;
+                phoneInput.setAttribute('readonly', true);
                 phoneInput.value = originalValues.phone;
             }
             formActions.style.display = 'none';

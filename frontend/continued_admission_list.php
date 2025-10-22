@@ -374,11 +374,3 @@ function getStatusClass($status) {
     </script>
 </body>
 </html>
-
-```
-
-### 2. 新增續招報名詳情頁面
-
-為了顯示包含上傳文件在內的完整資訊，我將再為您建立一個詳細資料頁 `d:\Topics\Topics-backend\frontend\continued_admission_detail.php`。
-
-```diff

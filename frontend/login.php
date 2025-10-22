@@ -27,39 +27,39 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         $stmt->execute([$username]);
         $user = $stmt->fetch(PDO::FETCH_ASSOC);
 
-        // 驗證密碼 (注意：這裡假設密碼是明文儲存，強烈建議未來改用 password_hash 和 password_verify)
-        if ($user && $password === $user['password'] && $user['role'] !== 'student' && $user['role'] !== '學生') {
-            // 登入成功，但需檢查帳號是否啟用
-            if ($user['status'] == 1) {
-                // 根據角色設定 Session
-                $_SESSION['admin_logged_in'] = true; // 保持登入狀態
-                $_SESSION['user_id'] = $user['id'];
-                $_SESSION['username'] = $user['username'];
-                $_SESSION['role'] = $user['role']; // 儲存角色
-                $_SESSION['name'] = $user['name']; // 儲存使用者姓名
-
-                // 根據角色跳轉到不同頁面
-                switch ($user['role']) {
-                    case 'admin':
-                    case '招生中心': // 假設 '招生中心' 也是管理員角色
-                        header("Location: index.php");
-                        break;
-                    case 'teacher':
-                        // 如果老師有特定的儀表板，可以跳轉到那裡
-                        header("Location: activity_records.php");
-                        break;
-                    default:
-                        // 其他角色預設跳轉到首頁
-                        header("Location: index.php");
-                        break;
-                }
-                exit;
-            }
-            // 如果帳號被停用，則顯示停用訊息
-            $error_message = "您的帳號已被停用，請聯繫管理員。";
-        } else {
-            // 帳號密碼錯誤，或使用者為學生，都顯示相同的錯誤訊息
+        // 1. 驗證使用者是否存在及密碼是否正確
+        // (注意：這裡假設密碼是明文儲存，強烈建議未來改用 password_hash 和 password_verify)
+        if (!$user || $password !== $user['password']) {
             $error_message = "帳號或密碼錯誤。";
+        }
+        // 2. 檢查帳號狀態是否被停用
+        elseif ($user['status'] != 1) {
+            $error_message = "您的帳號已被停用，請聯繫管理員。";
+        }
+        // 3. 檢查角色是否允許登入後台 (學生不允許)
+        elseif ($user['role'] === 'student' || $user['role'] === '學生') {
+            $error_message = "帳號或密碼錯誤。"; // 對學生顯示一樣的錯誤訊息，避免透露帳號存在
+        }
+        // 4. 登入成功
+        else {
+            // 根據角色設定 Session
+            $_SESSION['admin_logged_in'] = true; // 保持登入狀態
+            $_SESSION['user_id'] = $user['id'];
+            $_SESSION['username'] = $user['username'];
+            $_SESSION['role'] = $user['role']; // 儲存角色
+            $_SESSION['name'] = $user['name']; // 儲存使用者姓名
+
+            // 根據角色跳轉到不同頁面
+            switch ($user['role']) {
+                case 'admin':
+                case '招生中心': // 假設 '招生中心' 也是管理員角色
+                    header("Location: index.php");
+                    break;
+                case 'teacher':
+                    header("Location: activity_records.php");
+                    break;
+            }
+            exit;
         }
     } catch (PDOException $e) {
         $error_message = "資料庫連接失敗: " . $e->getMessage();
