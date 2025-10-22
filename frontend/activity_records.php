@@ -13,6 +13,17 @@ require_once '../../Topics-frontend/frontend/config.php';
 // 設置頁面標題
 $page_title = '教師活動紀錄管理';
 
+// 檢查用戶權限和部門
+$current_user = isset($_SESSION['username']) ? $_SESSION['username'] : '';
+$user_department = '';
+$department_filter = '';
+
+// 如果是 IMD 帳號，只能查看資管科的資料
+if ($current_user === 'IMD') {
+    $user_department = '資訊管理科';
+    $department_filter = " AND (t.department = '資訊管理科' OR t.department LIKE '%資管%')";
+}
+
 // 建立資料庫連接
 $conn = getDatabaseConnection();
     
@@ -62,7 +73,7 @@ if ($teacher_id > 0) {
     $records_sql = "SELECT ar.*, t.name AS teacher_name, t.department AS teacher_department
                     FROM activity_records ar
                     LEFT JOIN teacher t ON ar.teacher_id = t.user_id
-                    WHERE ar.teacher_id = ?
+                    WHERE ar.teacher_id = ? $department_filter
                     ORDER BY ar.activity_date DESC, ar.id DESC";
     $stmt = $conn->prepare($records_sql);
     $stmt->bind_param("i", $teacher_id);
@@ -82,6 +93,7 @@ if ($teacher_id > 0) {
     $teachers_sql = "SELECT t.user_id, t.name AS teacher_name, t.department AS teacher_department, COUNT(ar.id) AS record_count
                      FROM teacher t
                      JOIN activity_records ar ON t.user_id = ar.teacher_id
+                     WHERE 1=1 $department_filter
                      GROUP BY t.user_id, t.name, t.department
                      ORDER BY record_count DESC, t.name ASC";
     $result = $conn->query($teachers_sql);
@@ -91,6 +103,7 @@ if ($teacher_id > 0) {
     $all_records_sql = "SELECT ar.*, t.name AS teacher_name, t.department AS teacher_department
                         FROM activity_records ar
                         LEFT JOIN teacher t ON ar.teacher_id = t.user_id
+                        WHERE 1=1 $department_filter
                         ORDER BY ar.activity_date DESC, ar.id DESC";
     $all_records_result = $conn->query($all_records_sql);
     if ($all_records_result) {
@@ -653,10 +666,25 @@ $conn->close();
     // 將 PHP 數據傳遞給 JavaScript
     const activityRecords = <?php echo json_encode($all_activity_records ?? []); ?>;
     const isTeacherListView = <?php echo $teacher_id > 0 ? 'false' : 'true'; ?>;
+    const userDepartment = '<?php echo $user_department; ?>';
+    const currentUser = '<?php echo $current_user; ?>';
 
     // 調試信息
     console.log('PHP 傳遞的數據:', activityRecords);
     console.log('數據長度:', activityRecords.length);
+    console.log('當前用戶:', currentUser);
+    console.log('用戶部門:', userDepartment);
+    
+    // ========== 輔助函數 ==========
+    
+    // 構建 API URL，如果用戶有部門限制則添加參數
+    function buildApiUrl(baseUrl, action) {
+        let url = `${baseUrl}?action=${action}`;
+        if (userDepartment) {
+            url += `&department=${encodeURIComponent(userDepartment)}`;
+        }
+        return url;
+    }
     
     // ========== 簡化版測試函數 ==========
     
@@ -1187,7 +1215,7 @@ $conn->close();
         console.log('showEnrollmentDepartmentStats 被調用');
         
         // 從API獲取就讀意願數據
-        fetch('../../Topics-frontend/frontend/api/enrollment_stats_api.php?action=department')
+        fetch(buildApiUrl('../../Topics-frontend/frontend/api/enrollment_stats_api.php', 'department'))
             .then(response => response.json())
             .then(data => {
                 if (data.error) {
@@ -1301,7 +1329,7 @@ $conn->close();
         console.log('showEnrollmentSystemStats 被調用');
         
         // 從API獲取學制分布數據
-        fetch('../../Topics-frontend/frontend/api/enrollment_stats_api.php?action=system')
+        fetch(buildApiUrl('../../Topics-frontend/frontend/api/enrollment_stats_api.php', 'system'))
             .then(response => response.json())
             .then(data => {
                 if (data.error) {
@@ -1415,7 +1443,7 @@ $conn->close();
         console.log('showEnrollmentGradeStats 被調用');
         
         // 從API獲取年級分布數據
-        fetch('../../Topics-frontend/frontend/api/enrollment_stats_api.php?action=grade')
+        fetch(buildApiUrl('../../Topics-frontend/frontend/api/enrollment_stats_api.php', 'grade'))
             .then(response => response.json())
             .then(data => {
                 if (data.error) {
@@ -1519,7 +1547,7 @@ $conn->close();
         console.log('showEnrollmentGenderStats 被調用');
         
         // 從API獲取性別分布數據
-        fetch('../../Topics-frontend/frontend/api/enrollment_stats_api.php?action=gender')
+        fetch(buildApiUrl('../../Topics-frontend/frontend/api/enrollment_stats_api.php', 'gender'))
             .then(response => response.json())
             .then(data => {
                 if (data.error) {
@@ -1631,7 +1659,7 @@ $conn->close();
         console.log('showEnrollmentIdentityStats 被調用');
         
         // 從API獲取身分別分布數據
-        fetch('../../Topics-frontend/frontend/api/enrollment_stats_api.php?action=identity')
+        fetch(buildApiUrl('../../Topics-frontend/frontend/api/enrollment_stats_api.php', 'identity'))
             .then(response => response.json())
             .then(data => {
                 if (data.error) {
@@ -1745,7 +1773,7 @@ $conn->close();
         console.log('showEnrollmentMonthlyStats 被調用');
         
         // 從API獲取月度趨勢數據
-        fetch('../../Topics-frontend/frontend/api/enrollment_stats_api.php?action=monthly')
+        fetch(buildApiUrl('../../Topics-frontend/frontend/api/enrollment_stats_api.php', 'monthly'))
             .then(response => response.json())
             .then(data => {
                 if (data.error) {
@@ -1879,7 +1907,7 @@ $conn->close();
     function showContinuedAdmissionGenderStats() {
         console.log('showContinuedAdmissionGenderStats 被調用');
         
-        fetch('../../Topics-frontend/frontend/api/continued_admission_stats_api.php?action=gender')
+        fetch(buildApiUrl('../../Topics-frontend/frontend/api/continued_admission_stats_api.php', 'gender'))
             .then(response => response.json())
             .then(data => {
                 if (data.error) {
@@ -1991,7 +2019,7 @@ $conn->close();
     function showContinuedAdmissionCityStats() {
         console.log('showContinuedAdmissionCityStats 被調用');
         
-        fetch('../../Topics-frontend/frontend/api/continued_admission_stats_api.php?action=school_city')
+        fetch(buildApiUrl('../../Topics-frontend/frontend/api/continued_admission_stats_api.php', 'school_city'))
             .then(response => response.json())
             .then(data => {
                 if (data.error) {
@@ -2095,7 +2123,7 @@ $conn->close();
     function showContinuedAdmissionChoicesStats() {
         console.log('showContinuedAdmissionChoicesStats 被調用');
         
-        fetch('../../Topics-frontend/frontend/api/continued_admission_stats_api.php?action=choices')
+        fetch(buildApiUrl('../../Topics-frontend/frontend/api/continued_admission_stats_api.php', 'choices'))
             .then(response => response.json())
             .then(data => {
                 if (data.error) {
@@ -2209,7 +2237,7 @@ $conn->close();
     function showContinuedAdmissionMonthlyStats() {
         console.log('showContinuedAdmissionMonthlyStats 被調用');
         
-        fetch('../../Topics-frontend/frontend/api/continued_admission_stats_api.php?action=monthly')
+        fetch(buildApiUrl('../../Topics-frontend/frontend/api/continued_admission_stats_api.php', 'monthly'))
             .then(response => response.json())
             .then(data => {
                 if (data.error) {
@@ -2319,7 +2347,7 @@ $conn->close();
     function showContinuedAdmissionStatusStats() {
         console.log('showContinuedAdmissionStatusStats 被調用');
         
-        fetch('../../Topics-frontend/frontend/api/continued_admission_stats_api.php?action=status')
+        fetch(buildApiUrl('../../Topics-frontend/frontend/api/continued_admission_stats_api.php', 'status'))
             .then(response => response.json())
             .then(data => {
                 if (data.error) {
@@ -2454,7 +2482,7 @@ $conn->close();
     function showAdmissionGradeStats() {
         console.log('showAdmissionGradeStats 被調用');
         
-        fetch('../../Topics-frontend/frontend/api/admission_stats_api.php?action=grade')
+        fetch(buildApiUrl('../../Topics-frontend/frontend/api/admission_stats_api.php', 'grade'))
             .then(response => response.json())
             .then(data => {
                 if (data.error) {
@@ -2558,7 +2586,7 @@ $conn->close();
     function showAdmissionSchoolStats() {
         console.log('showAdmissionSchoolStats 被調用');
         
-        fetch('../../Topics-frontend/frontend/api/admission_stats_api.php?action=school')
+        fetch(buildApiUrl('../../Topics-frontend/frontend/api/admission_stats_api.php', 'school'))
             .then(response => response.json())
             .then(data => {
                 if (data.error) {
@@ -2662,7 +2690,7 @@ $conn->close();
     function showAdmissionSessionStats() {
         console.log('showAdmissionSessionStats 被調用');
         
-        fetch('../../Topics-frontend/frontend/api/admission_stats_api.php?action=session')
+        fetch(buildApiUrl('../../Topics-frontend/frontend/api/admission_stats_api.php', 'session'))
             .then(response => response.json())
             .then(data => {
                 if (data.error) {
@@ -2776,7 +2804,7 @@ $conn->close();
     function showAdmissionCourseStats() {
         console.log('showAdmissionCourseStats 被調用');
         
-        fetch('../../Topics-frontend/frontend/api/admission_stats_api.php?action=course')
+        fetch(buildApiUrl('../../Topics-frontend/frontend/api/admission_stats_api.php', 'course'))
             .then(response => response.json())
             .then(data => {
                 if (data.error) {
@@ -2894,7 +2922,7 @@ $conn->close();
     function showAdmissionMonthlyStats() {
         console.log('showAdmissionMonthlyStats 被調用');
         
-        fetch('../../Topics-frontend/frontend/api/admission_stats_api.php?action=monthly')
+        fetch(buildApiUrl('../../Topics-frontend/frontend/api/admission_stats_api.php', 'monthly'))
             .then(response => response.json())
             .then(data => {
                 if (data.error) {
@@ -3004,7 +3032,7 @@ $conn->close();
     function showAdmissionReceiveInfoStats() {
         console.log('showAdmissionReceiveInfoStats 被調用');
         
-        fetch('../../Topics-frontend/frontend/api/admission_stats_api.php?action=receive_info')
+        fetch(buildApiUrl('../../Topics-frontend/frontend/api/admission_stats_api.php', 'receive_info'))
             .then(response => response.json())
             .then(data => {
                 if (data.error) {
