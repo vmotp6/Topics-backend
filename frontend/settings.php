@@ -141,22 +141,39 @@ $conn->close();
         .card { background: var(--card-background-color); border-radius: 8px; box-shadow: 0 1px 2px rgba(0,0,0,0.03); border: 1px solid var(--border-color); margin-bottom: 24px; }
         .card-header { padding: 16px 24px; border-bottom: 1px solid var(--border-color); display: flex; justify-content: space-between; align-items: center; background: #fafafa; }
         .card-header h3 { font-size: 18px; font-weight: 600; color: var(--text-color); }
-        .card-body { padding: 24px; }
+        .card-body {
+            padding: 0; /* 移除內邊距 */
+            overflow-x: auto; /* 將水平捲動功能移到這裡 */
+        }
 
         .table-container { overflow-x: auto; }
         .table { width: 100%; border-collapse: collapse; }
-        .table th, .table td { padding: 16px; text-align: left; border-bottom: 1px solid var(--border-color); }
-        .table th { background: #fafafa; font-weight: 600; }
+        .table th, .table td { padding: 16px 24px; text-align: left; border-bottom: 1px solid var(--border-color); font-size: 16px; }
+        .table th { background: #fafafa; font-weight: 600; color: #262626; }
+        .table td { color: #595959; }
         .table tr:hover { background: #fafafa; }
+        .table a.btn { text-decoration: none; }
 
-        .btn { padding: 8px 16px; border: 1px solid #d9d9d9; border-radius: 6px; cursor: pointer; font-size: 14px; transition: all 0.3s; background: #fff; text-decoration: none; display: inline-flex; align-items: center; gap: 6px; }
+        .btn { padding: 8px 16px; border: 1px solid #d9d9d9; border-radius: 6px; cursor: pointer; font-size: 14px; transition: all 0.3s; background: #fff; text-decoration: none; display: inline-flex; align-items: center; justify-content: center; gap: 6px; }
         .btn-primary { background: var(--primary-color); color: white; border-color: var(--primary-color); }
         .btn-primary:hover { background: #40a9ff; border-color: #40a9ff; }
-        .btn-danger { background: var(--danger-color); color: white; border-color: var(--danger-color); }
-        .btn-danger:hover { background: #ff7875; border-color: #ff7875; }
-        .btn-info { background: #17a2b8; color: white; border-color: #17a2b8; }
-        .btn-info:hover { background: #138496; border-color: #117a8b; }
-        .btn-sm { padding: 4px 10px; font-size: 12px; }
+
+        /* 表格內操作按鈕樣式 (與 users.php 統一) */
+        .action-buttons { display: flex; gap: 8px; }
+        .btn-action {
+            padding: 4px 12px; border-radius: 4px; font-size: 14px;
+            text-decoration: none; display: inline-block; transition: all 0.3s;
+            background: #fff;
+        }
+        .btn-edit { color: var(--success-color); border: 1px solid var(--success-color); }
+        .btn-edit:hover { background: var(--success-color); color: white; }
+        .btn-view-list { color: var(--primary-color); border: 1px solid var(--primary-color); }
+        .btn-view-list:hover { background: var(--primary-color); color: white; }
+        .btn-delete { color: var(--danger-color); border: 1px solid var(--danger-color); }
+        .btn-delete:hover { background: var(--danger-color); color: white; }
+        
+        /* 移除 .btn-sm, .btn-danger, .btn-info 等舊樣式，改用新的 .btn-action 系列 */
+
 
         .form-group { margin-bottom: 20px; }
         .form-label { display: block; margin-bottom: 8px; font-weight: 500; }
@@ -204,12 +221,11 @@ $conn->close();
 
                 <!-- 場次管理 -->
                 <div id="sessions" class="tab-content active">
-                    <div class="card">
-                        <div class="card-header">
-                            <h3>場次列表</h3>
+                    <div class="card" style="border-radius: 0 0 8px 8px; border-top: none;">
+                        <div class="card-header" style="justify-content: flex-end; border-top-left-radius: 0; border-top-right-radius: 0;">
                             <button class="btn btn-primary" onclick="showModal('addSessionModal')"><i class="fas fa-plus"></i> 新增場次</button>
                         </div>
-                        <div class="card-body table-container">
+                        <div class="card-body">                            
                             <table class="table">
                                 <thead>
                                     <tr>
@@ -242,15 +258,16 @@ $conn->close();
                                             }
                                             ?>
                                         </td>
-                                        <td><span class="status-badge <?php echo $item['is_active'] ? 'status-active' : 'status-inactive'; ?>"><?php echo $item['is_active'] ? '啟用' : '停用'; ?></span></td>
-                                        <td>
-                                            <button class="btn btn-sm" onclick='editSession(<?php echo json_encode($item); ?>)'>編輯</button>
-                                            <a href="view_registrations.php?session_id=<?php echo $item['id']; ?>" class="btn btn-info btn-sm">查看名單</a>
+                                        <td><span class="status-badge <?php echo $item['is_active'] ? 'status-active' : 'status-inactive'; ?>"><?php echo $item['is_active'] ? '啟用' : '停用'; ?></span></td>                                        <td>
+                                            <div class="action-buttons">
+                                            <button class="btn-action btn-edit" onclick='editSession(<?php echo json_encode($item); ?>)'>編輯</button>
+                                            <a href="view_registrations.php?session_id=<?php echo $item['id']; ?>" class="btn-action btn-view-list">查看名單</a>
                                             <form method="POST" style="display:inline;" onsubmit="return confirm('確定要刪除此場次嗎？');">
                                                 <input type="hidden" name="action" value="delete_session">
                                                 <input type="hidden" name="session_id" value="<?php echo $item['id']; ?>">
-                                                <button type="submit" class="btn btn-danger btn-sm">刪除</button>
+                                                <button type="submit" class="btn-action btn-delete">刪除</button>
                                             </form>
+                                            </div>
                                         </td>
                                     </tr>
                                     <?php endforeach; ?>
@@ -262,13 +279,11 @@ $conn->close();
 
                 <!-- 課程管理 -->
                 <div id="courses" class="tab-content">
-                    <div class="card">
-                        <div class="card-header">
-                            <h3>體驗課程列表</h3>
+                    <div class="card" style="border-radius: 0 0 8px 8px; border-top: none;">
+                        <div class="card-header" style="justify-content: flex-end; border-top-left-radius: 0; border-top-right-radius: 0;">
                             <button class="btn btn-primary" onclick="showModal('addCourseModal')"><i class="fas fa-plus"></i> 新增課程</button>
                         </div>
-                        <div class="card-body table-container">
-                            <table class="table">
+                        <div class="card-body">                            <table class="table">
                                 <thead>
                                     <tr>
                                         <th>課程名稱</th>
@@ -281,13 +296,14 @@ $conn->close();
                                     <tr>
                                         <td><?php echo htmlspecialchars($item['course_name']); ?></td>
                                         <td><span class="status-badge <?php echo $item['is_active'] ? 'status-active' : 'status-inactive'; ?>"><?php echo $item['is_active'] ? '啟用' : '停用'; ?></span></td>
-                                        <td>
-                                            <button class="btn btn-sm" onclick='editCourse(<?php echo json_encode($item); ?>)'>編輯</button>
+                                        <td>                                            <div class="action-buttons">
+                                            <button class="btn-action btn-edit" onclick='editCourse(<?php echo json_encode($item); ?>)'>編輯</button>
                                             <form method="POST" style="display:inline;" onsubmit="return confirm('確定要刪除此課程嗎？');">
                                                 <input type="hidden" name="action" value="delete_course">
                                                 <input type="hidden" name="course_id" value="<?php echo $item['id']; ?>">
-                                                <button type="submit" class="btn btn-danger btn-sm">刪除</button>
+                                                <button type="submit" class="btn-action btn-delete">刪除</button>
                                             </form>
+                                            </div>
                                         </td>
                                     </tr>
                                     <?php endforeach; ?>
