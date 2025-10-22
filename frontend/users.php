@@ -39,6 +39,14 @@ $page_title = '使用者管理';
             overflow-x: hidden;
         }
         
+        .page-controls {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 16px;
+            gap: 16px;
+        }
+        
         /* 主介面樣式 */
         .dashboard {
             display: flex;
@@ -54,7 +62,7 @@ $page_title = '使用者管理';
         
         /* 麵包屑 */
         .breadcrumb {
-            margin-bottom: 16px;
+            margin-bottom: 0; /* 從 page-controls 控制 */
             font-size: 16px;
             color: #8c8c8c;
         }
@@ -78,18 +86,7 @@ $page_title = '使用者管理';
         }
         
         .table-header {
-            padding: 16px 24px;
-            border-bottom: 1px solid #f0f0f0;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            background: #fafafa;
-        }
-        
-        .table-title {
-            font-size: 18px;
-            font-weight: 600;
-            color: #262626;
+            /* 這個區塊現在是空的，可以移除或保留結構 */
         }
         
         .table-search {
@@ -436,21 +433,19 @@ $page_title = '使用者管理';
             <!-- 內容區域 -->
             <div class="content">
                 <!-- 麵包屑 -->
-                <div class="breadcrumb">
-                    <a href="index.php">首頁</a> / 使用者管理
+                <div class="page-controls">
+                    <div class="breadcrumb">
+                        <a href="index.php">首頁</a> / 使用者管理
+                    </div>
+                    <div class="table-search">
+                        <input type="text" id="tableSearchInput" placeholder="搜尋使用者..." onkeyup="filterTable()">
+                    </div>
                 </div>
                 
                 <div id="messageContainer"></div>
                 
                 <!-- 使用者表格 -->
                 <div class="table-container">
-                    <div class="table-header">
-                        <div class="table-title">使用者列表</div>
-                        <div class="table-search">
-                            <input type="text" id="tableSearchInput" placeholder="搜尋使用者..." onkeyup="filterTable()">
-                        </div>
-                    </div>
-                    
                     <div id="tableContainer">
                         <div class="loading">載入中...</div>
                     </div>

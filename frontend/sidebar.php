@@ -55,7 +55,7 @@ $current_page = basename($_SERVER['PHP_SELF'], '.php');
 <style>
 /* 側邊欄樣式 */
 .sidebar {
-    width: 280px;
+    width: 250px;
     background: #fff;
     color: #262626;
     position: fixed;
@@ -228,7 +228,7 @@ $current_page = basename($_SERVER['PHP_SELF'], '.php');
 /* 主內容區 */
 .main-content {
     flex: 1;
-    margin-left: 280px;
+    margin-left: 250px;
     background: #f0f2f5;
     transition: all 0.3s ease;
 }

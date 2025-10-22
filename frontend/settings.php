@@ -53,34 +53,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                 }
                 break;
 
-            // 年級管理
-            case 'add_grade':
-                $sql = "INSERT INTO admission_grades (grade_name, is_active, sort_order) VALUES (?, 1, 0)";
-                $stmt = $conn->prepare($sql);
-                $stmt->bind_param("s", $_POST['grade_name']);
-                if ($stmt->execute()) {
-                    $message = "年級新增成功！"; $messageType = "success";
-                }
-                break;
-
-            case 'update_grade':
-                $sql = "UPDATE admission_grades SET grade_name = ?, is_active = ? WHERE id = ?";
-                $stmt = $conn->prepare($sql);
-                $stmt->bind_param("sii", $_POST['grade_name'], $_POST['is_active'], $_POST['grade_id']);
-                if ($stmt->execute()) {
-                    $message = "年級更新成功！"; $messageType = "success";
-                }
-                break;
-
-            case 'delete_grade':
-                $sql = "DELETE FROM admission_grades WHERE id = ?";
-                $stmt = $conn->prepare($sql);
-                $stmt->bind_param("i", $_POST['grade_id']);
-                if ($stmt->execute()) {
-                    $message = "年級刪除成功！"; $messageType = "success";
-                }
-                break;
-
             // 課程管理
             case 'add_course':
                 $sql = "INSERT INTO admission_courses (course_name, is_active, sort_order) VALUES (?, 1, 0)";
@@ -126,8 +98,7 @@ $sessions_sql = "
            (s.max_participants - COUNT(a.id)) as remaining_slots
     FROM admission_sessions s
     LEFT JOIN admission_applications a ON s.id = a.session_id GROUP BY s.id ORDER BY s.session_date DESC";
-$sessions = $conn->query($sessions_sql)->fetch_all(MYSQLI_ASSOC);
-$grades = $conn->query("SELECT * FROM admission_grades ORDER BY sort_order, id")->fetch_all(MYSQLI_ASSOC);
+$sessions = $conn->query($sessions_sql)->fetch_all(MYSQLI_ASSOC);;
 $courses = $conn->query("SELECT * FROM admission_courses ORDER BY sort_order, id")->fetch_all(MYSQLI_ASSOC);
 
 $conn->close();
@@ -228,7 +199,6 @@ $conn->close();
 
                 <div class="tabs">
                     <button class="tab active" onclick="switchTab('sessions')"><i class="fas fa-calendar-alt"></i> 說明會場次</button>
-                    <button class="tab" onclick="switchTab('grades')"><i class="fas fa-layer-group"></i> 年級選項</button>
                     <button class="tab" onclick="switchTab('courses')"><i class="fas fa-book-open"></i> 體驗課程</button>
                 </div>
 
@@ -279,43 +249,6 @@ $conn->close();
                                             <form method="POST" style="display:inline;" onsubmit="return confirm('確定要刪除此場次嗎？');">
                                                 <input type="hidden" name="action" value="delete_session">
                                                 <input type="hidden" name="session_id" value="<?php echo $item['id']; ?>">
-                                                <button type="submit" class="btn btn-danger btn-sm">刪除</button>
-                                            </form>
-                                        </td>
-                                    </tr>
-                                    <?php endforeach; ?>
-                                </tbody>
-                            </table>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- 年級管理 -->
-                <div id="grades" class="tab-content">
-                    <div class="card">
-                        <div class="card-header">
-                            <h3>年級選項列表</h3>
-                            <button class="btn btn-primary" onclick="showModal('addGradeModal')"><i class="fas fa-plus"></i> 新增年級</button>
-                        </div>
-                        <div class="card-body table-container">
-                            <table class="table">
-                                <thead>
-                                    <tr>
-                                        <th>年級名稱</th>
-                                        <th>狀態</th>
-                                        <th>操作</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    <?php foreach ($grades as $item): ?>
-                                    <tr>
-                                        <td><?php echo htmlspecialchars($item['grade_name']); ?></td>
-                                        <td><span class="status-badge <?php echo $item['is_active'] ? 'status-active' : 'status-inactive'; ?>"><?php echo $item['is_active'] ? '啟用' : '停用'; ?></span></td>
-                                        <td>
-                                            <button class="btn btn-sm" onclick='editGrade(<?php echo json_encode($item); ?>)'>編輯</button>
-                                            <form method="POST" style="display:inline;" onsubmit="return confirm('確定要刪除此年級嗎？');">
-                                                <input type="hidden" name="action" value="delete_grade">
-                                                <input type="hidden" name="grade_id" value="<?php echo $item['id']; ?>">
                                                 <button type="submit" class="btn btn-danger btn-sm">刪除</button>
                                             </form>
                                         </td>
@@ -463,60 +396,6 @@ $conn->close();
         </div>
     </div>
 
-    <!-- 新增年級 Modal -->
-    <div id="addGradeModal" class="modal">
-        <div class="modal-content">
-            <div class="modal-header">
-                <h3 class="modal-title">新增年級</h3>
-                <span class="close" onclick="closeModal('addGradeModal')">&times;</span>
-            </div>
-            <form method="POST">
-                <input type="hidden" name="action" value="add_grade">
-                <div class="modal-body">
-                    <div class="form-group">
-                        <label class="form-label">年級名稱 *</label>
-                        <input type="text" name="grade_name" class="form-control" required>
-                    </div>
-                </div>
-                <div class="modal-footer">
-                    <button type="button" class="btn" onclick="closeModal('addGradeModal')">取消</button>
-                    <button type="submit" class="btn btn-primary">新增</button>
-                </div>
-            </form>
-        </div>
-    </div>
-
-    <!-- 編輯年級 Modal -->
-    <div id="editGradeModal" class="modal">
-        <div class="modal-content">
-            <div class="modal-header">
-                <h3 class="modal-title">編輯年級</h3>
-                <span class="close" onclick="closeModal('editGradeModal')">&times;</span>
-            </div>
-            <form method="POST">
-                <input type="hidden" name="action" value="update_grade">
-                <input type="hidden" name="grade_id" id="edit_grade_id">
-                <div class="modal-body">
-                    <div class="form-group">
-                        <label class="form-label">年級名稱 *</label>
-                        <input type="text" name="grade_name" id="edit_grade_name" class="form-control" required>
-                    </div>
-                    <div class="form-group">
-                        <label class="form-label">狀態 *</label>
-                        <select name="is_active" id="edit_grade_is_active" class="form-control" required>
-                            <option value="1">啟用</option>
-                            <option value="0">停用</option>
-                        </select>
-                    </div>
-                </div>
-                <div class="modal-footer">
-                    <button type="button" class="btn" onclick="closeModal('editGradeModal')">取消</button>
-                    <button type="submit" class="btn btn-primary">儲存</button>
-                </div>
-            </form>
-        </div>
-    </div>
-
     <!-- 新增課程 Modal -->
     <div id="addCourseModal" class="modal">
         <div class="modal-content">
@@ -605,13 +484,6 @@ $conn->close();
             document.getElementById('edit_description').value = item.description;
             document.getElementById('edit_session_is_active').value = item.is_active;
             showModal('editSessionModal');
-        }
-
-        function editGrade(item) {
-            document.getElementById('edit_grade_id').value = item.id;
-            document.getElementById('edit_grade_name').value = item.grade_name;
-            document.getElementById('edit_grade_is_active').value = item.is_active;
-            showModal('editGradeModal');
         }
 
         function editCourse(item) {

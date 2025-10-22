@@ -196,17 +196,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             <div class="message error"><?php echo $error_message; ?></div>
         <?php endif; ?>
         
-        <form method="POST">
+        <form method="POST" autocomplete="on">
             <input type="hidden" name="action" value="login">
             
             <div class="form-group">
                 <label for="username">帳號</label>
-                <input type="text" id="username" name="username" required>
+                <input type="text" id="username" name="username" autocomplete="username" required>
             </div>
             
             <div class="form-group">
                 <label for="password">密碼</label>
-                <input type="password" id="password" name="password" required>
+                <input type="password" id="password" name="password" autocomplete="current-password" required>
             </div>
             
             <button type="submit" class="btn-login">登入系統</button>
