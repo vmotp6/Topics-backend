@@ -71,7 +71,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Topics 後台管理系統 - 登入</title>
+    <title>招生平台 後台系統 - 登入</title>
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
     <style>
         * {
@@ -188,7 +188,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
 </head>
 <body>
     <div class="login-container">
-        <div class="login-logo">Topics</div>
+        <div class="login-logo">招生平台</div>
         <div class="login-subtitle">後台管理系統</div>
         
         <?php if (isset($error_message)): ?>
@@ -199,12 +199,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             <input type="hidden" name="action" value="login">
             
             <div class="form-group">
-                <label for="username">管理員帳號</label>
+                <label for="username">帳號</label>
                 <input type="text" id="username" name="username" required>
             </div>
             
             <div class="form-group">
-                <label for="password">管理員密碼</label>
+                <label for="password">密碼</label>
                 <input type="password" id="password" name="password" required>
             </div>
             
@@ -212,8 +212,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         </form>
         
         <div class="login-info">
-            預設管理員帳號：a<br>
-            預設管理員密碼：a
+            如忘記密碼請洽管理員
         </div>
     </div>
 </body>
