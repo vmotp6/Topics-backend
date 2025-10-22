@@ -17,7 +17,7 @@ $page_title = '就讀意願名單';
 $conn = getDatabaseConnection();
 
 // 獲取所有報名資料
-$stmt = $conn->prepare("SELECT * FROM enrollment_applications ORDER BY created_at DESC");
+$stmt = $conn->prepare("SELECT * FROM enrollment_intention ORDER BY created_at DESC");
 $stmt->execute();
 $result = $stmt->get_result();
 $enrollments = $result->fetch_all(MYSQLI_ASSOC);
@@ -43,21 +43,40 @@ $conn->close();
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; background: var(--background-color); color: var(--text-color); overflow-x: hidden; }
         .dashboard { display: flex; min-height: 100vh; }
-        .content { padding: 24px; }
-        .breadcrumb { margin-bottom: 16px; font-size: 16px; color: var(--text-secondary-color); }
+        .main-content {
+            /* 防止內部過寬的元素撐開主內容區，影響 header */
+            overflow-x: hidden;
+        }
+        .content { padding: 24px; width: 100%; }
+
+        .page-controls { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; gap: 16px; }
+        .breadcrumb { margin-bottom: 0; font-size: 16px; color: var(--text-secondary-color); }
         .breadcrumb a { color: var(--primary-color); text-decoration: none; }
         .breadcrumb a:hover { text-decoration: underline; }
         
-        .card { background: var(--card-background-color); border-radius: 8px; box-shadow: 0 1px 2px rgba(0,0,0,0.03); border: 1px solid var(--border-color); margin-bottom: 24px; }
-        .card-header { padding: 16px 24px; border-bottom: 1px solid var(--border-color); display: flex; justify-content: space-between; align-items: center; background: #fafafa; }
-        .card-header h3 { font-size: 18px; font-weight: 600; color: var(--text-color); }
-        .card-body { padding: 24px; }
+        .table-wrapper {
+            background: var(--card-background-color);
+            border-radius: 8px;
+            box-shadow: 0 1px 2px rgba(0,0,0,0.03);
+            border: 1px solid var(--border-color);
+            margin-bottom: 24px;
+            /* overflow: hidden; */ /* 移除此行以允許內部容器的捲軸顯示 */
+        }
 
-        .table-container { overflow-x: auto; }
+        .table-container {
+            overflow-x: auto;
+        }
         .table { width: 100%; border-collapse: collapse; }
-        .table th, .table td { padding: 16px; text-align: left; border-bottom: 1px solid var(--border-color); font-size: 14px; white-space: nowrap; }
-        .table th { background: #fafafa; font-weight: 600; cursor: pointer; user-select: none; }
-        .table th .sort-icon { margin-left: 4px; color: var(--text-secondary-color); }
+        .table th, .table td { padding: 16px 24px; text-align: left; border-bottom: 1px solid var(--border-color); font-size: 16px; white-space: nowrap; }
+        .table th { background: #fafafa; font-weight: 600; color: #262626; cursor: pointer; user-select: none; position: relative; }
+        .table td {
+            color: #595959; /* 與 users.php 統一表格內文顏色 */
+        }
+        .table th:hover { background: #f0f0f0; }
+        .sort-icon { margin-left: 8px; font-size: 12px; color: #8c8c8c; }
+        .sort-icon.active { color: #1890ff; }
+        .sort-icon.asc::after { content: "↑"; }
+        .sort-icon.desc::after { content: "↓"; }
         .table tr:hover { background: #fafafa; }
 
         .search-input {
@@ -66,6 +85,12 @@ $conn->close();
             border-radius: 6px;
             font-size: 14px;
             width: 250px;
+            transition: all 0.3s;
+        }
+        .search-input:focus {
+            outline: none;
+            border-color: #1890ff;
+            box-shadow: 0 0 0 2px rgba(24,144,255,0.2);
         }
 
         .empty-state { text-align: center; padding: 40px; color: var(--text-secondary-color); }
@@ -77,16 +102,17 @@ $conn->close();
         <div class="main-content" id="mainContent">
             <?php include 'header.php'; ?>
             <div class="content">
-                <div class="breadcrumb">
-                    <a href="index.php">首頁</a> / <?php echo $page_title; ?>
-                </div>
-
-                <div class="card">
-                    <div class="card-header">
-                        <h3><?php echo $page_title; ?> (共 <?php echo count($enrollments); ?> 筆)</h3>
+                <div class="page-controls">
+                    <div class="breadcrumb">
+                        <a href="index.php">首頁</a> / <?php echo $page_title; ?>
+                    </div>
+                    <div class="table-search">
                         <input type="text" id="searchInput" class="search-input" placeholder="搜尋姓名或電話...">
                     </div>
-                    <div class="card-body table-container">
+                </div>
+
+                <div class="table-wrapper">
+                    <div class="table-container">
                         <?php if (empty($enrollments)): ?>
                             <div class="empty-state">
                                 <i class="fas fa-inbox fa-3x" style="margin-bottom: 16px;"></i>
@@ -96,17 +122,22 @@ $conn->close();
                             <table class="table" id="enrollmentTable">
                                 <thead>
                                     <tr>
-                                        <th>姓名</th>
-                                        <th>身分別</th>
-                                        <th>聯絡電話</th>
-                                        <th>Email</th>
-                                        <th>就讀學校</th>
-                                        <th>年級</th>
-                                        <th>意願一</th>
-                                        <th>意願二</th>
-                                        <th>意願三</th>
-                                        <th>推薦老師</th>
-                                        <th>填寫日期</th>
+                                        <th onclick="sortTable(0)">姓名</th>
+                                        <th onclick="sortTable(1)">身分別</th>
+                                        <th onclick="sortTable(2)">性別</th>
+                                        <th onclick="sortTable(3)">聯絡電話一</th>
+                                        <th onclick="sortTable(4)">聯絡電話二</th>
+                                        <th onclick="sortTable(5)">Email</th>
+                                        <th onclick="sortTable(6)">就讀學校</th>
+                                        <th onclick="sortTable(7)">年級</th>
+                                        <th onclick="sortTable(8)">意願一 (學制)</th>
+                                        <th onclick="sortTable(9)">意願二 (學制)</th>
+                                        <th onclick="sortTable(10)">意願三 (學制)</th>
+                                        <th onclick="sortTable(11)">Line ID</th>
+                                        <th onclick="sortTable(12)">Facebook</th>
+                                        <th onclick="sortTable(13)">備註</th>
+                                        <th onclick="sortTable(14)">狀態</th>
+                                        <th onclick="sortTable(15, 'date')">填寫日期</th>
                                     </tr>
                                 </thead>
                                 <tbody>
@@ -114,14 +145,19 @@ $conn->close();
                                     <tr>
                                         <td><?php echo htmlspecialchars($item['name']); ?></td>
                                         <td><?php echo htmlspecialchars($item['identity']); ?></td>
+                                        <td><?php echo htmlspecialchars($item['gender'] ?? '未提供'); ?></td>
                                         <td><?php echo htmlspecialchars($item['phone1']); ?></td>
+                                        <td><?php echo htmlspecialchars($item['phone2'] ?? '無'); ?></td>
                                         <td><?php echo htmlspecialchars($item['email']); ?></td>
                                         <td><?php echo htmlspecialchars($item['junior_high']); ?></td>
                                         <td><?php echo htmlspecialchars($item['current_grade']); ?></td>
-                                        <td><?php echo htmlspecialchars($item['intention1']); ?></td>
-                                        <td><?php echo htmlspecialchars($item['intention2']); ?></td>
-                                        <td><?php echo htmlspecialchars($item['intention3']); ?></td>
-                                        <td><?php echo htmlspecialchars($item['recommended_teacher']); ?></td>
+                                        <td><?php echo htmlspecialchars($item['intention1'] . ' (' . ($item['system1'] ?? 'N/A') . ')'); ?></td>
+                                        <td><?php echo htmlspecialchars($item['intention2'] . ' (' . ($item['system2'] ?? 'N/A') . ')'); ?></td>
+                                        <td><?php echo htmlspecialchars($item['intention3'] . ' (' . ($item['system3'] ?? 'N/A') . ')'); ?></td>
+                                        <td><?php echo htmlspecialchars($item['line_id'] ?? '無'); ?></td>
+                                        <td><?php echo htmlspecialchars($item['facebook'] ?? '無'); ?></td>
+                                        <td><?php echo htmlspecialchars($item['remarks'] ?? '無'); ?></td>
+                                        <td><?php echo htmlspecialchars($item['status'] ?? 'pending'); ?></td>
                                         <td><?php echo date('Y/m/d H:i', strtotime($item['created_at'])); ?></td>
                                     </tr>
                                     <?php endforeach; ?>
@@ -136,6 +172,8 @@ $conn->close();
 
     <script>
     document.addEventListener('DOMContentLoaded', function() {
+        let sortStates = {}; // { colIndex: 'asc' | 'desc' }
+
         const searchInput = document.getElementById('searchInput');
         const table = document.getElementById('enrollmentTable');
         const rows = table ? table.getElementsByTagName('tbody')[0].getElementsByTagName('tr') : [];
@@ -160,6 +198,63 @@ $conn->close();
                     }
                 }
             });
+        }
+
+        window.sortTable = function(colIndex, type = 'string') {
+            const table = document.getElementById('enrollmentTable');
+            const tbody = table.getElementsByTagName('tbody')[0];
+            const rows = Array.from(tbody.getElementsByTagName('tr'));
+            
+            const currentOrder = sortStates[colIndex] === 'asc' ? 'desc' : 'asc';
+            sortStates = { [colIndex]: currentOrder }; // Reset other column states
+
+            rows.sort((a, b) => {
+                const valA = a.getElementsByTagName('td')[colIndex].textContent.trim();
+                const valB = b.getElementsByTagName('td')[colIndex].textContent.trim();
+
+                let comparison = 0;
+                if (type === 'date') {
+                    comparison = new Date(valA) - new Date(valB);
+                } else if (!isNaN(valA) && !isNaN(valB)) {
+                    comparison = parseFloat(valA) - parseFloat(valB);
+                } else {
+                    comparison = valA.localeCompare(valB, 'zh-Hant');
+                }
+
+                return currentOrder === 'asc' ? comparison : -comparison;
+            });
+
+            // Re-append sorted rows
+            rows.forEach(row => tbody.appendChild(row));
+
+            // Update sort icons
+            updateSortIcons(colIndex, currentOrder);
+        };
+
+        function updateSortIcons(activeIndex, order) {
+            const headers = document.querySelectorAll('#enrollmentTable th');
+            headers.forEach((th, index) => {
+                const icon = th.querySelector('.sort-icon');
+                if (icon) {
+                    if (index === activeIndex) {
+                        icon.className = `sort-icon active ${order}`;
+                    } else {
+                        icon.className = 'sort-icon';
+                    }
+                }
+            });
+        }
+
+        // Initial sort by date desc
+        function initialSort() {
+            const dateColumnIndex = 15;
+            sortStates = { [dateColumnIndex]: 'desc' };
+            sortTable(dateColumnIndex, 'date'); // Sort once to set desc
+            sortTable(dateColumnIndex, 'date'); // Sort again to trigger desc
+        }
+
+        if (rows.length > 0) {
+            initialSort();
         }
     });
     </script>

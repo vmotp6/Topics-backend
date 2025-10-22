@@ -45,7 +45,7 @@ $current_page = basename($_SERVER['PHP_SELF'], '.php');
             <i class="fas fa-graduation-cap"></i>
             <span>招生中心</span>
         </a>
-        <a href="index.php?action=logout" class="menu-item">
+        <a href="logout.php" class="menu-item">
             <i class="fas fa-sign-out-alt"></i>
             <span>登出</span>
         </a>
@@ -55,7 +55,7 @@ $current_page = basename($_SERVER['PHP_SELF'], '.php');
 <style>
 /* 側邊欄樣式 */
 .sidebar {
-    width: 280px;
+    width: 250px;
     background: #fff;
     color: #262626;
     position: fixed;
@@ -228,7 +228,7 @@ $current_page = basename($_SERVER['PHP_SELF'], '.php');
 /* 主內容區 */
 .main-content {
     flex: 1;
-    margin-left: 280px;
+    margin-left: 250px;
     background: #f0f2f5;
     transition: all 0.3s ease;
 }
