@@ -11,13 +11,26 @@ if (!isset($_SESSION['admin_logged_in']) || !$_SESSION['admin_logged_in']) {
 require_once '../../Topics-frontend/frontend/config.php';
 
 // 設置頁面標題
-$page_title = '就讀意願名單';
+$page_title = (isset($_SESSION['username']) && $_SESSION['username'] === 'IMD') ? '資管科就讀意願名單' : '就讀意願名單';
 
 // 建立資料庫連接
 $conn = getDatabaseConnection();
 
-// 獲取所有報名資料
-$stmt = $conn->prepare("SELECT * FROM enrollment_intention ORDER BY created_at DESC");
+// 檢查是否為IMD用戶
+$is_imd_user = (isset($_SESSION['username']) && $_SESSION['username'] === 'IMD');
+
+// 獲取報名資料（根據用戶權限過濾）
+if ($is_imd_user) {
+    // IMD用戶只能看到資管科相關的就讀意願
+    $stmt = $conn->prepare("SELECT * FROM enrollment_intention 
+                           WHERE intention1 LIKE '%資管%' OR intention1 LIKE '%資訊管理%' 
+                           OR intention2 LIKE '%資管%' OR intention2 LIKE '%資訊管理%' 
+                           OR intention3 LIKE '%資管%' OR intention3 LIKE '%資訊管理%'
+                           ORDER BY created_at DESC");
+} else {
+    // 一般管理員可以看到所有就讀意願
+    $stmt = $conn->prepare("SELECT * FROM enrollment_intention ORDER BY created_at DESC");
+}
 $stmt->execute();
 $result = $stmt->get_result();
 $enrollments = $result->fetch_all(MYSQLI_ASSOC);

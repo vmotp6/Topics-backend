@@ -14,8 +14,11 @@ $db_username = 'root';
 $db_password = '';
 
 // 設置頁面標題
-$page_title = '續招報名管理';
+$page_title = (isset($_SESSION['username']) && $_SESSION['username'] === 'IMD') ? '資管科續招報名管理' : '續招報名管理';
 $current_page = 'continued_admission_list'; // 新增此行
+
+// 檢查是否為IMD用戶
+$is_imd_user = (isset($_SESSION['username']) && $_SESSION['username'] === 'IMD');
 
 // 建立資料庫連接
 try {
@@ -25,8 +28,20 @@ try {
     die("資料庫連接失敗: " . $e->getMessage());
 }
 
-// 獲取所有續招報名資料
-$stmt = $pdo->prepare("SELECT id, name, id_number, mobile, school_name, created_at, status, choices FROM continued_admission ORDER BY created_at DESC");
+// 獲取續招報名資料（根據用戶權限過濾）
+if ($is_imd_user) {
+    // IMD用戶只能看到資管科相關的續招報名
+    $stmt = $pdo->prepare("SELECT id, name, id_number, mobile, school_name, created_at, status, choices 
+                          FROM continued_admission 
+                          WHERE JSON_CONTAINS(choices, JSON_QUOTE('資訊管理科')) 
+                          OR JSON_CONTAINS(choices, JSON_QUOTE('資管科'))
+                          OR JSON_SEARCH(choices, 'one', '%資管%') IS NOT NULL
+                          OR JSON_SEARCH(choices, 'one', '%資訊管理%') IS NOT NULL
+                          ORDER BY created_at DESC");
+} else {
+    // 一般管理員可以看到所有續招報名
+    $stmt = $pdo->prepare("SELECT id, name, id_number, mobile, school_name, created_at, status, choices FROM continued_admission ORDER BY created_at DESC");
+}
 $stmt->execute();
 $applications = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
@@ -41,13 +56,32 @@ try {
     $tableExists = $stmt->rowCount() > 0;
     
     if ($tableExists) {
-        $stmt = $pdo->prepare("SELECT * FROM department_quotas WHERE is_active = 1 ORDER BY department_name");
+        if ($is_imd_user) {
+            // IMD用戶只能看到資管科的名額
+            $stmt = $pdo->prepare("SELECT * FROM department_quotas 
+                                  WHERE is_active = 1 
+                                  AND (department_name LIKE '%資管%' OR department_name LIKE '%資訊管理%')
+                                  ORDER BY department_name");
+        } else {
+            // 一般管理員可以看到所有科系名額
+            $stmt = $pdo->prepare("SELECT * FROM department_quotas WHERE is_active = 1 ORDER BY department_name");
+        }
         $stmt->execute();
         $departments = $stmt->fetchAll(PDO::FETCH_ASSOC);
         
         // 計算各科系已錄取人數
         foreach ($departments as $dept) {
-            $stmt = $pdo->prepare("SELECT COUNT(*) as count FROM continued_admission WHERE status = 'approved' AND JSON_CONTAINS(choices, JSON_QUOTE(?))");
+            if ($is_imd_user) {
+                // IMD用戶只計算資管科相關的錄取人數
+                $stmt = $pdo->prepare("SELECT COUNT(*) as count FROM continued_admission 
+                                      WHERE status = 'approved' 
+                                      AND (JSON_CONTAINS(choices, JSON_QUOTE(?)) 
+                                      OR JSON_SEARCH(choices, 'one', '%資管%') IS NOT NULL
+                                      OR JSON_SEARCH(choices, 'one', '%資訊管理%') IS NOT NULL)");
+            } else {
+                // 一般管理員計算所有科系的錄取人數
+                $stmt = $pdo->prepare("SELECT COUNT(*) as count FROM continued_admission WHERE status = 'approved' AND JSON_CONTAINS(choices, JSON_QUOTE(?))");
+            }
             $stmt->execute([$dept['department_name']]);
             $result = $stmt->fetch(PDO::FETCH_ASSOC);
             $department_stats[$dept['department_code']] = [
