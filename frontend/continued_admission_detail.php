@@ -336,12 +336,3 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_status'])) {
     </script>
 </body>
 </html>
-```
-
-### 3. 更新側邊欄連結
-
-最後，我將修改 `d:\Topics\Topics-backend\frontend\sidebar.php` 中的「續招」連結，使其指向我們剛剛建立的 `continued_admission_list.php` 頁面。
-
-```diff
---- a/d:/Topics/Topics-backend/frontend/sidebar.php
-+++ b/d:/Topics/Topics-backend/frontend/sidebar.php
