@@ -45,56 +45,60 @@ if ($is_imd_user) {
 $stmt->execute();
 $applications = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-// 獲取科系名額資料（檢查資料表是否存在）
+// 獲取科系名額資料
 $department_stats = [];
-$departments = [];
 
 try {
-    // 檢查 department_quotas 資料表是否存在
-    $stmt = $pdo->prepare("SHOW TABLES LIKE 'department_quotas'");
+    // 檢查 admission_courses 資料表是否存在
+    $stmt = $pdo->prepare("SHOW TABLES LIKE 'admission_courses'");
     $stmt->execute();
     $tableExists = $stmt->rowCount() > 0;
     
     if ($tableExists) {
-        if ($is_imd_user) {
-            // IMD用戶只能看到資管科的名額
-            $stmt = $pdo->prepare("SELECT * FROM department_quotas 
-                                  WHERE is_active = 1 
-                                  AND (department_name LIKE '%資管%' OR department_name LIKE '%資訊管理%')
-                                  ORDER BY department_name");
-        } else {
-            // 一般管理員可以看到所有科系名額
-            $stmt = $pdo->prepare("SELECT * FROM department_quotas WHERE is_active = 1 ORDER BY department_name");
-        }
+        // 從 admission_courses 讀取科系列表，並與 department_quotas 關聯
+        $sql = "
+            SELECT 
+                ac.course_name as department_name,
+                COALESCE(dq.total_quota, 0) as total_quota
+            FROM admission_courses ac
+            LEFT JOIN department_quotas dq ON ac.course_name = dq.department_name AND dq.is_active = 1
+            WHERE ac.is_active = 1
+            ORDER BY ac.sort_order, ac.course_name
+        ";
+        $stmt = $pdo->prepare($sql);
         $stmt->execute();
-        $departments = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        $courses = $stmt->fetchAll(PDO::FETCH_ASSOC);
         
-        // 計算各科系已錄取人數
-        foreach ($departments as $dept) {
-            if ($is_imd_user) {
-                // IMD用戶只計算資管科相關的錄取人數
-                $stmt = $pdo->prepare("SELECT COUNT(*) as count FROM continued_admission 
-                                      WHERE status = 'approved' 
-                                      AND (JSON_CONTAINS(choices, JSON_QUOTE(?)) 
-                                      OR JSON_SEARCH(choices, 'one', '%資管%') IS NOT NULL
-                                      OR JSON_SEARCH(choices, 'one', '%資訊管理%') IS NOT NULL)");
-            } else {
-                // 一般管理員計算所有科系的錄取人數
-                $stmt = $pdo->prepare("SELECT COUNT(*) as count FROM continued_admission WHERE status = 'approved' AND JSON_CONTAINS(choices, JSON_QUOTE(?))");
+        // 先一次性獲取所有已錄取的學生志願
+        $stmt_approved = $pdo->prepare("SELECT choices FROM continued_admission WHERE status = 'approved'");
+        $stmt_approved->execute();
+        $approved_applications = $stmt_approved->fetchAll(PDO::FETCH_ASSOC);
+
+        // 在 PHP 中計算各科系已錄取人數，以避免複雜的 SQL 查詢
+        foreach ($courses as $course) {
+            $enrolled_count = 0;
+            foreach ($approved_applications as $app) {
+                $choices = json_decode($app['choices'], true);
+                if (is_array($choices) && !empty($choices)) {
+                    // 檢查第一志願是否匹配 (用科系全名去 LIKE 學生填的簡稱)
+                    if (strpos($course['department_name'], $choices[0]) !== false) {
+                        $enrolled_count++;
+                    }
+                }
             }
-            $stmt->execute([$dept['department_name']]);
-            $result = $stmt->fetch(PDO::FETCH_ASSOC);
-            $department_stats[$dept['department_code']] = [
-                'name' => $dept['department_name'],
-                'total_quota' => $dept['total_quota'],
+
+            $result = ['count' => $enrolled_count];
+            $department_stats[$course['department_name']] = [ // 使用科系名稱作為 key
+                'name' => $course['department_name'],
+                'code' => 'N/A', // 移除 department_code 的讀取
+                'total_quota' => (int)$course['total_quota'],
                 'current_enrolled' => $result['count'],
-                'remaining' => $dept['total_quota'] - $result['count']
+                'remaining' => (int)$course['total_quota'] - $result['count']
             ];
         }
     }
 } catch (PDOException $e) {
     // 如果資料表不存在或其他錯誤，設定為空陣列
-    $departments = [];
     $department_stats = [];
 }
 
@@ -240,11 +244,11 @@ function getStatusClass($status) {
                     <div class="card-body" id="quotaManagementContent">
                         <?php if (!empty($department_stats)): ?>
                             <div class="quota-grid">
-                                <?php foreach ($department_stats as $code => $stats): ?>
+                                <?php foreach ($department_stats as $name => $stats): ?>
                                 <div class="quota-card">
                                     <div class="quota-header">
                                         <h4><?php echo htmlspecialchars($stats['name']); ?></h4>
-                                        <span class="quota-code"><?php echo htmlspecialchars($code); ?></span>
+                                        <span class="quota-code"><?php echo htmlspecialchars($stats['code']); ?></span>
                                     </div>
                                     <div class="quota-stats">
                                         <div class="stat-item">

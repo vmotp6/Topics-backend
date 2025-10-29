@@ -38,19 +38,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             // 優先使用 password_verify 驗證已雜湊的密碼
             if (password_verify($password, $user['password'])) {
                 $login_successful = true;
-                // 如果需要，重新雜湊密碼以升級演算法
-                if (password_needs_rehash($user['password'], PASSWORD_DEFAULT)) {
-                    $new_hash = password_hash($password, PASSWORD_DEFAULT);
-                    $update_stmt = $pdo->prepare("UPDATE user SET password = ? WHERE id = ?");
-                    $update_stmt->execute([$new_hash, $user['id']]);
-                }
             }
-            // 兼容舊的明文密碼，登入成功後立即雜湊更新
+            // 兼容舊的明文密碼
             elseif ($password === $user['password']) {
                 $login_successful = true;
-                $new_hash = password_hash($password, PASSWORD_DEFAULT);
-                $update_stmt = $pdo->prepare("UPDATE user SET password = ? WHERE id = ?");
-                $update_stmt->execute([$new_hash, $user['id']]);
             } else {
                 $error_message = "帳號或密碼錯誤。";
             }

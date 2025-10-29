@@ -176,10 +176,8 @@ try {
                             <h4><i class="fas fa-info-circle"></i> 設定說明</h4>
                             <p>此功能將為續招報名系統建立科系名額管理功能，包括：</p>
                             <ul>
-                                <li>建立 <code>department_quotas</code> 資料表，用於管理各科系招生名額</li>
-                                <li>建立 <code>continued_admission_choices</code> 資料表，用於追蹤學生志願選擇</li>
-                                <li>插入預設的科系資料（資訊科、電子科、機械科等）</li>
-                                <li>設定各科系的初始招生名額</li>
+                                <li>建立 <code>department_quotas</code> 資料表，用於儲存各科系的招生名額。</li>
+                                <li>此資料表將與 <code>admission_courses</code> (在「場次設定」中管理) 關聯</li>
                             </ul>
                             <p><strong>注意：</strong>如果資料表已存在，此操作將不會重複建立。</p>
                         </div>

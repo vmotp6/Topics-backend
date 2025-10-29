@@ -313,8 +313,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_status'])) {
             }),
         })
         .then(response => {
+            // 如果回應不成功 (例如 409 Conflict)，將整個 response 拋出到 catch 區塊處理
             if (!response.ok) {
-                throw new Error(`伺服器錯誤: ${response.status} ${response.statusText}`);
+                throw response;
             }
             return response.json();
         })
@@ -329,7 +330,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_status'])) {
             }
         })
         .catch(error => {
-            showToast('前端請求錯誤：' + error.message, false);
+            // 檢查 error 是否為 Response 物件
+            if (error instanceof Response) {
+                error.json().then(errorData => {
+                    // 從後端 JSON 獲取錯誤訊息
+                    showToast('操作失敗：' + (errorData.message || `伺服器錯誤 ${error.status}`), false);
+                }).catch(() => {
+                    // 如果解析 JSON 失敗，顯示通用錯誤
+                    showToast(`操作失敗：伺服器錯誤 ${error.status} ${error.statusText}`, false);
+                });
+            } else {
+                // 處理網路錯誤或其他非 Response 的錯誤
+                console.error('Fetch Error:', error);
+                showToast('操作失敗：' + error.message, false);
+            }
         });
     });
     <?php endif; ?>
