@@ -8,7 +8,10 @@ if (!isset($_SESSION['admin_logged_in']) || !$_SESSION['admin_logged_in']) {
 }
 
 // 設置頁面標題
-$page_title = '招生中心';
+$page_title = (isset($_SESSION['username']) && $_SESSION['username'] === 'IMD') ? '資管科招生中心' : '招生中心';
+
+// 檢查是否為IMD用戶
+$is_imd_user = (isset($_SESSION['username']) && $_SESSION['username'] === 'IMD');
 
 // 資料庫連接設定
 $host = '100.79.58.120';
@@ -28,13 +31,28 @@ $all_applications = [];
 
 // 1. 就讀意願登錄 (cooperation_upload)
 try {
-    $stmt = $pdo->prepare("SELECT 
-        id, name, identity, gender, phone1, phone2, email, 
-        intention1, system1, intention2, system2, intention3, system3,
-        junior_high, current_grade, line_id, facebook, recommended_teacher, remarks,
-        created_at, '就讀意願登錄' as source_type
-        FROM enrollment_applications 
-        ORDER BY created_at DESC");
+    if ($is_imd_user) {
+        // IMD用戶只能看到資管科相關的就讀意願
+        $stmt = $pdo->prepare("SELECT 
+            id, name, identity, gender, phone1, phone2, email, 
+            intention1, system1, intention2, system2, intention3, system3,
+            junior_high, current_grade, line_id, facebook, recommended_teacher, remarks,
+            created_at, '就讀意願登錄' as source_type
+            FROM enrollment_applications 
+            WHERE intention1 LIKE '%資管%' OR intention1 LIKE '%資訊管理%' 
+            OR intention2 LIKE '%資管%' OR intention2 LIKE '%資訊管理%' 
+            OR intention3 LIKE '%資管%' OR intention3 LIKE '%資訊管理%'
+            ORDER BY created_at DESC");
+    } else {
+        // 一般管理員可以看到所有就讀意願
+        $stmt = $pdo->prepare("SELECT 
+            id, name, identity, gender, phone1, phone2, email, 
+            intention1, system1, intention2, system2, intention3, system3,
+            junior_high, current_grade, line_id, facebook, recommended_teacher, remarks,
+            created_at, '就讀意願登錄' as source_type
+            FROM enrollment_applications 
+            ORDER BY created_at DESC");
+    }
     $stmt->execute();
     $enrollment_data = $stmt->fetchAll(PDO::FETCH_ASSOC);
     
@@ -47,13 +65,29 @@ try {
 
 // 2. 續招報名 (continued_admission)
 try {
-    $stmt = $pdo->prepare("SELECT 
-        id, name, id_number, birth_year, birth_month, birth_day, gender,
-        phone, mobile, school_city, school_name, guardian_name as guardian, guardian_phone, guardian_mobile,
-        self_intro, skills, choices, status, review_notes, reviewed_at,
-        created_at, '續招報名' as source_type
-        FROM continued_admission 
-        ORDER BY created_at DESC");
+    if ($is_imd_user) {
+        // IMD用戶只能看到資管科相關的續招報名
+        $stmt = $pdo->prepare("SELECT 
+            id, name, id_number, birth_year, birth_month, birth_day, gender,
+            phone, mobile, school_city, school_name, guardian_name as guardian, guardian_phone, guardian_mobile,
+            self_intro, skills, choices, status, review_notes, reviewed_at,
+            created_at, '續招報名' as source_type
+            FROM continued_admission 
+            WHERE JSON_CONTAINS(choices, JSON_QUOTE('資訊管理科')) 
+            OR JSON_CONTAINS(choices, JSON_QUOTE('資管科'))
+            OR JSON_SEARCH(choices, 'one', '%資管%') IS NOT NULL
+            OR JSON_SEARCH(choices, 'one', '%資訊管理%') IS NOT NULL
+            ORDER BY created_at DESC");
+    } else {
+        // 一般管理員可以看到所有續招報名
+        $stmt = $pdo->prepare("SELECT 
+            id, name, id_number, birth_year, birth_month, birth_day, gender,
+            phone, mobile, school_city, school_name, guardian_name as guardian, guardian_phone, guardian_mobile,
+            self_intro, skills, choices, status, review_notes, reviewed_at,
+            created_at, '續招報名' as source_type
+            FROM continued_admission 
+            ORDER BY created_at DESC");
+    }
     $stmt->execute();
     $continued_data = $stmt->fetchAll(PDO::FETCH_ASSOC);
     
@@ -66,12 +100,25 @@ try {
 
 // 3. 入學說明會報名 (admission)
 try {
-    $stmt = $pdo->prepare("SELECT 
-        id, student_name as name, email, school_name, grade, parent_name, contact_phone, line_id,
-        session_choice, course_priority_1, course_priority_2, receive_info,
-        created_at, '入學說明會報名' as source_type
-        FROM admission_applications 
-        ORDER BY created_at DESC");
+    if ($is_imd_user) {
+        // IMD用戶只能看到資管科相關的入學說明會報名
+        $stmt = $pdo->prepare("SELECT 
+            id, student_name as name, email, school_name, grade, parent_name, contact_phone, line_id,
+            session_choice, course_priority_1, course_priority_2, receive_info,
+            created_at, '入學說明會報名' as source_type
+            FROM admission_applications 
+            WHERE course_priority_1 LIKE '%資管%' OR course_priority_1 LIKE '%資訊管理%' 
+            OR course_priority_2 LIKE '%資管%' OR course_priority_2 LIKE '%資訊管理%'
+            ORDER BY created_at DESC");
+    } else {
+        // 一般管理員可以看到所有入學說明會報名
+        $stmt = $pdo->prepare("SELECT 
+            id, student_name as name, email, school_name, grade, parent_name, contact_phone, line_id,
+            session_choice, course_priority_1, course_priority_2, receive_info,
+            created_at, '入學說明會報名' as source_type
+            FROM admission_applications 
+            ORDER BY created_at DESC");
+    }
     $stmt->execute();
     $admission_data = $stmt->fetchAll(PDO::FETCH_ASSOC);
     
@@ -84,14 +131,29 @@ try {
 
 // 4. 招生推薦報名 (admission_recommend)
 try {
-    $stmt = $pdo->prepare("SELECT 
-        id, student_name as name, student_school as school_name, student_grade as grade, 
-        student_phone as contact_phone, student_email as email, student_line_id as line_id,
-        recommender_name, recommender_student_id, recommender_department, recommendation_reason,
-        student_interest, additional_info, status, enrollment_status,
-        created_at, '招生推薦報名' as source_type
-        FROM admission_recommendations 
-        ORDER BY created_at DESC");
+    if ($is_imd_user) {
+        // IMD用戶只能看到資管科相關的招生推薦報名
+        $stmt = $pdo->prepare("SELECT 
+            id, student_name as name, student_school as school_name, student_grade as grade, 
+            student_phone as contact_phone, student_email as email, student_line_id as line_id,
+            recommender_name, recommender_student_id, recommender_department, recommendation_reason,
+            student_interest, additional_info, status, enrollment_status,
+            created_at, '招生推薦報名' as source_type
+            FROM admission_recommendations 
+            WHERE recommender_department LIKE '%資管%' OR recommender_department LIKE '%資訊管理%'
+            OR student_interest LIKE '%資管%' OR student_interest LIKE '%資訊管理%'
+            ORDER BY created_at DESC");
+    } else {
+        // 一般管理員可以看到所有招生推薦報名
+        $stmt = $pdo->prepare("SELECT 
+            id, student_name as name, student_school as school_name, student_grade as grade, 
+            student_phone as contact_phone, student_email as email, student_line_id as line_id,
+            recommender_name, recommender_student_id, recommender_department, recommendation_reason,
+            student_interest, additional_info, status, enrollment_status,
+            created_at, '招生推薦報名' as source_type
+            FROM admission_recommendations 
+            ORDER BY created_at DESC");
+    }
     $stmt->execute();
     $recommend_data = $stmt->fetchAll(PDO::FETCH_ASSOC);
     

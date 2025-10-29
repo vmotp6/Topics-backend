@@ -15,8 +15,10 @@ $page_title = '教師活動紀錄管理';
 
 // 檢查用戶權限和部門
 $current_user = isset($_SESSION['username']) ? $_SESSION['username'] : '';
+$user_role = isset($_SESSION['role']) ? $_SESSION['role'] : '';
 $user_department = '';
 $department_filter = '';
+$is_school_admin = ($user_role === '學校行政人員' || $user_role === '行政人員' || $current_user === 'IMD');
 
 // 如果是 IMD 帳號，只能查看資管科的資料
 if ($current_user === 'IMD') {
@@ -230,6 +232,17 @@ $conn->close();
             outline: none;
             border-color: var(--primary-color);
             box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+        }
+        
+        /* 響應式設計 - 篩選控制項 */
+        @media (max-width: 768px) {
+            .card-header > div:last-child {
+                grid-template-columns: 1fr !important;
+            }
+            
+            .search-input {
+                width: 100% !important;
+            }
         }
 
         .table-container {
@@ -494,9 +507,6 @@ $conn->close();
                                 <i class="fas fa-graduation-cap"></i> 就讀意願統計分析
                             </h4>
                             <div style="display: flex; gap: 12px; margin-bottom: 24px; flex-wrap: wrap;">
-                                <button class="btn-view" onclick="showEnrollmentDepartmentStats()">
-                                    <i class="fas fa-graduation-cap"></i> 科系分布分析
-                                </button>
                                 <button class="btn-view" onclick="showEnrollmentSystemStats()">
                                     <i class="fas fa-chart-pie"></i> 學制分布分析
                                 </button>
@@ -520,10 +530,25 @@ $conn->close();
                         
                         <!-- 就讀意願統計內容區域 -->
                         <div id="enrollmentAnalyticsContent" style="min-height: 200px;">
-                            <div class="empty-state">
-                                <i class="fas fa-graduation-cap fa-3x" style="margin-bottom: 16px;"></i>
-                                <h4>選擇上方的統計類型來查看詳細分析</h4>
-                                <p>提供科系分布、學制選擇、年級分布、性別比例等多維度統計</p>
+                            <div style="margin-bottom: 20px;">
+                                <h4 style="color: #667eea; margin-bottom: 15px;">
+                                    <i class="fas fa-graduation-cap"></i> 科系分布分析
+                                    <span style="font-size: 0.8em; color: #999; margin-left: 10px;">（<?php echo $current_user === 'IMD' ? '資管科專屬視圖' : '就讀意願統計專屬視圖'; ?>）</span>
+                                </h4>
+                                
+                                <div class="chart-card">
+                                    <div class="chart-title">科系選擇分布</div>
+                                    <div class="chart-container">
+                                        <canvas id="enrollmentDepartmentChart"></canvas>
+                                    </div>
+                                </div>
+                                
+                                <div style="background: #f8f9fa; padding: 20px; border-radius: 10px; margin-top: 20px;">
+                                    <h5 style="color: #333; margin-bottom: 15px;">科系詳細統計</h5>
+                                    <div id="enrollmentDepartmentStats" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px;">
+                                        <!-- 統計數據將由JavaScript動態載入 -->
+                                    </div>
+                                </div>
                             </div>
                         </div>
                         
@@ -539,9 +564,6 @@ $conn->close();
                                 <button class="btn-view" onclick="showContinuedAdmissionCityStats()">
                                     <i class="fas fa-map-marker-alt"></i> 縣市分布分析
                                 </button>
-                                <button class="btn-view" onclick="showContinuedAdmissionChoicesStats()">
-                                    <i class="fas fa-list-ol"></i> 志願選擇分析
-                                </button>
                                 <button class="btn-view" onclick="showContinuedAdmissionMonthlyStats()">
                                     <i class="fas fa-calendar-alt"></i> 月度趨勢分析
                                 </button>
@@ -556,10 +578,25 @@ $conn->close();
                         
                         <!-- 續招報名統計內容區域 -->
                         <div id="continuedAdmissionAnalyticsContent" style="min-height: 200px;">
-                            <div class="empty-state">
-                                <i class="fas fa-file-alt fa-3x" style="margin-bottom: 16px;"></i>
-                                <h4>選擇上方的統計類型來查看詳細分析</h4>
-                                <p>提供性別分布、縣市分布、志願選擇、月度趨勢、審核狀態等多維度統計</p>
+                            <div style="margin-bottom: 20px;">
+                                <h4 style="color: #667eea; margin-bottom: 15px;">
+                                    <i class="fas fa-list-ol"></i> 志願選擇分析
+                                    <span style="font-size: 0.8em; color: #999; margin-left: 10px;">（<?php echo $current_user === 'IMD' ? '資管科專屬視圖' : '續招報名統計專屬視圖'; ?>）</span>
+                                </h4>
+                                
+                                <div class="chart-card">
+                                    <div class="chart-title">志願選擇分布</div>
+                                    <div class="chart-container">
+                                        <canvas id="continuedAdmissionChoicesChart"></canvas>
+                                    </div>
+                                </div>
+                                
+                                <div style="background: #f8f9fa; padding: 20px; border-radius: 10px; margin-top: 20px;">
+                                    <h5 style="color: #333; margin-bottom: 15px;">志願詳細統計</h5>
+                                    <div id="continuedAdmissionChoicesStats" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px;">
+                                        <!-- 統計數據將由JavaScript動態載入 -->
+                                    </div>
+                                </div>
                             </div>
                         </div>
                         
@@ -605,43 +642,6 @@ $conn->close();
                     </div>
 
 
-                    <div class="card">
-                        <div class="card-header">
-                            <h3>教師列表 (共 <?php echo count($teachers_with_records); ?> 位)</h3>
-                            <input type="text" id="searchInput" class="search-input" placeholder="搜尋教師姓名或系所...">
-                        </div>
-                        <div class="card-body table-container">
-                            <?php if (empty($teachers_with_records)): ?>
-                                <div class="empty-state">
-                                    <i class="fas fa-users-slash fa-3x" style="margin-bottom: 16px;"></i>
-                                    <p>目前沒有任何教師提交過活動紀錄。</p>
-                                </div>
-                            <?php else: ?>
-                                <table class="table" id="recordsTable">
-                                    <thead>
-                                        <tr>
-                                            <th>教師姓名</th>
-                                            <th>所屬系所</th>
-                                            <th>紀錄筆數</th>
-                                            <th>操作</th>
-                                        </tr>
-                                    </thead>
-                                    <tbody>
-                                        <?php foreach ($teachers_with_records as $teacher): ?>
-                                        <tr>
-                                            <td><?php echo htmlspecialchars($teacher['teacher_name']); ?></td>
-                                            <td><?php echo htmlspecialchars($teacher['teacher_department']); ?></td>
-                                            <td><?php echo htmlspecialchars($teacher['record_count']); ?></td>
-                                            <td>
-                                                <a href="?teacher_id=<?php echo $teacher['user_id']; ?>" class="btn-view">查看紀錄</a>
-                                            </td>
-                                        </tr>
-                                        <?php endforeach; ?>
-                                    </tbody>
-                                </table>
-                            <?php endif; ?>
-                        </div>
-                    </div>
                 <?php endif; ?>
         </div>
     </div>
@@ -668,12 +668,16 @@ $conn->close();
     const isTeacherListView = <?php echo $teacher_id > 0 ? 'false' : 'true'; ?>;
     const userDepartment = '<?php echo $user_department; ?>';
     const currentUser = '<?php echo $current_user; ?>';
+    const userRole = '<?php echo $user_role; ?>';
+    const isSchoolAdmin = <?php echo $is_school_admin ? 'true' : 'false'; ?>;
 
     // 調試信息
     console.log('PHP 傳遞的數據:', activityRecords);
     console.log('數據長度:', activityRecords.length);
     console.log('當前用戶:', currentUser);
     console.log('用戶部門:', userDepartment);
+    console.log('用戶角色:', userRole);
+    console.log('是否為學校行政人員:', isSchoolAdmin);
     
     // ========== 輔助函數 ==========
     
@@ -1196,11 +1200,17 @@ $conn->close();
                 instance.canvas.id.includes('activityTypePieChart') ||
                 instance.canvas.id.includes('monthStatsChart') ||
                 instance.canvas.id.includes('dayStatsChart') ||
-                instance.canvas.id.includes('schoolStatsChart')) {
+                instance.canvas.id.includes('schoolStatsChart') ||
+                instance.canvas.id.includes('departmentOverviewChart')) {
                 instance.destroy();
             }
         });
         
+        // 如果是學校行政人員，顯示全校科系招生總覽
+        if (isSchoolAdmin) {
+            showDepartmentOverviewStats();
+        } else {
+            // 否則顯示空狀態
         document.getElementById('activityAnalyticsContent').innerHTML = `
             <div class="empty-state">
                 <i class="fas fa-chart-line fa-3x" style="margin-bottom: 16px;"></i>
@@ -1208,6 +1218,424 @@ $conn->close();
                 <p>提供教師活動參與度、活動類型分布、時間趨勢等多維度統計</p>
             </div>
         `;
+        }
+    }
+    
+    // 學校行政人員專用 - 科系招生總覽（自動顯示）
+    function showDepartmentOverviewStats() {
+        console.log('showDepartmentOverviewStats 被調用 - 顯示全部科系招生總覽');
+        
+        // 統計每個科系的活動數量
+        const departmentStats = {};
+        activityRecords.forEach(record => {
+            const department = record.teacher_department || '未知科系';
+            if (!departmentStats[department]) {
+                departmentStats[department] = {
+                    name: department,
+                    totalActivities: 0,
+                    teachers: new Set()
+                };
+            }
+            departmentStats[department].totalActivities++;
+            if (record.teacher_name) {
+                departmentStats[department].teachers.add(record.teacher_name);
+            }
+        });
+        
+        const departmentStatsArray = Object.values(departmentStats).map(dept => ({
+            name: dept.name,
+            totalActivities: dept.totalActivities,
+            teacherCount: dept.teachers.size
+        })).sort((a, b) => b.totalActivities - a.totalActivities);
+        
+        const content = `
+            <div style="margin-bottom: 20px;">
+                <h4 style="color: #667eea; margin-bottom: 15px;">
+                    <i class="fas fa-chart-bar"></i> 全校科系招生活動總覽
+                    <span style="font-size: 0.8em; color: #999; margin-left: 10px;">（<?php echo $current_user === 'IMD' ? '資管科專屬視圖' : '學校行政人員專屬視圖'; ?>）</span>
+                </h4>
+                
+                <div class="chart-card">
+                    <div class="chart-title">各科系招生活動數量統計 <span style="font-size: 0.9em; color: #999;">（點擊科系查看該科系教師列表）</span></div>
+                    <div class="chart-container">
+                        <canvas id="departmentOverviewChart"></canvas>
+                    </div>
+                </div>
+                
+                <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 20px; border-radius: 10px; margin-top: 20px;">
+                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px; text-align: center;">
+                        <div>
+                            <div style="font-size: 2.5em; font-weight: bold; margin-bottom: 5px;">${departmentStatsArray.reduce((sum, d) => sum + d.totalActivities, 0)}</div>
+                            <div style="font-size: 1em; opacity: 0.9;">總活動數</div>
+                        </div>
+                        <div>
+                            <div style="font-size: 2.5em; font-weight: bold; margin-bottom: 5px;">${departmentStatsArray.reduce((sum, d) => sum + d.teacherCount, 0)}</div>
+                            <div style="font-size: 1em; opacity: 0.9;">參與教師總數</div>
+                        </div>
+                        <div>
+                            <div style="font-size: 2.5em; font-weight: bold; margin-bottom: 5px;">${departmentStatsArray.length}</div>
+                            <div style="font-size: 1em; opacity: 0.9;">參與科系總數</div>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- 科系教師列表顯示區域 -->
+                <div id="departmentTeacherListContainer" style="margin-top: 20px;"></div>
+            </div>
+        `;
+        
+        document.getElementById('activityAnalyticsContent').innerHTML = content;
+        
+        // 創建圖表
+        setTimeout(() => {
+            const canvasElement = document.getElementById('departmentOverviewChart');
+            if (!canvasElement) return;
+            
+            const ctx = canvasElement.getContext('2d');
+            const colors = ['#667eea', '#28a745', '#ffc107', '#dc3545', '#17a2b8', '#6f42c1', '#fd7e14', '#20c997'];
+            
+            new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: departmentStatsArray.map(dept => dept.name),
+                    datasets: [{
+                        label: '招生活動數量',
+                        data: departmentStatsArray.map(dept => dept.totalActivities),
+                        backgroundColor: departmentStatsArray.map((_, index) => colors[index % colors.length]),
+                        borderColor: departmentStatsArray.map((_, index) => colors[index % colors.length]),
+                        borderWidth: 2
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    onClick: (event, elements) => {
+                        if (elements.length > 0) {
+                            const index = elements[0].index;
+                            const departmentName = departmentStatsArray[index].name;
+                            console.log(`點擊科系: ${departmentName}`);
+                            showDepartmentTeacherList(departmentName);
+                        }
+                    },
+                    plugins: {
+                        legend: {
+                            display: false
+                        },
+                        tooltip: {
+                            callbacks: {
+                                afterLabel: function(context) {
+                                    const index = context.dataIndex;
+                                    return `參與教師：${departmentStatsArray[index].teacherCount} 人`;
+                                }
+                            }
+                        }
+                    },
+                    scales: {
+                        y: {
+                            beginAtZero: true,
+                            ticks: {
+                                stepSize: 1,
+                                font: {
+                                    size: 13
+                                }
+                            },
+                            title: {
+                                display: true,
+                                text: '活動數量',
+                                font: {
+                                    size: 15,
+                                    weight: 'bold'
+                                },
+                                padding: {
+                                    bottom: 10
+                                },
+                                align: 'center'
+                            }
+                        },
+                        x: {
+                            ticks: {
+                                maxRotation: 45,
+                                minRotation: 0,
+                                color: '#2563eb',
+                                font: {
+                                    size: 15,
+                                    weight: 'bold'
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+        }, 100);
+    }
+    
+    // 顯示科系教師列表
+    function showDepartmentTeacherList(departmentName) {
+        console.log(`顯示 ${departmentName} 的教師列表`);
+        
+        // 統計該科系的教師資訊
+        const teacherStats = {};
+        
+        activityRecords.forEach(record => {
+            if (record.teacher_department === departmentName) {
+                const teacherId = record.teacher_id;
+                const teacherName = record.teacher_name;
+                
+                if (!teacherStats[teacherId]) {
+                    teacherStats[teacherId] = {
+                        id: teacherId,
+                        name: teacherName,
+                        department: departmentName,
+                        activityCount: 0,
+                        activities: []
+                    };
+                }
+                
+                teacherStats[teacherId].activityCount++;
+                teacherStats[teacherId].activities.push({
+                    school: record.school_name,
+                    type: record.activity_type,
+                    date: record.activity_date
+                });
+            }
+        });
+        
+        const teacherList = Object.values(teacherStats).sort((a, b) => b.activityCount - a.activityCount);
+        
+        // 收集所有可用的科系（從所有記錄中）
+        const allDepartments = new Set();
+        activityRecords.forEach(record => {
+            if (record.teacher_department) {
+                allDepartments.add(record.teacher_department);
+            }
+        });
+        const departmentOptions = Array.from(allDepartments).sort();
+        
+        const content = `
+            <div style="background: white; border-radius: 10px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); overflow: hidden; margin-top: 20px;">
+                <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 20px;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; gap: 15px; flex-wrap: wrap;">
+                        <h3 style="margin: 0; font-size: 1.3em; font-weight: 600;">
+                            <i class="fas fa-users"></i> ${departmentName} - 教師列表 (共 <span id="deptTeacherCount">${teacherList.length}</span> 位)
+                        </h3>
+                        
+                        <div style="display: flex; gap: 10px; align-items: center; flex: 1; max-width: 600px;">
+                            <!-- 搜尋框 -->
+                            <div style="position: relative; flex: 1;">
+                                <i class="fas fa-search" style="position: absolute; left: 12px; top: 50%; transform: translateY(-50%); color: rgba(255,255,255,0.7);"></i>
+                                <input type="text" 
+                                       id="deptTeacherSearch" 
+                                       placeholder="搜尋教師姓名..." 
+                                       style="padding: 8px 12px 8px 35px; border: 2px solid rgba(255,255,255,0.3); border-radius: 20px; background: rgba(255,255,255,0.2); color: white; font-size: 14px; width: 100%;">
+                                <style>
+                                    #deptTeacherSearch::placeholder {
+                                        color: white !important;
+                                        opacity: 1;
+                                    }
+                                </style>
+                            </div>
+                            
+                            <button onclick="document.getElementById('departmentTeacherListContainer').innerHTML = ''" 
+                                    style="background: rgba(255,255,255,0.2); color: white; border: 1px solid white; padding: 8px 16px; border-radius: 20px; cursor: pointer; font-weight: 500; transition: all 0.3s; white-space: nowrap;">
+                                <i class="fas fa-times"></i> 關閉
+                            </button>
+                        </div>
+                    </div>
+                </div>
+                
+                <div style="padding: 20px;">
+                    
+                    <div style="overflow-x: auto;">
+                        <table class="table" id="deptTeacherTable" style="width: 100%; border-collapse: collapse;">
+                            <thead>
+                                <tr>
+                                    <th style="padding: 12px 15px; text-align: left; border-bottom: 1px solid #e9ecef; background: #f8f9fa; font-weight: 600; color: #495057;">教師姓名</th>
+                                    <th style="padding: 12px 15px; text-align: left; border-bottom: 1px solid #e9ecef; background: #f8f9fa; font-weight: 600; color: #495057;">所屬系所</th>
+                                    <th style="padding: 12px 15px; text-align: left; border-bottom: 1px solid #e9ecef; background: #f8f9fa; font-weight: 600; color: #495057;">紀錄筆數</th>
+                                    <th style="padding: 12px 15px; text-align: left; border-bottom: 1px solid #e9ecef; background: #f8f9fa; font-weight: 600; color: #495057;">操作</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                ${teacherList.map(teacher => `
+                                    <tr style="transition: background 0.2s;" onmouseover="this.style.background='#f8f9fa'" onmouseout="this.style.background='white'">
+                                        <td style="padding: 12px 15px; text-align: left; border-bottom: 1px solid #e9ecef;">${teacher.name}</td>
+                                        <td style="padding: 12px 15px; text-align: left; border-bottom: 1px solid #e9ecef;">${teacher.department}</td>
+                                        <td style="padding: 12px 15px; text-align: left; border-bottom: 1px solid #e9ecef;">${teacher.activityCount}</td>
+                                        <td style="padding: 12px 15px; text-align: left; border-bottom: 1px solid #e9ecef;">
+                                            <button onclick="showTeacherActivityDetails(${teacher.id}, '${teacher.name}')" 
+                                                    class="btn-view"
+                                                    style="background: #667eea; color: white; border: none; padding: 8px 16px; border-radius: 20px; cursor: pointer; font-size: 14px; transition: all 0.3s ease;">
+                                                查看紀錄
+                                            </button>
+                                        </td>
+                                    </tr>
+                                `).join('')}
+                            </tbody>
+                        </table>
+                    </div>
+                    
+                    <div style="margin-top: 20px; padding: 15px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); border-radius: 8px; color: white; text-align: center;">
+                        <strong>
+                            <i class="fas fa-chart-bar"></i> ${departmentName} 共有 <span id="deptTotalCount">${teacherList.length}</span> 位教師參與，累計 ${teacherList.reduce((sum, t) => sum + t.activityCount, 0)} 場活動
+                        </strong>
+                    </div>
+                </div>
+            </div>
+        `;
+        
+        document.getElementById('departmentTeacherListContainer').innerHTML = content;
+        
+        // 添加搜尋和篩選功能
+        setTimeout(() => {
+            const searchInput = document.getElementById('deptTeacherSearch');
+            const deptFilter = document.getElementById('deptFilter');
+            const table = document.getElementById('deptTeacherTable');
+            
+            // 統一的篩選函數
+            function applyDeptFilters() {
+                if (!table) return;
+                
+                const searchValue = searchInput ? searchInput.value.toLowerCase() : '';
+                const deptValue = deptFilter ? deptFilter.value : '';
+                const rows = table.getElementsByTagName('tbody')[0].getElementsByTagName('tr');
+                let visibleCount = 0;
+                
+                for (let i = 0; i < rows.length; i++) {
+                    const cells = rows[i].getElementsByTagName('td');
+                    const teacherName = cells[0] ? cells[0].textContent.toLowerCase() : '';
+                    const department = cells[1] ? cells[1].textContent : '';
+                    
+                    let shouldShow = true;
+                    
+                    // 姓名篩選
+                    if (searchValue && teacherName.indexOf(searchValue) === -1) {
+                        shouldShow = false;
+                    }
+                    
+                    // 科系篩選
+                    if (deptValue && department !== deptValue) {
+                        shouldShow = false;
+                    }
+                    
+                    if (shouldShow) {
+                        rows[i].style.display = '';
+                        visibleCount++;
+                    } else {
+                        rows[i].style.display = 'none';
+                    }
+                }
+                
+                // 更新顯示數量
+                const countElement = document.getElementById('deptTeacherCount');
+                if (countElement) {
+                    countElement.textContent = visibleCount;
+                }
+            }
+            
+            // 為搜尋框添加事件監聽器
+            if (searchInput) {
+                searchInput.addEventListener('keyup', applyDeptFilters);
+                
+                // 設置input樣式（placeholder顏色）
+                searchInput.style.setProperty('color', 'white');
+                searchInput.addEventListener('focus', function() {
+                    this.style.background = 'rgba(255,255,255,0.3)';
+                });
+                searchInput.addEventListener('blur', function() {
+                    this.style.background = 'rgba(255,255,255,0.2)';
+                });
+            }
+            
+            // 為科系下拉選單添加事件監聽器
+            if (deptFilter) {
+                deptFilter.addEventListener('change', applyDeptFilters);
+            }
+        }, 100);
+        
+        // 平滑滾動到教師列表
+        document.getElementById('departmentTeacherListContainer').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+    
+    // 顯示教師詳細活動紀錄
+    function showTeacherActivityDetails(teacherId, teacherName) {
+        console.log(`顯示教師 ${teacherName} 的詳細活動紀錄`);
+        
+        // 篩選該教師的所有活動
+        const teacherActivities = activityRecords.filter(record => record.teacher_id == teacherId);
+        
+        if (teacherActivities.length === 0) {
+            alert('查無該教師的活動紀錄');
+            return;
+        }
+        
+        const teacherDept = teacherActivities[0].teacher_department;
+        
+        const content = `
+            <div style="background: white; border-radius: 10px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); overflow: hidden; margin-top: 20px;">
+                <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 20px; display: flex; justify-content: space-between; align-items: center;">
+                    <h3 style="margin: 0; font-size: 1.3em; font-weight: 600;">
+                        <i class="fas fa-clipboard-list"></i> ${teacherName} 的紀錄列表 (共 ${teacherActivities.length} 筆)
+                    </h3>
+                    <button onclick="document.getElementById('departmentTeacherListContainer').scrollIntoView({ behavior: 'smooth' }); showDepartmentTeacherList('${teacherDept}')" 
+                            style="background: rgba(255,255,255,0.2); color: white; border: 1px solid white; padding: 8px 16px; border-radius: 5px; cursor: pointer; font-weight: 500; transition: all 0.3s;">
+                        <i class="fas fa-arrow-left"></i> 返回教師列表
+                    </button>
+                </div>
+                
+                <div style="padding: 20px;">
+                    <div style="overflow-x: auto;">
+                        <table class="table" style="width: 100%; border-collapse: collapse; margin-top: 15px;">
+                            <thead>
+                                <tr>
+                                    <th style="padding: 12px 15px; text-align: left; border-bottom: 1px solid #e9ecef; background: #f8f9fa; font-weight: 600; color: #495057;">活動日期</th>
+                                    <th style="padding: 12px 15px; text-align: left; border-bottom: 1px solid #e9ecef; background: #f8f9fa; font-weight: 600; color: #495057;">學校名稱</th>
+                                    <th style="padding: 12px 15px; text-align: left; border-bottom: 1px solid #e9ecef; background: #f8f9fa; font-weight: 600; color: #495057;">活動類型</th>
+                                    <th style="padding: 12px 15px; text-align: left; border-bottom: 1px solid #e9ecef; background: #f8f9fa; font-weight: 600; color: #495057;">活動時間</th>
+                                    <th style="padding: 12px 15px; text-align: left; border-bottom: 1px solid #e9ecef; background: #f8f9fa; font-weight: 600; color: #495057;">提交時間</th>
+                                    <th style="padding: 12px 15px; text-align: left; border-bottom: 1px solid #e9ecef; background: #f8f9fa; font-weight: 600; color: #495057;">操作</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                ${teacherActivities.map((activity, index) => {
+                                    // 格式化提交時間
+                                    let formattedCreatedAt = '-';
+                                    if (activity.created_at) {
+                                        const date = new Date(activity.created_at);
+                                        const year = date.getFullYear();
+                                        const month = String(date.getMonth() + 1).padStart(2, '0');
+                                        const day = String(date.getDate()).padStart(2, '0');
+                                        const hours = String(date.getHours()).padStart(2, '0');
+                                        const minutes = String(date.getMinutes()).padStart(2, '0');
+                                        formattedCreatedAt = `${year}/${month}/${day} ${hours}:${minutes}`;
+                                    }
+                                    
+                                    return `
+                                        <tr style="transition: background 0.2s;" onmouseover="this.style.background='#f8f9fa'" onmouseout="this.style.background='white'">
+                                            <td style="padding: 12px 15px; text-align: left; border-bottom: 1px solid #e9ecef;">${activity.activity_date}</td>
+                                            <td style="padding: 12px 15px; text-align: left; border-bottom: 1px solid #e9ecef;">${activity.school_name}</td>
+                                            <td style="padding: 12px 15px; text-align: left; border-bottom: 1px solid #e9ecef;">${activity.activity_type}</td>
+                                            <td style="padding: 12px 15px; text-align: left; border-bottom: 1px solid #e9ecef;">${activity.activity_time || '上班日'}</td>
+                                            <td style="padding: 12px 15px; text-align: left; border-bottom: 1px solid #e9ecef;">${formattedCreatedAt}</td>
+                                            <td style="padding: 12px 15px; text-align: left; border-bottom: 1px solid #e9ecef;">
+                                                <button class="btn-view" onclick='viewRecord(${JSON.stringify(activity)})'
+                                                        style="background: #667eea; color: white; border: none; padding: 8px 16px; border-radius: 20px; cursor: pointer; font-size: 14px; transition: all 0.3s ease;">
+                                                    查看
+                                                </button>
+                                            </td>
+                                        </tr>
+                                    `;
+                                }).join('')}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        `;
+        
+        document.getElementById('departmentTeacherListContainer').innerHTML = content;
+        
+        // 平滑滾動到詳細紀錄
+        document.getElementById('departmentTeacherListContainer').scrollIntoView({ behavior: 'smooth', block: 'start' });
     }
     
     // 就讀意願統計 - 科系分布分析
@@ -1244,20 +1672,46 @@ $conn->close();
                         
                         <div style="background: #f8f9fa; padding: 20px; border-radius: 10px; margin-top: 20px;">
                             <h5 style="color: #333; margin-bottom: 15px;">科系詳細統計</h5>
-                            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px;">
-                                ${data.map((item, index) => {
-                                    const colors = ['#667eea', '#28a745', '#ffc107', '#dc3545', '#17a2b8'];
-                                    const color = colors[index % colors.length];
-                                    const total = data.reduce((sum, d) => sum + d.value, 0);
-                                    const percentage = ((item.value / total) * 100).toFixed(1);
-                                    return `
-                                        <div style="background: white; padding: 15px; border-radius: 8px; border-left: 4px solid ${color};">
-                                            <div style="font-weight: bold; color: #333; margin-bottom: 5px;">${item.name}</div>
-                                            <div style="font-size: 1.5em; font-weight: bold; color: ${color};">${item.value}人</div>
-                                            <div style="font-size: 0.9em; color: #666;">${percentage}%</div>
-                                        </div>
-                                    `;
-                                }).join('')}
+                            
+                            <!-- 總報名人數 -->
+                            <div style="background: white; padding: 15px; border-radius: 8px; margin-bottom: 20px; border-left: 4px solid #667eea;">
+                                <div style="font-weight: bold; color: #333; margin-bottom: 5px;">總報名人數</div>
+                                <div style="font-size: 1.5em; font-weight: bold; color: #667eea;">${data.reduce((sum, d) => sum + d.value, 0)}人</div>
+                            </div>
+                            
+                            <!-- 科系列表 -->
+                            <div style="background: white; border-radius: 8px; overflow: hidden;">
+                                <table style="width: 100%; border-collapse: collapse;">
+                                    <thead>
+                                        <tr style="background: #f8f9fa;">
+                                            <th style="padding: 15px; text-align: left; border-bottom: 1px solid #dee2e6; font-weight: 600; color: #495057;">科系名稱</th>
+                                            <th style="padding: 15px; text-align: center; border-bottom: 1px solid #dee2e6; font-weight: 600; color: #495057;">報名人數</th>
+                                            <th style="padding: 15px; text-align: center; border-bottom: 1px solid #dee2e6; font-weight: 600; color: #495057;">百分比</th>
+                                            <th style="padding: 15px; text-align: center; border-bottom: 1px solid #dee2e6; font-weight: 600; color: #495057;">操作</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        ${data.map((item, index) => {
+                                            const colors = ['#667eea', '#28a745', '#ffc107', '#dc3545', '#17a2b8', '#6f42c1', '#fd7e14', '#20c997', '#e83e8c', '#6c757d'];
+                                            const color = colors[index % colors.length];
+                                            const total = data.reduce((sum, d) => sum + d.value, 0);
+                                            const percentage = ((item.value / total) * 100).toFixed(1);
+                                            return `
+                                                <tr style="border-bottom: 1px solid #dee2e6;">
+                                                    <td style="padding: 15px; font-weight: 500; color: #333;">${item.name}</td>
+                                                    <td style="padding: 15px; text-align: center; font-weight: bold; color: #333;">${item.value}人</td>
+                                                    <td style="padding: 15px; text-align: center; color: #666;">${percentage}%</td>
+                                                    <td style="padding: 15px; text-align: center;">
+                                                        <button onclick="showDepartmentStudents('${item.name}')" 
+                                                                style="background: ${color}; color: white; border: none; padding: 8px 16px; border-radius: 20px; cursor: pointer; font-size: 14px; transition: all 0.3s ease;">
+                                                            查看詳情
+                                                        </button>
+                                                    </td>
+                                                </tr>
+                                            `;
+                                        }).join('')}
+                                    </tbody>
+                                </table>
                             </div>
                         </div>
                     </div>
@@ -1278,7 +1732,7 @@ $conn->close();
                             datasets: [{
                                 data: data.map(item => item.value),
                                 backgroundColor: [
-                                    '#667eea', '#28a745', '#ffc107', '#dc3545', '#17a2b8'
+                                    '#667eea', '#28a745', '#ffc107', '#dc3545', '#17a2b8', '#6f42c1', '#fd7e14', '#20c997', '#e83e8c', '#6c757d'
                                 ],
                                 borderWidth: 2,
                                 borderColor: '#fff'
@@ -1882,10 +2336,9 @@ $conn->close();
     function clearEnrollmentCharts() {
         console.log('clearEnrollmentCharts 被調用');
         
-        // 清除所有就讀意願相關的Chart.js實例
+        // 清除所有就讀意願相關的Chart.js實例，但保留科系分布分析
         Chart.helpers.each(Chart.instances, function(instance) {
-            if (instance.canvas.id.includes('enrollmentDepartmentChart') || 
-                instance.canvas.id.includes('enrollmentSystemChart') ||
+            if (instance.canvas.id.includes('enrollmentSystemChart') ||
                 instance.canvas.id.includes('enrollmentGradeChart') ||
                 instance.canvas.id.includes('enrollmentGenderChart') ||
                 instance.canvas.id.includes('enrollmentIdentityChart') ||
@@ -1894,13 +2347,322 @@ $conn->close();
             }
         });
         
-        document.getElementById('enrollmentAnalyticsContent').innerHTML = `
-            <div class="empty-state">
-                <i class="fas fa-graduation-cap fa-3x" style="margin-bottom: 16px;"></i>
-                <h4>選擇上方的統計類型來查看詳細分析</h4>
-                <p>提供科系分布、學制選擇、年級分布、性別比例等多維度統計</p>
+        // 重新顯示科系分布分析，確保它始終顯示
+        showEnrollmentDepartmentStats();
+    }
+    
+    // 顯示續招報名科系學生詳情
+    function showContinuedAdmissionDepartmentStudents(departmentName) {
+        console.log('顯示續招報名科系學生詳情:', departmentName);
+
+        // 顯示載入中
+        const loadingContent = `
+            <div style="background: white; border-radius: 10px; padding: 20px; max-width: 800px; max-height: 600px; overflow-y: auto;">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; border-bottom: 1px solid #dee2e6; padding-bottom: 15px;">
+                    <h4 style="margin: 0; color: #333;">
+                        <i class="fas fa-users"></i> ${departmentName} - 學生名單
+                    </h4>
+                    <button onclick="closeStudentModal()" style="background: #dc3545; color: white; border: none; padding: 8px 16px; border-radius: 5px; cursor: pointer;">
+                        <i class="fas fa-times"></i> 關閉
+                    </button>
+                </div>
+                <div style="text-align: center; padding: 40px;">
+                    <i class="fas fa-spinner fa-spin fa-2x" style="color: #667eea; margin-bottom: 15px;"></i>
+                    <p>載入學生資料中...</p>
+                </div>
             </div>
         `;
+
+        showStudentModal(loadingContent);
+
+        // 從API獲取該科系的學生資料
+        fetch('../../Topics-frontend/frontend/api/continued_admission_department_students_api.php?department=' + encodeURIComponent(departmentName))
+            .then(response => response.json())
+            .then(data => {
+                if (data.error) {
+                    const errorContent = `
+                        <div style="background: white; border-radius: 10px; padding: 20px; max-width: 800px; max-height: 600px; overflow-y: auto;">
+                            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; border-bottom: 1px solid #dee2e6; padding-bottom: 15px;">
+                                <h4 style="margin: 0; color: #333;">
+                                    <i class="fas fa-users"></i> ${departmentName} - 學生名單
+                                </h4>
+                                <button onclick="closeStudentModal()" style="background: #dc3545; color: white; border: none; padding: 8px 16px; border-radius: 5px; cursor: pointer;">
+                                    <i class="fas fa-times"></i> 關閉
+                                </button>
+                            </div>
+                            <div style="text-align: center; padding: 40px; color: #dc3545;">
+                                <i class="fas fa-exclamation-triangle fa-2x" style="margin-bottom: 15px;"></i>
+                                <p>載入學生資料失敗: ${data.error}</p>
+                            </div>
+                        </div>
+                    `;
+                    document.getElementById('studentModal').innerHTML = errorContent;
+                    return;
+                }
+
+                // 創建模態視窗內容
+                const modalContent = `
+                    <div style="background: white; border-radius: 10px; padding: 20px; max-width: 800px; max-height: 600px; overflow-y: auto;">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; border-bottom: 1px solid #dee2e6; padding-bottom: 15px;">
+                            <h4 style="margin: 0; color: #333;">
+                                <i class="fas fa-users"></i> ${departmentName} - 學生名單
+                            </h4>
+                            <button onclick="closeStudentModal()" style="background: #dc3545; color: white; border: none; padding: 8px 16px; border-radius: 5px; cursor: pointer;">
+                                <i class="fas fa-times"></i> 關閉
+                            </button>
+                        </div>
+
+                        <div style="margin-bottom: 15px;">
+                            <span style="background: #667eea; color: white; padding: 5px 12px; border-radius: 15px; font-size: 14px;">
+                                共 ${data.length} 位學生
+                            </span>
+                        </div>
+
+                        <div style="background: #f8f9fa; border-radius: 8px; overflow: hidden;">
+                            <table style="width: 100%; border-collapse: collapse;">
+                                <thead>
+                                    <tr style="background: #e9ecef;">
+                                        <th style="padding: 12px; text-align: left; border-bottom: 1px solid #dee2e6; font-weight: 600; color: #495057;">姓名</th>
+                                        <th style="padding: 12px; text-align: left; border-bottom: 1px solid #dee2e6; font-weight: 600; color: #495057;">學校</th>
+                                        <th style="padding: 12px; text-align: center; border-bottom: 1px solid #dee2e6; font-weight: 600; color: #495057;">年級</th>
+                                        <th style="padding: 12px; text-align: left; border-bottom: 1px solid #dee2e6; font-weight: 600; color: #495057;">聯絡電話</th>
+                                        <th style="padding: 12px; text-align: center; border-bottom: 1px solid #dee2e6; font-weight: 600; color: #495057;">報名時間</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    ${data.map((student, index) => `
+                                        <tr style="border-bottom: 1px solid #dee2e6;">
+                                            <td style="padding: 12px; font-weight: 500; color: #333;">${student.name || '未填寫'}</td>
+                                            <td style="padding: 12px; color: #666;">${student.school || '未填寫'}</td>
+                                            <td style="padding: 12px; text-align: center; color: #666;">${student.grade || '未填寫'}</td>
+                                            <td style="padding: 12px; color: #666;">
+                                                ${student.phone1 ? `<div style="margin-bottom: 2px;"><i class="fas fa-phone" style="color: #667eea; margin-right: 5px;"></i>${student.phone1}</div>` : ''}
+                                                ${student.phone2 ? `<div><i class="fas fa-phone" style="color: #667eea; margin-right: 5px;"></i>${student.phone2}</div>` : ''}
+                                                ${!student.phone1 && !student.phone2 ? '未填寫' : ''}
+                                            </td>
+                                            <td style="padding: 12px; text-align: center; color: #666; font-size: 0.9em;">${student.created_at ? new Date(student.created_at).toLocaleDateString('zh-TW') : '未填寫'}</td>
+                                        </tr>
+                                    `).join('')}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                `;
+
+                // 更新模態視窗內容
+                document.getElementById('studentModal').innerHTML = modalContent;
+            })
+            .catch(error => {
+                console.error('載入學生資料失敗:', error);
+                const errorContent = `
+                    <div style="background: white; border-radius: 10px; padding: 20px; max-width: 800px; max-height: 600px; overflow-y: auto;">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; border-bottom: 1px solid #dee2e6; padding-bottom: 15px;">
+                            <h4 style="margin: 0; color: #333;">
+                                <i class="fas fa-users"></i> ${departmentName} - 學生名單
+                            </h4>
+                            <button onclick="closeStudentModal()" style="background: #dc3545; color: white; border: none; padding: 8px 16px; border-radius: 5px; cursor: pointer;">
+                                <i class="fas fa-times"></i> 關閉
+                            </button>
+                        </div>
+                        <div style="text-align: center; padding: 40px; color: #dc3545;">
+                            <i class="fas fa-exclamation-triangle fa-2x" style="margin-bottom: 15px;"></i>
+                            <p>載入學生資料失敗，請稍後再試</p>
+                        </div>
+                    </div>
+                `;
+                document.getElementById('studentModal').innerHTML = errorContent;
+            });
+    }
+
+    // 顯示科系學生詳情
+    function showDepartmentStudents(departmentName) {
+        console.log('顯示科系學生詳情:', departmentName);
+        
+        // 顯示載入中
+        const loadingContent = `
+            <div style="background: white; border-radius: 10px; padding: 20px; max-width: 800px; max-height: 600px; overflow-y: auto;">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; border-bottom: 1px solid #dee2e6; padding-bottom: 15px;">
+                    <h4 style="margin: 0; color: #333;">
+                        <i class="fas fa-users"></i> ${departmentName} - 學生名單
+                    </h4>
+                    <button onclick="closeStudentModal()" style="background: #dc3545; color: white; border: none; padding: 8px 16px; border-radius: 5px; cursor: pointer;">
+                        <i class="fas fa-times"></i> 關閉
+                    </button>
+                </div>
+                <div style="text-align: center; padding: 40px;">
+                    <i class="fas fa-spinner fa-spin fa-2x" style="color: #667eea; margin-bottom: 15px;"></i>
+                    <p>載入學生資料中...</p>
+                </div>
+            </div>
+        `;
+        
+        showStudentModal(loadingContent);
+        
+        // 從API獲取該科系的學生資料
+        fetch('../../Topics-frontend/frontend/api/enrollment_department_students_api.php?department=' + encodeURIComponent(departmentName))
+            .then(response => response.json())
+            .then(data => {
+                if (data.error) {
+                    const errorContent = `
+                        <div style="background: white; border-radius: 10px; padding: 20px; max-width: 800px; max-height: 600px; overflow-y: auto;">
+                            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; border-bottom: 1px solid #dee2e6; padding-bottom: 15px;">
+                                <h4 style="margin: 0; color: #333;">
+                                    <i class="fas fa-users"></i> ${departmentName} - 學生名單
+                                </h4>
+                                <button onclick="closeStudentModal()" style="background: #dc3545; color: white; border: none; padding: 8px 16px; border-radius: 5px; cursor: pointer;">
+                                    <i class="fas fa-times"></i> 關閉
+                                </button>
+                            </div>
+                            <div style="text-align: center; padding: 40px; color: #dc3545;">
+                                <i class="fas fa-exclamation-triangle fa-2x" style="margin-bottom: 15px;"></i>
+                                <p>載入學生資料失敗: ${data.error}</p>
+                            </div>
+                        </div>
+                    `;
+                    document.getElementById('studentModal').innerHTML = errorContent;
+                    return;
+                }
+                
+                // 創建模態視窗內容
+                const modalContent = `
+                    <div style="background: white; border-radius: 10px; padding: 20px; max-width: 800px; max-height: 600px; overflow-y: auto;">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; border-bottom: 1px solid #dee2e6; padding-bottom: 15px;">
+                            <h4 style="margin: 0; color: #333;">
+                                <i class="fas fa-users"></i> ${departmentName} - 學生名單
+                            </h4>
+                            <button onclick="closeStudentModal()" style="background: #dc3545; color: white; border: none; padding: 8px 16px; border-radius: 5px; cursor: pointer;">
+                                <i class="fas fa-times"></i> 關閉
+                            </button>
+                        </div>
+                        
+                        <div style="margin-bottom: 15px;">
+                            <span style="background: #667eea; color: white; padding: 5px 12px; border-radius: 15px; font-size: 14px;">
+                                共 ${data.length} 位學生
+                            </span>
+                        </div>
+                        
+                        <div style="background: #f8f9fa; border-radius: 8px; overflow: hidden;">
+                            <table style="width: 100%; border-collapse: collapse;">
+                                <thead>
+                                    <tr style="background: #e9ecef;">
+                                        <th style="padding: 12px; text-align: left; border-bottom: 1px solid #dee2e6; font-weight: 600; color: #495057;">姓名</th>
+                                        <th style="padding: 12px; text-align: left; border-bottom: 1px solid #dee2e6; font-weight: 600; color: #495057;">學校</th>
+                                        <th style="padding: 12px; text-align: center; border-bottom: 1px solid #dee2e6; font-weight: 600; color: #495057;">年級</th>
+                                        <th style="padding: 12px; text-align: left; border-bottom: 1px solid #dee2e6; font-weight: 600; color: #495057;">聯絡電話</th>
+                                        <th style="padding: 12px; text-align: center; border-bottom: 1px solid #dee2e6; font-weight: 600; color: #495057;">報名時間</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    ${data.map((student, index) => `
+                                        <tr style="border-bottom: 1px solid #dee2e6;">
+                                            <td style="padding: 12px; font-weight: 500; color: #333;">${student.name || '未填寫'}</td>
+                                            <td style="padding: 12px; color: #666;">${student.school || '未填寫'}</td>
+                                            <td style="padding: 12px; text-align: center; color: #666;">${student.grade || '未填寫'}</td>
+                                            <td style="padding: 12px; color: #666;">
+                                                ${student.phone1 ? `<div style="margin-bottom: 2px;"><i class="fas fa-phone" style="color: #667eea; margin-right: 5px;"></i>${student.phone1}</div>` : ''}
+                                                ${student.phone2 ? `<div><i class="fas fa-phone" style="color: #667eea; margin-right: 5px;"></i>${student.phone2}</div>` : ''}
+                                                ${!student.phone1 && !student.phone2 ? '未填寫' : ''}
+                                            </td>
+                                            <td style="padding: 12px; text-align: center; color: #666; font-size: 0.9em;">${student.created_at ? new Date(student.created_at).toLocaleDateString('zh-TW') : '未填寫'}</td>
+                                        </tr>
+                                    `).join('')}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                `;
+                
+                // 更新模態視窗內容
+                document.getElementById('studentModal').innerHTML = modalContent;
+            })
+            .catch(error => {
+                console.error('載入學生資料失敗:', error);
+                const errorContent = `
+                    <div style="background: white; border-radius: 10px; padding: 20px; max-width: 800px; max-height: 600px; overflow-y: auto;">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; border-bottom: 1px solid #dee2e6; padding-bottom: 15px;">
+                            <h4 style="margin: 0; color: #333;">
+                                <i class="fas fa-users"></i> ${departmentName} - 學生名單
+                            </h4>
+                            <button onclick="closeStudentModal()" style="background: #dc3545; color: white; border: none; padding: 8px 16px; border-radius: 5px; cursor: pointer;">
+                                <i class="fas fa-times"></i> 關閉
+                            </button>
+                        </div>
+                        <div style="text-align: center; padding: 40px; color: #dc3545;">
+                            <i class="fas fa-exclamation-triangle fa-2x" style="margin-bottom: 15px;"></i>
+                            <p>載入學生資料失敗，請稍後再試</p>
+                        </div>
+                    </div>
+                `;
+                document.getElementById('studentModal').innerHTML = errorContent;
+            });
+    }
+    
+    // 生成模擬學生資料
+    function generateMockStudents(departmentName) {
+        const studentCounts = {
+            '嬰幼兒保育科': 5,
+            '護理科': 4,
+            '無特定': 1,
+            '資訊管理科': 1,
+            '應用外語科': 1,
+            '視光科': 1,
+            '企業管理科': 1
+        };
+        
+        const count = studentCounts[departmentName] || 1;
+        const students = [];
+        
+        const names = ['張小明', '李美華', '王大雄', '陳小芳', '林志強', '黃淑芬', '劉建國', '吳雅婷'];
+        const schools = ['台北市立第一中學', '新北市立第二中學', '桃園市立第三中學', '台中市立第四中學', '台南市立第五中學'];
+        const grades = ['一年級', '二年級', '三年級'];
+        
+        for (let i = 0; i < count; i++) {
+            students.push({
+                name: names[i] || `學生${i + 1}`,
+                school: schools[i % schools.length],
+                grade: grades[i % grades.length],
+                created_at: new Date(Date.now() - Math.random() * 30 * 24 * 60 * 60 * 1000).toLocaleDateString('zh-TW')
+            });
+        }
+        
+        return students;
+    }
+    
+    // 顯示學生模態視窗
+    function showStudentModal(content) {
+        // 創建模態視窗背景
+        const modal = document.createElement('div');
+        modal.id = 'studentModal';
+        modal.style.cssText = `
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.5);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            z-index: 10000;
+        `;
+        
+        modal.innerHTML = content;
+        document.body.appendChild(modal);
+        
+        // 點擊背景關閉模態視窗
+        modal.addEventListener('click', function(e) {
+            if (e.target === modal) {
+                closeStudentModal();
+            }
+        });
+    }
+    
+    // 關閉學生模態視窗
+    function closeStudentModal() {
+        const modal = document.getElementById('studentModal');
+        if (modal) {
+            modal.remove();
+        }
     }
     
     // 續招報名統計 - 性別分布分析
@@ -2152,20 +2914,46 @@ $conn->close();
                         
                         <div style="background: #f8f9fa; padding: 20px; border-radius: 10px; margin-top: 20px;">
                             <h5 style="color: #333; margin-bottom: 15px;">科系詳細統計</h5>
-                            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px;">
-                                ${data.map((item, index) => {
-                                    const colors = ['#667eea', '#28a745', '#ffc107', '#dc3545', '#17a2b8'];
-                                    const color = colors[index % colors.length];
-                                    const total = data.reduce((sum, d) => sum + d.value, 0);
-                                    const percentage = ((item.value / total) * 100).toFixed(1);
-                                    return `
-                                        <div style="background: white; padding: 15px; border-radius: 8px; border-left: 4px solid ${color};">
-                                            <div style="font-weight: bold; color: #333; margin-bottom: 5px;">${item.name}</div>
-                                            <div style="font-size: 1.5em; font-weight: bold; color: ${color};">${item.value}次</div>
-                                            <div style="font-size: 0.9em; color: #666;">${percentage}%</div>
-                                        </div>
-                                    `;
-                                }).join('')}
+                            
+                            <!-- 總報名人數 -->
+                            <div style="background: white; padding: 15px; border-radius: 8px; margin-bottom: 20px; border-left: 4px solid #667eea;">
+                                <div style="font-weight: bold; color: #333; margin-bottom: 5px;">總報名人數</div>
+                                <div style="font-size: 1.5em; font-weight: bold; color: #667eea;">${data.reduce((sum, d) => sum + d.value, 0)}人</div>
+                            </div>
+                            
+                            <!-- 科系列表 -->
+                            <div style="background: white; border-radius: 8px; overflow: hidden;">
+                                <table style="width: 100%; border-collapse: collapse;">
+                                    <thead>
+                                        <tr style="background: #f8f9fa;">
+                                            <th style="padding: 15px; text-align: left; border-bottom: 1px solid #dee2e6; font-weight: 600; color: #495057;">科系名稱</th>
+                                            <th style="padding: 15px; text-align: center; border-bottom: 1px solid #dee2e6; font-weight: 600; color: #495057;">報名人數</th>
+                                            <th style="padding: 15px; text-align: center; border-bottom: 1px solid #dee2e6; font-weight: 600; color: #495057;">百分比</th>
+                                            <th style="padding: 15px; text-align: center; border-bottom: 1px solid #dee2e6; font-weight: 600; color: #495057;">操作</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        ${data.map((item, index) => {
+                                            const colors = ['#667eea', '#28a745', '#ffc107', '#dc3545', '#17a2b8', '#6f42c1', '#fd7e14', '#20c997', '#e83e8c', '#6c757d'];
+                                            const color = colors[index % colors.length];
+                                            const total = data.reduce((sum, d) => sum + d.value, 0);
+                                            const percentage = ((item.value / total) * 100).toFixed(1);
+                                            return `
+                                                <tr style="border-bottom: 1px solid #dee2e6;">
+                                                    <td style="padding: 15px; font-weight: 500; color: #333;">${item.name}</td>
+                                                    <td style="padding: 15px; text-align: center; font-weight: bold; color: #333;">${item.value}人</td>
+                                                    <td style="padding: 15px; text-align: center; color: #666;">${percentage}%</td>
+                                                    <td style="padding: 15px; text-align: center;">
+                                                        <button onclick="showContinuedAdmissionDepartmentStudents('${item.name}')"
+                                                                style="background: ${color}; color: white; border: none; padding: 8px 16px; border-radius: 20px; cursor: pointer; font-size: 14px; transition: all 0.3s ease;">
+                                                            查看詳情
+                                                        </button>
+                                                    </td>
+                                                </tr>
+                                            `;
+                                        }).join('')}
+                                    </tbody>
+                                </table>
                             </div>
                         </div>
                     </div>
@@ -2458,24 +3246,18 @@ $conn->close();
     function clearContinuedAdmissionCharts() {
         console.log('clearContinuedAdmissionCharts 被調用');
         
-        // 清除所有續招報名相關的Chart.js實例
+        // 清除所有續招報名相關的Chart.js實例，但保留志願選擇分析
         Chart.helpers.each(Chart.instances, function(instance) {
             if (instance.canvas.id.includes('continuedAdmissionGenderChart') || 
                 instance.canvas.id.includes('continuedAdmissionCityChart') ||
-                instance.canvas.id.includes('continuedAdmissionChoicesChart') ||
                 instance.canvas.id.includes('continuedAdmissionMonthlyChart') ||
                 instance.canvas.id.includes('continuedAdmissionStatusChart')) {
                 instance.destroy();
             }
         });
         
-        document.getElementById('continuedAdmissionAnalyticsContent').innerHTML = `
-            <div class="empty-state">
-                <i class="fas fa-file-alt fa-3x" style="margin-bottom: 16px;"></i>
-                <h4>選擇上方的統計類型來查看詳細分析</h4>
-                <p>提供性別分布、縣市分布、志願選擇、月度趨勢、審核狀態等多維度統計</p>
-            </div>
-        `;
+        // 重新顯示志願選擇分析，確保它始終顯示
+        showContinuedAdmissionChoicesStats();
     }
     
     // 五專入學說明會統計 - 年級分布分析
@@ -3170,40 +3952,131 @@ $conn->close();
     document.addEventListener('DOMContentLoaded', function() {
         console.log('DOM已載入，開始初始化...');
         
+        // 如果是學校行政人員且在教師列表視圖，自動顯示科系招生總覽
+        if (isSchoolAdmin && isTeacherListView) {
+            console.log('學校行政人員登入，自動顯示科系招生總覽');
+            setTimeout(() => {
+                showDepartmentOverviewStats();
+            }, 500);
+        }
+        
+        // 自動顯示就讀意願統計的科系分布分析
+        setTimeout(() => {
+            showEnrollmentDepartmentStats();
+        }, 1000);
+        
+        // 自動顯示續招報名統計的志願選擇分析
+        setTimeout(() => {
+            showContinuedAdmissionChoicesStats();
+        }, 1500);
+        
         // 初始化完成
         console.log('統計分析系統初始化完成');
         
         const searchInput = document.getElementById('searchInput');
+        const teacherNameFilter = document.getElementById('teacherNameFilter');
+        const departmentFilter = document.getElementById('departmentFilter');
         const table = document.getElementById('recordsTable');
         const rows = table ? table.getElementsByTagName('tbody')[0].getElementsByTagName('tr') : [];
 
-        if (searchInput) {
-            searchInput.addEventListener('keyup', function() {
-                const filter = searchInput.value.toLowerCase();
+        // 統一的篩選函數
+        function applyFilters() {
+            const searchValue = searchInput ? searchInput.value.toLowerCase() : '';
+            const teacherNameValue = teacherNameFilter ? teacherNameFilter.value : '';
+            const departmentValue = departmentFilter ? departmentFilter.value : '';
+            let visibleCount = 0;
 
                 for (let i = 0; i < rows.length; i++) {
                     const cells = rows[i].getElementsByTagName('td');
-                    let text = '';
+                let shouldShow = true;
 
                     if (isTeacherListView) {
-                        // 搜尋教師姓名和系所
-                        if (cells[0]) text += cells[0].textContent || cells[0].innerText;
-                        if (cells[1]) text += (cells[1].textContent || cells[1].innerText);
-                    } else {
-                        // 搜尋學校名稱和活動類型
-                        if (cells[1]) text += cells[1].textContent || cells[1].innerText;
-                        if (cells[2]) text += (cells[2].textContent || cells[2].innerText);
+                    const teacherName = cells[0] ? (cells[0].textContent || cells[0].innerText) : '';
+                    const department = cells[1] ? (cells[1].textContent || cells[1].innerText) : '';
+                    
+                    // 搜尋框篩選（同時搜尋姓名和系所）
+                    if (searchValue) {
+                        const searchText = teacherName + department;
+                        if (searchText.toLowerCase().indexOf(searchValue) === -1) {
+                            shouldShow = false;
+                        }
                     }
+                    
+                    // 教師姓名下拉選單篩選
+                    if (teacherNameValue && teacherName !== teacherNameValue) {
+                        shouldShow = false;
+                    }
+                    
+                    // 科系下拉選單篩選
+                    if (departmentValue && department !== departmentValue) {
+                        shouldShow = false;
+                    }
+                    } else {
+                    // 詳細記錄視圖的搜尋
+                    const schoolName = cells[1] ? (cells[1].textContent || cells[1].innerText) : '';
+                    const activityType = cells[2] ? (cells[2].textContent || cells[2].innerText) : '';
+                    const searchText = schoolName + activityType;
+                    
+                    if (searchValue && searchText.toLowerCase().indexOf(searchValue) === -1) {
+                        shouldShow = false;
+                    }
+                }
 
-                    if (text.toLowerCase().indexOf(filter) > -1) {
+                if (shouldShow) {
                         rows[i].style.display = "";
+                    visibleCount++;
                     } else {
                         rows[i].style.display = "none";
                     }
                 }
-            });
+            
+            // 更新顯示的教師數量
+            const totalCountElement = document.getElementById('totalTeacherCount');
+            if (totalCountElement) {
+                totalCountElement.textContent = visibleCount;
+            }
+        }
+
+        // 為各個篩選控制項添加事件監聽器
+        if (searchInput) {
+            searchInput.addEventListener('keyup', applyFilters);
+        }
+        
+        if (teacherNameFilter) {
+            teacherNameFilter.addEventListener('change', applyFilters);
+        }
+        
+        if (departmentFilter) {
+            departmentFilter.addEventListener('change', applyFilters);
         }
     });
+    
+    // 重置篩選
+    function resetFilters() {
+        const searchInput = document.getElementById('searchInput');
+        const teacherNameFilter = document.getElementById('teacherNameFilter');
+        const departmentFilter = document.getElementById('departmentFilter');
+        
+        if (searchInput) searchInput.value = '';
+        if (teacherNameFilter) teacherNameFilter.value = '';
+        if (departmentFilter) departmentFilter.value = '';
+        
+        // 重新應用篩選（實際上是清除所有篩選）
+        const table = document.getElementById('recordsTable');
+        if (table) {
+            const rows = table.getElementsByTagName('tbody')[0].getElementsByTagName('tr');
+            let totalCount = 0;
+            for (let i = 0; i < rows.length; i++) {
+                rows[i].style.display = "";
+                totalCount++;
+            }
+            
+            const totalCountElement = document.getElementById('totalTeacherCount');
+            if (totalCountElement) {
+                totalCountElement.textContent = totalCount;
+            }
+        }
+    }
 
     // 查看記錄詳情
     function viewRecord(record) {
