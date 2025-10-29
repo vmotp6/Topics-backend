@@ -55,7 +55,6 @@ try {
     $tableExists = $stmt->rowCount() > 0;
     
     if ($tableExists) {
-<<<<<<< HEAD
         // 從 admission_courses 讀取科系列表，並與 department_quotas 關聯
         $sql = "
             SELECT 
@@ -67,22 +66,9 @@ try {
             ORDER BY ac.sort_order, ac.course_name
         ";
         $stmt = $pdo->prepare($sql);
-=======
-        if ($is_imd_user) {
-            // IMD用戶只能看到資管科的名額
-            $stmt = $pdo->prepare("SELECT * FROM department_quotas 
-                                  WHERE is_active = 1 
-                                  AND (department_name LIKE '%資管%' OR department_name LIKE '%資訊管理%')
-                                  ORDER BY department_name");
-        } else {
-            // 一般管理員可以看到所有科系名額
-            $stmt = $pdo->prepare("SELECT * FROM department_quotas WHERE is_active = 1 ORDER BY department_name");
-        }
->>>>>>> 3af27d92fe85b1a4ea34c4ed14f7737ef52baf07
         $stmt->execute();
         $courses = $stmt->fetchAll(PDO::FETCH_ASSOC);
         
-<<<<<<< HEAD
         // 先一次性獲取所有已錄取的學生志願
         $stmt_approved = $pdo->prepare("SELECT choices FROM continued_admission WHERE status = 'approved'");
         $stmt_approved->execute();
@@ -106,26 +92,6 @@ try {
                 'name' => $course['department_name'],
                 'code' => 'N/A', // 移除 department_code 的讀取
                 'total_quota' => (int)$course['total_quota'],
-=======
-        // 計算各科系已錄取人數
-        foreach ($departments as $dept) {
-            if ($is_imd_user) {
-                // IMD用戶只計算資管科相關的錄取人數
-                $stmt = $pdo->prepare("SELECT COUNT(*) as count FROM continued_admission 
-                                      WHERE status = 'approved' 
-                                      AND (JSON_CONTAINS(choices, JSON_QUOTE(?)) 
-                                      OR JSON_SEARCH(choices, 'one', '%資管%') IS NOT NULL
-                                      OR JSON_SEARCH(choices, 'one', '%資訊管理%') IS NOT NULL)");
-            } else {
-                // 一般管理員計算所有科系的錄取人數
-                $stmt = $pdo->prepare("SELECT COUNT(*) as count FROM continued_admission WHERE status = 'approved' AND JSON_CONTAINS(choices, JSON_QUOTE(?))");
-            }
-            $stmt->execute([$dept['department_name']]);
-            $result = $stmt->fetch(PDO::FETCH_ASSOC);
-            $department_stats[$dept['department_code']] = [
-                'name' => $dept['department_name'],
-                'total_quota' => $dept['total_quota'],
->>>>>>> 3af27d92fe85b1a4ea34c4ed14f7737ef52baf07
                 'current_enrolled' => $result['count'],
                 'remaining' => (int)$course['total_quota'] - $result['count']
             ];
