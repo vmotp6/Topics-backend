@@ -33,6 +33,10 @@ $current_page = basename($_SERVER['PHP_SELF'], '.php');
             <i class="fas fa-cog"></i>
             <span>頁面管理</span>
         </a>
+        <a href="ollama_admin.php" class="menu-item <?php echo $current_page === 'ollama_admin' ? 'active' : ''; ?>">
+            <i class="fas fa-robot"></i>
+            <span>AI模型管理</span>
+        </a>
         <a href="settings.php" class="menu-item <?php echo $current_page === 'settings' ? 'active' : ''; ?>">
             <i class="fas fa-cog"></i>
             <span>場次設定</span>

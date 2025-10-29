@@ -25,6 +25,7 @@ $page_title = '系統概覽';
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Topics 後台管理系統</title>
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
     <style>
         * {
             margin: 0;
@@ -228,6 +229,7 @@ $page_title = '系統概覽';
             color: #40a9ff;
         }
         
+
         /* 響應式設計 */
         @media (max-width: 768px) {
             .stats-grid {
@@ -237,6 +239,15 @@ $page_title = '系統概覽';
             .welcome-card {
                 flex-direction: column;
                 text-align: center;
+            }
+
+            .nav-tabs .nav-link {
+                padding: 12px 16px;
+                font-size: 14px;
+            }
+
+            .tab-content {
+                padding: 16px;
             }
         }
     </style>
@@ -280,11 +291,16 @@ $page_title = '系統概覽';
                                 <li>管理用戶資料</li>
                                 <li>編輯用戶資訊</li>
                                 <li>重置用戶密碼</li>
+                                <li>管理 AI 模型</li>
                             </ul>
                             <div class="welcome-actions">
                                 <a href="users.php" class="btn btn-primary">
                                     <i class="fas fa-users"></i>
                                     前往使用者管理
+                                </a>
+                                <a href="ollama_admin.php" class="btn btn-secondary">
+                                    <i class="fas fa-robot"></i>
+                                    AI 模型管理
                                 </a>
                             </div>
                         </div>
@@ -294,6 +310,8 @@ $page_title = '系統概覽';
         </div>
     </div>
     
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="https://code.jquery.com/jquery-3.7.0.min.js"></script>
     <script>
     const API_BASE_URL = 'http://100.79.58.120:5001';
     
@@ -377,6 +395,7 @@ $page_title = '系統概覽';
             messageContainer.innerHTML = '';
         }, 3000);
     }
+    
     
     // 頁面載入時執行
     document.addEventListener('DOMContentLoaded', function() {

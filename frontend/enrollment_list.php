@@ -35,6 +35,21 @@ $stmt->execute();
 $result = $stmt->get_result();
 $enrollments = $result->fetch_all(MYSQLI_ASSOC);
 
+// 如果是IMD用戶，獲取老師列表
+$teachers = [];
+if ($is_imd_user) {
+    $teacher_stmt = $conn->prepare("
+        SELECT u.id, u.username, t.name, t.department 
+        FROM user u 
+        LEFT JOIN teacher t ON u.id = t.user_id 
+        WHERE u.role = '老師' 
+        ORDER BY t.name ASC
+    ");
+    $teacher_stmt->execute();
+    $teacher_result = $teacher_stmt->get_result();
+    $teachers = $teacher_result->fetch_all(MYSQLI_ASSOC);
+}
+
 $conn->close();
 ?>
 <!DOCTYPE html>
@@ -107,6 +122,153 @@ $conn->close();
         }
 
         .empty-state { text-align: center; padding: 40px; color: var(--text-secondary-color); }
+
+        .assign-btn {
+            background: var(--primary-color);
+            color: white;
+            border: none;
+            padding: 6px 12px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 12px;
+            transition: all 0.3s;
+        }
+        .assign-btn:hover {
+            background: #40a9ff;
+            transform: translateY(-1px);
+        }
+        .assign-btn i {
+            margin-right: 4px;
+        }
+
+        .assigned-status {
+            color: #28a745;
+            font-size: 12px;
+            font-weight: 500;
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+        }
+
+        .assigned-status i {
+            color: #28a745;
+        }
+
+        /* 彈出視窗樣式 */
+        .modal {
+            position: fixed;
+            z-index: 1000;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0,0,0,0.5);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .modal-content {
+            background-color: white;
+            border-radius: 8px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.15);
+            width: 90%;
+            max-width: 500px;
+            max-height: 80vh;
+            overflow-y: auto;
+        }
+        .modal-header {
+            padding: 20px;
+            border-bottom: 1px solid var(--border-color);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .modal-header h3 {
+            margin: 0;
+            color: var(--text-color);
+        }
+        .close {
+            font-size: 24px;
+            font-weight: bold;
+            cursor: pointer;
+            color: var(--text-secondary-color);
+        }
+        .close:hover {
+            color: var(--text-color);
+        }
+        .modal-body {
+            padding: 20px;
+        }
+        .modal-body p {
+            margin-bottom: 16px;
+            font-size: 16px;
+        }
+        .teacher-list h4 {
+            margin-bottom: 12px;
+            color: var(--text-color);
+        }
+        .teacher-options {
+            max-height: 300px;
+            overflow-y: auto;
+        }
+        .teacher-option {
+            display: block;
+            padding: 12px;
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            margin-bottom: 8px;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+        .teacher-option:hover {
+            background-color: #f5f5f5;
+            border-color: var(--primary-color);
+        }
+        .teacher-option input[type="radio"] {
+            margin-right: 12px;
+        }
+        .teacher-info {
+            display: inline-block;
+            vertical-align: top;
+        }
+        .teacher-info strong {
+            display: block;
+            color: var(--text-color);
+            margin-bottom: 4px;
+        }
+        .teacher-dept {
+            color: var(--text-secondary-color);
+            font-size: 14px;
+        }
+        .modal-footer {
+            padding: 20px;
+            border-top: 1px solid var(--border-color);
+            display: flex;
+            justify-content: flex-end;
+            gap: 12px;
+        }
+        .btn-cancel, .btn-confirm {
+            padding: 8px 16px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+            transition: all 0.3s;
+        }
+        .btn-cancel {
+            background-color: #f5f5f5;
+            color: var(--text-color);
+        }
+        .btn-cancel:hover {
+            background-color: #e8e8e8;
+        }
+        .btn-confirm {
+            background-color: var(--primary-color);
+            color: white;
+        }
+        .btn-confirm:hover {
+            background-color: #40a9ff;
+        }
     </style>
 </head>
 <body>
@@ -151,6 +313,9 @@ $conn->close();
                                         <th onclick="sortTable(13)">備註</th>
                                         <th onclick="sortTable(14)">狀態</th>
                                         <th onclick="sortTable(15, 'date')">填寫日期</th>
+                                        <?php if ($is_imd_user): ?>
+                                        <th>操作</th>
+                                        <?php endif; ?>
                                     </tr>
                                 </thead>
                                 <tbody>
@@ -172,6 +337,19 @@ $conn->close();
                                         <td><?php echo htmlspecialchars($item['remarks'] ?? '無'); ?></td>
                                         <td><?php echo htmlspecialchars($item['status'] ?? 'pending'); ?></td>
                                         <td><?php echo date('Y/m/d H:i', strtotime($item['created_at'])); ?></td>
+                                        <?php if ($is_imd_user): ?>
+                                        <td>
+                                            <?php if (isset($item['assigned_teacher_id']) && $item['assigned_teacher_id'] !== null): ?>
+                                                <span class="assigned-status">
+                                                    <i class="fas fa-check-circle"></i> 已分配
+                                                </span>
+                                            <?php else: ?>
+                                                <button class="assign-btn" onclick="openAssignModal(<?php echo $item['id']; ?>, '<?php echo htmlspecialchars($item['name']); ?>')">
+                                                    <i class="fas fa-user-plus"></i> 分配
+                                                </button>
+                                            <?php endif; ?>
+                                        </td>
+                                        <?php endif; ?>
                                     </tr>
                                     <?php endforeach; ?>
                                 </tbody>
@@ -182,6 +360,39 @@ $conn->close();
             </div>
         </div>
     </div>
+
+    <!-- 分配學生彈出視窗 -->
+    <?php if ($is_imd_user): ?>
+    <div id="assignModal" class="modal" style="display: none;">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>分配學生</h3>
+                <span class="close" onclick="closeAssignModal()">&times;</span>
+            </div>
+            <div class="modal-body">
+                <p>學生：<span id="studentName"></span></p>
+                <div class="teacher-list">
+                    <h4>選擇老師：</h4>
+                    <div class="teacher-options">
+                        <?php foreach ($teachers as $teacher): ?>
+                        <label class="teacher-option">
+                            <input type="radio" name="teacher" value="<?php echo $teacher['id']; ?>">
+                            <div class="teacher-info">
+                                <strong><?php echo htmlspecialchars($teacher['name'] ?? $teacher['username']); ?></strong>
+                                <span class="teacher-dept"><?php echo htmlspecialchars($teacher['department'] ?? '未設定科系'); ?></span>
+                            </div>
+                        </label>
+                        <?php endforeach; ?>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn-cancel" onclick="closeAssignModal()">取消</button>
+                <button class="btn-confirm" onclick="assignStudent()">確認分配</button>
+            </div>
+        </div>
+    </div>
+    <?php endif; ?>
 
     <script>
     document.addEventListener('DOMContentLoaded', function() {
@@ -268,6 +479,75 @@ $conn->close();
 
         if (rows.length > 0) {
             initialSort();
+        }
+    });
+
+    // 分配學生相關變數
+    let currentStudentId = null;
+
+    // 開啟分配學生彈出視窗
+    function openAssignModal(studentId, studentName) {
+        currentStudentId = studentId;
+        document.getElementById('studentName').textContent = studentName;
+        document.getElementById('assignModal').style.display = 'flex';
+        
+        // 清除之前的選擇
+        const radioButtons = document.querySelectorAll('input[name="teacher"]');
+        radioButtons.forEach(radio => radio.checked = false);
+    }
+
+    // 關閉分配學生彈出視窗
+    function closeAssignModal() {
+        document.getElementById('assignModal').style.display = 'none';
+        currentStudentId = null;
+    }
+
+    // 分配學生
+    function assignStudent() {
+        const selectedTeacher = document.querySelector('input[name="teacher"]:checked');
+        
+        if (!selectedTeacher) {
+            alert('請選擇一位老師');
+            return;
+        }
+
+        const teacherId = selectedTeacher.value;
+        
+        // 發送AJAX請求
+        const xhr = new XMLHttpRequest();
+        xhr.open('POST', 'assign_student.php', true);
+        xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
+        
+        xhr.onreadystatechange = function() {
+            if (xhr.readyState === 4) {
+                if (xhr.status === 200) {
+                    try {
+                        const response = JSON.parse(xhr.responseText);
+                        if (response.success) {
+                            alert('學生分配成功！');
+                            closeAssignModal();
+                            // 可以選擇重新載入頁面或更新UI
+                            location.reload();
+                        } else {
+                            alert('分配失敗：' + (response.message || '未知錯誤'));
+                        }
+                    } catch (e) {
+                        alert('回應格式錯誤：' + xhr.responseText);
+                    }
+                } else {
+                    alert('請求失敗，狀態碼：' + xhr.status);
+                }
+            }
+        };
+        
+        xhr.send('student_id=' + encodeURIComponent(currentStudentId) + 
+                 '&teacher_id=' + encodeURIComponent(teacherId));
+    }
+
+    // 點擊彈出視窗外部關閉
+    document.getElementById('assignModal').addEventListener('click', function(e) {
+        if (e.target === this) {
+            closeAssignModal();
         }
     });
     </script>
