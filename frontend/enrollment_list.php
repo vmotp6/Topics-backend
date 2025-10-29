@@ -10,34 +10,56 @@ if (!isset($_SESSION['admin_logged_in']) || !$_SESSION['admin_logged_in']) {
 // 引入資料庫設定
 require_once '../../Topics-frontend/frontend/config.php';
 
-// 設置頁面標題
-$page_title = (isset($_SESSION['username']) && $_SESSION['username'] === 'IMD') ? '資管科就讀意願名單' : '就讀意願名單';
+// 角色與標題
+$username = isset($_SESSION['username']) ? $_SESSION['username'] : '';
+$role = isset($_SESSION['role']) ? $_SESSION['role'] : '';
+$is_department_account = in_array($username, ['IMD', 'FLD'], true);
+// 將非部門帳號一律視為管理端帳號（包含行政人員等），以便顯示全部資料
+$is_admin = ($role === '管理員') || !$is_department_account;
+$page_title = '就讀意願名單';
+if ($is_department_account) {
+    $page_title = $username . ' 就讀意願名單';
+}
 
 // 建立資料庫連接
 $conn = getDatabaseConnection();
 
-// 檢查是否為IMD用戶
-$is_imd_user = (isset($_SESSION['username']) && $_SESSION['username'] === 'IMD');
+// 檢查是否為IMD用戶（保留原變數），以及是否為部門帳號
+$is_imd_user = ($username === 'IMD');
 
-// 獲取報名資料（根據用戶權限過濾）
-if ($is_imd_user) {
-    // IMD用戶只能看到資管科相關的就讀意願
-    $stmt = $conn->prepare("SELECT * FROM enrollment_intention 
-                           WHERE intention1 LIKE '%資管%' OR intention1 LIKE '%資訊管理%' 
-                           OR intention2 LIKE '%資管%' OR intention2 LIKE '%資訊管理%' 
-                           OR intention3 LIKE '%資管%' OR intention3 LIKE '%資訊管理%'
-                           ORDER BY created_at DESC");
+// 確保存在 assigned_department 欄位
+$check_col = $conn->query("SHOW COLUMNS FROM enrollment_intention LIKE 'assigned_department'");
+if ($check_col && $check_col->num_rows == 0) {
+    // 先檢查是否有 status 欄位，如果沒有則在 remarks 之後添加
+    $status_check = $conn->query("SHOW COLUMNS FROM enrollment_intention LIKE 'status'");
+    if ($status_check && $status_check->num_rows > 0) {
+        $conn->query("ALTER TABLE enrollment_intention ADD COLUMN assigned_department VARCHAR(50) NULL AFTER status");
+    } else {
+        // 檢查是否有 remarks 欄位，如果沒有則在 created_at 之前添加
+        $remarks_check = $conn->query("SHOW COLUMNS FROM enrollment_intention LIKE 'remarks'");
+        if ($remarks_check && $remarks_check->num_rows > 0) {
+            $conn->query("ALTER TABLE enrollment_intention ADD COLUMN assigned_department VARCHAR(50) NULL AFTER remarks");
+        } else {
+            // 如果都沒有，就直接添加欄位
+            $conn->query("ALTER TABLE enrollment_intention ADD COLUMN assigned_department VARCHAR(50) NULL");
+        }
+    }
+}
+
+// 獲取報名資料（根據角色過濾）
+if ($is_department_account) {
+    $stmt = $conn->prepare("SELECT * FROM enrollment_intention WHERE assigned_department = ? ORDER BY created_at DESC");
+    $stmt->bind_param('s', $username);
 } else {
-    // 一般管理員可以看到所有就讀意願
     $stmt = $conn->prepare("SELECT * FROM enrollment_intention ORDER BY created_at DESC");
 }
 $stmt->execute();
 $result = $stmt->get_result();
 $enrollments = $result->fetch_all(MYSQLI_ASSOC);
 
-// 如果是IMD用戶，獲取老師列表
+// 如果是部門帳號，獲取老師列表
 $teachers = [];
-if ($is_imd_user) {
+if ($is_department_account) {
     $teacher_stmt = $conn->prepare("
         SELECT u.id, u.username, t.name, t.department 
         FROM user u 
@@ -50,9 +72,9 @@ if ($is_imd_user) {
     $teachers = $teacher_result->fetch_all(MYSQLI_ASSOC);
 }
 
-// 建立老師 ID 到顯示名稱的對應，供顯示已分配對象使用（僅 IMD 用戶）
+// 建立老師 ID 到顯示名稱的對應，供顯示已分配對象使用（僅部門帳號）
 $teacher_map = [];
-if ($is_imd_user && !empty($teachers)) {
+if ($is_department_account && !empty($teachers)) {
     foreach ($teachers as $t) {
         $display_name = $t['name'] ?? $t['username'];
         $teacher_map[$t['id']] = $display_name;
@@ -322,7 +344,7 @@ $conn->close();
                                         <th onclick="sortTable(13)">備註</th>
                                         <th onclick="sortTable(14)">狀態</th>
                                         <th onclick="sortTable(15, 'date')">填寫日期</th>
-                                        <?php if ($is_imd_user): ?>
+                                        <?php if ($is_admin || $is_department_account): ?>
                                         <th>操作</th>
                                         <?php endif; ?>
                                     </tr>
@@ -346,17 +368,30 @@ $conn->close();
                                         <td><?php echo htmlspecialchars($item['remarks'] ?? '無'); ?></td>
                                         <td><?php echo htmlspecialchars($item['status'] ?? 'pending'); ?></td>
                                         <td><?php echo date('Y/m/d H:i', strtotime($item['created_at'])); ?></td>
-                                        <?php if ($is_imd_user): ?>
+                                        <?php if ($is_admin || $is_department_account): ?>
                                         <td>
-                                            <?php if (isset($item['assigned_teacher_id']) && $item['assigned_teacher_id'] !== null): ?>
-                                                <span class="assigned-status">
-                                                    <i class="fas fa-check-circle"></i>
-                                                    已分配給 <?php echo htmlspecialchars($teacher_map[$item['assigned_teacher_id']] ?? '未知老師'); ?>
-                                                </span>
+                                            <?php if ($is_admin): ?>
+                                                <?php if (!empty($item['assigned_department'])): ?>
+                                                    <span class="assigned-status">
+                                                        <i class="fas fa-check-circle"></i>
+                                                        已分配給主任：<?php echo htmlspecialchars($item['assigned_department']); ?>
+                                                    </span>
+                                                <?php else: ?>
+                                                    <button class="assign-btn" onclick="openAssignDeptModal(<?php echo $item['id']; ?>, '<?php echo htmlspecialchars($item['name']); ?>')">
+                                                        <i class="fas fa-user-plus"></i> 分配至主任
+                                                    </button>
+                                                <?php endif; ?>
                                             <?php else: ?>
-                                                <button class="assign-btn" onclick="openAssignModal(<?php echo $item['id']; ?>, '<?php echo htmlspecialchars($item['name']); ?>')">
-                                                    <i class="fas fa-user-plus"></i> 分配
-                                                </button>
+                                                <?php if (isset($item['assigned_teacher_id']) && $item['assigned_teacher_id'] !== null): ?>
+                                                    <span class="assigned-status">
+                                                        <i class="fas fa-check-circle"></i>
+                                                        已分配給 <?php echo htmlspecialchars($teacher_map[$item['assigned_teacher_id']] ?? '未知老師'); ?>
+                                                    </span>
+                                                <?php else: ?>
+                                                    <button class="assign-btn" onclick="openAssignModal(<?php echo $item['id']; ?>, '<?php echo htmlspecialchars($item['name']); ?>')">
+                                                        <i class="fas fa-user-plus"></i> 分配
+                                                    </button>
+                                                <?php endif; ?>
                                             <?php endif; ?>
                                         </td>
                                         <?php endif; ?>
@@ -371,8 +406,8 @@ $conn->close();
         </div>
     </div>
 
-    <!-- 分配學生彈出視窗 -->
-    <?php if ($is_imd_user): ?>
+    <!-- 分配學生彈出視窗（部門帳號使用） -->
+    <?php if ($is_department_account): ?>
     <div id="assignModal" class="modal" style="display: none;">
         <div class="modal-content">
             <div class="modal-header">
@@ -399,6 +434,44 @@ $conn->close();
             <div class="modal-footer">
                 <button class="btn-cancel" onclick="closeAssignModal()">取消</button>
                 <button class="btn-confirm" onclick="assignStudent()">確認分配</button>
+            </div>
+        </div>
+    </div>
+    <?php endif; ?>
+
+    <!-- Admin 分配至部門彈出視窗 -->
+    <?php if ($is_admin): ?>
+    <div id="assignDeptModal" class="modal" style="display: none;">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>分配學生至主任</h3>
+                <span class="close" onclick="closeAssignDeptModal()">&times;</span>
+            </div>
+            <div class="modal-body">
+                <p>學生：<span id="deptStudentName"></span></p>
+                <div class="teacher-list">
+                    <h4>選擇主任帳號：</h4>
+                    <div class="teacher-options">
+                        <label class="teacher-option">
+                            <input type="radio" name="departmentAccount" value="IMD">
+                            <div class="teacher-info">
+                                <strong>IMD</strong>
+                                <span class="teacher-dept">資訊管理科主任帳號</span>
+                            </div>
+                        </label>
+                        <label class="teacher-option">
+                            <input type="radio" name="departmentAccount" value="FLD">
+                            <div class="teacher-info">
+                                <strong>FLD</strong>
+                                <span class="teacher-dept">外語系主任帳號</span>
+                            </div>
+                        </label>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn-cancel" onclick="closeAssignDeptModal()">取消</button>
+                <button class="btn-confirm" onclick="assignDepartment()">確認分配</button>
             </div>
         </div>
     </div>
@@ -492,7 +565,7 @@ $conn->close();
         }
     });
 
-    // 分配學生相關變數
+    // 分配相關變數
     let currentStudentId = null;
 
     // 開啟分配學生彈出視窗
@@ -510,6 +583,57 @@ $conn->close();
     function closeAssignModal() {
         document.getElementById('assignModal').style.display = 'none';
         currentStudentId = null;
+    }
+
+    // Admin: 開啟分配至部門視窗
+    function openAssignDeptModal(studentId, studentName) {
+        currentStudentId = studentId;
+        document.getElementById('deptStudentName').textContent = studentName;
+        document.getElementById('assignDeptModal').style.display = 'flex';
+
+        // 清除之前選擇
+        const radios = document.querySelectorAll('input[name="departmentAccount"]');
+        radios.forEach(r => r.checked = false);
+    }
+
+    function closeAssignDeptModal() {
+        document.getElementById('assignDeptModal').style.display = 'none';
+        currentStudentId = null;
+    }
+
+    function assignDepartment() {
+        const selected = document.querySelector('input[name="departmentAccount"]:checked');
+        if (!selected) {
+            alert('請選擇主任帳號');
+            return;
+        }
+
+        const dept = selected.value;
+
+        const xhr = new XMLHttpRequest();
+        xhr.open('POST', 'assign_department.php', true);
+        xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
+        xhr.onreadystatechange = function() {
+            if (xhr.readyState === 4) {
+                if (xhr.status === 200) {
+                    try {
+                        const res = JSON.parse(xhr.responseText);
+                        if (res.success) {
+                            alert('分配成功！');
+                            closeAssignDeptModal();
+                            location.reload();
+                        } else {
+                            alert('分配失敗：' + (res.message || '未知錯誤'));
+                        }
+                    } catch (e) {
+                        alert('回應格式錯誤：' + xhr.responseText);
+                    }
+                } else {
+                    alert('請求失敗，狀態碼：' + xhr.status);
+                }
+            }
+        };
+        xhr.send('student_id=' + encodeURIComponent(currentStudentId) + '&department=' + encodeURIComponent(dept));
     }
 
     // 分配學生

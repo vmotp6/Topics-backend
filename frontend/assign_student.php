@@ -1,8 +1,8 @@
 <?php
 session_start();
 
-// 檢查是否已登入且為IMD用戶
-if (!isset($_SESSION['admin_logged_in']) || !$_SESSION['admin_logged_in'] || $_SESSION['username'] !== 'IMD') {
+// 檢查是否已登入且為部門帳號（IMD/FLD）
+if (!isset($_SESSION['admin_logged_in']) || !$_SESSION['admin_logged_in'] || !in_array($_SESSION['username'], ['IMD','FLD'])) {
     http_response_code(403);
     echo json_encode(['success' => false, 'message' => '權限不足']);
     exit;
