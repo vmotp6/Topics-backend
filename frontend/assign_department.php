@@ -1,19 +1,18 @@
 <?php
 session_start();
 
-// 檢查是否已登入且為管理端帳號（非部門帳號）
+// 檢查是否已登入且為 admin1
 if (!isset($_SESSION['admin_logged_in']) || !$_SESSION['admin_logged_in']) {
     http_response_code(403);
     echo json_encode(['success' => false, 'message' => '未登入']);
     exit;
 }
 
-// 檢查是否為部門帳號，如果是則拒絕（只有管理端帳號可以分配）
+// 只有 admin1 可以分配學生至主任
 $username = isset($_SESSION['username']) ? $_SESSION['username'] : '';
-$is_department_account = in_array($username, ['IMD', 'FLD'], true);
-if ($is_department_account) {
+if ($username !== 'admin1') {
     http_response_code(403);
-    echo json_encode(['success' => false, 'message' => '部門帳號無權限進行此操作']);
+    echo json_encode(['success' => false, 'message' => '只有 admin1 可以進行此操作']);
     exit;
 }
 
