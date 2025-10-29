@@ -50,6 +50,15 @@ if ($is_imd_user) {
     $teachers = $teacher_result->fetch_all(MYSQLI_ASSOC);
 }
 
+// 建立老師 ID 到顯示名稱的對應，供顯示已分配對象使用（僅 IMD 用戶）
+$teacher_map = [];
+if ($is_imd_user && !empty($teachers)) {
+    foreach ($teachers as $t) {
+        $display_name = $t['name'] ?? $t['username'];
+        $teacher_map[$t['id']] = $display_name;
+    }
+}
+
 $conn->close();
 ?>
 <!DOCTYPE html>
@@ -341,7 +350,8 @@ $conn->close();
                                         <td>
                                             <?php if (isset($item['assigned_teacher_id']) && $item['assigned_teacher_id'] !== null): ?>
                                                 <span class="assigned-status">
-                                                    <i class="fas fa-check-circle"></i> 已分配
+                                                    <i class="fas fa-check-circle"></i>
+                                                    已分配給 <?php echo htmlspecialchars($teacher_map[$item['assigned_teacher_id']] ?? '未知老師'); ?>
                                                 </span>
                                             <?php else: ?>
                                                 <button class="assign-btn" onclick="openAssignModal(<?php echo $item['id']; ?>, '<?php echo htmlspecialchars($item['name']); ?>')">
