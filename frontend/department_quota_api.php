@@ -31,14 +31,8 @@ switch ($action) {
     case 'get_quotas':
         getQuotas($pdo);
         break;
-    case 'update_quota':
+    case 'update_or_add_quota': // 將 update_quota 改為更通用的名稱
         updateQuota($pdo);
-        break;
-    case 'add_department':
-        addDepartment($pdo);
-        break;
-    case 'delete_department':
-        deleteDepartment($pdo);
         break;
     default:
         http_response_code(400);
@@ -48,24 +42,47 @@ switch ($action) {
 function getQuotas($pdo) {
     try {
         $stmt = $pdo->prepare("SELECT * FROM department_quotas WHERE is_active = 1 ORDER BY department_name");
+        // 改為從 admission_courses 讀取，並關聯 department_quotas
+        $sql = "
+            SELECT 
+                ac.id as course_id, 
+                ac.course_name as department_name,
+                dq.id as quota_id,
+                COALESCE(dq.total_quota, 0) as total_quota
+            FROM admission_courses ac
+            LEFT JOIN department_quotas dq ON ac.course_name = dq.department_name AND dq.is_active = 1
+            WHERE ac.is_active = 1
+            ORDER BY ac.sort_order, ac.course_name
+        ";
+        $stmt = $pdo->prepare($sql);
         $stmt->execute();
-        $departments = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        $courses = $stmt->fetchAll(PDO::FETCH_ASSOC);
         
         // 計算各科系已錄取人數
         $department_stats = [];
-        foreach ($departments as $dept) {
-            $stmt = $pdo->prepare("SELECT COUNT(*) as count FROM continued_admission WHERE status = 'approved' AND JSON_CONTAINS(choices, JSON_QUOTE(?))");
-            $stmt->execute([$dept['department_name']]);
-            $result = $stmt->fetch(PDO::FETCH_ASSOC);
+
+        // 先一次性獲取所有已錄取的學生志願，以提高效率
+        $stmt_approved = $pdo->prepare("SELECT choices FROM continued_admission WHERE status = 'approved'");
+        $stmt_approved->execute();
+        $approved_applications = $stmt_approved->fetchAll(PDO::FETCH_ASSOC);
+
+        foreach ($courses as $course) {
+            // 在 PHP 中進行模糊比對，與 continued_admission_list.php 邏輯保持一致
+            $enrolled_count = 0;
+            foreach ($approved_applications as $app) {
+                $choices = json_decode($app['choices'], true);
+                if (is_array($choices) && !empty($choices) && strpos($course['department_name'], $choices[0]) !== false) {
+                    $enrolled_count++;
+                }
+            }
             
             $department_stats[] = [
-                'id' => $dept['id'],
-                'name' => $dept['department_name'],
-                'code' => $dept['department_code'],
-                'total_quota' => $dept['total_quota'],
-                'current_enrolled' => $result['count'],
-                'remaining' => $dept['total_quota'] - $result['count'],
-                'description' => $dept['description']
+                'id' => $course['course_id'], // 使用 admission_courses 的 ID
+                'name' => $course['department_name'],
+                'code' => 'N/A', // 移除 department_code 的讀取
+                'total_quota' => (int)$course['total_quota'],
+                'current_enrolled' => $enrolled_count,
+                'remaining' => (int)$course['total_quota'] - $enrolled_count
             ];
         }
         
@@ -85,13 +102,14 @@ function updateQuota($pdo) {
     
     $input = json_decode(file_get_contents('php://input'), true);
     
-    if (!isset($input['id']) || !isset($input['total_quota'])) {
+    // id 現在是 course_id，name 是 course_name
+    if (!isset($input['id']) || !isset($input['name']) || !isset($input['total_quota'])) {
         http_response_code(400);
         echo json_encode(['success' => false, 'message' => '缺少必要參數']);
         return;
     }
     
-    $id = (int)$input['id'];
+    $course_name = $input['name'];
     $total_quota = (int)$input['total_quota'];
     
     if ($total_quota < 0) {
@@ -101,112 +119,25 @@ function updateQuota($pdo) {
     }
     
     try {
-        $stmt = $pdo->prepare("UPDATE department_quotas SET total_quota = ? WHERE id = ?");
-        $stmt->execute([$total_quota, $id]);
+        // 檢查記錄是否存在
+        $stmt = $pdo->prepare("SELECT id FROM department_quotas WHERE department_name = ?");
+        $stmt->execute([$course_name]);
+        $existing_quota = $stmt->fetch(PDO::FETCH_ASSOC);
         
-        if ($stmt->rowCount() > 0) {
+        if ($existing_quota) {
+            // 更新現有記錄
+            $stmt = $pdo->prepare("UPDATE department_quotas SET total_quota = ?, is_active = 1 WHERE id = ?");
+            $stmt->execute([$total_quota, $existing_quota['id']]);
             echo json_encode(['success' => true, 'message' => '名額更新成功']);
         } else {
-            echo json_encode(['success' => false, 'message' => '未找到指定的科系']);
+            // 插入新記錄
+            $stmt = $pdo->prepare("INSERT INTO department_quotas (department_name, total_quota, is_active) VALUES (?, ?, 1)"); // 移除 department_code
+            $stmt->execute([$course_name, $total_quota]);
+            echo json_encode(['success' => true, 'message' => '名額設定成功']);
         }
     } catch (Exception $e) {
         http_response_code(500);
         echo json_encode(['success' => false, 'message' => '更新失敗: ' . $e->getMessage()]);
-    }
-}
-
-function addDepartment($pdo) {
-    if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
-        http_response_code(405);
-        echo json_encode(['success' => false, 'message' => '方法不允許']);
-        return;
-    }
-    
-    $input = json_decode(file_get_contents('php://input'), true);
-    
-    if (!isset($input['name']) || !isset($input['code']) || !isset($input['quota'])) {
-        http_response_code(400);
-        echo json_encode(['success' => false, 'message' => '缺少必要參數']);
-        return;
-    }
-    
-    $name = trim($input['name']);
-    $code = trim($input['code']);
-    $quota = (int)$input['quota'];
-    $description = trim($input['description'] ?? '');
-    
-    if (empty($name) || empty($code) || $quota < 0) {
-        http_response_code(400);
-        echo json_encode(['success' => false, 'message' => '參數格式不正確']);
-        return;
-    }
-    
-    try {
-        // 檢查科系代碼是否已存在
-        $stmt = $pdo->prepare("SELECT id FROM department_quotas WHERE department_code = ?");
-        $stmt->execute([$code]);
-        if ($stmt->fetch()) {
-            http_response_code(400);
-            echo json_encode(['success' => false, 'message' => '科系代碼已存在']);
-            return;
-        }
-        
-        $stmt = $pdo->prepare("INSERT INTO department_quotas (department_name, department_code, total_quota, description) VALUES (?, ?, ?, ?)");
-        $stmt->execute([$name, $code, $quota, $description]);
-        
-        echo json_encode(['success' => true, 'message' => '科系新增成功', 'id' => $pdo->lastInsertId()]);
-    } catch (Exception $e) {
-        http_response_code(500);
-        echo json_encode(['success' => false, 'message' => '新增失敗: ' . $e->getMessage()]);
-    }
-}
-
-function deleteDepartment($pdo) {
-    if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
-        http_response_code(405);
-        echo json_encode(['success' => false, 'message' => '方法不允許']);
-        return;
-    }
-    
-    $input = json_decode(file_get_contents('php://input'), true);
-    
-    if (!isset($input['id'])) {
-        http_response_code(400);
-        echo json_encode(['success' => false, 'message' => '缺少必要參數']);
-        return;
-    }
-    
-    $id = (int)$input['id'];
-    
-    try {
-        // 檢查是否有學生已錄取此科系
-        $stmt = $pdo->prepare("SELECT d.department_name FROM department_quotas d WHERE d.id = ?");
-        $stmt->execute([$id]);
-        $dept = $stmt->fetch(PDO::FETCH_ASSOC);
-        
-        if (!$dept) {
-            http_response_code(404);
-            echo json_encode(['success' => false, 'message' => '未找到指定的科系']);
-            return;
-        }
-        
-        $stmt = $pdo->prepare("SELECT COUNT(*) as count FROM continued_admission WHERE status = 'approved' AND JSON_CONTAINS(choices, JSON_QUOTE(?))");
-        $stmt->execute([$dept['department_name']]);
-        $result = $stmt->fetch(PDO::FETCH_ASSOC);
-        
-        if ($result['count'] > 0) {
-            http_response_code(400);
-            echo json_encode(['success' => false, 'message' => '此科系已有錄取學生，無法刪除']);
-            return;
-        }
-        
-        $stmt = $pdo->prepare("UPDATE department_quotas SET is_active = 0 WHERE id = ?");
-        $stmt->execute([$id]);
-        
-        echo json_encode(['success' => true, 'message' => '科系已停用']);
-    } catch (Exception $e) {
-        http_response_code(500);
-        echo json_encode(['success' => false, 'message' => '刪除失敗: ' . $e->getMessage()]);
     }
 }
 ?>
