@@ -13,7 +13,7 @@ $is_admin = in_array($user_role, ['admin', '管理員']) || $username === 'admin
 <!-- 側邊欄 -->
 <div class="sidebar" id="sidebar">
     <div class="sidebar-header">
-        <div class="sidebar-logo">後台管理系統</div>
+        <div class="sidebar-logo">後台</div>
         <button class="collapse-btn" id="collapseBtn" title="收合側邊欄">
             <i class="fas fa-bars"></i>
         </button>
