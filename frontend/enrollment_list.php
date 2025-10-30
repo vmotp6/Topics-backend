@@ -298,14 +298,8 @@ $conn->close();
                                         <th onclick="sortTable(11)">Line ID</th>
                                         <th onclick="sortTable(12)">Facebook</th>
                                         <th onclick="sortTable(13)">備註</th>
-<<<<<<< HEAD
-                                        <th onclick="sortTable(14)">狀態</th>
-                                        <th onclick="sortTable(15, 'date')">填寫日期</th>
-                                        <?php if ($is_imd_user): ?>
-=======
                                         <th onclick="sortTable(14, 'date')">填寫日期</th>
-                                        <?php if ($is_imd || $is_fld): ?>
->>>>>>> cdf4b11999bbcb9f9ccad0208390df5adc7eadf3
+                                        <?php if ($is_imd_user): ?>
                                         <th>操作</th>
                                         <?php endif; ?>
                                     </tr>
@@ -330,9 +324,14 @@ $conn->close();
                                         <td><?php echo date('Y/m/d H:i', strtotime($item['created_at'])); ?></td>
                                         <?php if ($is_imd_user): ?>
                                         <td>
-                                            <button class="assign-btn" onclick="openAssignModal(<?php echo $item['id']; ?>, '<?php echo htmlspecialchars($item['name']); ?>')">
-                                                <i class="fas fa-user-plus"></i> 分配
-                                            </button>
+                                            <div style="display:flex; gap:8px; align-items:center;">
+                                                <button class="assign-btn" onclick="openAssignModal(<?php echo $item['id']; ?>, '<?php echo htmlspecialchars($item['name']); ?>')">
+                                                    <i class="fas fa-user-plus"></i> 分配
+                                                </button>
+                                                <button class="assign-btn" style="background:#52c41a;" onclick="openLogsModal(<?php echo $item['id']; ?>, '<?php echo htmlspecialchars($item['name']); ?>')">
+                                                    <i class="fas fa-list"></i> 聯絡紀錄
+                                                </button>
+                                            </div>
                                         </td>
                                         <?php endif; ?>
                                     </tr>
@@ -346,8 +345,23 @@ $conn->close();
         </div>
     </div>
 
-    <!-- 分配學生彈出視窗 -->
+    <!-- 分配學生彈出視窗 & 聯絡紀錄視窗（IMD） -->
     <?php if ($is_imd_user): ?>
+    <div id="logsModal" class="modal" style="display: none;">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>聯絡紀錄</h3>
+                <span class="close" onclick="closeLogsModal()">&times;</span>
+            </div>
+            <div class="modal-body">
+                <p>學生：<span id="logsStudentName"></span></p>
+                <div id="logsContainer" style="margin-top: 12px;"></div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn-cancel" onclick="closeLogsModal()">關閉</button>
+            </div>
+        </div>
+    </div>
     <div id="assignModal" class="modal" style="display: none;">
         <div class="modal-content">
             <div class="modal-header">
@@ -533,6 +547,52 @@ $conn->close();
     document.getElementById('assignModal').addEventListener('click', function(e) {
         if (e.target === this) {
             closeAssignModal();
+        }
+    });
+
+    // 聯絡紀錄：開啟
+    function openLogsModal(studentId, studentName) {
+        document.getElementById('logsStudentName').textContent = studentName;
+        document.getElementById('logsContainer').innerHTML = '<div class="empty-state"><i class="fas fa-spinner fa-spin"></i> 載入中...</div>';
+        document.getElementById('logsModal').style.display = 'flex';
+
+        fetch('get_contact_logs.php?student_id=' + encodeURIComponent(studentId))
+            .then(r => r.json())
+            .then(data => {
+                if (!data.success) {
+                    document.getElementById('logsContainer').innerHTML = '<div class="empty-state">載入失敗：' + (data.message || '未知錯誤') + '</div>';
+                    return;
+                }
+                const logs = data.logs || [];
+                if (logs.length === 0) {
+                    document.getElementById('logsContainer').innerHTML = '<div class="empty-state">尚無聯絡紀錄</div>';
+                    return;
+                }
+                const html = logs.map(l => `
+                    <div style="border:1px solid var(--border-color); border-radius:6px; padding:12px; margin-bottom:10px;">
+                        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+                            <div style="font-weight:600; color:#262626;">${l.contact_date} ・ ${l.method}</div>
+                            <div style="font-size:12px; color:#8c8c8c;">${l.teacher_name || ''}</div>
+                        </div>
+                        <div style="color:#595959; white-space:pre-wrap;">${(l.result || '').replace(/</g,'&lt;')}</div>
+                        ${l.follow_up_notes ? `<div style=\"margin-top:8px; font-size:13px; color:#8c8c8c; white-space:pre-wrap;\">後續：${(l.follow_up_notes || '').replace(/</g,'&lt;')}</div>` : ''}
+                    </div>
+                `).join('');
+                document.getElementById('logsContainer').innerHTML = html;
+            })
+            .catch(err => {
+                document.getElementById('logsContainer').innerHTML = '<div class="empty-state">發生錯誤：' + err.message + '</div>';
+            });
+    }
+
+    function closeLogsModal() {
+        document.getElementById('logsModal').style.display = 'none';
+        document.getElementById('logsContainer').innerHTML = '';
+    }
+
+    document.getElementById('logsModal').addEventListener('click', function(e) {
+        if (e.target === this) {
+            closeLogsModal();
         }
     });
     </script>
