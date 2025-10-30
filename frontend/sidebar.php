@@ -1,6 +1,13 @@
 <?php
 // 獲取當前頁面名稱來設置active狀態
 $current_page = basename($_SERVER['PHP_SELF'], '.php');
+
+// 獲取使用者角色
+$user_role = $_SESSION['role'] ?? '';
+$username = $_SESSION['username'] ?? '';
+
+// 判斷是否為管理員 (包含多種可能的角色名稱)
+$is_admin = in_array($user_role, ['admin', '管理員']) || $username === 'admin1';
 ?>
 
 <!-- 側邊欄 -->
@@ -13,42 +20,58 @@ $current_page = basename($_SERVER['PHP_SELF'], '.php');
     </div>
     
     <div class="sidebar-menu">
-        <a href="index.php" class="menu-item <?php echo $current_page === 'index' ? 'active' : ''; ?>">
-            <i class="fas fa-home"></i>
-            <span>首頁</span>
-        </a>
-        <a href="users.php" class="menu-item <?php echo in_array($current_page, ['users', 'edit_user']) ? 'active' : ''; ?>">
-            <i class="fas fa-users"></i>
-            <span>使用者管理</span>
-        </a>
-        <a href="enrollment_list.php" class="menu-item <?php echo $current_page === 'enrollment_list' ? 'active' : ''; ?>">
-            <i class="fas fa-file-signature"></i>
-            <span>就讀意願名單</span>
-        </a>
-        <a href="activity_records.php" class="menu-item <?php echo $current_page === 'activity_records' ? 'active' : ''; ?>">
-            <i class="fas fa-tasks"></i>
-            <span>統計分析</span>
-        </a>
-        <a href="page_management.php" class="menu-item <?php echo $current_page === 'page_management' ? 'active' : ''; ?>">
-            <i class="fas fa-cog"></i>
-            <span>頁面管理</span>
-        </a>
-        <a href="ollama_admin.php" class="menu-item <?php echo $current_page === 'ollama_admin' ? 'active' : ''; ?>">
-            <i class="fas fa-robot"></i>
-            <span>AI模型管理</span>
-        </a>
-        <a href="settings.php" class="menu-item <?php echo $current_page === 'settings' ? 'active' : ''; ?>">
-            <i class="fas fa-cog"></i>
-            <span>場次設定</span>
-        </a>
-        <a href="continued_admission_list.php" class="menu-item <?php echo in_array($current_page, ['continued_admission_list', 'continued_admission_detail']) ? 'active' : ''; ?>">
-            <i class="fas fa-user-plus"></i>
-            <span>續招</span>
-        </a>
-        <a href="admission_center.php" class="menu-item <?php echo $current_page === 'admission_center' ? 'active' : ''; ?>">
-            <i class="fas fa-graduation-cap"></i>
-            <span>招生中心</span>
-        </a>
+        <?php if ($is_admin): // 管理員顯示所有項目 ?>
+            <a href="index.php" class="menu-item <?php echo $current_page === 'index' ? 'active' : ''; ?>">
+                <i class="fas fa-home"></i>
+                <span>首頁</span>
+            </a>
+            <a href="users.php" class="menu-item <?php echo in_array($current_page, ['users', 'edit_user']) ? 'active' : ''; ?>">
+                <i class="fas fa-users"></i>
+                <span>使用者管理</span>
+            </a>
+            <a href="enrollment_list.php" class="menu-item <?php echo $current_page === 'enrollment_list' ? 'active' : ''; ?>">
+                <i class="fas fa-file-signature"></i>
+                <span>就讀意願名單</span>
+            </a>
+            <a href="activity_records.php" class="menu-item <?php echo $current_page === 'activity_records' ? 'active' : ''; ?>">
+                <i class="fas fa-tasks"></i>
+                <span>統計分析</span>
+            </a>
+            <a href="page_management.php" class="menu-item <?php echo $current_page === 'page_management' ? 'active' : ''; ?>">
+                <i class="fas fa-cog"></i>
+                <span>頁面管理</span>
+            </a>
+            <a href="ollama_admin.php" class="menu-item <?php echo $current_page === 'ollama_admin' ? 'active' : ''; ?>">
+                <i class="fas fa-robot"></i>
+                <span>AI模型管理</span>
+            </a>
+            <a href="settings.php" class="menu-item <?php echo $current_page === 'settings' ? 'active' : ''; ?>">
+                <i class="fas fa-cog"></i>
+                <span>場次設定</span>
+            </a>
+            <a href="continued_admission_list.php" class="menu-item <?php echo in_array($current_page, ['continued_admission_list', 'continued_admission_detail']) ? 'active' : ''; ?>">
+                <i class="fas fa-user-plus"></i>
+                <span>續招</span>
+            </a>
+            <a href="admission_center.php" class="menu-item <?php echo $current_page === 'admission_center' ? 'active' : ''; ?>">
+                <i class="fas fa-graduation-cap"></i>
+                <span>招生中心</span>
+            </a>
+        <?php elseif ($user_role === '學校行政人員'): // 學校行政人員的權限 ?>
+            <a href="enrollment_list.php" class="menu-item <?php echo $current_page === 'enrollment_list' ? 'active' : ''; ?>">
+                <i class="fas fa-file-signature"></i>
+                <span>就讀意願名單</span>
+            </a>
+            <a href="activity_records.php" class="menu-item <?php echo $current_page === 'activity_records' ? 'active' : ''; ?>">
+                <i class="fas fa-tasks"></i>
+                <span>統計分析</span>
+            </a>
+            <a href="settings.php" class="menu-item <?php echo $current_page === 'settings' ? 'active' : ''; ?>">
+                <i class="fas fa-cog"></i>
+                <span>場次設定</span>
+            </a>
+        <?php endif; ?>
+
         <a href="logout.php" class="menu-item">
             <i class="fas fa-sign-out-alt"></i>
             <span>登出</span>

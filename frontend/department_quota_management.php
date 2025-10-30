@@ -116,8 +116,8 @@ $current_page = 'department_quota_management';
                 <div class="card">
                     <div class="card-header">
                         <h3><i class="fas fa-graduation-cap"></i> <?php echo $page_title; ?></h3>
-                        <a href="settings.php" class="btn-secondary">
-                            <i class="fas fa-cog"></i> 管理科系列表
+                        <a href="continued_admission_list.php" class="btn-secondary">
+                            <i class="fas fa-arrow-left"></i> 返回續招報名管理
                         </a>
                     </div>
                     <div class="card-body">
