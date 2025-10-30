@@ -10,73 +10,34 @@ if (!isset($_SESSION['admin_logged_in']) || !$_SESSION['admin_logged_in']) {
 // 引入資料庫設定
 require_once '../../Topics-frontend/frontend/config.php';
 
-// 角色與標題
-$username = isset($_SESSION['username']) ? $_SESSION['username'] : '';
-$role = isset($_SESSION['role']) ? $_SESSION['role'] : '';
-$is_admin1 = ($username === 'admin1');
-$is_imd = ($username === 'IMD');
-$is_fld = ($username === 'FLD');
-$page_title = '就讀意願名單';
-if ($is_imd) {
-    $page_title = 'IMD 就讀意願名單';
-} elseif ($is_fld) {
-    $page_title = 'FLD 就讀意願名單';
-}
+// 設置頁面標題
+$page_title = (isset($_SESSION['username']) && $_SESSION['username'] === 'IMD') ? '資管科就讀意願名單' : '就讀意願名單';
 
 // 建立資料庫連接
 $conn = getDatabaseConnection();
 
-// 檢查是否為部門帳號
-$is_department_account = ($is_imd || $is_fld);
+// 檢查是否為IMD用戶
+$is_imd_user = (isset($_SESSION['username']) && $_SESSION['username'] === 'IMD');
 
-// 確保存在 assigned_department 欄位
-$check_col = $conn->query("SHOW COLUMNS FROM enrollment_intention LIKE 'assigned_department'");
-if ($check_col && $check_col->num_rows == 0) {
-    // 先檢查是否有 status 欄位，如果沒有則在 remarks 之後添加
-    $status_check = $conn->query("SHOW COLUMNS FROM enrollment_intention LIKE 'status'");
-    if ($status_check && $status_check->num_rows > 0) {
-        $conn->query("ALTER TABLE enrollment_intention ADD COLUMN assigned_department VARCHAR(50) NULL AFTER status");
-    } else {
-        // 檢查是否有 remarks 欄位，如果沒有則在 created_at 之前添加
-        $remarks_check = $conn->query("SHOW COLUMNS FROM enrollment_intention LIKE 'remarks'");
-        if ($remarks_check && $remarks_check->num_rows > 0) {
-            $conn->query("ALTER TABLE enrollment_intention ADD COLUMN assigned_department VARCHAR(50) NULL AFTER remarks");
-        } else {
-            // 如果都沒有，就直接添加欄位
-            $conn->query("ALTER TABLE enrollment_intention ADD COLUMN assigned_department VARCHAR(50) NULL");
-        }
-    }
-}
-
-// 獲取報名資料（根據角色過濾）
-if ($is_admin1) {
-    // admin1 可以看到所有學生資料
-    $stmt = $conn->prepare("SELECT * FROM enrollment_intention ORDER BY created_at DESC");
-} elseif ($is_imd) {
-    // IMD 只能看到意願有填資管科的學生
+// 獲取報名資料（根據用戶權限過濾）
+if ($is_imd_user) {
+    // IMD用戶只能看到資管科相關的就讀意願
     $stmt = $conn->prepare("SELECT * FROM enrollment_intention 
                            WHERE intention1 LIKE '%資管%' OR intention1 LIKE '%資訊管理%' 
                            OR intention2 LIKE '%資管%' OR intention2 LIKE '%資訊管理%' 
                            OR intention3 LIKE '%資管%' OR intention3 LIKE '%資訊管理%'
                            ORDER BY created_at DESC");
-} elseif ($is_fld) {
-    // FLD 只能看到意願有填應外科的學生
-    $stmt = $conn->prepare("SELECT * FROM enrollment_intention 
-                           WHERE intention1 LIKE '%應外%' OR intention1 LIKE '%應用外語%' 
-                           OR intention2 LIKE '%應外%' OR intention2 LIKE '%應用外語%' 
-                           OR intention3 LIKE '%應外%' OR intention3 LIKE '%應用外語%'
-                           ORDER BY created_at DESC");
 } else {
-    // 其他帳號無權查看
-    $stmt = $conn->prepare("SELECT * FROM enrollment_intention WHERE 1=0");
+    // 一般管理員可以看到所有就讀意願
+    $stmt = $conn->prepare("SELECT * FROM enrollment_intention ORDER BY created_at DESC");
 }
 $stmt->execute();
 $result = $stmt->get_result();
 $enrollments = $result->fetch_all(MYSQLI_ASSOC);
 
-// 如果是部門帳號，獲取老師列表
+// 如果是IMD用戶，獲取老師列表
 $teachers = [];
-if ($is_imd || $is_fld) {
+if ($is_imd_user) {
     $teacher_stmt = $conn->prepare("
         SELECT u.id, u.username, t.name, t.department 
         FROM user u 
@@ -87,15 +48,6 @@ if ($is_imd || $is_fld) {
     $teacher_stmt->execute();
     $teacher_result = $teacher_stmt->get_result();
     $teachers = $teacher_result->fetch_all(MYSQLI_ASSOC);
-}
-
-// 建立老師 ID 到顯示名稱的對應，供顯示已分配對象使用（僅部門帳號）
-$teacher_map = [];
-if (($is_imd || $is_fld) && !empty($teachers)) {
-    foreach ($teachers as $t) {
-        $display_name = $t['name'] ?? $t['username'];
-        $teacher_map[$t['id']] = $display_name;
-    }
 }
 
 $conn->close();
@@ -187,19 +139,6 @@ $conn->close();
         }
         .assign-btn i {
             margin-right: 4px;
-        }
-
-        .assigned-status {
-            color: #28a745;
-            font-size: 12px;
-            font-weight: 500;
-            display: inline-flex;
-            align-items: center;
-            gap: 4px;
-        }
-
-        .assigned-status i {
-            color: #28a745;
         }
 
         /* 彈出視窗樣式 */
@@ -361,7 +300,7 @@ $conn->close();
                                         <th onclick="sortTable(13)">備註</th>
                                         <th onclick="sortTable(14)">狀態</th>
                                         <th onclick="sortTable(15, 'date')">填寫日期</th>
-                                        <?php if ($is_imd || $is_fld): ?>
+                                        <?php if ($is_imd_user): ?>
                                         <th>操作</th>
                                         <?php endif; ?>
                                     </tr>
@@ -385,18 +324,11 @@ $conn->close();
                                         <td><?php echo htmlspecialchars($item['remarks'] ?? '無'); ?></td>
                                         <td><?php echo htmlspecialchars($item['status'] ?? 'pending'); ?></td>
                                         <td><?php echo date('Y/m/d H:i', strtotime($item['created_at'])); ?></td>
-                                        <?php if ($is_imd || $is_fld): ?>
+                                        <?php if ($is_imd_user): ?>
                                         <td>
-                                            <?php if (isset($item['assigned_teacher_id']) && $item['assigned_teacher_id'] !== null): ?>
-                                                <span class="assigned-status">
-                                                    <i class="fas fa-check-circle"></i>
-                                                    已分配給 <?php echo htmlspecialchars($teacher_map[$item['assigned_teacher_id']] ?? '未知老師'); ?>
-                                                </span>
-                                            <?php else: ?>
-                                                <button class="assign-btn" onclick="openAssignModal(<?php echo $item['id']; ?>, '<?php echo htmlspecialchars($item['name']); ?>')">
-                                                    <i class="fas fa-user-plus"></i> 分配
-                                                </button>
-                                            <?php endif; ?>
+                                            <button class="assign-btn" onclick="openAssignModal(<?php echo $item['id']; ?>, '<?php echo htmlspecialchars($item['name']); ?>')">
+                                                <i class="fas fa-user-plus"></i> 分配
+                                            </button>
                                         </td>
                                         <?php endif; ?>
                                     </tr>
@@ -410,8 +342,8 @@ $conn->close();
         </div>
     </div>
 
-    <!-- 分配學生彈出視窗（部門帳號使用） -->
-    <?php if ($is_imd || $is_fld): ?>
+    <!-- 分配學生彈出視窗 -->
+    <?php if ($is_imd_user): ?>
     <div id="assignModal" class="modal" style="display: none;">
         <div class="modal-content">
             <div class="modal-header">
@@ -442,7 +374,6 @@ $conn->close();
         </div>
     </div>
     <?php endif; ?>
-
 
     <script>
     document.addEventListener('DOMContentLoaded', function() {
@@ -532,7 +463,7 @@ $conn->close();
         }
     });
 
-    // 分配相關變數
+    // 分配學生相關變數
     let currentStudentId = null;
 
     // 開啟分配學生彈出視窗
