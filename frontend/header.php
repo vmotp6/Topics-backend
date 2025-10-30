@@ -21,9 +21,6 @@ $user_display_name = $_SESSION['name'] ?? $_SESSION['username'] ?? 'Admin';
                 <span class="user-name"><?php echo htmlspecialchars($user_display_name); ?></span>
                 <i class="fas fa-chevron-down dropdown-arrow"></i>
                 <div class="dropdown-menu" id="userDropdownMenu">
-                    <a href="profile.php" class="dropdown-item">
-                        <i class="fas fa-user-circle"></i> 個人資料
-                    </a>
                     <a href="logout.php" class="dropdown-item">
                         <i class="fas fa-sign-out-alt"></i> 登出
                     </a>

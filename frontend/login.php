@@ -48,9 +48,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
 
             // 如果密碼驗證成功，繼續檢查帳號狀態和角色
             if ($login_successful) {
-                // 優先檢查角色是否不允許登入 (學生)
-                if ($user['role'] === 'student' || $user['role'] === '學生') {
-                    $error_message = "帳號或密碼錯誤。"; // 對學生顯示一樣的錯誤訊息，避免透露帳號存在
+                // 優先檢查角色是否不允許登入 (學生、老師)
+                if (in_array($user['role'], ['student', '學生', 'teacher', '老師'])) {
+                    $error_message = "帳號或密碼錯誤。"; // 對學生和老師顯示一樣的錯誤訊息，避免透露帳號存在
                     $login_successful = false;
                 } elseif ($user['status'] != 1) { // 然後才檢查帳號是否被停用
                     $error_message = "您的帳號已被停用，請聯繫管理員。";
