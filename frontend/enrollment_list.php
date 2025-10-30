@@ -298,9 +298,14 @@ $conn->close();
                                         <th onclick="sortTable(11)">Line ID</th>
                                         <th onclick="sortTable(12)">Facebook</th>
                                         <th onclick="sortTable(13)">備註</th>
+<<<<<<< HEAD
                                         <th onclick="sortTable(14)">狀態</th>
                                         <th onclick="sortTable(15, 'date')">填寫日期</th>
                                         <?php if ($is_imd_user): ?>
+=======
+                                        <th onclick="sortTable(14, 'date')">填寫日期</th>
+                                        <?php if ($is_imd || $is_fld): ?>
+>>>>>>> cdf4b11999bbcb9f9ccad0208390df5adc7eadf3
                                         <th>操作</th>
                                         <?php endif; ?>
                                     </tr>
@@ -322,7 +327,6 @@ $conn->close();
                                         <td><?php echo htmlspecialchars($item['line_id'] ?? '無'); ?></td>
                                         <td><?php echo htmlspecialchars($item['facebook'] ?? '無'); ?></td>
                                         <td><?php echo htmlspecialchars($item['remarks'] ?? '無'); ?></td>
-                                        <td><?php echo htmlspecialchars($item['status'] ?? 'pending'); ?></td>
                                         <td><?php echo date('Y/m/d H:i', strtotime($item['created_at'])); ?></td>
                                         <?php if ($is_imd_user): ?>
                                         <td>
@@ -452,7 +456,7 @@ $conn->close();
 
         // Initial sort by date desc
         function initialSort() {
-            const dateColumnIndex = 15;
+            const dateColumnIndex = 14;
             sortStates = { [dateColumnIndex]: 'desc' };
             sortTable(dateColumnIndex, 'date'); // Sort once to set desc
             sortTable(dateColumnIndex, 'date'); // Sort again to trigger desc
