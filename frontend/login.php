@@ -12,14 +12,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
     $username = $_POST['username'];
     $password = $_POST['password'];
     
-    // 資料庫連接設定
-    $host = '100.79.58.120';
-    $dbname = 'topics_good';
-    $db_username = 'root';
-    $db_password = '';
+    // 使用統一的資料庫配置
+    require_once '../../Topics-frontend/frontend/config.php';
 
     try {
-        $pdo = new PDO("mysql:host=$host;dbname=$dbname;charset=utf8mb4", $db_username, $db_password);
+        $pdo = new PDO("mysql:host=" . DB_HOST . ";dbname=" . DB_NAME . ";charset=" . DB_CHARSET, DB_USERNAME, DB_PASSWORD);
         $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
 
         // 查詢用戶

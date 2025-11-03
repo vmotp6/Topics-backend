@@ -8,49 +8,109 @@ if (!isset($_SESSION['admin_logged_in']) || !$_SESSION['admin_logged_in']) {
 }
 
 // 引入資料庫設定
-require_once '../../Topics-frontend/frontend/config.php';
+$config_path = '../../Topics-frontend/frontend/config.php';
+if (!file_exists($config_path)) {
+    $alt_paths = [
+        '../../../Topics-frontend/frontend/config.php',
+        __DIR__ . '/../../Topics-frontend/frontend/config.php',
+        dirname(__DIR__) . '/../Topics-frontend/frontend/config.php'
+    ];
+    
+    $found = false;
+    foreach ($alt_paths as $alt_path) {
+        if (file_exists($alt_path)) {
+            $config_path = $alt_path;
+            $found = true;
+            break;
+        }
+    }
+    
+    if (!$found) {
+        die('錯誤：找不到資料庫設定檔案 (config.php)');
+    }
+}
+
+require_once $config_path;
+
+if (!function_exists('getDatabaseConnection')) {
+    die('錯誤：資料庫連接函數未定義');
+}
 
 // 設置頁面標題
 $page_title = (isset($_SESSION['username']) && $_SESSION['username'] === 'IMD') ? '資管科就讀意願名單' : '就讀意願名單';
 
-// 建立資料庫連接
-$conn = getDatabaseConnection();
-
-// 檢查是否為IMD用戶
+// 初始化變數
+$enrollments = [];
+$teachers = [];
+$error_message = '';
 $is_imd_user = (isset($_SESSION['username']) && $_SESSION['username'] === 'IMD');
 
-// 獲取報名資料（根據用戶權限過濾）
-if ($is_imd_user) {
-    // IMD用戶只能看到資管科相關的就讀意願
-    $stmt = $conn->prepare("SELECT * FROM enrollment_intention 
-                           WHERE intention1 LIKE '%資管%' OR intention1 LIKE '%資訊管理%' 
-                           OR intention2 LIKE '%資管%' OR intention2 LIKE '%資訊管理%' 
-                           OR intention3 LIKE '%資管%' OR intention3 LIKE '%資訊管理%'
-                           ORDER BY created_at DESC");
-} else {
-    // 一般管理員可以看到所有就讀意願
-    $stmt = $conn->prepare("SELECT * FROM enrollment_intention ORDER BY created_at DESC");
-}
-$stmt->execute();
-$result = $stmt->get_result();
-$enrollments = $result->fetch_all(MYSQLI_ASSOC);
+try {
+    // 建立資料庫連接
+    $conn = getDatabaseConnection();
 
-// 如果是IMD用戶，獲取老師列表
-$teachers = [];
-if ($is_imd_user) {
-    $teacher_stmt = $conn->prepare("
-        SELECT u.id, u.username, t.name, t.department 
-        FROM user u 
-        LEFT JOIN teacher t ON u.id = t.user_id 
-        WHERE u.role = '老師' 
-        ORDER BY t.name ASC
-    ");
-    $teacher_stmt->execute();
-    $teacher_result = $teacher_stmt->get_result();
-    $teachers = $teacher_result->fetch_all(MYSQLI_ASSOC);
-}
+    // 獲取報名資料（根據用戶權限過濾）
+    if ($is_imd_user) {
+        // IMD用戶只能看到資管科相關的就讀意願
+        $stmt = $conn->prepare("SELECT * FROM enrollment_intention 
+                               WHERE intention1 LIKE '%資管%' OR intention1 LIKE '%資訊管理%' 
+                               OR intention2 LIKE '%資管%' OR intention2 LIKE '%資訊管理%' 
+                               OR intention3 LIKE '%資管%' OR intention3 LIKE '%資訊管理%'
+                               ORDER BY created_at DESC");
+    } else {
+        // 一般管理員可以看到所有就讀意願
+        $stmt = $conn->prepare("SELECT * FROM enrollment_intention ORDER BY created_at DESC");
+    }
+    
+    if (!$stmt) {
+        throw new Exception('準備查詢語句失敗: ' . $conn->error);
+    }
+    
+    if (!$stmt->execute()) {
+        throw new Exception('執行查詢失敗: ' . $stmt->error);
+    }
+    
+    $result = $stmt->get_result();
+    if ($result) {
+        $enrollments = $result->fetch_all(MYSQLI_ASSOC);
+    }
 
-$conn->close();
+    // 如果是IMD用戶，獲取老師列表
+    if ($is_imd_user) {
+        // 先檢查必要的表格是否存在
+        $table_check = $conn->query("SHOW TABLES LIKE 'user'");
+        if ($table_check && $table_check->num_rows > 0) {
+            $teacher_stmt = $conn->prepare("
+                SELECT u.id, u.username, t.name, t.department 
+                FROM user u 
+                LEFT JOIN teacher t ON u.id = t.user_id 
+                WHERE u.role = '老師' 
+                ORDER BY t.name ASC
+            ");
+            
+            if ($teacher_stmt && $teacher_stmt->execute()) {
+                $teacher_result = $teacher_stmt->get_result();
+                if ($teacher_result) {
+                    $teachers = $teacher_result->fetch_all(MYSQLI_ASSOC);
+                }
+            }
+        } else {
+            error_log('enrollment_list.php: user 表格不存在，無法載入老師列表');
+            if (empty($error_message)) {
+                $error_message = '警告：無法載入老師列表，因為 user 表格不存在。請聯絡系統管理員。';
+            }
+        }
+    }
+
+    $conn->close();
+    
+} catch (Exception $e) {
+    $error_message = '資料庫操作失敗，請稍後再試: ' . $e->getMessage();
+    error_log('enrollment_list.php 錯誤: ' . $e->getMessage());
+    if (isset($conn)) {
+        $conn->close();
+    }
+}
 ?>
 <!DOCTYPE html>
 <html lang="zh-TW">
@@ -273,6 +333,12 @@ $conn->close();
                     </div>
                 </div>
 
+                <?php if (!empty($error_message)): ?>
+                <div style="background: #fff2f0; border: 1px solid #ffccc7; border-radius: 8px; padding: 16px; margin-bottom: 24px; color: #cf1322;">
+                    <i class="fas fa-exclamation-circle"></i> <?php echo htmlspecialchars($error_message); ?>
+                </div>
+                <?php endif; ?>
+
                 <div class="table-wrapper">
                     <div class="table-container">
                         <?php if (empty($enrollments)): ?>
@@ -324,14 +390,9 @@ $conn->close();
                                         <td><?php echo date('Y/m/d H:i', strtotime($item['created_at'])); ?></td>
                                         <?php if ($is_imd_user): ?>
                                         <td>
-                                            <div style="display:flex; gap:8px; align-items:center;">
-                                                <button class="assign-btn" onclick="openAssignModal(<?php echo $item['id']; ?>, '<?php echo htmlspecialchars($item['name']); ?>')">
-                                                    <i class="fas fa-user-plus"></i> 分配
-                                                </button>
-                                                <button class="assign-btn" style="background:#52c41a;" onclick="openLogsModal(<?php echo $item['id']; ?>, '<?php echo htmlspecialchars($item['name']); ?>')">
-                                                    <i class="fas fa-list"></i> 聯絡紀錄
-                                                </button>
-                                            </div>
+                                            <button class="assign-btn" onclick="openAssignModal(<?php echo $item['id']; ?>, '<?php echo htmlspecialchars($item['name']); ?>')">
+                                                <i class="fas fa-user-plus"></i> 分配
+                                            </button>
                                         </td>
                                         <?php endif; ?>
                                     </tr>
@@ -345,23 +406,8 @@ $conn->close();
         </div>
     </div>
 
-    <!-- 分配學生彈出視窗 & 聯絡紀錄視窗（IMD） -->
+    <!-- 分配學生彈出視窗 -->
     <?php if ($is_imd_user): ?>
-    <div id="logsModal" class="modal" style="display: none;">
-        <div class="modal-content">
-            <div class="modal-header">
-                <h3>聯絡紀錄</h3>
-                <span class="close" onclick="closeLogsModal()">&times;</span>
-            </div>
-            <div class="modal-body">
-                <p>學生：<span id="logsStudentName"></span></p>
-                <div id="logsContainer" style="margin-top: 12px;"></div>
-            </div>
-            <div class="modal-footer">
-                <button class="btn-cancel" onclick="closeLogsModal()">關閉</button>
-            </div>
-        </div>
-    </div>
     <div id="assignModal" class="modal" style="display: none;">
         <div class="modal-content">
             <div class="modal-header">
@@ -547,52 +593,6 @@ $conn->close();
     document.getElementById('assignModal').addEventListener('click', function(e) {
         if (e.target === this) {
             closeAssignModal();
-        }
-    });
-
-    // 聯絡紀錄：開啟
-    function openLogsModal(studentId, studentName) {
-        document.getElementById('logsStudentName').textContent = studentName;
-        document.getElementById('logsContainer').innerHTML = '<div class="empty-state"><i class="fas fa-spinner fa-spin"></i> 載入中...</div>';
-        document.getElementById('logsModal').style.display = 'flex';
-
-        fetch('get_contact_logs.php?student_id=' + encodeURIComponent(studentId))
-            .then(r => r.json())
-            .then(data => {
-                if (!data.success) {
-                    document.getElementById('logsContainer').innerHTML = '<div class="empty-state">載入失敗：' + (data.message || '未知錯誤') + '</div>';
-                    return;
-                }
-                const logs = data.logs || [];
-                if (logs.length === 0) {
-                    document.getElementById('logsContainer').innerHTML = '<div class="empty-state">尚無聯絡紀錄</div>';
-                    return;
-                }
-                const html = logs.map(l => `
-                    <div style="border:1px solid var(--border-color); border-radius:6px; padding:12px; margin-bottom:10px;">
-                        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
-                            <div style="font-weight:600; color:#262626;">${l.contact_date} ・ ${l.method}</div>
-                            <div style="font-size:12px; color:#8c8c8c;">${l.teacher_name || ''}</div>
-                        </div>
-                        <div style="color:#595959; white-space:pre-wrap;">${(l.result || '').replace(/</g,'&lt;')}</div>
-                        ${l.follow_up_notes ? `<div style=\"margin-top:8px; font-size:13px; color:#8c8c8c; white-space:pre-wrap;\">後續：${(l.follow_up_notes || '').replace(/</g,'&lt;')}</div>` : ''}
-                    </div>
-                `).join('');
-                document.getElementById('logsContainer').innerHTML = html;
-            })
-            .catch(err => {
-                document.getElementById('logsContainer').innerHTML = '<div class="empty-state">發生錯誤：' + err.message + '</div>';
-            });
-    }
-
-    function closeLogsModal() {
-        document.getElementById('logsModal').style.display = 'none';
-        document.getElementById('logsContainer').innerHTML = '';
-    }
-
-    document.getElementById('logsModal').addEventListener('click', function(e) {
-        if (e.target === this) {
-            closeLogsModal();
         }
     });
     </script>
