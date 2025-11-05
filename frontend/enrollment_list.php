@@ -51,15 +51,26 @@ try {
 
     // 獲取報名資料（根據用戶權限過濾）
     if ($is_imd_user) {
-        // IMD用戶只能看到資管科相關的就讀意願
-        $stmt = $conn->prepare("SELECT * FROM enrollment_intention 
+        // IMD用戶只能看到資管科相關的就讀意願，並獲取分配的老師資訊
+        $stmt = $conn->prepare("SELECT ei.*, 
+                               t.name as teacher_name, 
+                               u.username as teacher_username
+                               FROM enrollment_intention ei
+                               LEFT JOIN user u ON ei.assigned_teacher_id = u.id
+                               LEFT JOIN teacher t ON u.id = t.user_id
                                WHERE intention1 LIKE '%資管%' OR intention1 LIKE '%資訊管理%' 
                                OR intention2 LIKE '%資管%' OR intention2 LIKE '%資訊管理%' 
                                OR intention3 LIKE '%資管%' OR intention3 LIKE '%資訊管理%'
                                ORDER BY created_at DESC");
     } else {
-        // 一般管理員可以看到所有就讀意願
-        $stmt = $conn->prepare("SELECT * FROM enrollment_intention ORDER BY created_at DESC");
+        // 一般管理員可以看到所有就讀意願，並獲取分配的老師資訊
+        $stmt = $conn->prepare("SELECT ei.*, 
+                               t.name as teacher_name, 
+                               u.username as teacher_username
+                               FROM enrollment_intention ei
+                               LEFT JOIN user u ON ei.assigned_teacher_id = u.id
+                               LEFT JOIN teacher t ON u.id = t.user_id
+                               ORDER BY created_at DESC");
     }
     
     if (!$stmt) {
@@ -366,6 +377,7 @@ try {
                                         <th onclick="sortTable(13)">備註</th>
                                         <th onclick="sortTable(14, 'date')">填寫日期</th>
                                         <?php if ($is_imd_user): ?>
+                                        <th onclick="sortTable(15)">分配狀態</th>
                                         <th>操作</th>
                                         <?php endif; ?>
                                     </tr>
@@ -390,8 +402,20 @@ try {
                                         <td><?php echo date('Y/m/d H:i', strtotime($item['created_at'])); ?></td>
                                         <?php if ($is_imd_user): ?>
                                         <td>
-                                            <button class="assign-btn" onclick="openAssignModal(<?php echo $item['id']; ?>, '<?php echo htmlspecialchars($item['name']); ?>')">
-                                                <i class="fas fa-user-plus"></i> 分配
+                                            <?php if (!empty($item['assigned_teacher_id'])): ?>
+                                                <span style="color: #52c41a;">
+                                                    <i class="fas fa-check-circle"></i> 已分配 - 
+                                                    <?php echo htmlspecialchars($item['teacher_name'] ?? $item['teacher_username'] ?? '未知老師'); ?>
+                                                </span>
+                                            <?php else: ?>
+                                                <span style="color: #8c8c8c;">
+                                                    <i class="fas fa-clock"></i> 未分配
+                                                </span>
+                                            <?php endif; ?>
+                                        </td>
+                                        <td>
+                                            <button class="assign-btn" onclick="openAssignModal(<?php echo $item['id']; ?>, '<?php echo htmlspecialchars($item['name']); ?>', <?php echo !empty($item['assigned_teacher_id']) ? $item['assigned_teacher_id'] : 'null'; ?>)">
+                                                <i class="fas fa-user-plus"></i> <?php echo !empty($item['assigned_teacher_id']) ? '重新分配' : '分配'; ?>
                                             </button>
                                         </td>
                                         <?php endif; ?>
@@ -516,7 +540,7 @@ try {
 
         // Initial sort by date desc
         function initialSort() {
-            const dateColumnIndex = 14;
+            const dateColumnIndex = <?php echo $is_imd_user ? '14' : '14'; ?>;
             sortStates = { [dateColumnIndex]: 'desc' };
             sortTable(dateColumnIndex, 'date'); // Sort once to set desc
             sortTable(dateColumnIndex, 'date'); // Sort again to trigger desc
@@ -531,14 +555,20 @@ try {
     let currentStudentId = null;
 
     // 開啟分配學生彈出視窗
-    function openAssignModal(studentId, studentName) {
+    function openAssignModal(studentId, studentName, currentTeacherId) {
         currentStudentId = studentId;
         document.getElementById('studentName').textContent = studentName;
         document.getElementById('assignModal').style.display = 'flex';
         
-        // 清除之前的選擇
+        // 清除之前的選擇，如果有已分配的老師則預選
         const radioButtons = document.querySelectorAll('input[name="teacher"]');
-        radioButtons.forEach(radio => radio.checked = false);
+        radioButtons.forEach(radio => {
+            if (currentTeacherId && radio.value == currentTeacherId) {
+                radio.checked = true;
+            } else {
+                radio.checked = false;
+            }
+        });
     }
 
     // 關閉分配學生彈出視窗
