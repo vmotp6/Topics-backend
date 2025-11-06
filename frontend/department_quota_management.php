@@ -7,16 +7,13 @@ if (!isset($_SESSION['admin_logged_in']) || !$_SESSION['admin_logged_in']) {
     exit;
 }
 
-// 資料庫連接設定
-$host = '100.79.58.120';
-$dbname = 'topics_good';
-$db_username = 'root';
-$db_password = '';
+// 引入資料庫設定
+require_once '../../Topics-frontend/frontend/config.php';
 
 try {
-    $pdo = new PDO("mysql:host=$host;dbname=$dbname;charset=utf8mb4", $db_username, $db_password);
-    $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
-} catch (PDOException $e) {
+    // 建立資料庫連接
+    $conn = getDatabaseConnection();
+} catch (Exception $e) {
     die("資料庫連接失敗: " . $e->getMessage());
 }
 

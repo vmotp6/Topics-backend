@@ -13,39 +13,26 @@ $page_title = (isset($_SESSION['username']) && $_SESSION['username'] === 'IMD') 
 // 檢查是否為IMD用戶
 $is_imd_user = (isset($_SESSION['username']) && $_SESSION['username'] === 'IMD');
 
-// 資料庫連接設定
-$host = '100.79.58.120';
-$dbname = 'topics_good';
-$db_username = 'root';
-$db_password = '';
-
-try {
-    $pdo = new PDO("mysql:host=$host;dbname=$dbname;charset=utf8mb4", $db_username, $db_password);
-    $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
-} catch (PDOException $e) {
+//  $conn = getDatabaseConnection();
+} catch (Exception $e) {
     die("資料庫連接失敗: " . $e->getMessage());
 }
-
-// 獲取所有報名資料
-$all_applications = [];
 
 // 1. 就讀意願登錄 (cooperation_upload)
 try {
     if ($is_imd_user) {
-        // IMD用戶只能看到資管科相關的就讀意願
-        $stmt = $pdo->prepare("SELECT 
+        // IMD用戶只能看到資管科相關的就讀意願 (應為 enrollment_intention)
+        $stmt = $conn->prepare("SELECT 
             id, name, identity, gender, phone1, phone2, email, 
             intention1, system1, intention2, system2, intention3, system3,
             junior_high, current_grade, line_id, facebook, recommended_teacher, remarks,
             created_at, '就讀意願登錄' as source_type
             FROM enrollment_applications 
-            WHERE intention1 LIKE '%資管%' OR intention1 LIKE '%資訊管理%' 
-            OR intention2 LIKE '%資管%' OR intention2 LIKE '%資訊管理%' 
-            OR intention3 LIKE '%資管%' OR intention3 LIKE '%資訊管理%'
-            ORDER BY created_at DESC");
+            WHERE inten '%資管%' OR intention2 LIKE '%資訊管理%' 
+      Ri    ORDER BY created_at DESC");
     } else {
-        // 一般管理員可以看到所有就讀意願
-        $stmt = $pdo->prepare("SELECT 
+        // 一般管理員可以看到所有就讀意願 (應為 enrollment_intention)
+        $stmt = $conn->prepare("SELECT 
             id, name, identity, gender, phone1, phone2, email, 
             intention1, system1, intention2, system2, intention3, system3,
             junior_high, current_grade, line_id, facebook, recommended_teacher, remarks,
@@ -54,89 +41,70 @@ try {
             ORDER BY created_at DESC");
     }
     $stmt->execute();
-    $enrollment_data = $stmt->fetchAll(PDO::FETCH_ASSOC);
-    
-    foreach ($enrollment_data as $row) {
+    $enrollment_data = $stta as $row) {
         $all_applications[] = $row;
     }
-} catch (PDOException $e) {
+} catch (Exception $e) {
     error_log("獲取就讀意願登錄資料失敗: " . $e->getMessage());
 }
 
 // 2. 續招報名 (continued_admission)
 try {
-    if ($is_imd_user) {
-        // IMD用戶只能看到資管科相關的續招報名
-        $stmt = $pdo->prepare("SELECT 
+    if ($is_imd_=" 
             id, name, id_number, birth_year, birth_month, birth_day, gender,
             phone, mobile, school_city, school_name, guardian_name as guardian, guardian_phone, guardian_mobile,
             self_intro, skills, choices, status, review_notes, reviewed_at,
             created_at, '續招報名' as source_type
-            FROM continued_admission 
-            WHERE JSON_CONTAINS(choices, JSON_QUOTE('資訊管理科')) 
+     AINS(choices, JSON_QUOTE('資訊管理科')) 
             OR JSON_CONTAINS(choices, JSON_QUOTE('資管科'))
             OR JSON_SEARCH(choices, 'one', '%資管%') IS NOT NULL
             OR JSON_SEARCH(choices, 'one', '%資訊管理%') IS NOT NULL
             ORDER BY created_at DESC");
     } else {
-        // 一般管理員可以看到所有續招報名
-        $stmt = $pdo->prepare("SELECT 
+        $stmt = $conn->prepare("SELECT 
             id, name, id_number, birth_year, birth_month, birth_day, gender,
-            phone, mobile, school_city, school_name, guardian_name as guardian, guardian_phone, guardian_mobile,
-            self_intro, skills, choices, status, review_notes, reviewed_at,
             created_at, '續招報名' as source_type
             FROM continued_admission 
             ORDER BY created_at DESC");
     }
     $stmt->execute();
-    $continued_data = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    $continued_data = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
     
     foreach ($continued_data as $row) {
         $all_applications[] = $row;
     }
-} catch (PDOException $e) {
-    error_log("獲取續招報名資料失敗: " . $e->getMessage());
-}
-
-// 3. 入學說明會報名 (admission)
+} catch (Exception $e) {
+    error_lo
+mission)
 try {
     if ($is_imd_user) {
-        // IMD用戶只能看到資管科相關的入學說明會報名
-        $stmt = $pdo->prepare("SELECT 
+        $stmt = $conn->prepare("SELECT 
             id, student_name as name, email, school_name, grade, parent_name, contact_phone, line_id,
             session_choice, course_priority_1, course_priority_2, receive_info,
             created_at, '入學說明會報名' as source_type
             FROM admission_applications 
             WHERE course_priority_1 LIKE '%資管%' OR course_priority_1 LIKE '%資訊管理%' 
-            OR course_priority_2 LIKE '%資管%' OR course_priority_2 LIKE '%資訊管理%'
-            ORDER BY created_at DESC");
+            OR course_prioritat DESC");
     } else {
-        // 一般管理員可以看到所有入學說明會報名
-        $stmt = $pdo->prepare("SELECT 
+        $stmt = $conn->prepare("SELECT 
             id, student_name as name, email, school_name, grade, parent_name, contact_phone, line_id,
-            session_choice, course_priority_1, course_priority_2, receive_info,
-            created_at, '入學說明會報名' as source_type
+     說明會報名' as source_type
             FROM admission_applications 
             ORDER BY created_at DESC");
     }
     $stmt->execute();
-    $admission_data = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    $admission_data = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
     
-    foreach ($admission_data as $row) {
-        $all_applications[] = $row;
-    }
-} catch (PDOException $e) {
+    foreach ($admissionw;
+    }n $e) {
     error_log("獲取入學說明會報名資料失敗: " . $e->getMessage());
 }
 
 // 4. 招生推薦報名 (admission_recommend)
 try {
     if ($is_imd_user) {
-        // IMD用戶只能看到資管科相關的招生推薦報名
-        $stmt = $pdo->prepare("SELECT 
+        $stmt = $conn->prepare("SELECT 
             id, student_name as name, student_school as school_name, student_grade as grade, 
-            student_phone as contact_phone, student_email as email, student_line_id as line_id,
-            recommender_name, recommender_student_id, recommender_department, recommendation_reason,
             student_interest, additional_info, status, enrollment_status,
             created_at, '招生推薦報名' as source_type
             FROM admission_recommendations 
@@ -144,25 +112,20 @@ try {
             OR student_interest LIKE '%資管%' OR student_interest LIKE '%資訊管理%'
             ORDER BY created_at DESC");
     } else {
-        // 一般管理員可以看到所有招生推薦報名
-        $stmt = $pdo->prepare("SELECT 
-            id, student_name as name, student_school as school_name, student_grade as grade, 
+        $stmt = ts s school_name, student_grade as grade, 
             student_phone as contact_phone, student_email as email, student_line_id as line_id,
             recommender_name, recommender_student_id, recommender_department, recommendation_reason,
             student_interest, additional_info, status, enrollment_status,
             created_at, '招生推薦報名' as source_type
-            FROM admission_recommendations 
-            ORDER BY created_at DESC");
+     d_at DESC");
     }
     $stmt->execute();
-    $recommend_data = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    $recommend_data = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
     
     foreach ($recommend_data as $row) {
         $all_applications[] = $row;
     }
-} catch (PDOException $e) {
-    error_log("獲取招生推薦報名資料失敗: " . $e->getMessage());
-}
+} catch 
 
 // 按時間排序
 usort($all_applications, function($a, $b) {
@@ -172,10 +135,8 @@ usort($all_applications, function($a, $b) {
 // 統計資料
 $stats = [
     'total' => count($all_applications),
-    'enrollment' => count($enrollment_data ?? []),
-    'continued' => count($continued_data ?? []),
-    'admission' => count($admission_data ?? []),
-    'recommend' => count($recommend_data ?? [])
+    'enrollmntinued_data ?? []),
+    'admission' => count($recommend_data ?? [])
 ];
 ?>
 
@@ -185,13 +146,11 @@ $stats = [
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>招生中心 - Topics 後台管理系統</title>
-    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
-    <style>
+    <link href="https://cdnjs
         * {
             margin: 0;
             padding: 0;
-            box-sizing: border-box;
-        }
+     
         
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;

@@ -17,6 +17,9 @@ if (isset($_GET['action']) && $_GET['action'] == 'logout') {
 // 設置頁面標題
 $page_title = '編輯使用者';
 
+// 引入資料庫設定
+require_once '../../Topics-frontend/frontend/config.php';
+
 // 獲取用戶ID
 $userId = isset($_GET['id']) ? intval($_GET['id']) : 0;
 if (!$userId) {
@@ -37,24 +40,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $status = $_POST['status'] ?? '1';
         
         try {
-            $host = '100.79.58.120';
-            $dbname = 'topics_good';
-            $db_username = 'root';
-            $db_password = '';
-            
-            $pdo = new PDO("mysql:host=$host;dbname=$dbname;charset=utf8mb4", $db_username, $db_password);
-            $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+            $conn = getDatabaseConnection();
             
             // 更新用戶資料
-            $stmt = $pdo->prepare("UPDATE user SET name = ?, email = ?, role = ?, status = ? WHERE id = ?");
-            $stmt->execute([ $name, $email, $role, $status, $userId]);
+            $stmt = $conn->prepare("UPDATE user SET name = ?, email = ?, role = ?, status = ? WHERE id = ?");
+            $stmt->bind_param("sssii", $name, $email, $role, $status, $userId);
+            $stmt->execute();
             
             $success_message = "用戶資料更新成功！";
             
             // 重新獲取更新後的用戶資料
-            $stmt = $pdo->prepare("SELECT id, username, name, email, role, status FROM user WHERE id = ?");
-            $stmt->execute([$userId]);
-            $user = $stmt->fetch(PDO::FETCH_ASSOC);
+            $stmt = $conn->prepare("SELECT id, username, name, email, role, status FROM user WHERE id = ?");
+            $stmt->bind_param("i", $userId);
+            $stmt->execute();
+            $user = $stmt->get_result()->fetch_assoc();
             
         } catch(PDOException $e) {
             $error_message = "資料庫更新失敗：" . $e->getMessage();
@@ -63,20 +62,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     } elseif ($action === 'reset_password') {
         // 重置密碼
         try {
-            $host = '100.79.58.120';
-            $dbname = 'topics_good';
-            $db_username = 'root';
-            $db_password = '';
-            
-            $pdo = new PDO("mysql:host=$host;dbname=$dbname;charset=utf8mb4", $db_username, $db_password);
-            $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+            $conn = getDatabaseConnection();
             
             // 重置密碼為 123456
             $new_password = '123456';
-            $stmt = $pdo->prepare("UPDATE user SET password = ? WHERE id = ?");
-            $stmt->execute([$new_password, $userId]);
+            $hashed_password = password_hash($new_password, PASSWORD_DEFAULT); // 密碼雜湊
+            $stmt = $conn->prepare("UPDATE user SET password = ? WHERE id = ?");
+            $stmt->bind_param("si", $hashed_password, $userId);
+            $stmt->execute();
             
-            $success_message = "密碼重置成功！新密碼為: 123456";
+            $success_message = "密碼已重置為 '123456'！";
             
         } catch(PDOException $e) {
             $error_message = "密碼重置失敗：" . $e->getMessage();
@@ -86,33 +81,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
 // 從資料庫獲取用戶資料
 try {
-    $host = '100.79.58.120';
-    $dbname = 'topics_good';
-    $db_username = 'root';
-    $db_password = '';
-    
-    $pdo = new PDO("mysql:host=$host;dbname=$dbname;charset=utf8mb4", $db_username, $db_password);
-    $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
-    
-    $stmt = $pdo->prepare("SELECT id, username, name, email, role, status FROM user WHERE id = ?");
-    $stmt->execute([$userId]);
-    $user = $stmt->fetch(PDO::FETCH_ASSOC);
+    $conn = getDatabaseConnection();
+    $stmt = $conn->prepare("SELECT id, username, name, email, role, status FROM user WHERE id = ?");
+    $stmt->bind_param("i", $userId);
+    $stmt->execute();
+    $user = $stmt->get_result()->fetch_assoc();
     
     if (!$user) {
         header("Location: index.php");
         exit;
     }
-    
 } catch(PDOException $e) {
-    // 如果資料庫連線失敗，使用模擬資料
-    $user = [
-        'id' => $userId,
-        'username' => 'admin',
-        'name' => '張三',
-        'email' => 'admin@example.com',
-        'role' => 'admin',
-        'status' => 1
-    ];
+    $error_message = "讀取使用者資料失敗：" . $e->getMessage();
+    // 發生錯誤時，顯示錯誤訊息，而不是模擬資料
+    $user = []; // 清空user避免顯示不正確的資料
 }
 ?>
 
@@ -420,7 +402,7 @@ try {
         }
         
         function resetPassword() {
-            if (confirm('確定要重置此用戶的密碼嗎？新密碼將設為 "123456"')) {
+            if (confirm('確定要將此用戶的密碼重置為 "123456" 嗎？')) {
                 submitForm('reset_password');
             }
         }
