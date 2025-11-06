@@ -1,18 +1,21 @@
 <?php
 session_start();
 
-// 檢查是否已登入且為 admin1
+// 檢查是否已登入
 if (!isset($_SESSION['admin_logged_in']) || !$_SESSION['admin_logged_in']) {
     http_response_code(403);
     echo json_encode(['success' => false, 'message' => '未登入']);
     exit;
 }
 
-// 只有 admin1 可以分配學生至主任
+// 檢查權限：admin1 或行政人員可以分配學生至主任
 $username = isset($_SESSION['username']) ? $_SESSION['username'] : '';
-if ($username !== 'admin1') {
+$user_role = isset($_SESSION['role']) ? $_SESSION['role'] : '';
+$is_admission_center = ($username === 'admin1' || in_array($user_role, ['admin', '管理員', '學校行政人員']));
+
+if (!$is_admission_center) {
     http_response_code(403);
-    echo json_encode(['success' => false, 'message' => '只有 admin1 可以進行此操作']);
+    echo json_encode(['success' => false, 'message' => '權限不足，只有招生中心或行政人員可以進行此操作']);
     exit;
 }
 
