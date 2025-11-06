@@ -8,15 +8,12 @@ if (!isset($_SESSION['admin_logged_in']) || !$_SESSION['admin_logged_in']) {
     exit;
 }
 
-// 資料庫連接設定
-$host = '100.79.58.120';
-$dbname = 'topics_good';
-$db_username = 'root';
-$db_password = '';
+// 引入資料庫設定
+require_once '../../Topics-frontend/frontend/config.php';
 
 try {
-    $pdo = new PDO("mysql:host=$host;dbname=$dbname;charset=utf8mb4", $db_username, $db_password);
-    $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+    // 建立資料庫連接
+    $conn = getDatabaseConnection();
 } catch (PDOException $e) {
     http_response_code(500);
     echo json_encode(['success' => false, 'message' => '資料庫連接失敗']);
@@ -29,17 +26,17 @@ $action = $_GET['action'] ?? $_POST['action'] ?? '';
 
 switch ($action) {
     case 'get_quotas':
-        getQuotas($pdo);
+        getQuotas($conn);
         break;
     case 'update_or_add_quota': // 將 update_quota 改為更通用的名稱
-        updateQuota($pdo);
+        updateQuota($conn);
         break;
     default:
         http_response_code(400);
         echo json_encode(['success' => false, 'message' => '無效的操作']);
 }
 
-function getQuotas($pdo) {
+function getQuotas($conn) {
     try {
         $stmt = $pdo->prepare("SELECT * FROM department_quotas WHERE is_active = 1 ORDER BY department_name");
         // 改為從 admission_courses 讀取，並關聯 department_quotas
@@ -54,17 +51,17 @@ function getQuotas($pdo) {
             WHERE ac.is_active = 1
             ORDER BY ac.sort_order, ac.course_name
         ";
-        $stmt = $pdo->prepare($sql);
+        $stmt = $conn->prepare($sql);
         $stmt->execute();
-        $courses = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        $courses = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
         
         // 計算各科系已錄取人數
         $department_stats = [];
 
         // 先一次性獲取所有已錄取的學生志願，以提高效率
-        $stmt_approved = $pdo->prepare("SELECT choices FROM continued_admission WHERE status = 'approved'");
+        $stmt_approved = $conn->prepare("SELECT choices FROM continued_admission WHERE status = 'approved'");
         $stmt_approved->execute();
-        $approved_applications = $stmt_approved->fetchAll(PDO::FETCH_ASSOC);
+        $approved_applications = $stmt_approved->get_result()->fetch_all(MYSQLI_ASSOC);
 
         foreach ($courses as $course) {
             // 在 PHP 中進行模糊比對，與 continued_admission_list.php 邏輯保持一致
@@ -93,7 +90,7 @@ function getQuotas($pdo) {
     }
 }
 
-function updateQuota($pdo) {
+function updateQuota($conn) {
     if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
         http_response_code(405);
         echo json_encode(['success' => false, 'message' => '方法不允許']);
@@ -120,19 +117,22 @@ function updateQuota($pdo) {
     
     try {
         // 檢查記錄是否存在
-        $stmt = $pdo->prepare("SELECT id FROM department_quotas WHERE department_name = ?");
-        $stmt->execute([$course_name]);
-        $existing_quota = $stmt->fetch(PDO::FETCH_ASSOC);
+        $stmt = $conn->prepare("SELECT id FROM department_quotas WHERE department_name = ?");
+        $stmt->bind_param("s", $course_name);
+        $stmt->execute();
+        $existing_quota = $stmt->get_result()->fetch_assoc();
         
         if ($existing_quota) {
             // 更新現有記錄
-            $stmt = $pdo->prepare("UPDATE department_quotas SET total_quota = ?, is_active = 1 WHERE id = ?");
-            $stmt->execute([$total_quota, $existing_quota['id']]);
+            $stmt = $conn->prepare("UPDATE department_quotas SET total_quota = ?, is_active = 1 WHERE id = ?");
+            $stmt->bind_param("ii", $total_quota, $existing_quota['id']);
+            $stmt->execute();
             echo json_encode(['success' => true, 'message' => '名額更新成功']);
         } else {
             // 插入新記錄
-            $stmt = $pdo->prepare("INSERT INTO department_quotas (department_name, total_quota, is_active) VALUES (?, ?, 1)"); // 移除 department_code
-            $stmt->execute([$course_name, $total_quota]);
+            $stmt = $conn->prepare("INSERT INTO department_quotas (department_name, total_quota, is_active) VALUES (?, ?, 1)"); // 移除 department_code
+            $stmt->bind_param("si", $course_name, $total_quota);
+            $stmt->execute();
             echo json_encode(['success' => true, 'message' => '名額設定成功']);
         }
     } catch (Exception $e) {

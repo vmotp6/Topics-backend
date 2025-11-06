@@ -13,11 +13,8 @@ if (!isset($_SESSION['admin_logged_in']) || !$_SESSION['admin_logged_in']) {
     exit;
 }
 
-// 資料庫連接設定（與招生中心保持一致）
-$host = '100.79.58.120';
-$dbname = 'topics_good';
-$db_username = 'root';
-$db_password = '';
+// 引入資料庫設定
+require_once '../../Topics-frontend/frontend/config.php';
 
 // 獲取從前端發送的 JSON 資料
 $data = json_decode(file_get_contents('php://input'), true);
@@ -34,15 +31,15 @@ if (!$application_id || !in_array($new_status, $allowed_statuses)) {
 }
 
 try {
-    $pdo = new PDO("mysql:host=$host;dbname=$dbname;charset=utf8mb4", $db_username, $db_password);
-    $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+    $conn = getDatabaseConnection();
     
     // 如果是更新為 "錄取"，則在更新前檢查名額
     if ($new_status === 'approved') {
         // 1. 獲取學生的第一志願
-        $stmt_choices = $pdo->prepare("SELECT choices FROM continued_admission WHERE id = ?");
-        $stmt_choices->execute([$application_id]);
-        $application = $stmt_choices->fetch(PDO::FETCH_ASSOC);
+        $stmt_choices = $conn->prepare("SELECT choices FROM continued_admission WHERE id = ?");
+        $stmt_choices->bind_param("i", $application_id);
+        $stmt_choices->execute();
+        $application = $stmt_choices->get_result()->fetch_assoc();
 
         $choices = json_decode($application['choices'], true);
         $first_choice_department = $choices[0] ?? null;
@@ -61,10 +58,11 @@ try {
                        FROM continued_admission ca
                        WHERE ca.status = 'approved' AND dq.department_name LIKE CONCAT('%', JSON_UNQUOTE(JSON_EXTRACT(ca.choices, '$[0]')), '%')
                       ) as current_enrolled 
-                      FROM department_quotas dq WHERE dq.department_name LIKE ? LIMIT 1";
-        $stmt_quota = $pdo->prepare($sql_quota);
-        $stmt_quota->execute(['%' . $first_choice_department . '%']); // $first_choice_department 是學生的志願 (例如 "動畫科")
-        $quota_info = $stmt_quota->fetch(PDO::FETCH_ASSOC);
+                      FROM department_quotas dq WHERE dq.department_name LIKE CONCAT('%', ?, '%') LIMIT 1";
+        $stmt_quota = $conn->prepare($sql_quota);
+        $stmt_quota->bind_param("s", $first_choice_department); // $first_choice_department 是學生的志願 (例如 "動畫科")
+        $stmt_quota->execute();
+        $quota_info = $stmt_quota->get_result()->fetch_assoc();
 
         if (!$quota_info) {
             http_response_code(400);
@@ -83,27 +81,29 @@ try {
     }
     
     // 檢查是否有 review_notes 欄位
-    $stmt = $pdo->prepare("SHOW COLUMNS FROM continued_admission LIKE 'review_notes'");
+    $stmt = $conn->prepare("SHOW COLUMNS FROM continued_admission LIKE 'review_notes'");
     $stmt->execute();
-    $has_review_notes = $stmt->rowCount() > 0;
+    $has_review_notes = $stmt->get_result()->num_rows > 0;
 
     if ($has_review_notes) {
         // 如果有 review_notes 欄位，則更新包含備註
-        $stmt = $pdo->prepare("UPDATE continued_admission SET status = ?, reviewed_at = NOW(), review_notes = ? WHERE id = ?");
-        $stmt->execute([$new_status, $review_notes, $application_id]);
+        $stmt = $conn->prepare("UPDATE continued_admission SET status = ?, reviewed_at = NOW(), review_notes = ? WHERE id = ?");
+        $stmt->bind_param("ssi", $new_status, $review_notes, $application_id);
+        $stmt->execute();
     } else {
         // 如果沒有 review_notes 欄位，則只更新狀態和時間
-        $stmt = $pdo->prepare("UPDATE continued_admission SET status = ?, reviewed_at = NOW() WHERE id = ?");
-        $stmt->execute([$new_status, $application_id]);
+        $stmt = $conn->prepare("UPDATE continued_admission SET status = ?, reviewed_at = NOW() WHERE id = ?");
+        $stmt->bind_param("si", $new_status, $application_id);
+        $stmt->execute();
     }
     
-    if ($stmt->rowCount() > 0) {
+    if ($stmt->affected_rows > 0) {
         echo json_encode(['success' => true, 'message' => '狀態更新成功']);
     } else {
         echo json_encode(['success' => false, 'message' => '沒有找到要更新的記錄']);
     }
     
-} catch (PDOException $e) {
+} catch (Exception $e) {
     http_response_code(500);
     error_log("續招狀態更新失敗: " . $e->getMessage());
     echo json_encode(['success' => false, 'message' => '伺服器錯誤：' . $e->getMessage()]);

@@ -7,11 +7,8 @@ if (!isset($_SESSION['admin_logged_in']) || !$_SESSION['admin_logged_in']) {
     exit;
 }
 
-// 資料庫連接設定（與招生中心保持一致）
-$host = '100.79.58.120';
-$dbname = 'topics_good';
-$db_username = 'root';
-$db_password = '';
+// 引入資料庫設定
+require_once '../../Topics-frontend/frontend/config.php';
 
 // 設置頁面標題
 $page_title = (isset($_SESSION['username']) && $_SESSION['username'] === 'IMD') ? '資管科續招報名管理' : '續招報名管理';
@@ -22,16 +19,15 @@ $is_imd_user = (isset($_SESSION['username']) && $_SESSION['username'] === 'IMD')
 
 // 建立資料庫連接
 try {
-    $pdo = new PDO("mysql:host=$host;dbname=$dbname;charset=utf8mb4", $db_username, $db_password);
-    $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
-} catch (PDOException $e) {
+    $conn = getDatabaseConnection();
+} catch (Exception $e) {
     die("資料庫連接失敗: " . $e->getMessage());
 }
 
 // 獲取續招報名資料（根據用戶權限過濾）
 if ($is_imd_user) {
     // IMD用戶只能看到資管科相關的續招報名
-    $stmt = $pdo->prepare("SELECT id, name, id_number, mobile, school_name, created_at, status, choices 
+    $stmt = $conn->prepare("SELECT id, name, id_number, mobile, school_name, created_at, status, choices 
                           FROM continued_admission 
                           WHERE JSON_CONTAINS(choices, JSON_QUOTE('資訊管理科')) 
                           OR JSON_CONTAINS(choices, JSON_QUOTE('資管科'))
@@ -40,19 +36,19 @@ if ($is_imd_user) {
                           ORDER BY created_at DESC");
 } else {
     // 一般管理員可以看到所有續招報名
-    $stmt = $pdo->prepare("SELECT id, name, id_number, mobile, school_name, created_at, status, choices FROM continued_admission ORDER BY created_at DESC");
+    $stmt = $conn->prepare("SELECT id, name, id_number, mobile, school_name, created_at, status, choices FROM continued_admission ORDER BY created_at DESC");
 }
 $stmt->execute();
-$applications = $stmt->fetchAll(PDO::FETCH_ASSOC);
+$applications = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
 
 // 獲取科系名額資料
 $department_stats = [];
 
 try {
     // 檢查 admission_courses 資料表是否存在
-    $stmt = $pdo->prepare("SHOW TABLES LIKE 'admission_courses'");
+    $stmt = $conn->prepare("SHOW TABLES LIKE 'admission_courses'");
     $stmt->execute();
-    $tableExists = $stmt->rowCount() > 0;
+    $tableExists = $stmt->get_result()->num_rows > 0;
     
     if ($tableExists) {
         // 從 admission_courses 讀取科系列表，並與 department_quotas 關聯
@@ -65,14 +61,14 @@ try {
             WHERE ac.is_active = 1
             ORDER BY ac.sort_order, ac.course_name
         ";
-        $stmt = $pdo->prepare($sql);
+        $stmt = $conn->prepare($sql);
         $stmt->execute();
-        $courses = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        $courses = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
         
         // 先一次性獲取所有已錄取的學生志願
-        $stmt_approved = $pdo->prepare("SELECT choices FROM continued_admission WHERE status = 'approved'");
+        $stmt_approved = $conn->prepare("SELECT choices FROM continued_admission WHERE status = 'approved'");
         $stmt_approved->execute();
-        $approved_applications = $stmt_approved->fetchAll(PDO::FETCH_ASSOC);
+        $approved_applications = $stmt_approved->get_result()->fetch_all(MYSQLI_ASSOC);
 
         // 在 PHP 中計算各科系已錄取人數，以避免複雜的 SQL 查詢
         foreach ($courses as $course) {

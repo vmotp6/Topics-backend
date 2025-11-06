@@ -16,6 +16,38 @@ if (isset($_GET['action']) && $_GET['action'] == 'logout') {
 
 // 設置頁面標題
 $page_title = '使用者管理';
+
+// 引入資料庫設定
+require_once '../../Topics-frontend/frontend/config.php';
+
+$users = [];
+$error_message = '';
+
+try {
+    $conn = getDatabaseConnection();
+
+    // 排序參數
+    $sortBy = $_GET['sort_by'] ?? 'id';
+    $sortOrder = $_GET['sort_order'] ?? 'desc';
+
+    // 驗證排序參數，防止 SQL 注入
+    $allowed_columns = ['id', 'username', 'name', 'email', 'role', 'status'];
+    if (!in_array($sortBy, $allowed_columns)) {
+        $sortBy = 'id';
+    }
+    if (!in_array(strtolower($sortOrder), ['asc', 'desc'])) {
+        $sortOrder = 'desc';
+    }
+
+    $sql = "SELECT id, username, name, email, role, status FROM user ORDER BY $sortBy $sortOrder";
+    $result = $conn->query($sql);
+
+    if ($result) {
+        $users = $result->fetch_all(MYSQLI_ASSOC);
+    }
+} catch (Exception $e) {
+    $error_message = "讀取使用者資料失敗：" . $e->getMessage();
+}
 ?>
 
 <!DOCTYPE html>
@@ -446,7 +478,7 @@ $page_title = '使用者管理';
                 
                 <!-- 使用者表格 -->
                 <div class="table-container">
-                    <div id="tableContainer">
+                    <div id="tableContainer" data-users='<?php echo json_encode($users); ?>'>
                         <div class="loading">載入中...</div>
                     </div>
                 </div>
@@ -494,32 +526,6 @@ $page_title = '使用者管理';
     </div>
     
     <script>
-    const API_BASE_URL = 'http://100.79.58.120:5001';
-    
-    // 排序狀態
-    let currentSortBy = 'id';
-    let currentSortOrder = 'desc';
-    
-    // 載入使用者資料
-    async function loadUsers(sortBy = 'id', sortOrder = 'desc') {
-        try {
-            const response = await fetch(`${API_BASE_URL}/admin/users?sort_by=${sortBy}&sort_order=${sortOrder}`);
-            const data = await response.json();
-            
-            if (response.ok) {
-                currentSortBy = data.sort_by;
-                currentSortOrder = data.sort_order;
-                renderUserTable(data.users);
-                updateSortIcons();
-            } else {
-                showMessage('載入使用者資料失敗', 'error');
-            }
-        } catch (error) {
-            console.error('Error loading users:', error);
-            showMessage('載入使用者資料失敗', 'error');
-        }
-    }
-    
     // 排序表格
     function sortTable(field) {
         let newSortOrder = 'asc';
@@ -529,7 +535,7 @@ $page_title = '使用者管理';
             newSortOrder = currentSortOrder === 'asc' ? 'desc' : 'asc';
         }
         
-        loadUsers(field, newSortOrder);
+        window.location.href = `users.php?sort_by=${field}&sort_order=${newSortOrder}`;
     }
     
     // 更新排序圖標
@@ -544,29 +550,6 @@ $page_title = '使用者管理';
         const currentIcon = document.getElementById(`sort-${currentSortBy}`);
         if (currentIcon) {
             currentIcon.className = `sort-icon active ${currentSortOrder}`;
-        }
-    }
-    
-    // 搜尋使用者
-    async function searchUsers() {
-        const query = document.getElementById('searchInput').value;
-        if (query.length < 2) {
-            loadUsers(currentSortBy, currentSortOrder);
-            return;
-        }
-        
-        try {
-            const response = await fetch(`${API_BASE_URL}/admin/users/search?q=${encodeURIComponent(query)}`);
-            const data = await response.json();
-            
-            if (response.ok) {
-                renderUserTable(data.users);
-            } else {
-                showMessage('搜尋失敗', 'error');
-            }
-        } catch (error) {
-            console.error('Error searching users:', error);
-            showMessage('搜尋失敗', 'error');
         }
     }
     
@@ -641,26 +624,30 @@ $page_title = '使用者管理';
     
     // 查看使用者
     async function viewUser(userId) {
-        try {
-            const response = await fetch(`${API_BASE_URL}/admin/users/${userId}`);
-            const data = await response.json();
+        const tableContainer = document.getElementById('tableContainer');
+        const users = JSON.parse(tableContainer.dataset.users);
+        const user = users.find(u => u.id == userId);
+
+        if (user) {
+            document.getElementById('viewUserId').value = user.id;
+            document.getElementById('viewUsername').value = user.username;
+            document.getElementById('viewName').value = user.name;
+            document.getElementById('viewEmail').value = user.email;
+            document.getElementById('viewRole').value = user.role;
+            document.getElementById('viewStatus').value = user.status == 0 ? '停用' : '啟用';
             
-            if (response.ok) {
-                document.getElementById('viewUserId').value = data.user.id;
-                document.getElementById('viewUsername').value = data.user.username;
-                document.getElementById('viewName').value = data.user.name;
-                document.getElementById('viewEmail').value = data.user.email;
-                document.getElementById('viewRole').value = data.user.role;
-                document.getElementById('viewStatus').value = data.user.status === 0 ? '停用' : '啟用';
-                
-                document.getElementById('viewModal').style.display = 'block';
-            } else {
-                showMessage('載入使用者資料失敗', 'error');
-            }
-        } catch (error) {
-            console.error('Error loading user:', error);
+            document.getElementById('viewModal').style.display = 'block';
+        } else {
             showMessage('載入使用者資料失敗', 'error');
         }
+    }
+
+    // 搜尋使用者 (本地端)
+    function searchUsers() {
+        const query = document.getElementById('searchInput').value.toLowerCase();
+        const rows = document.querySelectorAll('#userTable tbody tr');
+        // ... (此處省略本地搜尋邏輯，因為 filterTable 已實現)
+        filterTable();
     }
     
     // 編輯使用者 - 跳轉到編輯頁面
@@ -727,7 +714,21 @@ $page_title = '使用者管理';
     
     // 頁面載入時執行
     document.addEventListener('DOMContentLoaded', function() {
-        loadUsers('id', 'desc');
+        const tableContainer = document.getElementById('tableContainer');
+        const usersData = tableContainer.dataset.users;
+
+        if (usersData) {
+            const users = JSON.parse(usersData);
+            renderUserTable(users);
+        } else {
+            showMessage('無法載入使用者資料', 'error');
+        }
+
+        // 獲取當前 URL 的排序參數來更新圖標
+        const urlParams = new URLSearchParams(window.location.search);
+        currentSortBy = urlParams.get('sort_by') || 'id';
+        currentSortOrder = urlParams.get('sort_order') || 'desc';
+        updateSortIcons();
     });
     </script>
 </body>
