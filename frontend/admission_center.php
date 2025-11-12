@@ -13,12 +13,19 @@ $page_title = (isset($_SESSION['username']) && $_SESSION['username'] === 'IMD') 
 // 檢查是否為IMD用戶
 $is_imd_user = (isset($_SESSION['username']) && $_SESSION['username'] === 'IMD');
 
-//  $conn = getDatabaseConnection();
+// 引入資料庫設定
+require_once '../../Topics-frontend/frontend/config.php';
+
+$all_applications = [];
+
+try {
+    $conn = getDatabaseConnection();
 } catch (Exception $e) {
     die("資料庫連接失敗: " . $e->getMessage());
 }
 
 // 1. 就讀意願登錄 (cooperation_upload)
+// 資料表應為 enrollment_intention
 try {
     if ($is_imd_user) {
         // IMD用戶只能看到資管科相關的就讀意願 (應為 enrollment_intention)
@@ -27,9 +34,11 @@ try {
             intention1, system1, intention2, system2, intention3, system3,
             junior_high, current_grade, line_id, facebook, recommended_teacher, remarks,
             created_at, '就讀意願登錄' as source_type
-            FROM enrollment_applications 
-            WHERE inten '%資管%' OR intention2 LIKE '%資訊管理%' 
-      Ri    ORDER BY created_at DESC");
+            FROM enrollment_intention 
+            WHERE intention1 LIKE '%資管%' OR intention1 LIKE '%資訊管理%' 
+            OR intention2 LIKE '%資管%' OR intention2 LIKE '%資訊管理%' 
+            OR intention3 LIKE '%資管%' OR intention3 LIKE '%資訊管理%'
+            ORDER BY created_at DESC");
     } else {
         // 一般管理員可以看到所有就讀意願 (應為 enrollment_intention)
         $stmt = $conn->prepare("SELECT 
@@ -37,11 +46,12 @@ try {
             intention1, system1, intention2, system2, intention3, system3,
             junior_high, current_grade, line_id, facebook, recommended_teacher, remarks,
             created_at, '就讀意願登錄' as source_type
-            FROM enrollment_applications 
+            FROM enrollment_intention 
             ORDER BY created_at DESC");
     }
     $stmt->execute();
-    $enrollment_data = $stta as $row) {
+    $enrollment_data = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+    foreach ($enrollment_data as $row) {
         $all_applications[] = $row;
     }
 } catch (Exception $e) {
@@ -50,12 +60,14 @@ try {
 
 // 2. 續招報名 (continued_admission)
 try {
-    if ($is_imd_=" 
+    if ($is_imd_user) {
+        $stmt = $conn->prepare("SELECT 
             id, name, id_number, birth_year, birth_month, birth_day, gender,
             phone, mobile, school_city, school_name, guardian_name as guardian, guardian_phone, guardian_mobile,
             self_intro, skills, choices, status, review_notes, reviewed_at,
             created_at, '續招報名' as source_type
-     AINS(choices, JSON_QUOTE('資訊管理科')) 
+            FROM continued_admission 
+            WHERE JSON_CONTAINS(choices, JSON_QUOTE('資訊管理科')) 
             OR JSON_CONTAINS(choices, JSON_QUOTE('資管科'))
             OR JSON_SEARCH(choices, 'one', '%資管%') IS NOT NULL
             OR JSON_SEARCH(choices, 'one', '%資訊管理%') IS NOT NULL
@@ -63,6 +75,8 @@ try {
     } else {
         $stmt = $conn->prepare("SELECT 
             id, name, id_number, birth_year, birth_month, birth_day, gender,
+            phone, mobile, school_city, school_name, guardian_name as guardian, guardian_phone, guardian_mobile,
+            self_intro, skills, choices, status, review_notes, reviewed_at,
             created_at, '續招報名' as source_type
             FROM continued_admission 
             ORDER BY created_at DESC");
@@ -74,8 +88,10 @@ try {
         $all_applications[] = $row;
     }
 } catch (Exception $e) {
-    error_lo
-mission)
+    error_log("獲取續招報名資料失敗: " . $e->getMessage());
+}
+
+// 3. 入學說明會報名 (admission_applications)
 try {
     if ($is_imd_user) {
         $stmt = $conn->prepare("SELECT 
@@ -84,19 +100,23 @@ try {
             created_at, '入學說明會報名' as source_type
             FROM admission_applications 
             WHERE course_priority_1 LIKE '%資管%' OR course_priority_1 LIKE '%資訊管理%' 
-            OR course_prioritat DESC");
+            OR course_priority_2 LIKE '%資管%' OR course_priority_2 LIKE '%資訊管理%'
+            ORDER BY created_at DESC");
     } else {
         $stmt = $conn->prepare("SELECT 
             id, student_name as name, email, school_name, grade, parent_name, contact_phone, line_id,
-     說明會報名' as source_type
+            session_choice, course_priority_1, course_priority_2, receive_info,
+            created_at, '入學說明會報名' as source_type
             FROM admission_applications 
             ORDER BY created_at DESC");
     }
     $stmt->execute();
     $admission_data = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
     
-    foreach ($admissionw;
-    }n $e) {
+    foreach ($admission_data as $row) {
+        $all_applications[] = $row;
+    }
+} catch (Exception $e) {
     error_log("獲取入學說明會報名資料失敗: " . $e->getMessage());
 }
 
@@ -108,16 +128,17 @@ try {
             student_interest, additional_info, status, enrollment_status,
             created_at, '招生推薦報名' as source_type
             FROM admission_recommendations 
-            WHERE recommender_department LIKE '%資管%' OR recommender_department LIKE '%資訊管理%'
-            OR student_interest LIKE '%資管%' OR student_interest LIKE '%資訊管理%'
+            WHERE recommender_department LIKE '%資管%' OR recommender_department LIKE '%資訊管理%' OR student_interest LIKE '%資管%' OR student_interest LIKE '%資訊管理%'
             ORDER BY created_at DESC");
     } else {
-        $stmt = ts s school_name, student_grade as grade, 
+        $stmt = $conn->prepare("SELECT 
+            id, student_name as name, student_school as school_name, student_grade as grade, 
             student_phone as contact_phone, student_email as email, student_line_id as line_id,
             recommender_name, recommender_student_id, recommender_department, recommendation_reason,
             student_interest, additional_info, status, enrollment_status,
             created_at, '招生推薦報名' as source_type
-     d_at DESC");
+            FROM admission_recommendations 
+            ORDER BY created_at DESC");
     }
     $stmt->execute();
     $recommend_data = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
@@ -125,7 +146,9 @@ try {
     foreach ($recommend_data as $row) {
         $all_applications[] = $row;
     }
-} catch 
+} catch (Exception $e) {
+    error_log("獲取招生推薦報名資料失敗: " . $e->getMessage());
+}
 
 // 按時間排序
 usort($all_applications, function($a, $b) {
@@ -135,8 +158,10 @@ usort($all_applications, function($a, $b) {
 // 統計資料
 $stats = [
     'total' => count($all_applications),
-    'enrollmntinued_data ?? []),
-    'admission' => count($recommend_data ?? [])
+    'enrollment' => count($enrollment_data ?? []),
+    'continued' => count($continued_data ?? []),
+    'admission' => count($admission_data ?? []),
+    'recommend' => count($recommend_data ?? [])
 ];
 ?>
 
@@ -145,8 +170,9 @@ $stats = [
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>招生中心 - Topics 後台管理系統</title>
-    <link href="https://cdnjs
+    <title><?php echo $page_title; ?> - Topics 後台管理系統</title>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <style>
         * {
             margin: 0;
             padding: 0;
@@ -529,11 +555,6 @@ $stats = [
             
             <!-- 內容區域 -->
             <div class="content">
-                <div class="page-header">
-                    <h1><i class="fas fa-graduation-cap"></i> 招生中心</h1>
-                    <p>查看所有學生的報名資料</p>
-                </div>
-                
                 <!-- 統計卡片 -->
                 <div class="stats-grid">
                     <div class="stat-card">
