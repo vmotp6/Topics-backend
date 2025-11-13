@@ -471,6 +471,10 @@ try {
                     </div>
                     <div class="table-search">
                         <input type="text" id="tableSearchInput" placeholder="搜尋使用者..." onkeyup="filterTable()">
+                        <a href="add_user.php" class="btn btn-primary" style="padding: 8px 12px; font-size: 14px;">
+                            <i class="fas fa-plus" style="margin-right: 6px;"></i>
+                            新增使用者
+                        </a>
                     </div>
                 </div>
                 

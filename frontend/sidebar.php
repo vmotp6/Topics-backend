@@ -25,7 +25,7 @@ $is_admin = in_array($user_role, ['admin', '管理員']) || $username === 'admin
                 <i class="fas fa-home"></i>
                 <span>首頁</span>
             </a>
-            <a href="users.php" class="menu-item <?php echo in_array($current_page, ['users', 'edit_user']) ? 'active' : ''; ?>">
+            <a href="users.php" class="menu-item <?php echo in_array($current_page, ['users', 'edit_user', 'add_user']) ? 'active' : ''; ?>">
                 <i class="fas fa-users"></i>
                 <span>使用者管理</span>
             </a>
