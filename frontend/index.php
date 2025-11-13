@@ -16,6 +16,10 @@ if (isset($_GET['action']) && $_GET['action'] == 'logout') {
 
 // 設置頁面標題
 $page_title = '系統概覽';
+
+// 檢查是否為 admin1 帳號
+$username = isset($_SESSION['username']) ? $_SESSION['username'] : '';
+$is_admin1 = ($username === 'admin1');
 ?>
 
 <!DOCTYPE html>
@@ -302,10 +306,37 @@ $page_title = '系統概覽';
                                     <i class="fas fa-robot"></i>
                                     AI 模型管理
                                 </a>
+                                <?php if ($is_admin1): ?>
+                                <a href="school_contacts.php" class="btn btn-secondary">
+                                    <i class="fas fa-address-book"></i>
+                                    學校聯絡人管理
+                                </a>
+                                <?php endif; ?>
                             </div>
                         </div>
                     </div>
                 </div>
+                
+                <?php if ($is_admin1): ?>
+                <!-- Admin1 專用功能卡片 -->
+                <div class="welcome-section" style="margin-top: 24px;">
+                    <div class="welcome-card">
+                        <div class="welcome-icon">
+                            <i class="fas fa-school"></i>
+                        </div>
+                        <div class="welcome-content">
+                            <h2>學校聯絡人管理</h2>
+                            <p>查看和管理所有學校聯絡人的資訊，包括學校名稱、聯絡人姓名、Email、縣市等詳細資料。</p>
+                            <div class="welcome-actions">
+                                <a href="school_contacts.php" class="btn btn-primary">
+                                    <i class="fas fa-address-book"></i>
+                                    前往聯絡人管理
+                                </a>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <?php endif; ?>
             </div>
         </div>
     </div>

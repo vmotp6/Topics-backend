@@ -57,6 +57,12 @@ $is_admin = in_array($user_role, ['admin', '管理員']) || $username === 'admin
                 <i class="fas fa-graduation-cap"></i>
                 <span>招生中心</span>
             </a>
+            <?php if ($username === 'admin1'): ?>
+            <a href="school_contacts.php" class="menu-item <?php echo $current_page === 'school_contacts' ? 'active' : ''; ?>">
+                <i class="fas fa-address-book"></i>
+                <span>學校聯絡人</span>
+            </a>
+            <?php endif; ?>
         <?php elseif ($user_role === '學校行政人員'): // 學校行政人員的權限 ?>
             <a href="enrollment_list.php" class="menu-item <?php echo $current_page === 'enrollment_list' ? 'active' : ''; ?>">
                 <i class="fas fa-file-signature"></i>
