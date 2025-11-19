@@ -58,6 +58,10 @@ $is_admin = in_array($user_role, ['admin', '管理員']) || $username === 'admin
                 <span>招生中心</span>
             </a>
             <?php if ($username === 'admin1'): ?>
+            <a href="admission_recommend_list.php" class="menu-item <?php echo $current_page === 'admission_recommend_list' ? 'active' : ''; ?>">
+                <i class="fas fa-user-friends"></i>
+                <span>招生推薦</span>
+            </a>
             <a href="school_contacts.php" class="menu-item <?php echo $current_page === 'school_contacts' ? 'active' : ''; ?>">
                 <i class="fas fa-address-book"></i>
                 <span>學校聯絡人</span>
