@@ -57,7 +57,7 @@ $is_admin = in_array($user_role, ['admin', '管理員']) || $username === 'admin
                 <i class="fas fa-graduation-cap"></i>
                 <span>招生中心</span>
             </a>
-            <?php if ($username === 'admin1'): ?>
+            <?php if ($username === 'admin1' || $username === 'IMD'): ?>
             <a href="admission_recommend_list.php" class="menu-item <?php echo $current_page === 'admission_recommend_list' ? 'active' : ''; ?>">
                 <i class="fas fa-user-friends"></i>
                 <span>招生推薦</span>
@@ -80,6 +80,12 @@ $is_admin = in_array($user_role, ['admin', '管理員']) || $username === 'admin
                 <i class="fas fa-cog"></i>
                 <span>場次設定</span>
             </a>
+            <?php if ($username === 'IMD'): ?>
+            <a href="admission_recommend_list.php" class="menu-item <?php echo $current_page === 'admission_recommend_list' ? 'active' : ''; ?>">
+                <i class="fas fa-user-friends"></i>
+                <span>招生推薦</span>
+            </a>
+            <?php endif; ?>
         <?php endif; ?>
 
         <a href="logout.php" class="menu-item">

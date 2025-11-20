@@ -522,6 +522,11 @@ $conn->close();
                                 <button class="btn-view" onclick="showEnrollmentMonthlyStats()">
                                     <i class="fas fa-calendar-alt"></i> 月度趨勢分析
                                 </button>
+                                <?php if ($current_user === 'admin1'): ?>
+                                <button class="btn-view" onclick="showEnrollmentSchoolDepartmentStats()">
+                                    <i class="fas fa-school"></i> 國中選擇科系分析
+                                </button>
+                                <?php endif; ?>
                                 <button class="btn-view" onclick="clearEnrollmentCharts()" style="background: #dc3545; color: white; border-color: #dc3545;">
                                     <i class="fas fa-arrow-up"></i> 收回圖表
                                 </button>
@@ -2323,6 +2328,119 @@ $conn->close();
             })
             .catch(error => {
                 console.error('載入月度統計數據失敗:', error);
+                document.getElementById('enrollmentAnalyticsContent').innerHTML = `
+                    <div style="text-align: center; padding: 40px; color: #dc3545;">
+                        <i class="fas fa-exclamation-triangle fa-3x" style="margin-bottom: 16px;"></i>
+                        <h4>數據載入失敗</h4>
+                        <p>無法連接到統計API</p>
+                    </div>
+                `;
+            });
+    }
+    
+    function showEnrollmentSchoolDepartmentStats() {
+        console.log('showEnrollmentSchoolDepartmentStats 被調用');
+        
+        // 從API獲取國中選擇科系統計數據
+        fetch(buildApiUrl('../../Topics-frontend/frontend/api/enrollment_stats_api.php', 'school_department'))
+            .then(response => response.json())
+            .then(data => {
+                if (data.error) {
+                    document.getElementById('enrollmentAnalyticsContent').innerHTML = `
+                        <div style="text-align: center; padding: 40px; color: #dc3545;">
+                            <i class="fas fa-exclamation-triangle fa-3x" style="margin-bottom: 16px;"></i>
+                            <h4>數據載入失敗</h4>
+                            <p>${data.error}</p>
+                        </div>
+                    `;
+                    return;
+                }
+                
+                if (!data || data.length === 0) {
+                    document.getElementById('enrollmentAnalyticsContent').innerHTML = `
+                        <div style="text-align: center; padding: 40px; color: #6c757d;">
+                            <i class="fas fa-inbox fa-3x" style="margin-bottom: 16px;"></i>
+                            <h4>暫無數據</h4>
+                            <p>目前沒有國中選擇科系的統計數據</p>
+                        </div>
+                    `;
+                    return;
+                }
+                
+                const content = `
+                    <div style="margin-bottom: 20px;">
+                        <h4 style="color: #667eea; margin-bottom: 15px;">
+                            <i class="fas fa-school"></i> 國中選擇科系分析
+                           
+                        </h4>
+                        
+                        <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 20px; border-radius: 10px; margin-bottom: 20px;">
+                            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px; text-align: center;">
+                                <div>
+                                    <div style="font-size: 2.5em; font-weight: bold; margin-bottom: 5px;">${data.length}</div>
+                                    <div style="font-size: 1em; opacity: 0.9;">參與國中數</div>
+                                </div>
+                                <div>
+                                    <div style="font-size: 2.5em; font-weight: bold; margin-bottom: 5px;">${data.reduce((sum, s) => sum + s.total_students, 0)}</div>
+                                    <div style="font-size: 1em; opacity: 0.9;">總選擇次數</div>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(400px, 1fr)); gap: 20px;">
+                            ${data.map((school, index) => {
+                                // 使用更淺的顏色
+                                const colors = ['#a8b5f0', '#7dd87d', '#ffd966', '#f5a5a5', '#7dd4e8', '#b8a5e8', '#ffb366', '#7dd4c8'];
+                                const color = colors[index % colors.length];
+                                
+                                return `
+                                    <div style="background: white; box-shadow: 0 2px 10px rgba(0,0,0,0.1); overflow: hidden;">
+                                        <div style="background: ${color}; color: white; padding: 15px 20px;">
+                                            <h5 style="margin: 0; font-size: 1.1em; font-weight: 600; display: flex; justify-content: space-between; align-items: center;">
+                                                <span><i class="fas fa-school"></i> ${school.school}</span>
+                                                <span style="background: rgba(255,255,255,0.3); padding: 4px 12px; border-radius: 15px; font-size: 0.9em;">
+                                                    ${school.total_students}次選擇
+                                                </span>
+                                            </h5>
+                                        </div>
+                                        
+                                        <div style="padding: 20px;">
+                                            <div style="margin-bottom: 15px; font-size: 0.9em; color: #666;">
+                                                共選擇 <strong style="color: ${color};">${school.departments.length}</strong> 個科系
+                                            </div>
+                                            
+                                            <div style="max-height: 400px; overflow-y: auto;">
+                                                <table style="width: 100%; border-collapse: collapse;">
+                                                    <thead>
+                                                        <tr style="background: #f8f9fa; border-bottom: 2px solid #dee2e6;">
+                                                            <th style="padding: 10px; text-align: left; font-weight: 600; color: #495057; font-size: 0.9em;">科系名稱</th>
+                                                            <th style="padding: 10px; text-align: center; font-weight: 600; color: #495057; font-size: 0.9em;">總數</th>
+                                                        </tr>
+                                                    </thead>
+                                                    <tbody>
+                                                        ${school.departments.map((dept, deptIndex) => {
+                                                            return `
+                                                                <tr style="border-bottom: 1px solid #e9ecef; ${deptIndex % 2 === 0 ? 'background: #f8f9fa;' : ''}">
+                                                                    <td style="padding: 12px 10px; font-weight: 500; color: #333;">${dept.name}</td>
+                                                                    <td style="padding: 12px 10px; text-align: center; font-weight: bold; color: ${color};">${dept.total}</td>
+                                                                </tr>
+                                                            `;
+                                                        }).join('')}
+                                                    </tbody>
+                                                </table>
+                                            </div>
+                                        </div>
+                                    </div>
+                                `;
+                            }).join('')}
+                        </div>
+                    </div>
+                `;
+                
+                document.getElementById('enrollmentAnalyticsContent').innerHTML = content;
+            })
+            .catch(error => {
+                console.error('載入國中選擇科系統計數據失敗:', error);
                 document.getElementById('enrollmentAnalyticsContent').innerHTML = `
                     <div style="text-align: center; padding: 40px; color: #dc3545;">
                         <i class="fas fa-exclamation-triangle fa-3x" style="margin-bottom: 16px;"></i>

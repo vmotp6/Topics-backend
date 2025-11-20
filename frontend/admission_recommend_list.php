@@ -7,18 +7,24 @@ if (!isset($_SESSION['admin_logged_in']) || !$_SESSION['admin_logged_in']) {
     exit;
 }
 
-// 檢查是否為 admin1 用戶
+// 檢查是否為 admin1 或 IMD 用戶
 $username = $_SESSION['username'] ?? '';
-if ($username !== 'admin1') {
+$is_imd = ($username === 'IMD');
+$is_admin1 = ($username === 'admin1');
+if (!$is_admin1 && !$is_imd) {
     header("Location: index.php");
     exit;
 }
+
+// 判斷是否為招生中心（admin1）或部門用戶（IMD）
+$is_admission_center = $is_admin1;
+$is_department_user = $is_imd;
 
 // 引入資料庫設定
 require_once '../../Topics-frontend/frontend/config.php';
 
 // 設置頁面標題
-$page_title = '被推薦人資訊';
+$page_title = $is_imd ? '資管科被推薦人資訊' : '被推薦人資訊';
 $current_page = 'admission_recommend_list';
 
 // 建立資料庫連接
@@ -30,21 +36,115 @@ try {
 
 // 獲取所有招生推薦資料
 try {
-    $stmt = $conn->prepare("SELECT 
-        id, recommender_name, recommender_student_id, recommender_grade, 
-        recommender_department, recommender_phone, recommender_email,
-        student_name, student_school, student_grade, 
-        student_phone, student_email, student_line_id,
-        recommendation_reason, student_interest, additional_info, 
-        status, enrollment_status, proof_evidence,
-        created_at, updated_at
-        FROM admission_recommendations 
-        ORDER BY created_at DESC");
-    $stmt->execute();
-    $recommendations = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+    // 先檢查表是否存在
+    $table_check = $conn->query("SHOW TABLES LIKE 'admission_recommendations'");
+    if (!$table_check || $table_check->num_rows == 0) {
+        throw new Exception("資料表 'admission_recommendations' 不存在");
+    }
+    
+    // 如果是IMD帳號，顯示學生興趣是資訊管理科的記錄，或已被分配給IMD部門的記錄
+    $where_clause = "";
+    if ($is_imd) {
+        $where_clause = " WHERE ((student_interest LIKE '%資管%' OR student_interest LIKE '%資訊管理%') OR assigned_department = 'IMD')";
+    }
+    
+    // 檢查字段是否存在，如果不存在則動態添加
+    $columns_to_check = ['assigned_department', 'assigned_teacher_id', 'status', 'enrollment_status'];
+    foreach ($columns_to_check as $column) {
+        $column_check = $conn->query("SHOW COLUMNS FROM admission_recommendations LIKE '$column'");
+        if (!$column_check || $column_check->num_rows == 0) {
+            // 字段不存在，動態添加
+            try {
+                if ($column === 'assigned_department') {
+                    $conn->query("ALTER TABLE admission_recommendations ADD COLUMN assigned_department VARCHAR(50) DEFAULT NULL");
+                } elseif ($column === 'assigned_teacher_id') {
+                    $conn->query("ALTER TABLE admission_recommendations ADD COLUMN assigned_teacher_id INT DEFAULT NULL");
+                } elseif ($column === 'status') {
+                    $conn->query("ALTER TABLE admission_recommendations ADD COLUMN status VARCHAR(20) DEFAULT 'pending'");
+                } elseif ($column === 'enrollment_status') {
+                    $conn->query("ALTER TABLE admission_recommendations ADD COLUMN enrollment_status VARCHAR(20) DEFAULT NULL");
+                }
+            } catch (Exception $e) {
+                error_log("添加字段 $column 失敗: " . $e->getMessage());
+            }
+        }
+    }
+    
+    // 構建SQL查詢，使用COALESCE處理可能為NULL的字段
+    $sql = "SELECT 
+        ar.id, ar.recommender_name, ar.recommender_student_id, ar.recommender_grade, 
+        ar.recommender_department, ar.recommender_phone, ar.recommender_email,
+        ar.student_name, ar.student_school, ar.student_grade, 
+        ar.student_phone, ar.student_email, ar.student_line_id,
+        ar.recommendation_reason, ar.student_interest, ar.additional_info, 
+        COALESCE(ar.status, 'pending') as status, 
+        COALESCE(ar.enrollment_status, '未入學') as enrollment_status, 
+        ar.proof_evidence,
+        ar.assigned_department, ar.assigned_teacher_id,
+        t.name as teacher_name, u.username as teacher_username,
+        ar.created_at, ar.updated_at
+        FROM admission_recommendations ar
+        LEFT JOIN user u ON ar.assigned_teacher_id = u.id
+        LEFT JOIN teacher t ON u.id = t.user_id
+        $where_clause
+        ORDER BY ar.created_at DESC";
+    
+    $stmt = $conn->prepare($sql);
+    if (!$stmt) {
+        throw new Exception("SQL 準備失敗: " . $conn->error . " (SQL: " . $sql . ")");
+    }
+    
+    if (!$stmt->execute()) {
+        throw new Exception("SQL 執行失敗: " . $stmt->error);
+    }
+    
+    $result = $stmt->get_result();
+    $recommendations = $result->fetch_all(MYSQLI_ASSOC);
+    
+    // 調試信息：檢查總數（僅在開發環境顯示）
+    if (isset($_GET['debug']) && $_GET['debug'] == '1') {
+        $count_sql = "SELECT COUNT(*) as total FROM admission_recommendations" . ($is_imd ? " WHERE ((student_interest LIKE '%資管%' OR student_interest LIKE '%資訊管理%') OR assigned_department = 'IMD')" : "");
+        $count_result = $conn->query($count_sql);
+        if ($count_result) {
+            $count_row = $count_result->fetch_assoc();
+            error_log("招生推薦總數: " . $count_row['total'] . " (當前用戶: " . $username . ", IMD: " . ($is_imd ? '是' : '否') . ")");
+        }
+    }
 } catch (Exception $e) {
     error_log("獲取招生推薦資料失敗: " . $e->getMessage());
     $recommendations = [];
+    // 在開發模式下顯示錯誤信息
+    if (isset($_GET['debug']) && $_GET['debug'] == '1') {
+        echo "<div style='background: #fff2f0; border: 1px solid #ffccc7; padding: 16px; margin: 16px; border-radius: 4px;'>";
+        echo "<strong>錯誤:</strong> " . htmlspecialchars($e->getMessage());
+        echo "</div>";
+    }
+}
+
+// 如果是部門用戶（IMD），獲取老師列表
+$teachers = [];
+if ($is_department_user) {
+    try {
+        $table_check = $conn->query("SHOW TABLES LIKE 'user'");
+        if ($table_check && $table_check->num_rows > 0) {
+            $teacher_stmt = $conn->prepare("
+                SELECT u.id, u.username, t.name, t.department 
+                FROM user u 
+                LEFT JOIN teacher t ON u.id = t.user_id 
+                WHERE u.role = '老師' 
+                ORDER BY t.name ASC
+            ");
+            
+            if ($teacher_stmt && $teacher_stmt->execute()) {
+                $teacher_result = $teacher_stmt->get_result();
+                if ($teacher_result) {
+                    $teachers = $teacher_result->fetch_all(MYSQLI_ASSOC);
+                }
+            }
+        }
+    } catch (Exception $e) {
+        error_log("獲取老師列表失敗: " . $e->getMessage());
+    }
 }
 
 // 統計資料
@@ -355,6 +455,138 @@ function getEnrollmentStatusClass($status) {
         .info-value {
             color: var(--text-color);
         }
+        
+        /* 分配相關樣式 */
+        .assign-btn {
+            background: var(--primary-color);
+            color: white;
+            border: none;
+            padding: 6px 12px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 12px;
+            transition: all 0.3s;
+        }
+        .assign-btn:hover {
+            background: #40a9ff;
+            transform: translateY(-1px);
+        }
+        
+        /* 彈出視窗樣式 */
+        .modal {
+            position: fixed;
+            z-index: 1000;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0,0,0,0.5);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .modal-content {
+            background-color: white;
+            border-radius: 8px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.15);
+            width: 90%;
+            max-width: 500px;
+            max-height: 80vh;
+            overflow-y: auto;
+        }
+        .modal-header {
+            padding: 20px;
+            border-bottom: 1px solid var(--border-color);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .modal-header h3 {
+            margin: 0;
+            color: var(--text-color);
+        }
+        .close {
+            font-size: 24px;
+            font-weight: bold;
+            cursor: pointer;
+            color: var(--text-secondary-color);
+        }
+        .close:hover {
+            color: var(--text-color);
+        }
+        .modal-body {
+            padding: 20px;
+        }
+        .modal-body p {
+            margin-bottom: 16px;
+            font-size: 16px;
+        }
+        .teacher-list h4 {
+            margin-bottom: 12px;
+            color: var(--text-color);
+        }
+        .teacher-options {
+            max-height: 300px;
+            overflow-y: auto;
+        }
+        .teacher-option {
+            display: block;
+            padding: 12px;
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            margin-bottom: 8px;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+        .teacher-option:hover {
+            background-color: #f5f5f5;
+            border-color: var(--primary-color);
+        }
+        .teacher-option input[type="radio"] {
+            margin-right: 12px;
+        }
+        .teacher-info {
+            display: inline-block;
+            vertical-align: top;
+        }
+        .teacher-info strong {
+            display: block;
+            color: var(--text-color);
+            margin-bottom: 4px;
+        }
+        .teacher-dept {
+            color: var(--text-secondary-color);
+            font-size: 14px;
+        }
+        .modal-footer {
+            padding: 20px;
+            border-top: 1px solid var(--border-color);
+            display: flex;
+            justify-content: flex-end;
+            gap: 12px;
+        }
+        .btn-cancel, .btn-confirm {
+            padding: 8px 16px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+            transition: all 0.3s;
+        }
+        .btn-cancel {
+            background-color: #f5f5f5;
+            color: var(--text-color);
+        }
+        .btn-cancel:hover {
+            background-color: #e8e8e8;
+        }
+        .btn-confirm {
+            background-color: var(--primary-color);
+            color: white;
+        }
+        .btn-confirm:hover {
+            background-color: #40a9ff;
+        }
     </style>
 </head>
 <body>
@@ -426,10 +658,101 @@ function getEnrollmentStatusClass($status) {
                         <input type="text" id="searchInput" class="search-input" placeholder="搜尋被推薦人姓名、學校或電話...">
                     </div>
                     <div class="card-body table-container">
+                        <?php 
+                        // 調試信息：檢查數據庫中的總記錄數
+                        if (empty($recommendations)) {
+                            try {
+                                // 檢查表是否存在
+                                $table_check = $conn->query("SHOW TABLES LIKE 'admission_recommendations'");
+                                $table_exists = $table_check && $table_check->num_rows > 0;
+                                
+                                if ($table_exists) {
+                                    // 獲取總記錄數
+                                    $total_check = $conn->query("SELECT COUNT(*) as total FROM admission_recommendations");
+                                    $total_row = $total_check ? $total_check->fetch_assoc() : null;
+                                    $total_count = $total_row ? $total_row['total'] : 0;
+                                    
+                                    if ($total_count > 0) {
+                                        // 有數據但查詢結果為空，可能是過濾條件或SQL問題
+                                        if ($is_imd) {
+                                            // 如果是IMD，檢查有多少符合條件的記錄（興趣是資管或已分配給IMD）
+                                            $filter_check = $conn->query("SELECT COUNT(*) as total FROM admission_recommendations WHERE ((student_interest LIKE '%資管%' OR student_interest LIKE '%資訊管理%') OR assigned_department = 'IMD')");
+                                            $filter_row = $filter_check ? $filter_check->fetch_assoc() : null;
+                                            $filter_count = $filter_row ? $filter_row['total'] : 0;
+                                            
+                                            // 獲取所有學生興趣的值（用於調試）
+                                            $interest_check = $conn->query("SELECT DISTINCT student_interest FROM admission_recommendations WHERE student_interest IS NOT NULL AND student_interest != '' LIMIT 10");
+                                            $interest_values = [];
+                                            if ($interest_check) {
+                                                while ($row = $interest_check->fetch_assoc()) {
+                                                    $interest_values[] = $row['student_interest'];
+                                                }
+                                            }
+                                            
+                                            // 檢查已分配給IMD的記錄數
+                                            $assigned_check = $conn->query("SELECT COUNT(*) as total FROM admission_recommendations WHERE assigned_department = 'IMD'");
+                                            $assigned_row = $assigned_check ? $assigned_check->fetch_assoc() : null;
+                                            $assigned_count = $assigned_row ? $assigned_row['total'] : 0;
+                                            
+                                            if ($filter_count == 0) {
+                                                // 顯示提示：有數據但不符合過濾條件
+                                                echo "<div style='background: #fff7e6; border: 1px solid #ffd591; padding: 16px; margin: 16px; border-radius: 4px;'>";
+                                                echo "<p><strong>提示：</strong>資料庫中共有 <strong>{$total_count}</strong> 筆推薦記錄，但沒有符合條件的記錄。</p>";
+                                                echo "<p>IMD 帳號會顯示：學生興趣為「資訊管理科」的記錄，或已被分配給 IMD 部門的記錄。</p>";
+                                                if ($assigned_count > 0) {
+                                                    echo "<p>已分配給 IMD 的記錄數：<strong>{$assigned_count}</strong></p>";
+                                                }
+                                                if (!empty($interest_values)) {
+                                                    echo "<p><strong>資料庫中的學生興趣值範例：</strong></p>";
+                                                    echo "<ul style='margin: 8px 0; padding-left: 20px;'>";
+                                                    foreach ($interest_values as $val) {
+                                                        echo "<li>" . htmlspecialchars($val) . "</li>";
+                                                    }
+                                                    echo "</ul>";
+                                                }
+                                                echo "</div>";
+                                            }
+                                        } else {
+                                            // admin1應該看到所有記錄，但查詢結果為空，可能是SQL問題
+                                            echo "<div style='background: #fff2f0; border: 1px solid #ffccc7; padding: 16px; margin: 16px; border-radius: 4px;'>";
+                                            echo "<p><strong>警告：</strong>資料庫中共有 <strong>{$total_count}</strong> 筆推薦記錄，但查詢結果為空。</p>";
+                                            echo "<p>可能是SQL查詢有問題，請檢查錯誤日誌或聯繫系統管理員。</p>";
+                                            if (isset($_GET['debug']) && $_GET['debug'] == '1') {
+                                                echo "<p style='margin-top: 8px; font-size: 12px; color: #8c8c8c;'>SQL: " . htmlspecialchars($sql) . "</p>";
+                                            }
+                                            echo "</div>";
+                                        }
+                                    } else {
+                                        // 表存在但沒有數據
+                                        echo "<div style='background: #e6f7ff; border: 1px solid #91d5ff; padding: 16px; margin: 16px; border-radius: 4px;'>";
+                                        echo "<p><strong>資訊：</strong>資料表存在，但目前沒有任何推薦記錄。</p>";
+                                        echo "</div>";
+                                    }
+                                } else {
+                                    // 表不存在
+                                    echo "<div style='background: #fff2f0; border: 1px solid #ffccc7; padding: 16px; margin: 16px; border-radius: 4px;'>";
+                                    echo "<p><strong>錯誤：</strong>資料表 'admission_recommendations' 不存在。</p>";
+                                    echo "<p>請聯繫系統管理員建立資料表。</p>";
+                                    echo "</div>";
+                                }
+                            } catch (Exception $e) {
+                                // 顯示錯誤信息
+                                echo "<div style='background: #fff2f0; border: 1px solid #ffccc7; padding: 16px; margin: 16px; border-radius: 4px;'>";
+                                echo "<p><strong>錯誤：</strong>" . htmlspecialchars($e->getMessage()) . "</p>";
+                                echo "</div>";
+                            }
+                        }
+                        ?>
                         <?php if (empty($recommendations)): ?>
                             <div class="empty-state">
                                 <i class="fas fa-inbox fa-3x" style="margin-bottom: 16px;"></i>
                                 <p>目前尚無任何被推薦人資料。</p>
+                                <?php if (isset($_GET['debug']) && $_GET['debug'] == '1'): ?>
+                                    <p style="margin-top: 16px; color: #8c8c8c; font-size: 12px;">
+                                        調試模式：當前用戶 = <?php echo htmlspecialchars($username); ?>, 
+                                        IMD = <?php echo $is_imd ? '是' : '否'; ?>
+                                    </p>
+                                <?php endif; ?>
                             </div>
                         <?php else: ?>
                             <table class="table" id="recommendationTable">
@@ -444,7 +767,15 @@ function getEnrollmentStatusClass($status) {
                                         <th>狀態</th>
                                         <th>入學狀態</th>
                                         <th>推薦時間</th>
+                                        <?php if ($is_admission_center): ?>
+                                        <th>分配部門</th>
                                         <th>操作</th>
+                                        <?php elseif ($is_department_user): ?>
+                                        <th>分配狀態</th>
+                                        <th>操作</th>
+                                        <?php else: ?>
+                                        <th>操作</th>
+                                        <?php endif; ?>
                                     </tr>
                                 </thead>
                                 <tbody>
@@ -510,6 +841,57 @@ function getEnrollmentStatusClass($status) {
                                             </span>
                                         </td>
                                         <td><?php echo date('Y/m/d H:i', strtotime($item['created_at'])); ?></td>
+                                        <?php if ($is_admission_center): ?>
+                                        <td>
+                                            <?php if (!empty($item['assigned_department'])): ?>
+                                                <span style="color: #52c41a;">
+                                                    <i class="fas fa-check-circle"></i> 已分配 - 
+                                                    <?php echo htmlspecialchars($item['assigned_department']); ?>
+                                                </span>
+                                            <?php else: ?>
+                                                <span style="color: #8c8c8c;">
+                                                    <i class="fas fa-clock"></i> 未分配
+                                                </span>
+                                            <?php endif; ?>
+                                        </td>
+                                        <td>
+                                            <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+                                                <button type="button" 
+                                                   class="btn-view" 
+                                                        onclick="toggleDetail(<?php echo $item['id']; ?>)">
+                                                    <i class="fas fa-eye"></i> 查看詳情
+                                                </button>
+                                                <button class="btn-view" style="background: #1890ff; color: white; border-color: #1890ff;" onclick="openAssignRecommendationDepartmentModal(<?php echo $item['id']; ?>, '<?php echo htmlspecialchars($item['student_name']); ?>', '<?php echo htmlspecialchars($item['assigned_department'] ?? ''); ?>')">
+                                                    <i class="fas fa-building"></i> <?php echo !empty($item['assigned_department']) ? '重新分配' : '分配'; ?>
+                                                </button>
+                                            </div>
+                                        </td>
+                                        <?php elseif ($is_department_user): ?>
+                                        <td>
+                                            <?php if (!empty($item['assigned_teacher_id'])): ?>
+                                                <span style="color: #52c41a;">
+                                                    <i class="fas fa-check-circle"></i> 已分配 - 
+                                                    <?php echo htmlspecialchars($item['teacher_name'] ?? $item['teacher_username'] ?? '未知老師'); ?>
+                                                </span>
+                                            <?php else: ?>
+                                                <span style="color: #8c8c8c;">
+                                                    <i class="fas fa-clock"></i> 未分配
+                                                </span>
+                                            <?php endif; ?>
+                                        </td>
+                                        <td>
+                                            <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+                                                <button type="button" 
+                                                   class="btn-view" 
+                                                        onclick="toggleDetail(<?php echo $item['id']; ?>)">
+                                                    <i class="fas fa-eye"></i> 查看詳情
+                                                </button>
+                                                <button class="btn-view" style="background: #1890ff; color: white; border-color: #1890ff;" onclick="openAssignRecommendationModal(<?php echo $item['id']; ?>, '<?php echo htmlspecialchars($item['student_name']); ?>', <?php echo !empty($item['assigned_teacher_id']) ? $item['assigned_teacher_id'] : 'null'; ?>)">
+                                                    <i class="fas fa-user-plus"></i> <?php echo !empty($item['assigned_teacher_id']) ? '重新分配' : '分配'; ?>
+                                                </button>
+                                            </div>
+                                        </td>
+                                        <?php else: ?>
                                         <td>
                                             <button type="button" 
                                                class="btn-view" 
@@ -517,9 +899,10 @@ function getEnrollmentStatusClass($status) {
                                                 <i class="fas fa-eye"></i> 查看詳情
                                             </button>
                                         </td>
+                                        <?php endif; ?>
                                     </tr>
                                     <tr id="detail-<?php echo $item['id']; ?>" class="detail-row" style="display: none;">
-                                        <td colspan="10" style="padding: 20px; background: #f9f9f9; border: 2px solid #b3d9ff; border-radius: 4px;">
+                                        <td colspan="<?php echo $is_admission_center || $is_department_user ? '11' : '10'; ?>" style="padding: 20px; background: #f9f9f9; border: 2px solid #b3d9ff; border-radius: 4px;">
                                             <table style="width: 100%; border-collapse: collapse;">
                                                 <tr>
                                                     <td style="width: 50%; vertical-align: top; padding-right: 20px;">
@@ -623,6 +1006,77 @@ function getEnrollmentStatusClass($status) {
         </div>
     </div>
 
+    <!-- 分配部門彈出視窗（admin1） -->
+    <?php if ($is_admission_center): ?>
+    <div id="assignRecommendationDepartmentModal" class="modal" style="display: none;">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>分配推薦學生至部門</h3>
+                <span class="close" onclick="closeAssignRecommendationDepartmentModal()">&times;</span>
+            </div>
+            <div class="modal-body">
+                <p>學生：<span id="recommendationDepartmentStudentName"></span></p>
+                <div class="teacher-list">
+                    <h4>選擇部門：</h4>
+                    <div class="teacher-options">
+                        <label class="teacher-option">
+                            <input type="radio" name="recommendation_department" value="IMD">
+                            <div class="teacher-info">
+                                <strong>資管科 (IMD)</strong>
+                                <span class="teacher-dept">資訊管理科</span>
+                            </div>
+                        </label>
+                        <label class="teacher-option">
+                            <input type="radio" name="recommendation_department" value="FLD">
+                            <div class="teacher-info">
+                                <strong>應用外語科 (FLD)</strong>
+                                <span class="teacher-dept">應用外語科</span>
+                            </div>
+                        </label>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn-cancel" onclick="closeAssignRecommendationDepartmentModal()">取消</button>
+                <button class="btn-confirm" onclick="assignRecommendationDepartment()">確認分配</button>
+            </div>
+        </div>
+    </div>
+    <?php endif; ?>
+
+    <!-- 分配學生彈出視窗（IMD） -->
+    <?php if ($is_department_user): ?>
+    <div id="assignRecommendationModal" class="modal" style="display: none;">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>分配推薦學生</h3>
+                <span class="close" onclick="closeAssignRecommendationModal()">&times;</span>
+            </div>
+            <div class="modal-body">
+                <p>學生：<span id="recommendationStudentName"></span></p>
+                <div class="teacher-list">
+                    <h4>選擇老師：</h4>
+                    <div class="teacher-options">
+                        <?php foreach ($teachers as $teacher): ?>
+                        <label class="teacher-option">
+                            <input type="radio" name="recommendation_teacher" value="<?php echo $teacher['id']; ?>">
+                            <div class="teacher-info">
+                                <strong><?php echo htmlspecialchars($teacher['name'] ?? $teacher['username']); ?></strong>
+                                <span class="teacher-dept"><?php echo htmlspecialchars($teacher['department'] ?? '未設定科系'); ?></span>
+                            </div>
+                        </label>
+                        <?php endforeach; ?>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn-cancel" onclick="closeAssignRecommendationModal()">取消</button>
+                <button class="btn-confirm" onclick="assignRecommendationStudent()">確認分配</button>
+            </div>
+        </div>
+    </div>
+    <?php endif; ?>
+
     <script>
     document.addEventListener('DOMContentLoaded', function() {
         const searchInput = document.getElementById('searchInput');
@@ -672,6 +1126,158 @@ function getEnrollmentStatusClass($status) {
             }
         }
     }
+
+    // 分配推薦學生相關變數
+    let currentRecommendationId = null;
+
+    // 開啟分配推薦學生彈出視窗（IMD）
+    <?php if ($is_department_user): ?>
+    function openAssignRecommendationModal(recommendationId, studentName, currentTeacherId) {
+        currentRecommendationId = recommendationId;
+        document.getElementById('recommendationStudentName').textContent = studentName;
+        document.getElementById('assignRecommendationModal').style.display = 'flex';
+        
+        // 清除之前的選擇，如果有已分配的老師則預選
+        const radioButtons = document.querySelectorAll('input[name="recommendation_teacher"]');
+        radioButtons.forEach(radio => {
+            if (currentTeacherId && radio.value == currentTeacherId) {
+                radio.checked = true;
+            } else {
+                radio.checked = false;
+            }
+        });
+    }
+
+    // 關閉分配推薦學生彈出視窗
+    function closeAssignRecommendationModal() {
+        document.getElementById('assignRecommendationModal').style.display = 'none';
+        currentRecommendationId = null;
+    }
+
+    // 分配推薦學生
+    function assignRecommendationStudent() {
+        const selectedTeacher = document.querySelector('input[name="recommendation_teacher"]:checked');
+        
+        if (!selectedTeacher) {
+            alert('請選擇一位老師');
+            return;
+        }
+
+        const teacherId = selectedTeacher.value;
+        
+        // 發送AJAX請求
+        const xhr = new XMLHttpRequest();
+        xhr.open('POST', 'assign_recommendation_teacher.php', true);
+        xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
+        
+        xhr.onreadystatechange = function() {
+            if (xhr.readyState === 4) {
+                if (xhr.status === 200) {
+                    try {
+                        const response = JSON.parse(xhr.responseText);
+                        if (response.success) {
+                            alert('推薦學生分配成功！');
+                            closeAssignRecommendationModal();
+                            location.reload();
+                        } else {
+                            alert('分配失敗：' + (response.message || '未知錯誤'));
+                        }
+                    } catch (e) {
+                        alert('回應格式錯誤：' + xhr.responseText);
+                    }
+                } else {
+                    alert('請求失敗，狀態碼：' + xhr.status);
+                }
+            }
+        };
+        
+        xhr.send('recommendation_id=' + encodeURIComponent(currentRecommendationId) + 
+                 '&teacher_id=' + encodeURIComponent(teacherId));
+    }
+
+    // 點擊彈出視窗外部關閉
+    document.getElementById('assignRecommendationModal').addEventListener('click', function(e) {
+        if (e.target === this) {
+            closeAssignRecommendationModal();
+        }
+    });
+    <?php endif; ?>
+
+    // 分配部門相關變數
+    let currentRecommendationDepartmentId = null;
+
+    // 開啟分配部門彈出視窗（admin1）
+    <?php if ($is_admission_center): ?>
+    function openAssignRecommendationDepartmentModal(recommendationId, studentName, currentDepartment) {
+        currentRecommendationDepartmentId = recommendationId;
+        document.getElementById('recommendationDepartmentStudentName').textContent = studentName;
+        document.getElementById('assignRecommendationDepartmentModal').style.display = 'flex';
+        
+        // 清除之前的選擇，如果有已分配的部門則預選
+        const radioButtons = document.querySelectorAll('input[name="recommendation_department"]');
+        radioButtons.forEach(radio => {
+            if (currentDepartment && radio.value === currentDepartment) {
+                radio.checked = true;
+            } else {
+                radio.checked = false;
+            }
+        });
+    }
+
+    // 關閉分配部門彈出視窗
+    function closeAssignRecommendationDepartmentModal() {
+        document.getElementById('assignRecommendationDepartmentModal').style.display = 'none';
+        currentRecommendationDepartmentId = null;
+    }
+
+    // 分配部門
+    function assignRecommendationDepartment() {
+        const selectedDepartment = document.querySelector('input[name="recommendation_department"]:checked');
+        
+        if (!selectedDepartment) {
+            alert('請選擇一個部門');
+            return;
+        }
+
+        const department = selectedDepartment.value;
+        
+        // 發送AJAX請求
+        const xhr = new XMLHttpRequest();
+        xhr.open('POST', 'assign_recommendation_department.php', true);
+        xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
+        
+        xhr.onreadystatechange = function() {
+            if (xhr.readyState === 4) {
+                if (xhr.status === 200) {
+                    try {
+                        const response = JSON.parse(xhr.responseText);
+                        if (response.success) {
+                            alert('推薦學生分配成功！');
+                            closeAssignRecommendationDepartmentModal();
+                            location.reload();
+                        } else {
+                            alert('分配失敗：' + (response.message || '未知錯誤'));
+                        }
+                    } catch (e) {
+                        alert('回應格式錯誤：' + xhr.responseText);
+                    }
+                } else {
+                    alert('請求失敗，狀態碼：' + xhr.status);
+                }
+            }
+        };
+        
+        xhr.send('recommendation_id=' + encodeURIComponent(currentRecommendationDepartmentId) + 
+                 '&department=' + encodeURIComponent(department));
+    }
+
+    // 點擊分配部門彈出視窗外部關閉
+    document.getElementById('assignRecommendationDepartmentModal').addEventListener('click', function(e) {
+        if (e.target === this) {
+            closeAssignRecommendationDepartmentModal();
+        }
+    });
+    <?php endif; ?>
     </script>
 </body>
 </html>

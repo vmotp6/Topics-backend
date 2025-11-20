@@ -17,9 +17,10 @@ if (isset($_GET['action']) && $_GET['action'] == 'logout') {
 // 設置頁面標題
 $page_title = '系統概覽';
 
-// 檢查是否為 admin1 帳號
+// 檢查是否為 admin1 或 IMD 帳號
 $username = isset($_SESSION['username']) ? $_SESSION['username'] : '';
 $is_admin1 = ($username === 'admin1');
+$is_imd = ($username === 'IMD');
 ?>
 
 <!DOCTYPE html>
@@ -331,6 +332,27 @@ $is_admin1 = ($username === 'admin1');
                                 <a href="school_contacts.php" class="btn btn-primary">
                                     <i class="fas fa-address-book"></i>
                                     前往聯絡人管理
+                                </a>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <?php endif; ?>
+                
+                <?php if ($is_imd): ?>
+                <!-- IMD 專用功能卡片 - 招生推薦 -->
+                <div class="welcome-section" style="margin-top: 24px;">
+                    <div class="welcome-card">
+                        <div class="welcome-icon" style="background: linear-gradient(135deg, #667eea, #764ba2);">
+                            <i class="fas fa-user-friends"></i>
+                        </div>
+                        <div class="welcome-content">
+                            <h2>資管科招生推薦</h2>
+                            <p>查看和管理資訊管理科的招生推薦資訊。您只能看到學生興趣為「資訊管理科」的推薦記錄。</p>
+                            <div class="welcome-actions">
+                                <a href="admission_recommend_list.php" class="btn btn-primary">
+                                    <i class="fas fa-user-friends"></i>
+                                    前往招生推薦管理
                                 </a>
                             </div>
                         </div>
