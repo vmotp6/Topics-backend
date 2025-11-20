@@ -86,7 +86,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $hashed_password = password_hash($password, PASSWORD_DEFAULT);
 
                 // 插入新用戶資料，姓名留空、Email 為使用者輸入
-                $stmt = $conn->prepare("INSERT INTO user (username, password, role, status, name, email) VALUES (?, ?, ?, ?, '', ?)");
+                // username_changed 設為 0，表示這是系統生成的帳號，尚未修改過
+                $stmt = $conn->prepare("INSERT INTO user (username, password, role, status, name, email, username_changed) VALUES (?, ?, ?, ?, '', ?, 0)");
                 $status_value = (int)$status;
                 $stmt->bind_param("sssis", $username, $hashed_password, $role, $status_value, $email);
                 
