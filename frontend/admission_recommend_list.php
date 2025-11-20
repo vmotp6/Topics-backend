@@ -18,7 +18,7 @@ if ($username !== 'admin1') {
 require_once '../../Topics-frontend/frontend/config.php';
 
 // 設置頁面標題
-$page_title = '招生推薦管理';
+$page_title = '被推薦人資訊';
 $current_page = 'admission_recommend_list';
 
 // 建立資料庫連接
@@ -334,6 +334,12 @@ function getEnrollmentStatusClass($status) {
             background: #1890ff;
             color: white;
         }
+        button.btn-view {
+            font-family: inherit;
+        }
+        .detail-row {
+            background: #f9f9f9;
+        }
         
         .info-row {
             display: flex;
@@ -417,22 +423,22 @@ function getEnrollmentStatusClass($status) {
                 <div class="card">
                     <div class="card-header">
                         <h3><?php echo $page_title; ?> (共 <?php echo count($recommendations); ?> 筆)</h3>
-                        <input type="text" id="searchInput" class="search-input" placeholder="搜尋推薦人、學生姓名、學校或電話...">
+                        <input type="text" id="searchInput" class="search-input" placeholder="搜尋被推薦人姓名、學校或電話...">
                     </div>
                     <div class="card-body table-container">
                         <?php if (empty($recommendations)): ?>
                             <div class="empty-state">
                                 <i class="fas fa-inbox fa-3x" style="margin-bottom: 16px;"></i>
-                                <p>目前尚無任何招生推薦資料。</p>
+                                <p>目前尚無任何被推薦人資料。</p>
                             </div>
                         <?php else: ?>
                             <table class="table" id="recommendationTable">
                                 <thead>
                                     <tr>
                                         <th>ID</th>
-                                        <th>推薦人資訊</th>
-                                        <th>被推薦學生</th>
-                                        <th>學生學校/年級</th>
+                                        <th>被推薦人姓名</th>
+                                        <th>被推薦人電子郵件</th>
+                                        <th>學校/年級</th>
                                         <th>聯絡方式</th>
                                         <th>學生興趣</th>
                                         <th>狀態</th>
@@ -447,28 +453,14 @@ function getEnrollmentStatusClass($status) {
                                         <td><?php echo htmlspecialchars($item['id']); ?></td>
                                         <td>
                                             <div class="info-row">
-                                                <span class="info-label">姓名:</span>
-                                                <span class="info-value"><?php echo htmlspecialchars($item['recommender_name']); ?></span>
-                                            </div>
-                                            <div class="info-row">
-                                                <span class="info-label">學號:</span>
-                                                <span class="info-value"><?php echo htmlspecialchars($item['recommender_student_id']); ?></span>
-                                            </div>
-                                            <div class="info-row">
-                                                <span class="info-label">科系:</span>
-                                                <span class="info-value"><?php echo htmlspecialchars($item['recommender_department']); ?></span>
+                                                <span class="info-value" style="font-weight: 600;"><?php echo htmlspecialchars($item['student_name']); ?></span>
                                             </div>
                                         </td>
                                         <td>
-                                            <div class="info-row">
-                                                <span class="info-label">姓名:</span>
-                                                <span class="info-value"><?php echo htmlspecialchars($item['student_name']); ?></span>
-                                            </div>
                                             <?php if (!empty($item['student_email'])): ?>
-                                            <div class="info-row">
-                                                <span class="info-label">Email:</span>
                                                 <span class="info-value"><?php echo htmlspecialchars($item['student_email']); ?></span>
-                                            </div>
+                                            <?php else: ?>
+                                                <span style="color: #8c8c8c;">未填寫</span>
                                             <?php endif; ?>
                                         </td>
                                         <td>
@@ -494,11 +486,8 @@ function getEnrollmentStatusClass($status) {
                                                 <span class="info-value"><?php echo htmlspecialchars($item['student_line_id']); ?></span>
                                             </div>
                                             <?php endif; ?>
-                                            <?php if (!empty($item['recommender_phone'])): ?>
-                                            <div class="info-row">
-                                                <span class="info-label">推薦人:</span>
-                                                <span class="info-value"><?php echo htmlspecialchars($item['recommender_phone']); ?></span>
-                                            </div>
+                                            <?php if (empty($item['student_phone']) && empty($item['student_line_id'])): ?>
+                                            <span style="color: #8c8c8c;">未填寫</span>
                                             <?php endif; ?>
                                         </td>
                                         <td>
@@ -522,11 +511,106 @@ function getEnrollmentStatusClass($status) {
                                         </td>
                                         <td><?php echo date('Y/m/d H:i', strtotime($item['created_at'])); ?></td>
                                         <td>
-                                            <a href="../Topics-frontend/frontend/admission_recommend.php?id=<?php echo $item['id']; ?>" 
+                                            <button type="button" 
                                                class="btn-view" 
-                                               target="_blank">
+                                                    onclick="toggleDetail(<?php echo $item['id']; ?>)">
                                                 <i class="fas fa-eye"></i> 查看詳情
-                                            </a>
+                                            </button>
+                                        </td>
+                                    </tr>
+                                    <tr id="detail-<?php echo $item['id']; ?>" class="detail-row" style="display: none;">
+                                        <td colspan="10" style="padding: 20px; background: #f9f9f9; border: 2px solid #b3d9ff; border-radius: 4px;">
+                                            <table style="width: 100%; border-collapse: collapse;">
+                                                <tr>
+                                                    <td style="width: 50%; vertical-align: top; padding-right: 20px;">
+                                                        <h4 style="margin: 0 0 10px 0; font-size: 16px;">推薦人資訊</h4>
+                                                        <table style="width: 100%; border-collapse: collapse; font-size: 14px;">
+                                                            <tr>
+                                                                <td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5; width: 120px;">姓名</td>
+                                                                <td style="padding: 5px; border: 1px solid #ddd;"><?php echo htmlspecialchars($item['recommender_name']); ?></td>
+                                                            </tr>
+                                                            <tr>
+                                                                <td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">學號/教師編號</td>
+                                                                <td style="padding: 5px; border: 1px solid #ddd;"><?php echo htmlspecialchars($item['recommender_student_id']); ?></td>
+                                                            </tr>
+                                                            <tr>
+                                                                <td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">年級</td>
+                                                                <td style="padding: 5px; border: 1px solid #ddd;"><?php echo htmlspecialchars($item['recommender_grade']); ?></td>
+                                                            </tr>
+                                                            <tr>
+                                                                <td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">科系</td>
+                                                                <td style="padding: 5px; border: 1px solid #ddd;"><?php echo htmlspecialchars($item['recommender_department']); ?></td>
+                                                            </tr>
+                                                            <tr>
+                                                                <td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">聯絡電話</td>
+                                                                <td style="padding: 5px; border: 1px solid #ddd;"><?php echo htmlspecialchars($item['recommender_phone']); ?></td>
+                                                            </tr>
+                                                            <tr>
+                                                                <td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">電子郵件</td>
+                                                                <td style="padding: 5px; border: 1px solid #ddd;"><?php echo htmlspecialchars($item['recommender_email']); ?></td>
+                                                            </tr>
+                                                        </table>
+                                                    </td>
+                                                    <td style="width: 50%; vertical-align: top; padding-left: 20px;">
+                                                        <h4 style="margin: 0 0 10px 0; font-size: 16px;">被推薦人資訊</h4>
+                                                        <table style="width: 100%; border-collapse: collapse; font-size: 14px;">
+                                                            <tr>
+                                                                <td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5; width: 120px;">姓名</td>
+                                                                <td style="padding: 5px; border: 1px solid #ddd;"><?php echo htmlspecialchars($item['student_name']); ?></td>
+                                                            </tr>
+                                                            <tr>
+                                                                <td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">電子郵件</td>
+                                                                <td style="padding: 5px; border: 1px solid #ddd;"><?php echo !empty($item['student_email']) ? htmlspecialchars($item['student_email']) : '未填寫'; ?></td>
+                                                            </tr>
+                                                            <tr>
+                                                                <td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">就讀學校</td>
+                                                                <td style="padding: 5px; border: 1px solid #ddd;"><?php echo htmlspecialchars($item['student_school']); ?></td>
+                                                            </tr>
+                                                            <tr>
+                                                                <td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">年級</td>
+                                                                <td style="padding: 5px; border: 1px solid #ddd;"><?php echo !empty($item['student_grade']) ? htmlspecialchars($item['student_grade']) : '未填寫'; ?></td>
+                                                            </tr>
+                                                            <tr>
+                                                                <td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">聯絡電話</td>
+                                                                <td style="padding: 5px; border: 1px solid #ddd;"><?php echo htmlspecialchars($item['student_phone']); ?></td>
+                                                            </tr>
+                                                            <tr>
+                                                                <td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">LINE ID</td>
+                                                                <td style="padding: 5px; border: 1px solid #ddd;"><?php echo !empty($item['student_line_id']) ? htmlspecialchars($item['student_line_id']) : '未填寫'; ?></td>
+                                                            </tr>
+                                                            <tr>
+                                                                <td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">學生興趣</td>
+                                                                <td style="padding: 5px; border: 1px solid #ddd;"><?php echo !empty($item['student_interest']) ? htmlspecialchars($item['student_interest']) : '未填寫'; ?></td>
+                                                            </tr>
+                                                        </table>
+                                                    </td>
+                                                </tr>
+                                                <tr>
+                                                    <td colspan="2" style="padding-top: 20px;">
+                                                        <h4 style="margin: 0 0 10px 0; font-size: 16px;">推薦資訊</h4>
+                                                        <table style="width: 100%; border-collapse: collapse; font-size: 14px;">
+                                                            <tr>
+                                                                <td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5; width: 120px;">推薦理由</td>
+                                                                <td style="padding: 5px; border: 1px solid #ddd;"><?php echo nl2br(htmlspecialchars($item['recommendation_reason'])); ?></td>
+                                                            </tr>
+                                                            <?php if (!empty($item['additional_info'])): ?>
+                                                            <tr>
+                                                                <td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">其他補充資訊</td>
+                                                                <td style="padding: 5px; border: 1px solid #ddd;"><?php echo nl2br(htmlspecialchars($item['additional_info'])); ?></td>
+                                                            </tr>
+                                                            <?php endif; ?>
+                                                            <?php if (!empty($item['proof_evidence'])): ?>
+                                                            <tr>
+                                                                <td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">證明文件</td>
+                                                                <td style="padding: 5px; border: 1px solid #ddd;">
+                                                                    <a href="<?php echo htmlspecialchars($item['proof_evidence']); ?>" target="_blank">查看文件</a>
+                                                                </td>
+                                                            </tr>
+                                                            <?php endif; ?>
+                                                        </table>
+                                                    </td>
+                                                </tr>
+                                            </table>
                                         </td>
                                     </tr>
                                     <?php endforeach; ?>
@@ -550,6 +634,11 @@ function getEnrollmentStatusClass($status) {
                 const filter = searchInput.value.toLowerCase();
                 
                 for (let i = 0; i < rows.length; i++) {
+                    // 跳過詳細資訊行
+                    if (rows[i].classList.contains('detail-row')) {
+                        continue;
+                    }
+                    
                     const cells = rows[i].getElementsByTagName('td');
                     let found = false;
                     
@@ -563,10 +652,26 @@ function getEnrollmentStatusClass($status) {
                     }
                     
                     rows[i].style.display = found ? "" : "none";
+                    // 如果主行隱藏，也隱藏對應的詳細行
+                    const detailRow = rows[i].nextElementSibling;
+                    if (detailRow && detailRow.classList.contains('detail-row')) {
+                        detailRow.style.display = found ? detailRow.style.display : "none";
+                    }
                 }
             });
         }
     });
+
+    function toggleDetail(id) {
+        const detailRow = document.getElementById('detail-' + id);
+        if (detailRow) {
+            if (detailRow.style.display === 'none' || detailRow.style.display === '') {
+                detailRow.style.display = 'table-row';
+            } else {
+                detailRow.style.display = 'none';
+            }
+        }
+    }
     </script>
 </body>
 </html>
