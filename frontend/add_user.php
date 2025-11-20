@@ -12,15 +12,38 @@ $page_title = '新增使用者';
 
 // 引入資料庫設定
 require_once '../../Topics-frontend/frontend/config.php';
+require_once '../../Topics-frontend/frontend/includes/email_functions.php';
+
+function sendNewAccountEmail($email, $username, $password) {
+    $subject = "招生系統帳號建立通知";
+    $body = '
+        <p>您好：</p>
+        <p>已為您建立招生系統帳號，請使用以下資訊登入：</p>
+        <ul>
+            <li><strong>帳號：</strong> ' . htmlspecialchars($username, ENT_QUOTES, 'UTF-8') . '</li>
+            <li><strong>初始密碼：</strong> ' . htmlspecialchars($password, ENT_QUOTES, 'UTF-8') . '</li>
+        </ul>
+        <p>首次登入後請立即前往「個人資料」頁面設定姓名與 Email，並修改密碼以確保帳號安全。</p>
+        <p>謝謝！</p>
+    ';
+    $altBody = "您好：\n\n已為您建立招生系統帳號。\n帳號：{$username}\n初始密碼：{$password}\n\n請登入後盡快更新個人資料與密碼。\n";
+    return sendEmail($email, $subject, $body, $altBody);
+}
+
+$role = $_POST['role'] ?? '';
+$status = $_POST['status'] ?? '1';
+$email = trim($_POST['email'] ?? '');
 
 // 處理表單提交
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    $role = $_POST['role'] ?? '';
-    $status = $_POST['status'] ?? '1';
 
     // 簡單的後端驗證
     if (empty($role)) {
         $error_message = "請選擇要建立的帳號角色。";
+    } elseif (empty($email)) {
+        $error_message = "請輸入使用者的 Email（建議使用 Gmail 以確保可收到通知）。";
+    } elseif (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
+        $error_message = "Email 格式不正確，請重新確認。";
     } else {
         try {
             $conn = getDatabaseConnection();
@@ -29,9 +52,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
             // 根據角色決定帳號前綴
             $prefix = '';
-            if ($role === '老師') {
-                $prefix = 'teacher_';
-            } elseif ($role === '學校行政人員') {
+            if ($role === '學校行政人員') {
                 $prefix = 'staff_';
             } elseif ($role === 'admin') {
                 $prefix = 'admin_';
@@ -39,30 +60,49 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $prefix = 'user_';
             }
 
-            // 產生一個唯一的帳號
-            do {
-                $username = $prefix . rand(1000, 9999);
-                $stmt = $conn->prepare("SELECT id FROM user WHERE username = ?");
-                $stmt->bind_param("s", $username);
-                $stmt->execute();
-                $result = $stmt->get_result();
-            } while ($result->num_rows > 0);
+            // 確認 Email 是否已存在
+            $email_check_stmt = $conn->prepare("SELECT id FROM user WHERE email = ? LIMIT 1");
+            $email_check_stmt->bind_param("s", $email);
+            $email_check_stmt->execute();
+            $email_result = $email_check_stmt->get_result();
+            $email_exists = $email_result->num_rows > 0;
+            $email_check_stmt->close();
 
-            // 密碼雜湊
-            $hashed_password = password_hash($password, PASSWORD_DEFAULT);
-
-            // 插入新用戶資料，姓名和Email留空
-            $stmt = $conn->prepare("INSERT INTO user (username, password, role, status, name, email) VALUES (?, ?, ?, ?, '', '')");
-            $stmt->bind_param("sssi", $username, $hashed_password, $role, $status);
-            
-            if ($stmt->execute()) {
-                $success_message = "帳號建立成功！";
-                $generated_username = $username;
-                $generated_password = $password;
+            if ($email_exists) {
+                $error_message = "此 Email 已被使用，請改用其他 Email。";
             } else {
-                $error_message = "建立使用者失敗：" . $stmt->error;
+                // 產生一個唯一的帳號
+                do {
+                    $username = $prefix . rand(1000, 9999);
+                    $stmt = $conn->prepare("SELECT id FROM user WHERE username = ?");
+                    $stmt->bind_param("s", $username);
+                    $stmt->execute();
+                    $result = $stmt->get_result();
+                    $is_username_taken = $result->num_rows > 0;
+                    $stmt->close();
+                } while ($is_username_taken);
+
+                // 密碼雜湊
+                $hashed_password = password_hash($password, PASSWORD_DEFAULT);
+
+                // 插入新用戶資料，姓名留空、Email 為使用者輸入
+                // username_changed 設為 0，表示這是系統生成的帳號，尚未修改過
+                $stmt = $conn->prepare("INSERT INTO user (username, password, role, status, name, email, username_changed) VALUES (?, ?, ?, ?, '', ?, 0)");
+                $status_value = (int)$status;
+                $stmt->bind_param("sssis", $username, $hashed_password, $role, $status_value, $email);
+                
+                if ($stmt->execute()) {
+                    $success_message = "帳號建立成功！";
+                    $generated_username = $username;
+                    $generated_password = $password;
+                    $generated_email = $email;
+    
+                    $email_sent = sendNewAccountEmail($email, $username, $password);
+                } else {
+                    $error_message = "建立使用者失敗：" . $stmt->error;
+                }
+                $stmt->close();
             }
-            
             $conn->close();
         } catch (Exception $e) {
             $error_message = "資料庫操作失敗：" . $e->getMessage();
@@ -143,6 +183,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                             使用者首次登入後，應引導其至個人資料頁面填寫姓名與Email。
                         </p>
                     </div>
+                    <?php if (isset($email_sent) && isset($generated_email)): ?>
+                        <div class="message <?php echo $email_sent ? 'success' : 'error'; ?>">
+                            <?php if ($email_sent): ?>
+                                <i class="fas fa-envelope-circle-check"></i> 已將預設帳密寄送至 <?php echo htmlspecialchars($generated_email, ENT_QUOTES, 'UTF-8'); ?>，請提醒使用者登入後盡速修改。
+                            <?php else: ?>
+                                <i class="fas fa-envelope-open-text"></i> 帳號已建立，但郵件寄送失敗，請自行轉告使用者帳密。
+                            <?php endif; ?>
+                        </div>
+                    <?php endif; ?>
                 <?php endif; ?>
                 
                 <?php if (isset($error_message)): ?>
@@ -155,20 +204,26 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     </div>
                     <form method="POST" class="form-body">
                         <div class="form-group">
+                            <label for="email">Email <span class="required">*</span></label>
+                            <input type="email" id="email" name="email" class="form-control" placeholder="example@gmail.com" value="<?php echo htmlspecialchars($email, ENT_QUOTES, 'UTF-8'); ?>" required>
+                            <small style="display:block;margin-top:6px;color:#8c8c8c;">系統將寄送預設帳密至此信箱，建議填寫 Gmail 以確保可收到通知。</small>
+                        </div>
+
+                        <div class="form-group">
                             <label for="role">角色 <span class="required">*</span></label>
                             <select id="role" name="role" class="form-control" required>
                                 <option value="">請選擇角色</option>
-                                <option value="老師">老師</option>
-                                <option value="學校行政人員">學校行政人員</option>
-                                <option value="admin">管理員</option>
+                                <option value="老師" <?php echo $role === '老師' ? 'selected' : ''; ?>>老師</option>
+                                <option value="學校行政人員" <?php echo $role === '學校行政人員' ? 'selected' : ''; ?>>學校行政人員</option>
+                                <option value="admin" <?php echo $role === 'admin' ? 'selected' : ''; ?>>管理員</option>
                             </select>
                         </div>
 
                         <div class="form-group">
                             <label for="status">狀態 <span class="required">*</span></label>
                             <select id="status" name="status" class="form-control" required>
-                                <option value="1" selected>啟用</option>
-                                <option value="0">停用</option>
+                                <option value="1" <?php echo $status === '1' ? 'selected' : ''; ?>>啟用</option>
+                                <option value="0" <?php echo $status === '0' ? 'selected' : ''; ?>>停用</option>
                             </select>
                         </div>
 
