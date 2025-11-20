@@ -212,6 +212,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                             <label for="role">角色 <span class="required">*</span></label>
                             <select id="role" name="role" class="form-control" required>
                                 <option value="">請選擇角色</option>
+                                <option value="老師" <?php echo $role === '老師' ? 'selected' : ''; ?>>老師</option>
                                 <option value="學校行政人員" <?php echo $role === '學校行政人員' ? 'selected' : ''; ?>>學校行政人員</option>
                                 <option value="admin" <?php echo $role === 'admin' ? 'selected' : ''; ?>>管理員</option>
                             </select>
