@@ -675,6 +675,27 @@ $conn->close();
     const currentUser = '<?php echo $current_user; ?>';
     const userRole = '<?php echo $user_role; ?>';
     const isSchoolAdmin = <?php echo $is_school_admin ? 'true' : 'false'; ?>;
+    
+    // 從學校名稱中提取縣市（全局函數，供多處使用）
+    function extractCityFromSchoolName(schoolName) {
+        if (!schoolName) return '';
+        
+        // 先嘗試匹配 XX市立 或 XX縣立（例如：台北市立XX國中）
+        let cityMatch = schoolName.match(/^(.+?)(?:市立|縣立)/);
+        if (cityMatch) {
+            const cityName = cityMatch[1] + (schoolName.includes('市立') ? '市' : '縣');
+            return cityName;
+        }
+        
+        // 再嘗試匹配 XX市 或 XX縣（在開頭，例如：台北市XX國中）
+        cityMatch = schoolName.match(/^(.+?)(?:市|縣)/);
+        if (cityMatch) {
+            const cityName = cityMatch[1] + (schoolName.includes('市') ? '市' : '縣');
+            return cityName;
+        }
+        
+        return '';
+    }
 
     // 調試信息
     console.log('PHP 傳遞的數據:', activityRecords);
@@ -2367,77 +2388,33 @@ $conn->close();
                     return;
                 }
                 
-                const content = `
-                    <div style="margin-bottom: 20px;">
-                        <h4 style="color: #667eea; margin-bottom: 15px;">
-                            <i class="fas fa-school"></i> 國中選擇科系分析
-                           
-                        </h4>
-                        
-                        <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 20px; border-radius: 10px; margin-bottom: 20px;">
-                            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px; text-align: center;">
-                                <div>
-                                    <div style="font-size: 2.5em; font-weight: bold; margin-bottom: 5px;">${data.length}</div>
-                                    <div style="font-size: 1em; opacity: 0.9;">參與國中數</div>
-                                </div>
-                                <div>
-                                    <div style="font-size: 2.5em; font-weight: bold; margin-bottom: 5px;">${data.reduce((sum, s) => sum + s.total_students, 0)}</div>
-                                    <div style="font-size: 1em; opacity: 0.9;">總選擇次數</div>
-                                </div>
-                            </div>
-                        </div>
-                        
-                        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(400px, 1fr)); gap: 20px;">
-                            ${data.map((school, index) => {
-                                // 使用更淺的顏色
-                                const colors = ['#a8b5f0', '#7dd87d', '#ffd966', '#f5a5a5', '#7dd4e8', '#b8a5e8', '#ffb366', '#7dd4c8'];
-                                const color = colors[index % colors.length];
-                                
-                                return `
-                                    <div style="background: white; box-shadow: 0 2px 10px rgba(0,0,0,0.1); overflow: hidden;">
-                                        <div style="background: ${color}; color: white; padding: 15px 20px;">
-                                            <h5 style="margin: 0; font-size: 1.1em; font-weight: 600; display: flex; justify-content: space-between; align-items: center;">
-                                                <span><i class="fas fa-school"></i> ${school.school}</span>
-                                                <span style="background: rgba(255,255,255,0.3); padding: 4px 12px; border-radius: 15px; font-size: 0.9em;">
-                                                    ${school.total_students}次選擇
-                                                </span>
-                                            </h5>
-                                        </div>
-                                        
-                                        <div style="padding: 20px;">
-                                            <div style="margin-bottom: 15px; font-size: 0.9em; color: #666;">
-                                                共選擇 <strong style="color: ${color};">${school.departments.length}</strong> 個科系
-                                            </div>
-                                            
-                                            <div style="max-height: 400px; overflow-y: auto;">
-                                                <table style="width: 100%; border-collapse: collapse;">
-                                                    <thead>
-                                                        <tr style="background: #f8f9fa; border-bottom: 2px solid #dee2e6;">
-                                                            <th style="padding: 10px; text-align: left; font-weight: 600; color: #495057; font-size: 0.9em;">科系名稱</th>
-                                                            <th style="padding: 10px; text-align: center; font-weight: 600; color: #495057; font-size: 0.9em;">總數</th>
-                                                        </tr>
-                                                    </thead>
-                                                    <tbody>
-                                                        ${school.departments.map((dept, deptIndex) => {
-                                                            return `
-                                                                <tr style="border-bottom: 1px solid #e9ecef; ${deptIndex % 2 === 0 ? 'background: #f8f9fa;' : ''}">
-                                                                    <td style="padding: 12px 10px; font-weight: 500; color: #333;">${dept.name}</td>
-                                                                    <td style="padding: 12px 10px; text-align: center; font-weight: bold; color: ${color};">${dept.total}</td>
-                                                                </tr>
-                                                            `;
-                                                        }).join('')}
-                                                    </tbody>
-                                                </table>
-                                            </div>
-                                        </div>
-                                    </div>
-                                `;
-                            }).join('')}
-                        </div>
-                    </div>
-                `;
+                // 收集所有縣市（只提取縣市部分，不包含學校名稱）
+                const cities = new Set();
+                data.forEach(school => {
+                    if (school && school.school) {
+                        const city = extractCityFromSchoolName(school.school);
+                        if (city) {
+                            cities.add(city);
+                        }
+                    }
+                });
+                const cityList = Array.from(cities).sort();
                 
-                document.getElementById('enrollmentAnalyticsContent').innerHTML = content;
+                console.log('提取的縣市列表:', cityList);
+                console.log('學校數據範例:', data.slice(0, 5).map(s => ({ 
+                    school: s.school, 
+                    extractedCity: extractCityFromSchoolName(s.school) 
+                })));
+                
+                console.log('提取的縣市列表:', cityList);
+                console.log('學校數據範例:', data.slice(0, 3));
+                
+                // 儲存原始數據供篩選使用
+                window.schoolDepartmentData = data;
+                window.schoolDepartmentCityList = cityList;
+                
+                // 渲染內容（包含篩選控件）
+                renderSchoolDepartmentContent(data, cityList);
             })
             .catch(error => {
                 console.error('載入國中選擇科系統計數據失敗:', error);
@@ -2449,6 +2426,289 @@ $conn->close();
                     </div>
                 `;
             });
+    }
+    
+    // 渲染學校科系內容（支援篩選）
+    function renderSchoolDepartmentContent(data, cityList, filteredData = null, savedState = null) {
+        const displayData = filteredData || data;
+        
+        // 檢查是否已經有篩選控件容器，如果沒有則創建
+        let filterContainer = document.getElementById('schoolDeptFilterContainer');
+        let dataContainer = document.getElementById('schoolDeptDataContainer');
+        
+        // 如果是第一次渲染，創建完整的內容
+        if (!filterContainer) {
+            const fullContent = `
+                <div style="margin-bottom: 20px;">
+                    <h4 style="color: #667eea; margin-bottom: 15px;">
+                        <i class="fas fa-school"></i> 國中選擇科系分析
+                    </h4>
+                    
+                    <!-- 篩選控件容器（固定，不會被重新渲染） -->
+                    <div id="schoolDeptFilterContainer" style="background: white; padding: 20px; border-radius: 10px; margin-bottom: 20px; box-shadow: 0 2px 8px rgba(0,0,0,0.1);">
+                        <div style="display: flex; gap: 15px; align-items: center; flex-wrap: wrap;">
+                            <div style="flex: 1; min-width: 200px;">
+                                <label style="display: block; margin-bottom: 8px; font-weight: 600; color: #495057; font-size: 14px;">
+                                    <i class="fas fa-search"></i> 關鍵字搜尋
+                                </label>
+                                <input type="text" id="schoolDeptKeywordFilter" placeholder="搜尋學校名稱或科系..." 
+                                       style="width: 100%; padding: 10px 12px; border: 2px solid #e9ecef; border-radius: 8px; font-size: 14px; transition: all 0.3s;"
+                                       autocomplete="off"
+                                       spellcheck="false"
+                                       tabindex="0">
+                            </div>
+                            <div style="display: flex; align-items: flex-end;">
+                                <button id="resetSchoolDeptFilterBtn" 
+                                        style="padding: 10px 20px; background: #6c757d; color: white; border: none; border-radius: 8px; cursor: pointer; font-size: 14px; font-weight: 500; transition: all 0.3s;"
+                                        onmouseover="this.style.background='#5a6268'"
+                                        onmouseout="this.style.background='#6c757d'">
+                                    <i class="fas fa-redo"></i> 重置篩選
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- 數據展示容器（會根據篩選結果更新） -->
+                    <div id="schoolDeptDataContainer"></div>
+                </div>
+            `;
+            
+            document.getElementById('enrollmentAnalyticsContent').innerHTML = fullContent;
+            
+            // 初始化事件監聽器
+            initializeSchoolDeptFilters(cityList);
+        }
+        
+        // 只更新數據展示部分
+        dataContainer = document.getElementById('schoolDeptDataContainer');
+        if (dataContainer) {
+            const dataContent = `
+                <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 20px; border-radius: 10px; margin-bottom: 20px;">
+                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px; text-align: center;">
+                        <div>
+                            <div style="font-size: 2.5em; font-weight: bold; margin-bottom: 5px;">${displayData.length}</div>
+                            <div style="font-size: 1em; opacity: 0.9;">參與國中數</div>
+                        </div>
+                        <div>
+                            <div style="font-size: 2.5em; font-weight: bold; margin-bottom: 5px;">${displayData.reduce((sum, s) => sum + s.total_students, 0)}</div>
+                            <div style="font-size: 1em; opacity: 0.9;">總選擇次數</div>
+                        </div>
+                    </div>
+                </div>
+                
+                ${displayData.length === 0 ? `
+                    <div style="text-align: center; padding: 40px; color: #6c757d; background: white; border-radius: 10px;">
+                        <i class="fas fa-search fa-3x" style="margin-bottom: 16px; opacity: 0.3;"></i>
+                        <h4>沒有符合篩選條件的資料</h4>
+                        <p>請嘗試調整篩選條件</p>
+                    </div>
+                ` : `
+                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(400px, 1fr)); gap: 20px;">
+                        ${displayData.map((school, index) => {
+                            // 使用更淺的顏色
+                            const colors = ['#a8b5f0', '#7dd87d', '#ffd966', '#f5a5a5', '#7dd4e8', '#b8a5e8', '#ffb366', '#7dd4c8'];
+                            const color = colors[index % colors.length];
+                            
+                            return `
+                                <div style="background: white; box-shadow: 0 2px 10px rgba(0,0,0,0.1); overflow: hidden;">
+                                    <div style="background: ${color}; color: white; padding: 15px 20px;">
+                                        <h5 style="margin: 0; font-size: 1.1em; font-weight: 600; display: flex; justify-content: space-between; align-items: center;">
+                                            <span><i class="fas fa-school"></i> ${school.school}</span>
+                                            <span style="background: rgba(255,255,255,0.3); padding: 4px 12px; border-radius: 15px; font-size: 0.9em;">
+                                                ${school.total_students}次選擇
+                                            </span>
+                                        </h5>
+                                    </div>
+                                    
+                                    <div style="padding: 20px;">
+                                        <div style="margin-bottom: 15px; font-size: 0.9em; color: #666;">
+                                            共選擇 <strong style="color: ${color};">${school.departments.length}</strong> 個科系
+                                        </div>
+                                        
+                                        <div style="max-height: 400px; overflow-y: auto;">
+                                            <table style="width: 100%; border-collapse: collapse;">
+                                                <thead>
+                                                    <tr style="background: #f8f9fa; border-bottom: 2px solid #dee2e6;">
+                                                        <th style="padding: 10px; text-align: left; font-weight: 600; color: #495057; font-size: 0.9em;">科系名稱</th>
+                                                        <th style="padding: 10px; text-align: center; font-weight: 600; color: #495057; font-size: 0.9em;">總數</th>
+                                                    </tr>
+                                                </thead>
+                                                <tbody>
+                                                    ${school.departments.map((dept, deptIndex) => {
+                                                        return `
+                                                            <tr style="border-bottom: 1px solid #e9ecef; ${deptIndex % 2 === 0 ? 'background: #f8f9fa;' : ''}">
+                                                                <td style="padding: 12px 10px; font-weight: 500; color: #333;">${dept.name}</td>
+                                                                <td style="padding: 12px 10px; text-align: center; font-weight: bold; color: ${color};">${dept.total}</td>
+                                                            </tr>
+                                                        `;
+                                                    }).join('')}
+                                                </tbody>
+                                            </table>
+                                        </div>
+                                    </div>
+                                </div>
+                            `;
+                        }).join('')}
+                    </div>
+                `}
+            `;
+            
+            dataContainer.innerHTML = dataContent;
+        }
+    }
+    
+    // 初始化篩選控件的事件監聽器（只執行一次）
+    function initializeSchoolDeptFilters(cityList) {
+        setTimeout(() => {
+            const keywordInput = document.getElementById('schoolDeptKeywordFilter');
+            const resetBtn = document.getElementById('resetSchoolDeptFilterBtn');
+            
+            if (keywordInput) {
+                // 確保輸入框可以正常輸入
+                keywordInput.disabled = false;
+                keywordInput.readOnly = false;
+                keywordInput.style.pointerEvents = 'auto';
+                keywordInput.style.userSelect = 'text';
+                keywordInput.style.cursor = 'text';
+                
+                // 添加焦点和失焦样式处理
+                keywordInput.addEventListener('focus', function() {
+                    this.style.borderColor = '#667eea';
+                    this.style.boxShadow = '0 0 0 3px rgba(102, 126, 234, 0.1)';
+                }, false);
+                
+                keywordInput.addEventListener('blur', function() {
+                    this.style.borderColor = '#e9ecef';
+                    this.style.boxShadow = 'none';
+                }, false);
+                
+                // 使用防抖函數來優化性能
+                let filterTimeout;
+                const triggerFilter = function() {
+                    clearTimeout(filterTimeout);
+                    filterTimeout = setTimeout(() => {
+                        if (window.filterSchoolDepartment) {
+                            window.filterSchoolDepartment();
+                        }
+                    }, 500); // 增加延遲時間，減少重新渲染頻率
+                };
+                
+                // 只使用 input 事件，這是最可靠的事件，不會干擾輸入
+                keywordInput.addEventListener('input', function(e) {
+                    e.stopPropagation(); // 阻止事件冒泡
+                    triggerFilter();
+                }, false);
+            }
+            
+            if (resetBtn) {
+                resetBtn.addEventListener('click', function() {
+                    if (window.resetSchoolDepartmentFilter) {
+                        window.resetSchoolDepartmentFilter();
+                    }
+                }, false);
+            }
+        }, 100);
+    }
+    
+    // 篩選學校科系資料（全局函數）
+    window.filterSchoolDepartment = function() {
+        if (!window.schoolDepartmentData || !window.schoolDepartmentCityList) {
+            console.error('篩選失敗：缺少數據');
+            return;
+        }
+        
+        const keywordFilterEl = document.getElementById('schoolDeptKeywordFilter');
+        
+        if (!keywordFilterEl) {
+            console.error('篩選失敗：找不到篩選控件');
+            return;
+        }
+        
+        const keywordFilter = keywordFilterEl.value.toLowerCase().trim() || '';
+        
+        console.log('篩選條件:', { keywordFilter, '數據總數': window.schoolDepartmentData.length });
+        
+        // 篩選資料
+        const filteredData = [];
+        
+        for (let i = 0; i < window.schoolDepartmentData.length; i++) {
+            const school = window.schoolDepartmentData[i];
+            
+            if (!school || !school.school) continue;
+            
+            // 關鍵字篩選（搜尋學校名稱或科系名稱）
+            if (keywordFilter) {
+                const schoolName = (school.school || '').toString();
+                const schoolMatch = schoolName.toLowerCase().includes(keywordFilter);
+                
+                // 篩選科系列表，只保留符合關鍵字的科系
+                const departments = Array.isArray(school.departments) ? school.departments : [];
+                const filteredDepartments = departments.filter(dept => {
+                    if (!dept || !dept.name) return false;
+                    const deptName = dept.name.toString().toLowerCase();
+                    return deptName.includes(keywordFilter);
+                });
+                
+                console.log(`學校: ${schoolName}, 關鍵字: ${keywordFilter}, 學校匹配: ${schoolMatch}, 科系匹配數: ${filteredDepartments.length}`);
+                
+                // 如果學校名稱和科系都不符合，則過濾掉整個學校
+                if (!schoolMatch && filteredDepartments.length === 0) {
+                    continue; // 不符合關鍵字篩選，跳過
+                }
+                
+                // 如果學校名稱符合，保留所有科系；如果只有科系符合，只保留符合的科系
+                if (schoolMatch) {
+                    // 學校名稱符合，保留所有科系
+                    filteredData.push(school);
+                } else {
+                    // 只有科系符合，只保留符合的科系
+                    const newSchool = {
+                        school: school.school,
+                        departments: filteredDepartments,
+                        total_students: filteredDepartments.reduce((sum, dept) => sum + (dept.total || 0), 0)
+                    };
+                    filteredData.push(newSchool);
+                }
+            } else {
+                // 沒有關鍵字篩選，直接加入
+                filteredData.push(school);
+            }
+        }
+        
+        console.log('篩選結果:', filteredData.length, '所學校');
+        
+        // 只更新數據展示部分，不重新渲染輸入框
+        if (typeof renderSchoolDepartmentContent === 'function') {
+            renderSchoolDepartmentContent(window.schoolDepartmentData, window.schoolDepartmentCityList, filteredData);
+        } else {
+            console.error('renderSchoolDepartmentContent 函數不存在');
+        }
+    };
+    
+    // 為了向後兼容，也保留原來的函數名
+    function filterSchoolDepartment() {
+        window.filterSchoolDepartment();
+    }
+    
+    // 重置篩選（全局函數）
+    window.resetSchoolDepartmentFilter = function() {
+        const keywordFilter = document.getElementById('schoolDeptKeywordFilter');
+        
+        if (keywordFilter) keywordFilter.value = '';
+        
+        // 重新渲染原始資料
+        if (window.schoolDepartmentData && window.schoolDepartmentCityList) {
+            if (typeof renderSchoolDepartmentContent === 'function') {
+                renderSchoolDepartmentContent(window.schoolDepartmentData, window.schoolDepartmentCityList);
+            } else {
+                console.error('renderSchoolDepartmentContent 函數不存在');
+            }
+        }
+    };
+    
+    // 為了向後兼容，也保留原來的函數名
+    function resetSchoolDepartmentFilter() {
+        window.resetSchoolDepartmentFilter();
     }
     
     function clearEnrollmentCharts() {

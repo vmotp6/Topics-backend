@@ -33,6 +33,24 @@ $is_admin = in_array($user_role, ['admin', '管理員']) || $username === 'admin
                 <i class="fas fa-file-signature"></i>
                 <span>就讀意願名單</span>
             </a>
+
+            <a href="continued_admission_list.php" class="menu-item <?php echo in_array($current_page, ['continued_admission_list', 'continued_admission_detail']) ? 'active' : ''; ?>">
+                <i class="fas fa-user-plus"></i>
+                <span>續招</span>
+            </a>
+
+             <a href="admission_recommend_list.php" class="menu-item <?php echo $current_page === 'admission_recommend_list' ? 'active' : ''; ?>">
+                <i class="fas fa-user-friends"></i>
+                <span>招生推薦</span>
+            </a>
+            
+            <?php if ($username === 'admin1'): ?>
+            <a href="admission_applications.php" class="menu-item <?php echo $current_page === 'admission_applications' ? 'active' : ''; ?>">
+                <i class="fas fa-clipboard-list"></i>
+                <span>五專入學說明會</span>
+            </a>
+            <?php endif; ?>
+            
             <a href="activity_records.php" class="menu-item <?php echo $current_page === 'activity_records' ? 'active' : ''; ?>">
                 <i class="fas fa-tasks"></i>
                 <span>統計分析</span>
@@ -49,19 +67,13 @@ $is_admin = in_array($user_role, ['admin', '管理員']) || $username === 'admin
                 <i class="fas fa-cog"></i>
                 <span>場次設定</span>
             </a>
-            <a href="continued_admission_list.php" class="menu-item <?php echo in_array($current_page, ['continued_admission_list', 'continued_admission_detail']) ? 'active' : ''; ?>">
-                <i class="fas fa-user-plus"></i>
-                <span>續招</span>
-            </a>
+            
             <a href="admission_center.php" class="menu-item <?php echo $current_page === 'admission_center' ? 'active' : ''; ?>">
                 <i class="fas fa-graduation-cap"></i>
                 <span>招生中心</span>
             </a>
             <?php if ($username === 'admin1' || $username === 'IMD'): ?>
-            <a href="admission_recommend_list.php" class="menu-item <?php echo $current_page === 'admission_recommend_list' ? 'active' : ''; ?>">
-                <i class="fas fa-user-friends"></i>
-                <span>招生推薦</span>
-            </a>
+           
             <a href="school_contacts.php" class="menu-item <?php echo $current_page === 'school_contacts' ? 'active' : ''; ?>">
                 <i class="fas fa-address-book"></i>
                 <span>學校聯絡人</span>
