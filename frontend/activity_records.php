@@ -131,6 +131,7 @@ $conn->close();
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2.0.0"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
     <style>
         :root {
             --primary-color: #667eea;
@@ -2457,7 +2458,14 @@ $conn->close();
                                        spellcheck="false"
                                        tabindex="0">
                             </div>
-                            <div style="display: flex; align-items: flex-end;">
+                            <div style="display: flex; gap: 10px; align-items: flex-end;">
+                                <button id="exportSchoolDeptExcelBtn" 
+                                        style="padding: 10px 20px; background: #28a745; color: white; border: none; border-radius: 8px; cursor: pointer; font-size: 14px; font-weight: 500; transition: all 0.3s;"
+                                        onmouseover="this.style.background='#218838'"
+                                        onmouseout="this.style.background='#28a745'"
+                                        onclick="exportSchoolDepartmentToExcel()">
+                                    <i class="fas fa-file-excel"></i> 匯出 Excel
+                                </button>
                                 <button id="resetSchoolDeptFilterBtn" 
                                         style="padding: 10px 20px; background: #6c757d; color: white; border: none; border-radius: 8px; cursor: pointer; font-size: 14px; font-weight: 500; transition: all 0.3s;"
                                         onmouseover="this.style.background='#5a6268'"
@@ -2709,6 +2717,119 @@ $conn->close();
     // 為了向後兼容，也保留原來的函數名
     function resetSchoolDepartmentFilter() {
         window.resetSchoolDepartmentFilter();
+    }
+    
+    // 匯出國中選擇科系統計資料為 Excel
+    function exportSchoolDepartmentToExcel() {
+        console.log('開始匯出 Excel');
+        
+        // 獲取當前顯示的資料（如果有篩選，使用篩選後的資料；否則使用原始資料）
+        let exportData = window.schoolDepartmentData || [];
+        
+        // 檢查是否有篩選條件
+        const keywordFilter = document.getElementById('schoolDeptKeywordFilter');
+        if (keywordFilter && keywordFilter.value.trim()) {
+            // 如果有篩選，需要重新應用篩選邏輯來獲取當前顯示的資料
+            const keyword = keywordFilter.value.toLowerCase().trim();
+            exportData = window.schoolDepartmentData.filter(school => {
+                if (!school || !school.school) return false;
+                
+                const schoolName = school.school.toString().toLowerCase();
+                const schoolMatch = schoolName.includes(keyword);
+                
+                const departments = Array.isArray(school.departments) ? school.departments : [];
+                const filteredDepartments = departments.filter(dept => {
+                    if (!dept || !dept.name) return false;
+                    return dept.name.toString().toLowerCase().includes(keyword);
+                });
+                
+                return schoolMatch || filteredDepartments.length > 0;
+            }).map(school => {
+                const schoolName = school.school.toString().toLowerCase();
+                const schoolMatch = schoolName.includes(keyword);
+                
+                if (schoolMatch) {
+                    return school; // 學校名稱符合，保留所有科系
+                } else {
+                    // 只有科系符合，只保留符合的科系
+                    const departments = Array.isArray(school.departments) ? school.departments : [];
+                    const filteredDepartments = departments.filter(dept => {
+                        if (!dept || !dept.name) return false;
+                        return dept.name.toString().toLowerCase().includes(keyword);
+                    });
+                    return {
+                        school: school.school,
+                        departments: filteredDepartments,
+                        total_students: filteredDepartments.reduce((sum, dept) => sum + (dept.total || 0), 0)
+                    };
+                }
+            });
+        }
+        
+        if (!exportData || exportData.length === 0) {
+            alert('目前沒有可匯出的資料');
+            return;
+        }
+        
+        // 準備 Excel 資料
+        // 第一行：標題
+        const excelData = [
+            ['學校名稱', '科系名稱', '選擇次數']
+        ];
+        
+        // 遍歷每個學校和科系
+        exportData.forEach(school => {
+            if (school.departments && school.departments.length > 0) {
+                school.departments.forEach((dept, index) => {
+                    excelData.push([
+                        index === 0 ? school.school : '', // 只在第一行顯示學校名稱
+                        dept.name || '',
+                        dept.total || 0
+                    ]);
+                });
+            } else {
+                // 如果沒有科系資料，至少顯示學校名稱
+                excelData.push([
+                    school.school || '',
+                    '',
+                    0
+                ]);
+            }
+        });
+        
+        // 添加統計行
+        excelData.push([]); // 空行
+        excelData.push(['統計', '', '']);
+        excelData.push(['參與國中數', '', exportData.length]);
+        excelData.push(['總選擇次數', '', exportData.reduce((sum, s) => sum + (s.total_students || 0), 0)]);
+        
+        // 創建工作表
+        const ws = XLSX.utils.aoa_to_sheet(excelData);
+        
+        // 設置列寬
+        ws['!cols'] = [
+            { wch: 30 }, // 學校名稱
+            { wch: 25 }, // 科系名稱
+            { wch: 12 }  // 選擇次數
+        ];
+        
+        // 創建工作簿
+        const wb = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(wb, ws, '國中選擇科系統計');
+        
+        // 生成檔案名稱（包含日期時間）
+        const now = new Date();
+        const dateStr = now.getFullYear() + 
+                       String(now.getMonth() + 1).padStart(2, '0') + 
+                       String(now.getDate()).padStart(2, '0') + '_' +
+                       String(now.getHours()).padStart(2, '0') + 
+                       String(now.getMinutes()).padStart(2, '0');
+        const fileName = `國中選擇科系統計_${dateStr}.xlsx`;
+        
+        // 匯出檔案
+        XLSX.writeFile(wb, fileName);
+        
+        console.log('Excel 匯出完成:', fileName);
     }
     
     function clearEnrollmentCharts() {

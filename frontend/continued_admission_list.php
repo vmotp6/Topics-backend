@@ -26,13 +26,14 @@ try {
 
 // 獲取續招報名資料（根據用戶權限過濾）
 if ($is_imd_user) {
-    // IMD用戶只能看到資管科相關的續招報名
+    // IMD用戶只能看到志願選擇包含"資訊管理科"的續招報名
+    // 檢查 JSON 陣列中是否包含"資訊管理科"或"資管科"
     $stmt = $conn->prepare("SELECT id, name, id_number, mobile, school_name, created_at, status, choices 
                           FROM continued_admission 
-                          WHERE JSON_CONTAINS(choices, JSON_QUOTE('資訊管理科')) 
+                          WHERE (JSON_CONTAINS(choices, JSON_QUOTE('資訊管理科')) 
                           OR JSON_CONTAINS(choices, JSON_QUOTE('資管科'))
-                          OR JSON_SEARCH(choices, 'one', '%資管%') IS NOT NULL
-                          OR JSON_SEARCH(choices, 'one', '%資訊管理%') IS NOT NULL
+                          OR JSON_SEARCH(choices, 'one', '%資訊管理科%') IS NOT NULL
+                          OR JSON_SEARCH(choices, 'one', '%資管科%') IS NOT NULL)
                           ORDER BY created_at DESC");
 } else {
     // 一般管理員可以看到所有續招報名
@@ -321,14 +322,38 @@ function getStatusClass($status) {
                                             <?php 
                                             $choices = json_decode($item['choices'], true);
                                             if (!empty($choices) && is_array($choices)): 
+                                                // 如果是IMD用戶，只顯示資訊管理科相關的志願
+                                                if ($is_imd_user):
+                                                    $filtered_choices = [];
+                                                    foreach ($choices as $index => $choice):
+                                                        // 只保留包含"資訊管理科"或"資管科"的志願
+                                                        if (strpos($choice, '資訊管理科') !== false || strpos($choice, '資管科') !== false):
+                                                            $filtered_choices[] = ['index' => $index, 'choice' => $choice];
+                                                        endif;
+                                                    endforeach;
+                                                    
+                                                    if (!empty($filtered_choices)):
                                             ?>
-                                                <div class="choices-display">
-                                                    <?php foreach ($choices as $index => $choice): ?>
-                                                        <span class="choice-item <?php echo $index === 0 ? 'first-choice' : ''; ?>">
-                                                            <?php echo ($index + 1) . '. ' . htmlspecialchars($choice); ?>
-                                                        </span>
-                                                    <?php endforeach; ?>
-                                                </div>
+                                                        <div class="choices-display">
+                                                            <?php foreach ($filtered_choices as $item_data): ?>
+                                                                <span class="choice-item <?php echo $item_data['index'] === 0 ? 'first-choice' : ''; ?>">
+                                                                    <?php echo ($item_data['index'] + 1) . '. ' . htmlspecialchars($item_data['choice']); ?>
+                                                                </span>
+                                                            <?php endforeach; ?>
+                                                        </div>
+                                                    <?php else: ?>
+                                                        <span class="no-choices">無相關志願</span>
+                                                    <?php endif; ?>
+                                                <?php else: ?>
+                                                    <!-- 一般管理員顯示所有志願 -->
+                                                    <div class="choices-display">
+                                                        <?php foreach ($choices as $index => $choice): ?>
+                                                            <span class="choice-item <?php echo $index === 0 ? 'first-choice' : ''; ?>">
+                                                                <?php echo ($index + 1) . '. ' . htmlspecialchars($choice); ?>
+                                                            </span>
+                                                        <?php endforeach; ?>
+                                                    </div>
+                                                <?php endif; ?>
                                             <?php else: ?>
                                                 <span class="no-choices">未選擇</span>
                                             <?php endif; ?>

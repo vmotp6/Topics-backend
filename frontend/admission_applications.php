@@ -7,9 +7,9 @@ if (!isset($_SESSION['admin_logged_in']) || !$_SESSION['admin_logged_in']) {
     exit;
 }
 
-// 檢查是否為 admin1 用戶
+// 檢查是否為 admin1 或 IMD 用戶
 $username = $_SESSION['username'] ?? '';
-if ($username !== 'admin1') {
+if ($username !== 'admin1' && $username !== 'IMD') {
     header("Location: index.php");
     exit;
 }
@@ -42,8 +42,17 @@ try {
         throw new Exception("資料表 'admission_applications' 不存在");
     }
     
-    // 獲取所有資料
-    $sql = "SELECT * FROM admission_applications ORDER BY created_at DESC";
+    // 根據用戶身份決定查詢條件
+    if ($username === 'IMD') {
+        // IMD 用戶只能看到體驗課程為"資訊管理科"的資料（第一志願或第二志願）
+        $sql = "SELECT * FROM admission_applications 
+                WHERE (course_priority_1 = '資訊管理科' OR course_priority_2 = '資訊管理科')
+                ORDER BY created_at DESC";
+    } else {
+        // admin1 用戶可以看到所有資料
+        $sql = "SELECT * FROM admission_applications ORDER BY created_at DESC";
+    }
+    
     $result = $conn->query($sql);
     
     if ($result) {
@@ -520,6 +529,9 @@ try {
     </div>
     
     <script>
+        // 獲取當前用戶名（用於權限控制）
+        const currentUsername = '<?php echo htmlspecialchars($username, ENT_QUOTES, 'UTF-8'); ?>';
+        
         // 表格搜尋功能
         function filterTable() {
             const input = document.getElementById('tableSearchInput');
@@ -582,16 +594,53 @@ try {
         // 顯示體驗課程資訊
         function showCourseInfo(app) {
             const content = document.getElementById('courseInfoContent');
-            content.innerHTML = `
-                <div class="info-group">
-                    <div class="info-label">第一志願</div>
-                    <div class="info-value">${escapeHtml(app.course_priority_1)}</div>
-                </div>
-                <div class="info-group">
-                    <div class="info-label">第二志願</div>
-                    <div class="info-value">${escapeHtml(app.course_priority_2)}</div>
-                </div>
-            `;
+            let html = '';
+            
+            // 如果是IMD用戶，只顯示資訊管理科
+            if (currentUsername === 'IMD') {
+                const targetCourse = '資訊管理科';
+                let hasInfo = false;
+                
+                // 只顯示第一志願或第二志願為資訊管理科的項目
+                if (app.course_priority_1 === targetCourse) {
+                    html += `
+                        <div class="info-group">
+                            <div class="info-label">第一志願</div>
+                            <div class="info-value">${escapeHtml(app.course_priority_1)}</div>
+                        </div>
+                    `;
+                    hasInfo = true;
+                }
+                
+                if (app.course_priority_2 === targetCourse) {
+                    html += `
+                        <div class="info-group">
+                            <div class="info-label">第二志願</div>
+                            <div class="info-value">${escapeHtml(app.course_priority_2)}</div>
+                        </div>
+                    `;
+                    hasInfo = true;
+                }
+                
+                // 如果沒有資訊管理科，顯示提示
+                if (!hasInfo) {
+                    html = '<div class="info-group"><div class="info-value" style="text-align: center; color: var(--text-secondary-color);">無相關課程資訊</div></div>';
+                }
+            } else {
+                // admin1用戶可以看到所有志願
+                html = `
+                    <div class="info-group">
+                        <div class="info-label">第一志願</div>
+                        <div class="info-value">${escapeHtml(app.course_priority_1)}</div>
+                    </div>
+                    <div class="info-group">
+                        <div class="info-label">第二志願</div>
+                        <div class="info-value">${escapeHtml(app.course_priority_2)}</div>
+                    </div>
+                `;
+            }
+            
+            content.innerHTML = html;
             document.getElementById('courseModal').style.display = 'block';
         }
         
