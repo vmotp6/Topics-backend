@@ -45,9 +45,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
 
             // 如果密碼驗證成功，繼續檢查帳號狀態和角色
             if ($login_successful) {
-                // 優先檢查角色是否不允許登入 (學生、老師)
-                if (in_array($user['role'], ['student', '學生', 'teacher', '老師'])) {
-                    $error_message = "帳號或密碼錯誤。"; // 對學生和老師顯示一樣的錯誤訊息，避免透露帳號存在
+                // 優先檢查角色是否不允許登入後台（只允許管理員、行政人員、主任）
+                // 使用角色代碼：'ADM'=管理員, 'STA'=行政人員, 'DI'=主任
+                $allowed_roles = ['ADM', 'STA', 'DI'];
+                // 向後兼容：也檢查舊的中文角色名稱
+                $allowed_role_names = ['管理員', '行政人員', '主任'];
+                
+                if (!in_array($user['role'], $allowed_roles) && !in_array($user['role'], $allowed_role_names)) {
+                    $error_message = "帳號或密碼錯誤。"; // 對不允許的角色顯示一樣的錯誤訊息，避免透露帳號存在
                     $login_successful = false;
                 } elseif ($user['status'] != 1) { // 然後才檢查帳號是否被停用
                     $error_message = "您的帳號已被停用，請聯繫管理員。";
