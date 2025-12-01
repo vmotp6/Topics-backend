@@ -9,7 +9,7 @@ $username = $_SESSION['username'] ?? ''; // 預期為用戶名
 // -------------------------------------------------------------
 // 【修改點 1】 重新定義管理員/行政人員的代碼驗證邏輯
 // 只有 ADM (管理員) 和 STA (行政人員) 才能看到主選單
-$allowed_admin_roles = ['ADM', 'STA'];
+$allowed_admin_roles = ['ADM', 'STA','DI'];
 $is_admin_or_staff = in_array($user_role, $allowed_admin_roles);
 // -------------------------------------------------------------
 ?>

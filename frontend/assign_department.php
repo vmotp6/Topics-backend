@@ -8,10 +8,10 @@ if (!isset($_SESSION['admin_logged_in']) || !$_SESSION['admin_logged_in']) {
     exit;
 }
 
-// 檢查權限：admin1 或行政人員可以分配學生至主任
+// 檢查權限：招生中心/行政人員可以分配學生至主任
 $username = isset($_SESSION['username']) ? $_SESSION['username'] : '';
 $user_role = isset($_SESSION['role']) ? $_SESSION['role'] : '';
-$is_admission_center = ($username === 'admin1' || in_array($user_role, ['admin', '管理員', '學校行政人員']));
+$is_admission_center = ($username === 'admin1' || in_array($user_role, ['admin', '管理員', '學校行政人員', 'ADM', 'STA']));
 
 if (!$is_admission_center) {
     http_response_code(403);
@@ -27,11 +27,9 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
 }
 
 $student_id = isset($_POST['student_id']) ? intval($_POST['student_id']) : 0;
-$department_account = isset($_POST['department']) ? trim($_POST['department']) : '';
-
-// 僅允許指定的部門帳號
-$allowed_departments = ['IMD', 'FLD'];
-if ($student_id <= 0 || !in_array($department_account, $allowed_departments, true)) {
+// 前端會傳入科系代碼（例如 IM, AF），驗證該科系是否存在
+$department_code = isset($_POST['department']) ? trim($_POST['department']) : '';
+if ($student_id <= 0 || empty($department_code)) {
     echo json_encode(['success' => false, 'message' => '無效的參數']);
     exit;
 }
@@ -71,9 +69,49 @@ try {
         exit;
     }
 
+    // 驗證科系代碼是否存在於 departments 表
+    $dep_check = $conn->prepare("SELECT code, name FROM departments WHERE code = ? LIMIT 1");
+    $dep_check->bind_param("s", $department_code);
+    $dep_check->execute();
+    $dep_res = $dep_check->get_result();
+    $department_row = $dep_res ? $dep_res->fetch_assoc() : null;
+    if (!$department_row) {
+        echo json_encode(['success' => false, 'message' => '指定的科系代碼不存在']);
+        exit;
+    }
+
+    // 驗證：只能分配學生志願裡有的科系
+    $choices_stmt = $conn->prepare("SELECT department_code FROM enrollment_choices WHERE enrollment_id = ? AND department_code IS NOT NULL AND department_code != ''");
+    $choices_stmt->bind_param("i", $student_id);
+    $choices_stmt->execute();
+    $choices_result = $choices_stmt->get_result();
+    $chosen_codes = [];
+    if ($choices_result) {
+        while ($r = $choices_result->fetch_assoc()) {
+            if (!empty($r['department_code'])) {
+                $chosen_codes[] = $r['department_code'];
+            }
+        }
+    }
+    $chosen_codes = array_values(array_unique($chosen_codes)); // 去重
+
+    // 驗證：只能分配學生志願裡有的科系
+    // 如果學生有填志願（至少一個非空志願），則檢查被指派的科系是否為該志願科系
+    if (!empty($chosen_codes)) {
+        if (!in_array($department_code, $chosen_codes)) {
+            echo json_encode(['success' => false, 'message' => '只能分配學生志願裡有的科系，無法分配至 ' . $department_row['name']]);
+            exit;
+        }
+    } else {
+        // 如果學生沒有填寫任何志願，不允許分配
+        echo json_encode(['success' => false, 'message' => '此學生尚未填寫志願，無法進行分配。請先確認學生是否已填寫志願。']);
+        exit;
+    }
+
     // 更新學生的部門分配
-    $update = $conn->prepare("UPDATE enrollment_intention SET assigned_department = ? WHERE id = ?");
-    $update->bind_param("si", $department_account, $student_id);
+    // 更新 assigned_department 為科系代碼
+    $update = $conn->prepare("UPDATE enrollment_intention SET assigned_department = ?, assigned_teacher_id = NULL WHERE id = ?");
+    $update->bind_param("si", $department_code, $student_id);
 
     if ($update->execute()) {
         // 記錄分配日誌
@@ -107,9 +145,10 @@ try {
 
         echo json_encode([
             'success' => true,
-            'message' => '已分配學生至主任帳號',
+            'message' => '已分配學生至科系',
             'student_name' => $student['name'],
-            'department' => $department_account
+            'department' => $department_row['code'],
+            'department_name' => $department_row['name'] ?? ''
         ]);
     } else {
         echo json_encode(['success' => false, 'message' => '分配失敗：' . $conn->error]);

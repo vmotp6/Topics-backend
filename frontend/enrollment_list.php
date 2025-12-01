@@ -56,11 +56,22 @@ $user_department_code = null;
 $is_department_user = false;
 
 // 僅當用戶是老師 (TEA) 或主任 (DI) 時，查詢其所屬部門
+$is_director = ($user_role === 'DI');
 if ($user_role === 'TEA' || $user_role === 'DI') { 
     try {
         $conn_temp = getDatabaseConnection();
-        // 從 teacher/director 表格獲取部門代碼
-        $stmt_dept = $conn_temp->prepare("SELECT department FROM teacher WHERE user_id = ?");
+        // 優先從 director 表獲取部門代碼（主任）
+        if ($is_director) {
+            $table_check = $conn_temp->query("SHOW TABLES LIKE 'director'");
+            if ($table_check && $table_check->num_rows > 0) {
+                $stmt_dept = $conn_temp->prepare("SELECT department FROM director WHERE user_id = ?");
+            } else {
+                $stmt_dept = $conn_temp->prepare("SELECT department FROM teacher WHERE user_id = ?");
+            }
+        } else {
+            // 從 teacher 表格獲取部門代碼
+            $stmt_dept = $conn_temp->prepare("SELECT department FROM teacher WHERE user_id = ?");
+        }
         $stmt_dept->bind_param("i", $user_id);
         $stmt_dept->execute();
         $result_dept = $stmt_dept->get_result();
@@ -174,14 +185,18 @@ try {
     // 根據用戶權限決定 WHERE 條件
     $where_clause = '';
 
-    if ($is_imd_user) {
-        // IM用戶看到所有選擇 IM 的記錄，或者被分配到 IM 部門的記錄
+    if ($is_director && !empty($user_department_code)) {
+        // 主任只能看到被分配給他的科系的記錄（assigned_department 等於他的科系）
+        // 不可以看到沒有被分配的記錄
+        $where_clause = " WHERE ei.assigned_department = ? ";
+    } elseif ($is_imd_user) {
+        // IM用戶（老師）看到所有選擇 IM 的記錄，或者被分配到 IM 部門的記錄
         $where_clause = "
             WHERE (ec1.department_code = 'IM' OR ec2.department_code = 'IM' OR ec3.department_code = 'IM') 
             OR ei.assigned_department = 'IM' 
         ";
     } elseif ($is_fld_user) {
-        // AF用戶看到所有選擇 AF 的記錄，或者被分配到 AF 部門的記錄
+        // AF用戶（老師）看到所有選擇 AF 的記錄，或者被分配到 AF 部門的記錄
         $where_clause = "
             WHERE (ec1.department_code = 'AF' OR ec2.department_code = 'AF' OR ec3.department_code = 'AF') 
             OR ei.assigned_department = 'AF'
@@ -193,7 +208,12 @@ try {
     
     $stmt = $conn->prepare($sql);
     
-    if ($stmt) { 
+    if ($stmt) {
+        // 如果是主任，需要綁定參數
+        if ($is_director && !empty($user_department_code)) {
+            $stmt->bind_param("s", $user_department_code);
+        }
+        
         if (!$stmt->execute()) {
             throw new Exception('執行查詢失敗: ' . $stmt->error);
         }
@@ -223,35 +243,80 @@ try {
         }
     }
 
-    // 獲取所有科系主任列表 (用於分配)
+    // 獲取老師列表 (用於分配)
     if ($is_department_user) {
-        // 優先使用 `director` 表來取得科系主任資料
-        $table_check = $conn->query("SHOW TABLES LIKE 'director'");
-        $director_join = $table_check && $table_check->num_rows > 0 ? "LEFT JOIN director dir ON u.id = dir.user_id" : "";
-        $department_select = $table_check && $table_check->num_rows > 0 ? "dir.department" : "t.department";
+        // 如果是主任，獲取自己科系的所有老師（包括主任和一般老師）
+        if ($is_director && !empty($user_department_code)) {
+            $table_check = $conn->query("SHOW TABLES LIKE 'director'");
+            $director_join = $table_check && $table_check->num_rows > 0 ? "LEFT JOIN director dir ON u.id = dir.user_id" : "";
+            
+            // 獲取該科系的所有老師（包括主任和一般老師），但不包括自己
+            $teacher_stmt = $conn->prepare(
+                "SELECT DISTINCT u.id, u.username, u.name, 
+                    COALESCE(dir.department, t.department) AS department_code, 
+                    dep.name AS department_name,
+                    u.role
+                FROM user u
+                LEFT JOIN teacher t ON u.id = t.user_id
+                " . ($director_join ?: "") . "
+                LEFT JOIN departments dep ON COALESCE(dir.department, t.department) = dep.code
+                WHERE (u.role = 'TEA' OR u.role = 'DI')
+                AND COALESCE(dir.department, t.department) = ?
+                AND u.id != ?
+                ORDER BY u.role DESC, u.name ASC"
+            );
+            
+            if ($teacher_stmt) {
+                $teacher_stmt->bind_param("si", $user_department_code, $user_id);
+                if ($teacher_stmt->execute()) {
+                    $teacher_result = $teacher_stmt->get_result();
+                    if ($teacher_result) {
+                        $teachers = $teacher_result->fetch_all(MYSQLI_ASSOC);
+                    }
+                }
+            }
+        } else {
+            // 如果是老師，獲取所有主任（用於分配給主任）
+            $table_check = $conn->query("SHOW TABLES LIKE 'director'");
+            $director_join = $table_check && $table_check->num_rows > 0 ? "LEFT JOIN director dir ON u.id = dir.user_id" : "";
+            $department_select = $table_check && $table_check->num_rows > 0 ? "dir.department" : "t.department";
 
-        // 獲取所有主任，並連線到 departments 表獲取科系名稱
-        $director_stmt = $conn->prepare(
-            "SELECT u.id, u.username, u.name, {$department_select} AS department_code, dep.name AS department_name\n"
-            . "FROM user u\n"
-            . "LEFT JOIN teacher t ON u.id = t.user_id\n"
-            . $director_join . "\n"
-            . "LEFT JOIN departments dep ON {$department_select} = dep.code\n"
-            . "WHERE u.role = 'DI' OR u.username = 'IMD' /* 確保 IMD 帳號（若存在於 user 表）也被抓到 */\n" 
-            . "ORDER BY u.name ASC"
-        );
+            // 獲取所有主任，並連線到 departments 表獲取科系名稱
+            $director_stmt = $conn->prepare(
+                "SELECT u.id, u.username, u.name, {$department_select} AS department_code, dep.name AS department_name, u.role\n"
+                . "FROM user u\n"
+                . "LEFT JOIN teacher t ON u.id = t.user_id\n"
+                . $director_join . "\n"
+                . "LEFT JOIN departments dep ON {$department_select} = dep.code\n"
+                . "WHERE u.role = 'DI' OR u.username = 'IMD' /* 確保 IMD 帳號（若存在於 user 表）也被抓到 */\n" 
+                . "ORDER BY u.name ASC"
+            );
 
-        if ($director_stmt && $director_stmt->execute()) {
-            $director_result = $director_stmt->get_result();
-            if ($director_result) {
-                $teachers = $director_result->fetch_all(MYSQLI_ASSOC); // $teachers 變數現在包含所有主任
+            if ($director_stmt && $director_stmt->execute()) {
+                $director_result = $director_stmt->get_result();
+                if ($director_result) {
+                    $teachers = $director_result->fetch_all(MYSQLI_ASSOC);
+                }
             }
         }
     }
 
-    // 如果使用者為招生中心，載入可分配的部門清單（不要硬編碼）
+    // 如果使用者為招生中心，載入所有部門清單及對應的主任（用於前端動態過濾）
+    // 實際顯示時會根據學生的 enrollment_choices 來過濾
     if ($is_admission_center) {
-        $dept_stmt = $conn->prepare("SELECT code, name FROM departments ORDER BY name ASC");
+        $table_check = $conn->query("SHOW TABLES LIKE 'director'");
+        $director_join = $table_check && $table_check->num_rows > 0 ? "LEFT JOIN director dir ON dir.department = d.code" : "";
+        $department_select = $table_check && $table_check->num_rows > 0 ? "dir.department" : "t.department";
+        
+        $dept_stmt = $conn->prepare("
+            SELECT DISTINCT d.code, d.name, 
+                GROUP_CONCAT(DISTINCT u.name ORDER BY u.name SEPARATOR ', ') AS director_names
+            FROM departments d
+            LEFT JOIN director dir ON dir.department = d.code
+            LEFT JOIN user u ON dir.user_id = u.id AND u.role = 'DI'
+            GROUP BY d.code, d.name
+            ORDER BY d.name ASC
+        ");
         if ($dept_stmt && $dept_stmt->execute()) {
             $dept_result = $dept_stmt->get_result();
             if ($dept_result) {
@@ -801,8 +866,13 @@ try {
                                             <?php endif; ?>
                                         </td>
                                         <td>
-                                            <button class="assign-btn" onclick="openAssignDepartmentModal(<?php echo $item['id']; ?>, '<?php echo htmlspecialchars($item['name']); ?>', '<?php echo htmlspecialchars($item['assigned_department'] ?? ''); ?>')">
-                                                <i class="fas fa-building"></i> <?php echo !empty($item['assigned_department']) ? '重新分配' : '分配'; ?>
+                                            <button class="assign-btn" 
+                                                    data-student-id="<?php echo $item['id']; ?>"
+                                                    data-student-name="<?php echo htmlspecialchars($item['name'], ENT_QUOTES, 'UTF-8'); ?>"
+                                                    data-current-department="<?php echo htmlspecialchars($item['assigned_department'] ?? '', ENT_QUOTES, 'UTF-8'); ?>"
+                                                    data-chosen-codes="<?php echo htmlspecialchars($chosen_codes_json, ENT_QUOTES, 'UTF-8'); ?>"
+                                                    onclick="openAssignDepartmentModalFromButton(this)">
+                                                <i class="fas fa-building"></i> 分配
                                             </button>
                                         </td>
                                         <?php elseif ($is_department_user): ?>
@@ -822,13 +892,12 @@ try {
                                         <td>
                                             <div style="display: flex; gap: 8px; flex-wrap: wrap;">
                                                 <button class="assign-btn" 
-                                                        onclick="openAssignModal(
-                                                            <?php echo $item['id']; ?>, 
-                                                            '<?php echo htmlspecialchars($item['name']); ?>', 
-                                                            <?php echo !empty($item['assigned_teacher_id']) ? $item['assigned_teacher_id'] : 'null'; ?>, 
-                                                            '<?php echo $chosen_codes_json; ?>' /* 傳遞志願代碼 */
-                                                        )">
-                                                    <i class="fas fa-user-plus"></i> <?php echo !empty($item['assigned_teacher_id']) ? '重新分配主任' : '分配主任'; ?>
+                                                        data-student-id="<?php echo $item['id']; ?>"
+                                                        data-student-name="<?php echo htmlspecialchars($item['name'], ENT_QUOTES, 'UTF-8'); ?>"
+                                                        data-current-teacher-id="<?php echo !empty($item['assigned_teacher_id']) ? $item['assigned_teacher_id'] : ''; ?>"
+                                                        data-chosen-codes="<?php echo htmlspecialchars($chosen_codes_json, ENT_QUOTES, 'UTF-8'); ?>"
+                                                        onclick="openAssignModalFromButton(this)">
+                                                    <i class="fas fa-user-plus"></i> 分配
                                                 </button>
                                                 <?php if (!empty($item['assigned_teacher_id'])): ?>
                                                 <button class="assign-btn" style="background: #17a2b8;" onclick="openContactLogsModal(<?php echo $item['id']; ?>, '<?php echo htmlspecialchars($item['name']); ?>')">
@@ -860,20 +929,8 @@ try {
                 <p>學生：<span id="departmentStudentName"></span></p>
                 <div class="teacher-list">
                     <h4>選擇部門：</h4>
-                    <div class="teacher-options">
-                        <?php if (!empty($departments)): ?>
-                            <?php foreach ($departments as $dep): ?>
-                                <label class="teacher-option">
-                                    <input type="radio" name="department" value="<?php echo htmlspecialchars($dep['code']); ?>">
-                                    <div class="teacher-info">
-                                        <strong><?php echo htmlspecialchars($dep['name'] . ' (' . $dep['code'] . ')'); ?></strong>
-                                        <span class="teacher-dept"><?php echo htmlspecialchars($dep['name']); ?></span>
-                                    </div>
-                                </label>
-                            <?php endforeach; ?>
-                        <?php else: ?>
-                            <p class="empty-state" style="padding:10px;">目前沒有任何部門可供分配。</p>
-                        <?php endif; ?>
+                    <div class="teacher-options" id="departmentOptions">
+                        <div class="contact-log-loading"><i class="fas fa-spinner fa-spin"></i> 準備部門名單中...</div>
                     </div>
                 </div>
             </div>
@@ -889,15 +946,15 @@ try {
     <div id="assignModal" class="modal" style="display: none;">
         <div class="modal-content">
             <div class="modal-header">
-                <h3>分配學生 (主任)</h3>
+                <h3>分配學生</h3>
                 <span class="close" onclick="closeAssignModal()">&times;</span>
             </div>
             <div class="modal-body">
                 <p>學生：<span id="studentName"></span></p>
                 <div class="teacher-list">
-                    <h4>選擇主任：</h4>
+                    <h4>選擇老師：</h4>
                     <div class="teacher-options" id="directorOptions">
-                        <div class="contact-log-loading"><i class="fas fa-spinner fa-spin"></i> 準備主任名單中...</div>
+                        <div class="contact-log-loading"><i class="fas fa-spinner fa-spin"></i> 準備老師名單中...</div>
                     </div>
                 </div>
             </div>
@@ -932,7 +989,13 @@ try {
     // 將 PHP 的主任名單轉換為 JS 陣列
     let allDirectors = [];
     <?php if ($is_department_user && !empty($teachers)): ?>
-    allDirectors = <?php echo json_encode($teachers); ?>;
+    allDirectors = <?php echo json_encode($teachers, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_UNESCAPED_UNICODE); ?>;
+    <?php endif; ?>
+
+    // 將 PHP 的部門清單轉換為 JS 陣列（招生中心使用）
+    let allDepartments = [];
+    <?php if ($is_admission_center && !empty($departments)): ?>
+    allDepartments = <?php echo json_encode($departments, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_UNESCAPED_UNICODE); ?>;
     <?php endif; ?>
 
     document.addEventListener('DOMContentLoaded', function() {
@@ -1026,10 +1089,24 @@ try {
     let currentStudentId = null;
 
     /**
-     * 開啟分配主任彈出視窗
+     * 從按鈕元素開啟分配老師彈出視窗（使用 data 屬性避免引號衝突）
+     * @param {HTMLElement} button 按鈕元素
+     */
+    function openAssignModalFromButton(button) {
+        const studentId = parseInt(button.getAttribute('data-student-id'));
+        const studentName = button.getAttribute('data-student-name');
+        const currentTeacherIdStr = button.getAttribute('data-current-teacher-id');
+        const currentTeacherId = currentTeacherIdStr ? parseInt(currentTeacherIdStr) : null;
+        const chosenCodesJson = button.getAttribute('data-chosen-codes') || '[]';
+        
+        openAssignModal(studentId, studentName, currentTeacherId, chosenCodesJson);
+    }
+
+    /**
+     * 開啟分配老師彈出視窗
      * @param {number} studentId 學生ID
      * @param {string} studentName 學生姓名
-     * @param {number|null} currentTeacherId 當前分配的主任ID
+     * @param {number|null} currentTeacherId 當前分配的老師ID
      * @param {string} chosenCodesJson 學生志願的科系代碼 JSON 陣列
      */
     function openAssignModal(studentId, studentName, currentTeacherId, chosenCodesJson) {
@@ -1043,6 +1120,7 @@ try {
             chosenCodes = JSON.parse(chosenCodesJson);
         } catch (e) {
             console.error("解析 chosenCodesJson 失敗:", e);
+            chosenCodes = [];
         }
         
         // 步驟 2: 呼叫篩選函數
@@ -1050,8 +1128,8 @@ try {
     }
     
     /**
-     * 篩選並動態顯示主任名單
-     * @param {number|null} currentTeacherId 當前分配的主任ID
+     * 篩選並動態顯示老師名單（主任可以看到自己科系的所有老師，老師可以看到所有主任）
+     * @param {number|null} currentTeacherId 當前分配的老師ID
      * @param {string[]} chosenCodes 學生選擇的科系代碼陣列 (e.g., ['IM', 'AF'])
      */
     function filterAndDisplayDirectors(currentTeacherId, chosenCodes) {
@@ -1060,38 +1138,37 @@ try {
 
         // 判斷是否有填寫志願 (chosenCodes 是一個包含有效科系代碼的陣列)
         const filterByChoice = chosenCodes.length > 0;
-        let filteredDirectors = allDirectors;
+        let filteredTeachers = allDirectors;
         let html = '';
 
         if (filterByChoice) {
-            // 情況 1: 志願有填寫 - 只顯示志願科系的主任
-            filteredDirectors = allDirectors.filter(director => 
-                // 確保主任有設定 department_code 且該代碼存在於學生的志願列表中
-                director.department_code && chosenCodes.includes(director.department_code)
+            // 情況 1: 志願有填寫 - 只顯示志願科系的老師
+            filteredTeachers = allDirectors.filter(teacher => 
+                // 確保老師有設定 department_code 且該代碼存在於學生的志願列表中
+                teacher.department_code && chosenCodes.includes(teacher.department_code)
             );
         } else {
-            // 情況 2: 志願是空的 - 顯示所有主任
-            filteredDirectors = allDirectors;
+            // 情況 2: 志願是空的 - 顯示所有老師
+            filteredTeachers = allDirectors;
         }
 
-        if (filteredDirectors.length === 0) {
+        if (filteredTeachers.length === 0) {
             if (filterByChoice) {
-                 html = '<p class="empty-state" style="padding: 10px;">找不到符合學生志願科系的主任。</p>';
+                 html = '<p class="empty-state" style="padding: 10px;">找不到符合學生志願科系的老師。</p>';
             } else {
-                 html = '<p class="empty-state" style="padding: 10px;">目前沒有任何科系主任資料可供分配。</p>';
+                 html = '<p class="empty-state" style="padding: 10px;">目前沒有任何老師資料可供分配。</p>';
             }
         } else {
-            // 渲染篩選過後的主任名單
-            filteredDirectors.forEach(director => {
-                const isChecked = (currentTeacherId && director.id == currentTeacherId);
-                const departmentDisplay = director.department_name ? `${director.department_name} (${director.department_code})` : (director.department_code || '未設定');
+            // 渲染篩選過後的老師名單（主任分配：大字顯示名字，不顯示角色，不顯示自己）
+            filteredTeachers.forEach(teacher => {
+                const isChecked = (currentTeacherId && teacher.id == currentTeacherId);
+                const teacherName = teacher.name ?? teacher.username;
 
                 html += `
                     <label class="teacher-option">
-                        <input type="radio" name="teacher" value="${director.id}" ${isChecked ? 'checked' : ''}>
+                        <input type="radio" name="teacher" value="${teacher.id}" ${isChecked ? 'checked' : ''}>
                         <div class="teacher-info">
-                            <strong>${director.name ?? director.username}</strong>
-                            <span class="teacher-dept">${departmentDisplay}</span>
+                            <strong>${teacherName}</strong>
                         </div>
                     </label>
                 `;
@@ -1113,7 +1190,7 @@ try {
         const selectedTeacher = document.querySelector('input[name="teacher"]:checked');
         
         if (!selectedTeacher) {
-            alert('請選擇一位主任');
+            alert('請選擇一位老師');
             return;
         }
 
@@ -1162,21 +1239,93 @@ try {
     // 分配部門相關變數
     let currentDepartmentStudentId = null;
 
-    // 開啟分配部門彈出視窗
-    function openAssignDepartmentModal(studentId, studentName, currentDepartment) {
+    /**
+     * 從按鈕元素開啟分配部門彈出視窗（使用 data 屬性避免引號衝突）
+     * @param {HTMLElement} button 按鈕元素
+     */
+    function openAssignDepartmentModalFromButton(button) {
+        const studentId = parseInt(button.getAttribute('data-student-id'));
+        const studentName = button.getAttribute('data-student-name');
+        const currentDepartment = button.getAttribute('data-current-department') || '';
+        const chosenCodesJson = button.getAttribute('data-chosen-codes') || '[]';
+        
+        openAssignDepartmentModal(studentId, studentName, currentDepartment, chosenCodesJson);
+    }
+
+    /**
+     * 開啟分配部門彈出視窗
+     * @param {number} studentId 學生ID
+     * @param {string} studentName 學生姓名
+     * @param {string} currentDepartment 當前分配的部門代碼
+     * @param {string} chosenCodesJson 學生志願的科系代碼 JSON 陣列
+     */
+    function openAssignDepartmentModal(studentId, studentName, currentDepartment, chosenCodesJson) {
         currentDepartmentStudentId = studentId;
         document.getElementById('departmentStudentName').textContent = studentName;
         document.getElementById('assignDepartmentModal').style.display = 'flex';
         
-        // 清除之前的選擇，如果有已分配的部門則預選
-        const radioButtons = document.querySelectorAll('input[name="department"]');
-        radioButtons.forEach(radio => {
-            if (currentDepartment && radio.value === currentDepartment) {
-                radio.checked = true;
+        // 步驟 1: 解析志願代碼
+        let chosenCodes = [];
+        try {
+            chosenCodes = JSON.parse(chosenCodesJson);
+        } catch (e) {
+            console.error("解析 chosenCodesJson 失敗:", e);
+            chosenCodes = [];
+        }
+        
+        // 步驟 2: 呼叫篩選函數
+        filterAndDisplayDepartments(currentDepartment, chosenCodes);
+    }
+    
+    /**
+     * 篩選並動態顯示部門名單（只顯示學生志願裡有的科系）
+     * @param {string} currentDepartment 當前分配的部門代碼
+     * @param {string[]} chosenCodes 學生選擇的科系代碼陣列 (e.g., ['IM', 'AF'])
+     */
+    function filterAndDisplayDepartments(currentDepartment, chosenCodes) {
+        const optionsContainer = document.getElementById('departmentOptions');
+        optionsContainer.innerHTML = ''; // 清空選項
+
+        // 判斷是否有填寫志願 (chosenCodes 是一個包含有效科系代碼的陣列)
+        const filterByChoice = chosenCodes.length > 0;
+        let filteredDepartments = [];
+        let html = '';
+
+        if (filterByChoice) {
+            // 情況 1: 志願有填寫 - 只顯示志願科系
+            filteredDepartments = allDepartments.filter(dept => 
+                // 確保部門代碼存在於學生的志願列表中
+                dept.code && chosenCodes.includes(dept.code)
+            );
+        } else {
+            // 情況 2: 志願是空的 - 不顯示任何部門（只有學生志願有填的科系才會出現）
+            filteredDepartments = [];
+        }
+
+        if (filteredDepartments.length === 0) {
+            if (filterByChoice) {
+                html = '<p class="empty-state" style="padding: 10px;">找不到符合學生志願的科系。請確認學生是否已填寫志願。</p>';
             } else {
-                radio.checked = false;
+                html = '<p class="empty-state" style="padding: 10px;">此學生尚未填寫志願，無法進行分配。請先確認學生是否已填寫志願。</p>';
             }
-        });
+        } else {
+            // 渲染篩選過後的部門名單（行政人員：大字顯示科系，灰字顯示主任名字）
+            filteredDepartments.forEach(dept => {
+                const isChecked = (currentDepartment && dept.code === currentDepartment);
+                const directorNames = dept.director_names || '無主任';
+                html += `
+                    <label class="teacher-option">
+                        <input type="radio" name="department" value="${dept.code}" ${isChecked ? 'checked' : ''}>
+                        <div class="teacher-info">
+                            <strong>${dept.name}</strong>
+                            <span class="teacher-dept">${directorNames}</span>
+                        </div>
+                    </label>
+                `;
+            });
+        }
+        
+        optionsContainer.innerHTML = html;
     }
 
     // 關閉分配部門彈出視窗

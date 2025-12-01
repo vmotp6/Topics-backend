@@ -1,8 +1,17 @@
 <?php
 session_start();
 
-// 檢查是否已登入且為部門帳號（IMD/FLD）
-if (!isset($_SESSION['admin_logged_in']) || !$_SESSION['admin_logged_in'] || !in_array($_SESSION['username'], ['IMD','FLD'])) {
+// 檢查是否已登入且為部門或主任帳號（允許 department users 或 role 為 DI/TEA）
+if (!isset($_SESSION['admin_logged_in']) || !$_SESSION['admin_logged_in']) {
+    http_response_code(403);
+    echo json_encode(['success' => false, 'message' => '權限不足']);
+    exit;
+}
+
+$session_username = isset($_SESSION['username']) ? $_SESSION['username'] : '';
+$session_role = isset($_SESSION['role']) ? $_SESSION['role'] : '';
+// 允許的授權條件：專門部門帳號（如 IMD/FLD），或 role 為 DI/TEA
+if (!in_array($session_username, ['IMD', 'FLD'], true) && !in_array($session_role, ['DI', 'TEA'], true)) {
     http_response_code(403);
     echo json_encode(['success' => false, 'message' => '權限不足']);
     exit;
@@ -51,15 +60,32 @@ try {
         exit;
     }
     
-    // 取得指定老師/主任資訊（優先從 director 表取得 department）
-    $stmt = $conn->prepare("SELECT u.id, u.username, u.name, dir.department AS department_code FROM user u LEFT JOIN director dir ON u.id = dir.user_id WHERE u.id = ?");
+    // 取得指定老師資訊（優先從 director 表取得 department，否則從 teacher 表）
+    $table_check = $conn->query("SHOW TABLES LIKE 'director'");
+    if ($table_check && $table_check->num_rows > 0) {
+        $stmt = $conn->prepare("
+            SELECT u.id, u.username, u.name, u.role,
+                COALESCE(dir.department, t.department) AS department_code 
+            FROM user u 
+            LEFT JOIN director dir ON u.id = dir.user_id 
+            LEFT JOIN teacher t ON u.id = t.user_id 
+            WHERE u.id = ?
+        ");
+    } else {
+        $stmt = $conn->prepare("
+            SELECT u.id, u.username, u.name, u.role, t.department AS department_code 
+            FROM user u 
+            LEFT JOIN teacher t ON u.id = t.user_id 
+            WHERE u.id = ?
+        ");
+    }
     $stmt->bind_param("i", $teacher_id);
     $stmt->execute();
     $result = $stmt->get_result();
     $teacher = $result->fetch_assoc();
 
     if (!$teacher) {
-        echo json_encode(['success' => false, 'message' => '找不到指定的老師或主任']);
+        echo json_encode(['success' => false, 'message' => '找不到指定的老師']);
         exit;
     }
 
@@ -78,18 +104,26 @@ try {
     }
     $chosen_codes = array_values(array_unique($chosen_codes)); // 去重
 
-    // 如果學生有填志願（至少一個非空志願），則檢查被指派的老師是否為該志願科系的主任
+    // 如果學生有填志願（至少一個非空志願），則檢查被指派的老師是否為該志願科系的老師
     if (!empty($chosen_codes)) {
         $teacher_dept = $teacher['department_code'] ?? null;
         if (empty($teacher_dept) || !in_array($teacher_dept, $chosen_codes)) {
-            echo json_encode(['success' => false, 'message' => '指定的主任不屬於學生填寫的志願科系，無法分配']);
+            echo json_encode(['success' => false, 'message' => '指定的老師不屬於學生填寫的志願科系，無法分配']);
             exit;
         }
     }
     
-    // 更新學生的分配老師
-    $stmt = $conn->prepare("UPDATE enrollment_intention SET assigned_teacher_id = ? WHERE id = ?");
-    $stmt->bind_param("ii", $teacher_id, $student_id);
+    // 更新學生的分配老師與分配科系（若有）
+    // assigned_teacher_id 寫入老師的ID
+    $teacher_dept = $teacher['department_code'] ?? null;
+    if (!empty($teacher_dept)) {
+        $stmt = $conn->prepare("UPDATE enrollment_intention SET assigned_teacher_id = ?, assigned_department = ? WHERE id = ?");
+        $stmt->bind_param("isi", $teacher_id, $teacher_dept, $student_id);
+    } else {
+        // 若無法得知老師所屬科系，僅更新 assigned_teacher_id
+        $stmt = $conn->prepare("UPDATE enrollment_intention SET assigned_teacher_id = ? WHERE id = ?");
+        $stmt->bind_param("ii", $teacher_id, $student_id);
+    }
     
     if ($stmt->execute()) {
         // 記錄分配日誌（可選）
