@@ -51,16 +51,40 @@ try {
         exit;
     }
     
-    // 檢查老師是否存在
-    $stmt = $conn->prepare("SELECT u.id, u.username, t.name FROM user u LEFT JOIN teacher t ON u.id = t.user_id WHERE u.id = ? AND u.role = '老師'");
+    // 取得指定老師/主任資訊（優先從 director 表取得 department）
+    $stmt = $conn->prepare("SELECT u.id, u.username, u.name, dir.department AS department_code FROM user u LEFT JOIN director dir ON u.id = dir.user_id WHERE u.id = ?");
     $stmt->bind_param("i", $teacher_id);
     $stmt->execute();
     $result = $stmt->get_result();
     $teacher = $result->fetch_assoc();
-    
+
     if (!$teacher) {
-        echo json_encode(['success' => false, 'message' => '找不到指定的老師']);
+        echo json_encode(['success' => false, 'message' => '找不到指定的老師或主任']);
         exit;
+    }
+
+    // 取得學生的志願科系代碼（可能多筆）
+    $choices_stmt = $conn->prepare("SELECT department_code FROM enrollment_choices WHERE enrollment_id = ?");
+    $choices_stmt->bind_param("i", $student_id);
+    $choices_stmt->execute();
+    $choices_result = $choices_stmt->get_result();
+    $chosen_codes = [];
+    if ($choices_result) {
+        while ($r = $choices_result->fetch_assoc()) {
+            if (!empty($r['department_code'])) {
+                $chosen_codes[] = $r['department_code'];
+            }
+        }
+    }
+    $chosen_codes = array_values(array_unique($chosen_codes)); // 去重
+
+    // 如果學生有填志願（至少一個非空志願），則檢查被指派的老師是否為該志願科系的主任
+    if (!empty($chosen_codes)) {
+        $teacher_dept = $teacher['department_code'] ?? null;
+        if (empty($teacher_dept) || !in_array($teacher_dept, $chosen_codes)) {
+            echo json_encode(['success' => false, 'message' => '指定的主任不屬於學生填寫的志願科系，無法分配']);
+            exit;
+        }
     }
     
     // 更新學生的分配老師

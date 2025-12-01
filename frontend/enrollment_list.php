@@ -38,80 +38,176 @@ if (!function_exists('getDatabaseConnection')) {
 
 // 初始化變數
 $enrollments = [];
-$teachers = [];
+$teachers = []; // 將用於儲存主任名單
+$departments = []; // 將用於儲存可分配的部門列表（招生中心使用）
+$identity_options = [];
+$school_data = [];
 $error_message = '';
+$new_enrollments_count = 0; 
+$user_id = $_SESSION['user_id'] ?? 0;
+
+// 獲取使用者角色和用戶名
 $username = isset($_SESSION['username']) ? $_SESSION['username'] : '';
 $user_role = isset($_SESSION['role']) ? $_SESSION['role'] : '';
-$is_imd_user = ($username === 'IMD');
-$is_fld_user = ($username === 'FLD');
-$is_department_user = ($is_imd_user || $is_fld_user);
-// 判斷是否為招生中心（admin1 或管理員角色，但排除部門用戶）
-// 確保部門用戶（IMD/FLD）優先，即使他們有管理員角色，也只顯示教師分配功能
-$is_admission_center = !$is_department_user && ($username === 'admin1' || in_array($user_role, ['admin', '管理員', '學校行政人員']));
+
+$allowed_center_roles = ['ADM', 'STA'];
+$is_admin_or_staff = in_array($user_role, $allowed_center_roles);
+$user_department_code = null;
+$is_department_user = false;
+
+// 僅當用戶是老師 (TEA) 或主任 (DI) 時，查詢其所屬部門
+if ($user_role === 'TEA' || $user_role === 'DI') { 
+    try {
+        $conn_temp = getDatabaseConnection();
+        // 從 teacher/director 表格獲取部門代碼
+        $stmt_dept = $conn_temp->prepare("SELECT department FROM teacher WHERE user_id = ?");
+        $stmt_dept->bind_param("i", $user_id);
+        $stmt_dept->execute();
+        $result_dept = $stmt_dept->get_result();
+        if ($row = $result_dept->fetch_assoc()) {
+            $user_department_code = $row['department'];
+            // 只要有部門代碼，就視為部門推廣人員
+            if (!empty($user_department_code)) { 
+                 $is_department_user = true; 
+            }
+        }
+        $stmt_dept->close();
+        $conn_temp->close(); 
+    } catch (Exception $e) {
+        error_log('Error fetching user department: ' . $e->getMessage());
+    }
+}
+
+// 部門專屬判斷 (使用標準部門代碼 IM/AF)
+$is_imd_user = ($user_department_code === 'IM'); 
+$is_fld_user = ($user_department_code === 'AF'); 
+
+// 判斷是否為招生中心/行政人員（負責分配部門）
+$is_admission_center = $is_admin_or_staff && !$is_department_user;
 
 // 設置頁面標題
 if ($is_imd_user) {
-    $page_title = '資管科就讀意願名單';
+    $page_title = '資訊管理科就讀意願名單';
 } elseif ($is_fld_user) {
     $page_title = '應用外語科就讀意願名單';
 } else {
     $page_title = '就讀意願名單';
 }
 
+// 基礎 SELECT 語句：新增三個志願的名稱、學制名稱和【科系代碼】
+$base_select = "
+    SELECT 
+        ei.*, 
+        u.name AS teacher_name, 
+        u.username AS teacher_username,
+        d1.name AS intention1_name, d1.code AS intention1_code,
+        es1.name AS system1_name,
+        d2.name AS intention2_name, d2.code AS intention2_code,
+        es2.name AS system2_name,
+        d3.name AS intention3_name, d3.code AS intention3_code,
+        es3.name AS system3_name
+";
+
+// 基礎 JOIN 語句：分別為三個志願連線 enrollment_choices, departments, education_systems
+$base_from_join = "
+    FROM enrollment_intention ei
+    LEFT JOIN user u ON ei.assigned_teacher_id = u.id
+    LEFT JOIN teacher t ON u.id = t.user_id
+    /* Join for Choice 1 */
+    LEFT JOIN enrollment_choices ec1 ON ei.id = ec1.enrollment_id AND ec1.choice_order = 1
+    LEFT JOIN departments d1 ON ec1.department_code = d1.code
+    LEFT JOIN education_systems es1 ON ec1.system_code = es1.code
+    /* Join for Choice 2 */
+    LEFT JOIN enrollment_choices ec2 ON ei.id = ec2.enrollment_id AND ec2.choice_order = 2
+    LEFT JOIN departments d2 ON ec2.department_code = d2.code
+    LEFT JOIN education_systems es2 ON ec2.system_code = es2.code
+    /* Join for Choice 3 */
+    LEFT JOIN enrollment_choices ec3 ON ei.id = ec3.enrollment_id AND ec3.choice_order = 3
+    LEFT JOIN departments d3 ON ec3.department_code = d3.code
+    LEFT JOIN education_systems es3 ON ec3.system_code = es3.code
+";
+
+$order_by = " ORDER BY ei.created_at DESC";
+
 try {
     // 建立資料庫連接
     $conn = getDatabaseConnection();
 
-    // 獲取報名資料（根據用戶權限過濾）
-    if ($is_imd_user) {
-        // IMD用戶可以看到：1) 資管科相關的就讀意願 或 2) 分配給IMD的學生，並獲取分配的老師資訊
-        $stmt = $conn->prepare("SELECT ei.*, 
-                               t.name as teacher_name, 
-                               u.username as teacher_username
-                               FROM enrollment_intention ei
-                               LEFT JOIN user u ON ei.assigned_teacher_id = u.id
-                               LEFT JOIN teacher t ON u.id = t.user_id
-                               WHERE (intention1 LIKE '%資管%' OR intention1 LIKE '%資訊管理%' 
-                               OR intention2 LIKE '%資管%' OR intention2 LIKE '%資訊管理%' 
-                               OR intention3 LIKE '%資管%' OR intention3 LIKE '%資訊管理%')
-                               OR assigned_department = 'IMD'
-                               ORDER BY created_at DESC");
-    } elseif ($is_fld_user) {
-        // FLD用戶可以看到分配給FLD的學生，並獲取分配的老師資訊
-        $stmt = $conn->prepare("SELECT ei.*, 
-                               t.name as teacher_name, 
-                               u.username as teacher_username
-                               FROM enrollment_intention ei
-                               LEFT JOIN user u ON ei.assigned_teacher_id = u.id
-                               LEFT JOIN teacher t ON u.id = t.user_id
-                               WHERE assigned_department = 'FLD'
-                               ORDER BY created_at DESC");
-    } else {
-        // 一般管理員可以看到所有就讀意願，並獲取分配的老師資訊
-        $stmt = $conn->prepare("SELECT ei.*, 
-                               t.name as teacher_name, 
-                               u.username as teacher_username
-                               FROM enrollment_intention ei
-                               LEFT JOIN user u ON ei.assigned_teacher_id = u.id
-                               LEFT JOIN teacher t ON u.id = t.user_id
-                               ORDER BY created_at DESC");
-    }
-    
-    if (!$stmt) {
-        throw new Exception('準備查詢語句失敗: ' . $conn->error);
-    }
-    
-    if (!$stmt->execute()) {
-        throw new Exception('執行查詢失敗: ' . $stmt->error);
-    }
-    
-    $result = $stmt->get_result();
-    if ($result) {
-        $enrollments = $result->fetch_all(MYSQLI_ASSOC);
+    // 載入身分別/年級與學校對應表，避免在列表中顯示原始代碼
+    $identity_result = $conn->query("SELECT code, name FROM identity_options");
+    if ($identity_result) {
+        while ($row = $identity_result->fetch_assoc()) {
+            $identity_options[$row['code']] = $row['name'];
+        }
     }
 
+    $school_result = $conn->query("SELECT school_code, name FROM school_data");
+    if ($school_result) {
+        while ($row = $school_result->fetch_assoc()) {
+            $school_data[$row['school_code']] = $row['name'];
+        }
+    }
+
+    // 輔助函數：轉換代碼為文字（避免直接顯示代碼）
+    function getGenderText($code) {
+        if ($code === 1 || $code === '1' || $code === '男') return '男';
+        if ($code === 2 || $code === '2' || $code === '女') return '女';
+        return '未提供';
+    }
+
+    function getIdentityText($code, $options) {
+        if (isset($options[$code]) && $options[$code] !== '') {
+            return htmlspecialchars($options[$code]);
+        }
+        if ($code === 1 || $code === '1') return '學生';
+        if ($code === 2 || $code === '2') return '家長';
+        return '未提供';
+    }
+
+    function getSchoolName($code, $schools) {
+        if (isset($schools[$code]) && $schools[$code] !== '') {
+            return htmlspecialchars($schools[$code]);
+        }
+        return '未提供';
+    }
+
+    // 根據用戶權限決定 WHERE 條件
+    $where_clause = '';
+
+    if ($is_imd_user) {
+        // IM用戶看到所有選擇 IM 的記錄，或者被分配到 IM 部門的記錄
+        $where_clause = "
+            WHERE (ec1.department_code = 'IM' OR ec2.department_code = 'IM' OR ec3.department_code = 'IM') 
+            OR ei.assigned_department = 'IM' 
+        ";
+    } elseif ($is_fld_user) {
+        // AF用戶看到所有選擇 AF 的記錄，或者被分配到 AF 部門的記錄
+        $where_clause = "
+            WHERE (ec1.department_code = 'AF' OR ec2.department_code = 'AF' OR ec3.department_code = 'AF') 
+            OR ei.assigned_department = 'AF'
+        ";
+    }
+    
+    // 組合最終查詢語句
+    $sql = $base_select . $base_from_join . $where_clause . $order_by;
+    
+    $stmt = $conn->prepare($sql);
+    
+    if ($stmt) { 
+        if (!$stmt->execute()) {
+            throw new Exception('執行查詢失敗: ' . $stmt->error);
+        }
+        
+        $result = $stmt->get_result();
+        if ($result) {
+            $enrollments = $result->fetch_all(MYSQLI_ASSOC);
+        }
+    } else {
+         throw new Exception('準備查詢語句失敗: ' . $conn->error);
+    }
+
+
     // 檢查是否有新的就讀意願（最近1小時內）
-    $new_enrollments_count = 0;
     $new_enrollments = [];
     $one_hour_ago_timestamp = strtotime('-1 hour');
     
@@ -127,29 +223,39 @@ try {
         }
     }
 
-    // 如果是部門用戶（IMD或FLD），獲取老師列表
+    // 獲取所有科系主任列表 (用於分配)
     if ($is_department_user) {
-        // 先檢查必要的表格是否存在
-        $table_check = $conn->query("SHOW TABLES LIKE 'user'");
-        if ($table_check && $table_check->num_rows > 0) {
-            $teacher_stmt = $conn->prepare("
-                SELECT u.id, u.username, t.name, t.department 
-                FROM user u 
-                LEFT JOIN teacher t ON u.id = t.user_id 
-                WHERE u.role = '老師' 
-                ORDER BY t.name ASC
-            ");
-            
-            if ($teacher_stmt && $teacher_stmt->execute()) {
-                $teacher_result = $teacher_stmt->get_result();
-                if ($teacher_result) {
-                    $teachers = $teacher_result->fetch_all(MYSQLI_ASSOC);
-                }
+        // 優先使用 `director` 表來取得科系主任資料
+        $table_check = $conn->query("SHOW TABLES LIKE 'director'");
+        $director_join = $table_check && $table_check->num_rows > 0 ? "LEFT JOIN director dir ON u.id = dir.user_id" : "";
+        $department_select = $table_check && $table_check->num_rows > 0 ? "dir.department" : "t.department";
+
+        // 獲取所有主任，並連線到 departments 表獲取科系名稱
+        $director_stmt = $conn->prepare(
+            "SELECT u.id, u.username, u.name, {$department_select} AS department_code, dep.name AS department_name\n"
+            . "FROM user u\n"
+            . "LEFT JOIN teacher t ON u.id = t.user_id\n"
+            . $director_join . "\n"
+            . "LEFT JOIN departments dep ON {$department_select} = dep.code\n"
+            . "WHERE u.role = 'DI' OR u.username = 'IMD' /* 確保 IMD 帳號（若存在於 user 表）也被抓到 */\n" 
+            . "ORDER BY u.name ASC"
+        );
+
+        if ($director_stmt && $director_stmt->execute()) {
+            $director_result = $director_stmt->get_result();
+            if ($director_result) {
+                $teachers = $director_result->fetch_all(MYSQLI_ASSOC); // $teachers 變數現在包含所有主任
             }
-        } else {
-            error_log('enrollment_list.php: user 表格不存在，無法載入老師列表');
-            if (empty($error_message)) {
-                $error_message = '警告：無法載入老師列表，因為 user 表格不存在。請聯絡系統管理員。';
+        }
+    }
+
+    // 如果使用者為招生中心，載入可分配的部門清單（不要硬編碼）
+    if ($is_admission_center) {
+        $dept_stmt = $conn->prepare("SELECT code, name FROM departments ORDER BY name ASC");
+        if ($dept_stmt && $dept_stmt->execute()) {
+            $dept_result = $dept_stmt->get_result();
+            if ($dept_result) {
+                $departments = $dept_result->fetch_all(MYSQLI_ASSOC);
             }
         }
     }
@@ -200,7 +306,6 @@ try {
             box-shadow: 0 1px 2px rgba(0,0,0,0.03);
             border: 1px solid var(--border-color);
             margin-bottom: 24px;
-            /* overflow: hidden; */ /* 移除此行以允許內部容器的捲軸顯示 */
         }
 
         .table-container {
@@ -210,7 +315,7 @@ try {
         .table th, .table td { padding: 16px 24px; text-align: left; border-bottom: 1px solid var(--border-color); font-size: 16px; white-space: nowrap; }
         .table th { background: #fafafa; font-weight: 600; color: #262626; cursor: pointer; user-select: none; position: relative; }
         .table td {
-            color: #595959; /* 與 users.php 統一表格內文顏色 */
+            color: #595959;
         }
         .table th:hover { background: #f0f0f0; }
         .sort-icon { margin-left: 8px; font-size: 12px; color: #8c8c8c; }
@@ -606,69 +711,81 @@ try {
                                     </tr>
                                 </thead>
                                 <tbody>
-                                    <?php foreach ($enrollments as $item): ?>
+                                    <?php foreach ($enrollments as $item): 
+                                    // 獲取意願和學制名稱
+                                    $intention1_name = $item['intention1_name'] ?? '';
+                                    $system1_name = $item['system1_name'] ?? '';
+                                    $intention2_name = $item['intention2_name'] ?? '';
+                                    $system2_name = $item['system2_name'] ?? '';
+                                    $intention3_name = $item['intention3_name'] ?? '';
+                                    $system3_name = $item['system3_name'] ?? '';
+                                    
+                                    // 獲取科系代碼，用於 JS 篩選主任
+                                    $intention1_code = $item['intention1_code'] ?? '';
+                                    $intention2_code = $item['intention2_code'] ?? '';
+                                    $intention3_code = $item['intention3_code'] ?? '';
+
+                                    // 格式化顯示文字的 Helper 函數
+                                    $format_intention = function($name, $system) {
+                                        if (empty($name)) return '無意願';
+                                        $system_display = !empty($system) ? " ({$system})" : '';
+                                        return htmlspecialchars($name . $system_display);
+                                    };
+                                    
+                                    $display_text1 = $format_intention($intention1_name, $system1_name);
+                                    $display_text2 = $format_intention($intention2_name, $system2_name);
+                                    $display_text3 = $format_intention($intention3_name, $system3_name);
+
+                                    // 確保其他欄位也使用安全操作符
+                                    $phone2 = $item['phone2'] ?? '無';
+                                    $line_id = $item['line_id'] ?? '無';
+                                    $facebook = $item['facebook'] ?? '無';
+                                    $remarks = $item['remarks'] ?? '無';
+
+                                    // IM 用戶的單一志願顯示邏輯
+                                    $imd_single_display = '無志願';
+                                    if ($is_imd_user) {
+                                        $imd_choices = [];
+                                        // 由於 IM 用戶的查詢已經過濾，這裡只需要檢查意願名稱
+                                        if ($intention1_code === 'IM') {
+                                            $imd_choices[] = "第一志願: {$intention1_name} ({$system1_name})";
+                                        }
+                                        if ($intention2_code === 'IM') {
+                                            $imd_choices[] = "第二志願: {$intention2_name} ({$system2_name})";
+                                        }
+                                        if ($intention3_code === 'IM') {
+                                            $imd_choices[] = "第三志願: {$intention3_name} ({$system3_name})";
+                                        }
+                                        // 確保至少有一個 IM 志願被顯示，否則顯示無志願 (這與 SQL 過濾邏輯匹配)
+                                        $imd_single_display = !empty($imd_choices) ? htmlspecialchars(implode(' | ', $imd_choices)) : '無志願';
+                                    }
+
+                                    // 準備要傳遞給 JS 的志願代碼列表
+                                    $chosen_codes = array_filter([$intention1_code, $intention2_code, $intention3_code]);
+                                    $chosen_codes_json = json_encode(array_unique($chosen_codes));
+                                    
+                                    ?>
                                     <tr>
                                         <td><?php echo htmlspecialchars($item['name']); ?></td>
-                                        <td><?php echo htmlspecialchars($item['identity']); ?></td>
-                                        <td><?php echo htmlspecialchars($item['gender'] ?? '未提供'); ?></td>
+                                        <td><?php echo getIdentityText($item['identity'] ?? '', $identity_options); ?></td>
+                                        <td><?php echo getGenderText($item['gender'] ?? ''); ?></td>
                                         <td><?php echo htmlspecialchars($item['phone1']); ?></td>
-                                        <td><?php echo htmlspecialchars($item['phone2'] ?? '無'); ?></td>
+                                        <td><?php echo htmlspecialchars($phone2); ?></td>
                                         <td><?php echo htmlspecialchars($item['email']); ?></td>
-                                        <td><?php echo htmlspecialchars($item['junior_high']); ?></td>
-                                        <td><?php echo htmlspecialchars($item['current_grade']); ?></td>
+                                        <td><?php echo getSchoolName($item['junior_high'] ?? '', $school_data); ?></td>
+                                        <td><?php echo getIdentityText($item['current_grade'] ?? '', $identity_options); ?></td>
+                                        
                                         <?php if ($is_imd_user): ?>
-                                        <?php
-                                        // 對於IMD用戶，找出資訊管理科是第幾志願
-                                        $imd_intention = null;
-                                        $imd_priority = null;
-                                        
-                                        if (!empty($item['intention1']) && (stripos($item['intention1'], '資管') !== false || stripos($item['intention1'], '資訊管理') !== false)) {
-                                            $imd_intention = $item['intention1'];
-                                            $imd_priority = 1;
-                                        } elseif (!empty($item['intention2']) && (stripos($item['intention2'], '資管') !== false || stripos($item['intention2'], '資訊管理') !== false)) {
-                                            $imd_intention = $item['intention2'];
-                                            $imd_priority = 2;
-                                        } elseif (!empty($item['intention3']) && (stripos($item['intention3'], '資管') !== false || stripos($item['intention3'], '資訊管理') !== false)) {
-                                            $imd_intention = $item['intention3'];
-                                            $imd_priority = 3;
-                                        }
-                                        
-                                        if ($imd_intention) {
-                                            $imd_system = '';
-                                            if ($imd_priority == 1) {
-                                                $imd_system = $item['system1'] ?? '';
-                                            } elseif ($imd_priority == 2) {
-                                                $imd_system = $item['system2'] ?? '';
-                                            } elseif ($imd_priority == 3) {
-                                                $imd_system = $item['system3'] ?? '';
-                                            }
-                                            $display_text = '資訊管理科';
-                                            if ($imd_system) {
-                                                $display_text .= '(' . htmlspecialchars($imd_system) . ')';
-                                            }
-                                            // 添加志願順序
-                                            $priority_text = '';
-                                            if ($imd_priority == 1) {
-                                                $priority_text = '第一志願';
-                                            } elseif ($imd_priority == 2) {
-                                                $priority_text = '第二志願';
-                                            } elseif ($imd_priority == 3) {
-                                                $priority_text = '第三志願';
-                                            }
-                                            $display_text .= ' - ' . $priority_text;
-                                        } else {
-                                            $display_text = '無志願';
-                                        }
-                                        ?>
-                                        <td><?php echo $display_text; ?></td>
+                                        <td><?php echo $imd_single_display; ?></td>
                                         <?php else: ?>
-                                        <td><?php echo htmlspecialchars($item['intention1'] . ' (' . ($item['system1'] ?? 'N/A') . ')'); ?></td>
-                                        <td><?php echo htmlspecialchars($item['intention2'] . ' (' . ($item['system2'] ?? 'N/A') . ')'); ?></td>
-                                        <td><?php echo htmlspecialchars($item['intention3'] . ' (' . ($item['system3'] ?? 'N/A') . ')'); ?></td>
+                                        <td><?php echo $display_text1; ?></td>
+                                        <td><?php echo $display_text2; ?></td>
+                                        <td><?php echo $display_text3; ?></td>
                                         <?php endif; ?>
-                                        <td><?php echo htmlspecialchars($item['line_id'] ?? '無'); ?></td>
-                                        <td><?php echo htmlspecialchars($item['facebook'] ?? '無'); ?></td>
-                                        <td><?php echo htmlspecialchars($item['remarks'] ?? '無'); ?></td>
+                                        
+                                        <td><?php echo htmlspecialchars($line_id); ?></td>
+                                        <td><?php echo htmlspecialchars($facebook); ?></td>
+                                        <td><?php echo htmlspecialchars($remarks); ?></td>
                                         <td><?php echo date('Y/m/d H:i', strtotime($item['created_at'])); ?></td>
                                         <?php if ($is_admission_center): ?>
                                         <td>
@@ -690,21 +807,28 @@ try {
                                         </td>
                                         <?php elseif ($is_department_user): ?>
                                         <td>
+                                            <span style="display: none;" class="chosen-codes-data"><?php echo $chosen_codes_json; ?></span>
                                             <?php if (!empty($item['assigned_teacher_id'])): ?>
                                                 <span style="color: #52c41a;">
                                                     <i class="fas fa-check-circle"></i> 已分配 - 
                                                     <?php echo htmlspecialchars($item['teacher_name'] ?? $item['teacher_username'] ?? '未知老師'); ?>
-                                                </span>
+                                                </span >
                                             <?php else: ?>
                                                 <span style="color: #8c8c8c;">
                                                     <i class="fas fa-clock"></i> 未分配
-                                                </span>
+                                                </span >
                                             <?php endif; ?>
                                         </td>
                                         <td>
                                             <div style="display: flex; gap: 8px; flex-wrap: wrap;">
-                                                <button class="assign-btn" onclick="openAssignModal(<?php echo $item['id']; ?>, '<?php echo htmlspecialchars($item['name']); ?>', <?php echo !empty($item['assigned_teacher_id']) ? $item['assigned_teacher_id'] : 'null'; ?>)">
-                                                    <i class="fas fa-user-plus"></i> <?php echo !empty($item['assigned_teacher_id']) ? '重新分配' : '分配'; ?>
+                                                <button class="assign-btn" 
+                                                        onclick="openAssignModal(
+                                                            <?php echo $item['id']; ?>, 
+                                                            '<?php echo htmlspecialchars($item['name']); ?>', 
+                                                            <?php echo !empty($item['assigned_teacher_id']) ? $item['assigned_teacher_id'] : 'null'; ?>, 
+                                                            '<?php echo $chosen_codes_json; ?>' /* 傳遞志願代碼 */
+                                                        )">
+                                                    <i class="fas fa-user-plus"></i> <?php echo !empty($item['assigned_teacher_id']) ? '重新分配主任' : '分配主任'; ?>
                                                 </button>
                                                 <?php if (!empty($item['assigned_teacher_id'])): ?>
                                                 <button class="assign-btn" style="background: #17a2b8;" onclick="openContactLogsModal(<?php echo $item['id']; ?>, '<?php echo htmlspecialchars($item['name']); ?>')">
@@ -725,7 +849,6 @@ try {
         </div>
     </div>
 
-    <!-- 分配部門彈出視窗（招生中心/行政人員） -->
     <?php if ($is_admission_center): ?>
     <div id="assignDepartmentModal" class="modal" style="display: none;">
         <div class="modal-content">
@@ -738,20 +861,19 @@ try {
                 <div class="teacher-list">
                     <h4>選擇部門：</h4>
                     <div class="teacher-options">
-                        <label class="teacher-option">
-                            <input type="radio" name="department" value="IMD">
-                            <div class="teacher-info">
-                                <strong>資管科 (IMD)</strong>
-                                <span class="teacher-dept">資訊管理科</span>
-                            </div>
-                        </label>
-                        <label class="teacher-option">
-                            <input type="radio" name="department" value="FLD">
-                            <div class="teacher-info">
-                                <strong>應用外語科 (FLD)</strong>
-                                <span class="teacher-dept">應用外語科</span>
-                            </div>
-                        </label>
+                        <?php if (!empty($departments)): ?>
+                            <?php foreach ($departments as $dep): ?>
+                                <label class="teacher-option">
+                                    <input type="radio" name="department" value="<?php echo htmlspecialchars($dep['code']); ?>">
+                                    <div class="teacher-info">
+                                        <strong><?php echo htmlspecialchars($dep['name'] . ' (' . $dep['code'] . ')'); ?></strong>
+                                        <span class="teacher-dept"><?php echo htmlspecialchars($dep['name']); ?></span>
+                                    </div>
+                                </label>
+                            <?php endforeach; ?>
+                        <?php else: ?>
+                            <p class="empty-state" style="padding:10px;">目前沒有任何部門可供分配。</p>
+                        <?php endif; ?>
                     </div>
                 </div>
             </div>
@@ -763,28 +885,19 @@ try {
     </div>
     <?php endif; ?>
 
-    <!-- 分配學生彈出視窗（部門用戶：IMD或FLD） -->
     <?php if ($is_department_user): ?>
     <div id="assignModal" class="modal" style="display: none;">
         <div class="modal-content">
             <div class="modal-header">
-                <h3>分配學生</h3>
+                <h3>分配學生 (主任)</h3>
                 <span class="close" onclick="closeAssignModal()">&times;</span>
             </div>
             <div class="modal-body">
                 <p>學生：<span id="studentName"></span></p>
                 <div class="teacher-list">
-                    <h4>選擇老師：</h4>
-                    <div class="teacher-options">
-                        <?php foreach ($teachers as $teacher): ?>
-                        <label class="teacher-option">
-                            <input type="radio" name="teacher" value="<?php echo $teacher['id']; ?>">
-                            <div class="teacher-info">
-                                <strong><?php echo htmlspecialchars($teacher['name'] ?? $teacher['username']); ?></strong>
-                                <span class="teacher-dept"><?php echo htmlspecialchars($teacher['department'] ?? '未設定科系'); ?></span>
-                            </div>
-                        </label>
-                        <?php endforeach; ?>
+                    <h4>選擇主任：</h4>
+                    <div class="teacher-options" id="directorOptions">
+                        <div class="contact-log-loading"><i class="fas fa-spinner fa-spin"></i> 準備主任名單中...</div>
                     </div>
                 </div>
             </div>
@@ -796,7 +909,6 @@ try {
     </div>
     <?php endif; ?>
 
-    <!-- 查看聯絡紀錄模態視窗（部門用戶：IMD或FLD） -->
     <?php if ($is_department_user): ?>
     <div id="contactLogsModal" class="contact-log-modal" style="display: none;">
         <div class="modal-content">
@@ -817,6 +929,12 @@ try {
     <?php endif; ?>
 
     <script>
+    // 將 PHP 的主任名單轉換為 JS 陣列
+    let allDirectors = [];
+    <?php if ($is_department_user && !empty($teachers)): ?>
+    allDirectors = <?php echo json_encode($teachers); ?>;
+    <?php endif; ?>
+
     document.addEventListener('DOMContentLoaded', function() {
         let sortStates = {}; // { colIndex: 'asc' | 'desc' }
 
@@ -830,7 +948,7 @@ try {
                 
                 for (let i = 0; i < rows.length; i++) {
                     const nameCell = rows[i].getElementsByTagName('td')[0];
-                    const phoneCell = rows[i].getElementsByTagName('td')[2];
+                    const phoneCell = rows[i].getElementsByTagName('td')[3]; // 聯絡電話一的欄位索引
                     
                     if (nameCell || phoneCell) {
                         const nameText = nameCell.textContent || nameCell.innerText;
@@ -907,22 +1025,82 @@ try {
     // 分配學生相關變數
     let currentStudentId = null;
 
-    // 開啟分配學生彈出視窗
-    function openAssignModal(studentId, studentName, currentTeacherId) {
+    /**
+     * 開啟分配主任彈出視窗
+     * @param {number} studentId 學生ID
+     * @param {string} studentName 學生姓名
+     * @param {number|null} currentTeacherId 當前分配的主任ID
+     * @param {string} chosenCodesJson 學生志願的科系代碼 JSON 陣列
+     */
+    function openAssignModal(studentId, studentName, currentTeacherId, chosenCodesJson) {
         currentStudentId = studentId;
         document.getElementById('studentName').textContent = studentName;
         document.getElementById('assignModal').style.display = 'flex';
         
-        // 清除之前的選擇，如果有已分配的老師則預選
-        const radioButtons = document.querySelectorAll('input[name="teacher"]');
-        radioButtons.forEach(radio => {
-            if (currentTeacherId && radio.value == currentTeacherId) {
-                radio.checked = true;
-            } else {
-                radio.checked = false;
-            }
-        });
+        // 步驟 1: 解析志願代碼
+        let chosenCodes = [];
+        try {
+            chosenCodes = JSON.parse(chosenCodesJson);
+        } catch (e) {
+            console.error("解析 chosenCodesJson 失敗:", e);
+        }
+        
+        // 步驟 2: 呼叫篩選函數
+        filterAndDisplayDirectors(currentTeacherId, chosenCodes);
     }
+    
+    /**
+     * 篩選並動態顯示主任名單
+     * @param {number|null} currentTeacherId 當前分配的主任ID
+     * @param {string[]} chosenCodes 學生選擇的科系代碼陣列 (e.g., ['IM', 'AF'])
+     */
+    function filterAndDisplayDirectors(currentTeacherId, chosenCodes) {
+        const optionsContainer = document.getElementById('directorOptions');
+        optionsContainer.innerHTML = ''; // 清空選項
+
+        // 判斷是否有填寫志願 (chosenCodes 是一個包含有效科系代碼的陣列)
+        const filterByChoice = chosenCodes.length > 0;
+        let filteredDirectors = allDirectors;
+        let html = '';
+
+        if (filterByChoice) {
+            // 情況 1: 志願有填寫 - 只顯示志願科系的主任
+            filteredDirectors = allDirectors.filter(director => 
+                // 確保主任有設定 department_code 且該代碼存在於學生的志願列表中
+                director.department_code && chosenCodes.includes(director.department_code)
+            );
+        } else {
+            // 情況 2: 志願是空的 - 顯示所有主任
+            filteredDirectors = allDirectors;
+        }
+
+        if (filteredDirectors.length === 0) {
+            if (filterByChoice) {
+                 html = '<p class="empty-state" style="padding: 10px;">找不到符合學生志願科系的主任。</p>';
+            } else {
+                 html = '<p class="empty-state" style="padding: 10px;">目前沒有任何科系主任資料可供分配。</p>';
+            }
+        } else {
+            // 渲染篩選過後的主任名單
+            filteredDirectors.forEach(director => {
+                const isChecked = (currentTeacherId && director.id == currentTeacherId);
+                const departmentDisplay = director.department_name ? `${director.department_name} (${director.department_code})` : (director.department_code || '未設定');
+
+                html += `
+                    <label class="teacher-option">
+                        <input type="radio" name="teacher" value="${director.id}" ${isChecked ? 'checked' : ''}>
+                        <div class="teacher-info">
+                            <strong>${director.name ?? director.username}</strong>
+                            <span class="teacher-dept">${departmentDisplay}</span>
+                        </div>
+                    </label>
+                `;
+            });
+        }
+        
+        optionsContainer.innerHTML = html;
+    }
+
 
     // 關閉分配學生彈出視窗
     function closeAssignModal() {
@@ -935,7 +1113,7 @@ try {
         const selectedTeacher = document.querySelector('input[name="teacher"]:checked');
         
         if (!selectedTeacher) {
-            alert('請選擇一位老師');
+            alert('請選擇一位主任');
             return;
         }
 

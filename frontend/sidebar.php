@@ -3,14 +3,17 @@
 $current_page = basename($_SERVER['PHP_SELF'], '.php');
 
 // 獲取使用者角色
-$user_role = $_SESSION['role'] ?? '';
-$username = $_SESSION['username'] ?? '';
+$user_role = $_SESSION['role'] ?? ''; // 預期為 ADM, STA, DI, TEA, STU 等代碼
+$username = $_SESSION['username'] ?? ''; // 預期為用戶名
 
-// 判斷是否為管理員 (包含多種可能的角色名稱)
-$is_admin = in_array($user_role, ['admin', '管理員']) || $username === 'admin1';
+// -------------------------------------------------------------
+// 【修改點 1】 重新定義管理員/行政人員的代碼驗證邏輯
+// 只有 ADM (管理員) 和 STA (行政人員) 才能看到主選單
+$allowed_admin_roles = ['ADM', 'STA'];
+$is_admin_or_staff = in_array($user_role, $allowed_admin_roles);
+// -------------------------------------------------------------
 ?>
 
-<!-- 側邊欄 -->
 <div class="sidebar" id="sidebar">
     <div class="sidebar-header">
         <div class="sidebar-logo">後台</div>
@@ -20,15 +23,20 @@ $is_admin = in_array($user_role, ['admin', '管理員']) || $username === 'admin
     </div>
     
     <div class="sidebar-menu">
-        <?php if ($is_admin): // 管理員顯示所有項目 ?>
+        <?php if ($is_admin_or_staff): // 僅管理員 (ADM) 和行政人員 (STA) 顯示主選單 ?>
+            
             <a href="index.php" class="menu-item <?php echo $current_page === 'index' ? 'active' : ''; ?>">
                 <i class="fas fa-home"></i>
                 <span>首頁</span>
             </a>
-            <a href="users.php" class="menu-item <?php echo in_array($current_page, ['users', 'edit_user', 'add_user']) ? 'active' : ''; ?>">
-                <i class="fas fa-users"></i>
-                <span>使用者管理</span>
-            </a>
+            
+            <?php if ($user_role === 'ADM'): // 僅管理員 (ADM) 顯示使用者管理 ?>
+                <a href="users.php" class="menu-item <?php echo in_array($current_page, ['users', 'edit_user', 'add_user']) ? 'active' : ''; ?>">
+                    <i class="fas fa-users"></i>
+                    <span>使用者管理</span>
+                </a>
+            <?php endif; ?>
+
             <a href="enrollment_list.php" class="menu-item <?php echo $current_page === 'enrollment_list' ? 'active' : ''; ?>">
                 <i class="fas fa-file-signature"></i>
                 <span>就讀意願名單</span>
@@ -44,71 +52,42 @@ $is_admin = in_array($user_role, ['admin', '管理員']) || $username === 'admin
                 <span>招生推薦</span>
             </a>
             
-            <?php if ($username === 'admin1'): ?>
             <a href="admission_applications.php" class="menu-item <?php echo $current_page === 'admission_applications' ? 'active' : ''; ?>">
                 <i class="fas fa-clipboard-list"></i>
-                <span>五專入學說明會</span>
+                <span>入學說明會</span>
             </a>
-            <?php endif; ?>
             
             <a href="activity_records.php" class="menu-item <?php echo $current_page === 'activity_records' ? 'active' : ''; ?>">
                 <i class="fas fa-tasks"></i>
                 <span>統計分析</span>
             </a>
+            
             <a href="page_management.php" class="menu-item <?php echo $current_page === 'page_management' ? 'active' : ''; ?>">
-                <i class="fas fa-cog"></i>
+                <i class="fas fa-file-alt"></i>
                 <span>頁面管理</span>
             </a>
+            
             <a href="ollama_admin.php" class="menu-item <?php echo $current_page === 'ollama_admin' ? 'active' : ''; ?>">
                 <i class="fas fa-robot"></i>
                 <span>AI模型管理</span>
             </a>
-            <?php if ($username !== 'IMD'): ?>
+            
             <a href="settings.php" class="menu-item <?php echo $current_page === 'settings' ? 'active' : ''; ?>">
-                <i class="fas fa-cog"></i>
+                <i class="fas fa-cogs"></i>
                 <span>場次設定</span>
             </a>
-            <?php endif; ?>
             
             <a href="admission_center.php" class="menu-item <?php echo $current_page === 'admission_center' ? 'active' : ''; ?>">
                 <i class="fas fa-graduation-cap"></i>
                 <span>招生中心</span>
             </a>
-            <?php if ($username === 'admin1' || $username === 'IMD'): ?>
-           
+            
             <a href="school_contacts.php" class="menu-item <?php echo $current_page === 'school_contacts' ? 'active' : ''; ?>">
                 <i class="fas fa-address-book"></i>
                 <span>學校聯絡人</span>
             </a>
-            <?php endif; ?>
-        <?php elseif ($user_role === '學校行政人員'): // 學校行政人員的權限 ?>
-            <a href="enrollment_list.php" class="menu-item <?php echo $current_page === 'enrollment_list' ? 'active' : ''; ?>">
-                <i class="fas fa-file-signature"></i>
-                <span>就讀意願名單</span>
-            </a>
 
-<?php if ($username === 'IMD'): ?>
-            <a href="admission_recommend_list.php" class="menu-item <?php echo $current_page === 'admission_recommend_list' ? 'active' : ''; ?>">
-                <i class="fas fa-user-friends"></i>
-                <span>招生推薦</span>
-            </a>
-            <a href="admission_applications.php" class="menu-item <?php echo $current_page === 'admission_applications' ? 'active' : ''; ?>">
-                <i class="fas fa-clipboard-list"></i>
-                <span>五專入學說明會</span>
-            </a>
-            <a href="continued_admission_list.php" class="menu-item <?php echo in_array($current_page, ['continued_admission_list', 'continued_admission_detail']) ? 'active' : ''; ?>">
-                <i class="fas fa-user-plus"></i>
-                <span>續招報名</span>
-            </a>
-            <?php endif; ?>
-            
-            <a href="activity_records.php" class="menu-item <?php echo $current_page === 'activity_records' ? 'active' : ''; ?>">
-                <i class="fas fa-tasks"></i>
-                <span>統計分析</span>
-            </a>
-          
-            
-        <?php endif; ?>
+        <?php endif; // 結束 ADM/STA 主選單的判斷 ?>
 
         <a href="logout.php" class="menu-item">
             <i class="fas fa-sign-out-alt"></i>
@@ -118,7 +97,7 @@ $is_admin = in_array($user_role, ['admin', '管理員']) || $username === 'admin
 </div>
 
 <style>
-/* 側邊欄樣式 */
+/* 側邊欄樣式 (保持不變) */
 .sidebar {
     width: 250px;
     background: #fff;
@@ -316,7 +295,7 @@ $is_admin = in_array($user_role, ['admin', '管理員']) || $username === 'admin
 </style>
 
 <script>
-// 側邊欄收合功能
+// 側邊欄收合功能 (保持不變)
 document.addEventListener('DOMContentLoaded', function() {
     const collapseBtn = document.getElementById('collapseBtn');
     if (collapseBtn) {
