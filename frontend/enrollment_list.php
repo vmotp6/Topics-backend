@@ -554,40 +554,69 @@ try {
         }
         .contact-log-modal .modal-content {
             background-color: white;
-            border-radius: 8px;
-            box-shadow: 0 4px 20px rgba(0,0,0,0.15);
+            border-radius: 12px; 
+            box-shadow: 0 10px 25px rgba(0,0,0,0.2);
             width: 90%;
-            max-width: 800px;
+            max-width: 600px; 
             max-height: 80vh;
+            display: flex;
+            flex-direction: column; 
+        }
+        .contact-log-modal .modal-body {
             overflow-y: auto;
+            padding: 20px;
+            flex: 1;
         }
         .contact-log-item {
-            background: #f8f9fa;
-            border: 1px solid var(--border-color);
-            border-radius: 6px;
+            background: #fff;
+            border: 1px solid #e8e8e8;
+            border-radius: 8px;
             padding: 16px;
-            margin-bottom: 12px;
+            margin-bottom: 16px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.02);
+            transition: all 0.3s;
+        }
+        .contact-log-item:hover {
+            border-color: var(--primary-color);
+            box-shadow: 0 2px 12px rgba(24, 144, 255, 0.1);
         }
         .contact-log-header {
             display: flex;
             justify-content: space-between;
-            align-items: center;
+            align-items: flex-start;
             margin-bottom: 12px;
             padding-bottom: 12px;
-            border-bottom: 1px solid var(--border-color);
+            border-bottom: 1px dashed #f0f0f0;
+        }
+        .contact-log-info {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
         }
         .contact-log-date {
-            font-weight: 600;
-            color: var(--text-color);
+            font-weight: 700;
+            color: #333;
             font-size: 16px;
+            line-height: 1.4;
+        }
+        .contact-log-create-time {
+            font-size: 13px;
+            color: #999;
+            display: flex;
+            align-items: center;
+            gap: 4px;
         }
         .contact-log-method {
-            background: var(--primary-color);
-            color: white;
-            padding: 4px 12px;
-            border-radius: 12px;
-            font-size: 12px;
+            background: #e6f7ff;
+            color: #1890ff;
+            border: 1px solid #91d5ff;
+            padding: 2px 10px;
+            border-radius: 4px;
+            font-size: 13px;
             font-weight: 500;
+            white-space: nowrap;
+            flex-shrink: 0;
+            margin-left: 12px;
         }
         .contact-log-teacher {
             color: var(--text-secondary-color);
@@ -595,10 +624,14 @@ try {
             margin-top: 8px;
         }
         .contact-log-result {
-            color: var(--text-color);
+            color: #595959;
             line-height: 1.6;
-            margin-top: 12px;
+            font-size: 15px;
+            margin-top: 8px;
             white-space: pre-wrap;
+            background-color: #fafafa;
+            padding: 10px;
+            border-radius: 6px;
         }
         .contact-log-notes {
             background: #fff3cd;
@@ -866,14 +899,26 @@ try {
                                             <?php endif; ?>
                                         </td>
                                         <td>
+                                            <?php if (!empty($item['assigned_department'])): ?>
+                                            <button class="assign-btn" 
+                                                    style="background: #28a745;"
+                                                    data-student-id="<?php echo $item['id']; ?>"
+                                                    data-student-name="<?php echo htmlspecialchars($item['name'], ENT_QUOTES, 'UTF-8'); ?>"
+                                                    data-current-department="<?php echo htmlspecialchars($item['assigned_department'], ENT_QUOTES, 'UTF-8'); ?>"
+                                                    data-chosen-codes="<?php echo htmlspecialchars($chosen_codes_json, ENT_QUOTES, 'UTF-8'); ?>"
+                                                    onclick="openAssignDepartmentModalFromButton(this)">
+                                                <i class="fas fa-check-circle"></i> 已分配
+                                            </button>
+                                            <?php else: ?>
                                             <button class="assign-btn" 
                                                     data-student-id="<?php echo $item['id']; ?>"
                                                     data-student-name="<?php echo htmlspecialchars($item['name'], ENT_QUOTES, 'UTF-8'); ?>"
-                                                    data-current-department="<?php echo htmlspecialchars($item['assigned_department'] ?? '', ENT_QUOTES, 'UTF-8'); ?>"
+                                                    data-current-department=""
                                                     data-chosen-codes="<?php echo htmlspecialchars($chosen_codes_json, ENT_QUOTES, 'UTF-8'); ?>"
                                                     onclick="openAssignDepartmentModalFromButton(this)">
                                                 <i class="fas fa-building"></i> 分配
                                             </button>
+                                            <?php endif; ?>
                                         </td>
                                         <?php elseif ($is_department_user): ?>
                                         <td>
@@ -891,14 +936,26 @@ try {
                                         </td>
                                         <td>
                                             <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+                                                <?php if (!empty($item['assigned_teacher_id'])): ?>
+                                                <button class="assign-btn" 
+                                                        style="background: #28a745; cursor: default;"
+                                                        data-student-id="<?php echo $item['id']; ?>"
+                                                        data-student-name="<?php echo htmlspecialchars($item['name'], ENT_QUOTES, 'UTF-8'); ?>"
+                                                        data-current-teacher-id="<?php echo $item['assigned_teacher_id']; ?>"
+                                                        data-chosen-codes="<?php echo htmlspecialchars($chosen_codes_json, ENT_QUOTES, 'UTF-8'); ?>"
+                                                        onclick="openAssignModalFromButton(this)">
+                                                    <i class="fas fa-check-circle"></i> 已分配
+                                                </button>
+                                                <?php else: ?>
                                                 <button class="assign-btn" 
                                                         data-student-id="<?php echo $item['id']; ?>"
                                                         data-student-name="<?php echo htmlspecialchars($item['name'], ENT_QUOTES, 'UTF-8'); ?>"
-                                                        data-current-teacher-id="<?php echo !empty($item['assigned_teacher_id']) ? $item['assigned_teacher_id'] : ''; ?>"
+                                                        data-current-teacher-id=""
                                                         data-chosen-codes="<?php echo htmlspecialchars($chosen_codes_json, ENT_QUOTES, 'UTF-8'); ?>"
                                                         onclick="openAssignModalFromButton(this)">
                                                     <i class="fas fa-user-plus"></i> 分配
                                                 </button>
+                                                <?php endif; ?>
                                                 <?php if (!empty($item['assigned_teacher_id'])): ?>
                                                 <button class="assign-btn" style="background: #17a2b8;" onclick="openContactLogsModal(<?php echo $item['id']; ?>, '<?php echo htmlspecialchars($item['name']); ?>')">
                                                     <i class="fas fa-address-book"></i> 查看聯絡紀錄
@@ -1407,41 +1464,59 @@ try {
         logsList.innerHTML = '<div class="contact-log-loading"><i class="fas fa-spinner fa-spin"></i> 載入中...</div>';
 
         try {
-            const response = await fetch(`get_contact_logs.php?student_id=${studentId}`);
+            const response = await fetch(`get_contact_logs.php?enrollment_id=${studentId}`);
+            
+            if (!response.ok) {
+                throw new Error(`伺服器錯誤 (${response.status})`);
+            }
+
+            const contentType = response.headers.get('content-type');
+            if (!contentType || !contentType.includes('application/json')) {
+                const text = await response.text();
+                throw new Error('伺服器回應格式錯誤');
+            }
+
             const data = await response.json();
 
             if (data.success && data.logs) {
                 if (data.logs.length === 0) {
                     logsList.innerHTML = `
                         <div class="contact-log-empty">
-                            <i class="fas fa-inbox fa-3x" style="margin-bottom: 16px; color: #ccc;"></i>
+                            <i class="fas fa-inbox fa-3x" style="margin-bottom: 16px; color: #e8e8e8;"></i>
                             <p>目前尚無聯絡紀錄</p>
                         </div>
                     `;
                 } else {
-                    logsList.innerHTML = data.logs.map(log => `
-                        <div class="contact-log-item">
-                            <div class="contact-log-header">
-                                <div>
-                                    <div class="contact-log-date">${formatDate(log.contact_date)}</div>
-                                    <div class="contact-log-teacher">聯絡老師：${log.teacher_name || '未知'}</div>
+                    // 修改這裡的 HTML 結構以配合新的 CSS
+                    logsList.innerHTML = data.logs.map(log => {
+                        const contactDate = log.contact_date || log.created_at?.split(' ')[0] || '未知';
+                        const method = log.method || '未知';
+                        const notes = log.notes || log.result || '';
+                        const createdDate = log.created_at ? new Date(log.created_at).toLocaleString('zh-TW', { hour12: false }) : '';
+
+                        return `
+                            <div class="contact-log-item">
+                                <div class="contact-log-header">
+                                    <div class="contact-log-info">
+                                        <div class="contact-log-date">
+                                            <i class="far fa-calendar-alt" style="margin-right:6px; color:#1890ff;"></i>
+                                            ${formatDate(contactDate)}
+                                        </div>
+                                        ${createdDate ? `
+                                        <div class="contact-log-create-time">
+                                            <i class="far fa-clock" style="font-size:12px;"></i>
+                                            建立於：${createdDate}
+                                        </div>` : ''}
+                                    </div>
+                                    <span class="contact-log-method">${method}</span>
                                 </div>
-                                <span class="contact-log-method">${log.method}</span>
+                                <div class="contact-log-result">${escapeHtml(notes)}</div>
                             </div>
-                            <div class="contact-log-result">
-                                <strong>聯絡結果：</strong><br>
-                                ${escapeHtml(log.result)}
-                            </div>
-                            ${log.follow_up_notes ? `
-                                <div class="contact-log-notes">
-                                    <strong>後續追蹤備註：</strong><br>
-                                    ${escapeHtml(log.follow_up_notes)}
-                                </div>
-                            ` : ''}
-                        </div>
-                    `).join('');
+                        `;
+                    }).join('');
                 }
             } else {
+                // ... Error handling remains the same ...
                 logsList.innerHTML = `
                     <div class="contact-log-empty">
                         <i class="fas fa-exclamation-triangle fa-3x" style="margin-bottom: 16px; color: #ff9800;"></i>
@@ -1450,12 +1525,12 @@ try {
                 `;
             }
         } catch (error) {
-            console.error('載入聯絡紀錄錯誤:', error);
-            logsList.innerHTML = `
+             // ... Error handling remains the same ...
+             console.error('載入聯絡紀錄錯誤:', error);
+             logsList.innerHTML = `
                 <div class="contact-log-empty">
-                    <i class="fas fa-exclamation-triangle fa-3x" style="margin-bottom: 16px; color: #ff9800;"></i>
                     <p>載入失敗，請稍後再試</p>
-                    <p style="font-size: 12px; color: #999; margin-top: 8px;">${error.message}</p>
+                    <p style="font-size: 12px; color: #999;">${error.message}</p>
                 </div>
             `;
         }

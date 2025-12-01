@@ -27,20 +27,40 @@ try {
 // 獲取續招報名資料（根據用戶權限過濾）
 if ($is_imd_user) {
     // IMD用戶只能看到志願選擇包含"資訊管理科"的續招報名
-    // 檢查 JSON 陣列中是否包含"資訊管理科"或"資管科"
-    $stmt = $conn->prepare("SELECT id, name, id_number, mobile, school_name, created_at, status, choices 
-                          FROM continued_admission 
-                          WHERE (JSON_CONTAINS(choices, JSON_QUOTE('資訊管理科')) 
-                          OR JSON_CONTAINS(choices, JSON_QUOTE('資管科'))
-                          OR JSON_SEARCH(choices, 'one', '%資訊管理科%') IS NOT NULL
-                          OR JSON_SEARCH(choices, 'one', '%資管科%') IS NOT NULL)
-                          ORDER BY created_at DESC");
+    // 從 continued_admission_choices 表檢查是否有 IM 科系
+    $stmt = $conn->prepare("SELECT DISTINCT ca.id, ca.name, ca.id_number, ca.mobile, ca.school, ca.created_at, ca.status
+                          FROM continued_admission ca
+                          INNER JOIN continued_admission_choices cac ON ca.id = cac.application_id
+                          INNER JOIN departments d ON cac.department_code = d.code
+                          WHERE d.code = 'IM' OR d.name LIKE '%資訊管理%' OR d.name LIKE '%資管%'
+                          ORDER BY ca.created_at DESC");
 } else {
     // 一般管理員可以看到所有續招報名
-    $stmt = $conn->prepare("SELECT id, name, id_number, mobile, school_name, created_at, status, choices FROM continued_admission ORDER BY created_at DESC");
+    $stmt = $conn->prepare("SELECT id, name, id_number, mobile, school, created_at, status FROM continued_admission ORDER BY created_at DESC");
 }
 $stmt->execute();
 $applications = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+
+// 為每個報名獲取志願選擇
+foreach ($applications as &$app) {
+    $choices_stmt = $conn->prepare("
+        SELECT cac.choice_order, d.name as department_name, cac.department_code
+        FROM continued_admission_choices cac
+        LEFT JOIN departments d ON cac.department_code = d.code
+        WHERE cac.application_id = ?
+        ORDER BY cac.choice_order ASC
+    ");
+    $choices_stmt->bind_param('i', $app['id']);
+    $choices_stmt->execute();
+    $choices_result = $choices_stmt->get_result();
+    $choices = [];
+    while ($choice_row = $choices_result->fetch_assoc()) {
+        $choices[] = $choice_row['department_name'] ?? $choice_row['department_code'];
+    }
+    $app['choices'] = json_encode($choices, JSON_UNESCAPED_UNICODE);
+    $choices_stmt->close();
+}
+unset($app);
 
 // 獲取科系名額資料
 $department_stats = [];
@@ -67,18 +87,36 @@ try {
         $courses = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
         
         // 先一次性獲取所有已錄取的學生志願
-        $stmt_approved = $conn->prepare("SELECT choices FROM continued_admission WHERE status = 'approved'");
+        $stmt_approved = $conn->prepare("
+            SELECT ca.id, cac.choice_order, d.name as department_name
+            FROM continued_admission ca
+            INNER JOIN continued_admission_choices cac ON ca.id = cac.application_id
+            LEFT JOIN departments d ON cac.department_code = d.code
+            WHERE ca.status = 'approved'
+            ORDER BY ca.id, cac.choice_order
+        ");
         $stmt_approved->execute();
-        $approved_applications = $stmt_approved->get_result()->fetch_all(MYSQLI_ASSOC);
+        $approved_result = $stmt_approved->get_result();
+        
+        // 組織已錄取學生的志願數據
+        $approved_choices = [];
+        while ($row = $approved_result->fetch_assoc()) {
+            $app_id = $row['id'];
+            if (!isset($approved_choices[$app_id])) {
+                $approved_choices[$app_id] = [];
+            }
+            if ($row['choice_order'] == 1) {
+                $approved_choices[$app_id][] = $row['department_name'] ?? '';
+            }
+        }
 
-        // 在 PHP 中計算各科系已錄取人數，以避免複雜的 SQL 查詢
+        // 在 PHP 中計算各科系已錄取人數
         foreach ($courses as $course) {
             $enrolled_count = 0;
-            foreach ($approved_applications as $app) {
-                $choices = json_decode($app['choices'], true);
-                if (is_array($choices) && !empty($choices)) {
+            foreach ($approved_choices as $app_choices) {
+                if (!empty($app_choices) && isset($app_choices[0])) {
                     // 檢查第一志願是否匹配 (用科系全名去 LIKE 學生填的簡稱)
-                    if (strpos($course['department_name'], $choices[0]) !== false) {
+                    if (strpos($course['department_name'], $app_choices[0]) !== false) {
                         $enrolled_count++;
                     }
                 }
@@ -317,7 +355,7 @@ function getStatusClass($status) {
                                         <td><?php echo htmlspecialchars($item['name']); ?></td>
                                         <td><?php echo htmlspecialchars($item['id_number']); ?></td>
                                         <td><?php echo htmlspecialchars($item['mobile']); ?></td>
-                                        <td><?php echo htmlspecialchars($item['school_name']); ?></td>
+                                        <td><?php echo htmlspecialchars($item['school'] ?? ''); ?></td>
                                         <td>
                                             <?php 
                                             $choices = json_decode($item['choices'], true);

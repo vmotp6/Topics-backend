@@ -7,24 +7,58 @@ if (!isset($_SESSION['admin_logged_in']) || !$_SESSION['admin_logged_in']) {
     exit;
 }
 
-// 檢查是否為 admin1 或 IMD 用戶
-$username = $_SESSION['username'] ?? '';
-$is_imd = ($username === 'IMD');
-$is_admin1 = ($username === 'admin1');
-if (!$is_admin1 && !$is_imd) {
-    header("Location: index.php");
-    exit;
-}
-
-// 判斷是否為招生中心（admin1）或部門用戶（IMD）
-$is_admission_center = $is_admin1;
-$is_department_user = $is_imd;
 
 // 引入資料庫設定
 require_once '../../Topics-frontend/frontend/config.php';
 
+// 獲取使用者資訊
+$username = isset($_SESSION['username']) ? $_SESSION['username'] : '';
+$user_id = isset($_SESSION['user_id']) ? (int)$_SESSION['user_id'] : 0;
+$user_role = isset($_SESSION['role']) ? $_SESSION['role'] : '';
+$is_imd = ($username === 'IMD'); // 保留用於向後兼容
+
+// 判斷用戶角色
+$allowed_center_roles = ['ADM', 'STA'];
+$is_admin_or_staff = in_array($user_role, $allowed_center_roles);
+$is_director = ($user_role === 'DI');
+$user_department_code = null;
+$is_department_user = false;
+
+// 如果是主任，獲取其科系代碼
+if ($is_director && $user_id > 0) {
+    try {
+        $conn_temp = getDatabaseConnection();
+        $table_check = $conn_temp->query("SHOW TABLES LIKE 'director'");
+        if ($table_check && $table_check->num_rows > 0) {
+            $stmt_dept = $conn_temp->prepare("SELECT department FROM director WHERE user_id = ?");
+        } else {
+            $stmt_dept = $conn_temp->prepare("SELECT department FROM teacher WHERE user_id = ?");
+        }
+        $stmt_dept->bind_param("i", $user_id);
+        $stmt_dept->execute();
+        $result_dept = $stmt_dept->get_result();
+        if ($row = $result_dept->fetch_assoc()) {
+            $user_department_code = $row['department'];
+            if (!empty($user_department_code)) {
+                $is_department_user = true;
+            }
+        }
+        $stmt_dept->close();
+        $conn_temp->close();
+    } catch (Exception $e) {
+        error_log('Error fetching user department: ' . $e->getMessage());
+    }
+}
+
+// 判斷是否為招生中心/行政人員
+$is_admission_center = $is_admin_or_staff && !$is_department_user;
+
+// 檢查是否有 recommender 和 recommended 表
+$has_recommender_table = false;
+$has_recommended_table = false;
+
 // 設置頁面標題
-$page_title = $is_imd ? '資管科被推薦人資訊' : '被推薦人資訊';
+$page_title = '被推薦人資訊';
 $current_page = 'admission_recommend_list';
 
 // 建立資料庫連接
@@ -42,27 +76,48 @@ try {
         throw new Exception("資料表 'admission_recommendations' 不存在");
     }
     
-    // 如果是IMD帳號，顯示學生興趣是資訊管理科的記錄，或已被分配給IMD部門的記錄
-    $where_clause = "";
-    if ($is_imd) {
-        $where_clause = " WHERE ((student_interest LIKE '%資管%' OR student_interest LIKE '%資訊管理%') OR assigned_department = 'IMD')";
-    }
+    // 檢查是否有 recommender 和 recommended 表
+    $table_check_recommender = $conn->query("SHOW TABLES LIKE 'recommender'");
+    $has_recommender_table = $table_check_recommender && $table_check_recommender->num_rows > 0;
     
-    // 檢查字段是否存在，如果不存在則動態添加
+    $table_check_recommended = $conn->query("SHOW TABLES LIKE 'recommended'");
+    $has_recommended_table = $table_check_recommended && $table_check_recommended->num_rows > 0;
+    
+    // 檢查字段是否存在（先檢查，因為 WHERE 條件需要用到）
+    $has_assigned_department = false;
+    $has_assigned_teacher_id = false;
+    $has_status = false;
+    $has_enrollment_status = false;
+    
     $columns_to_check = ['assigned_department', 'assigned_teacher_id', 'status', 'enrollment_status'];
     foreach ($columns_to_check as $column) {
         $column_check = $conn->query("SHOW COLUMNS FROM admission_recommendations LIKE '$column'");
-        if (!$column_check || $column_check->num_rows == 0) {
+        if ($column_check && $column_check->num_rows > 0) {
+            // 字段存在
+            if ($column === 'assigned_department') {
+                $has_assigned_department = true;
+            } elseif ($column === 'assigned_teacher_id') {
+                $has_assigned_teacher_id = true;
+            } elseif ($column === 'status') {
+                $has_status = true;
+            } elseif ($column === 'enrollment_status') {
+                $has_enrollment_status = true;
+            }
+        } else {
             // 字段不存在，動態添加
             try {
                 if ($column === 'assigned_department') {
                     $conn->query("ALTER TABLE admission_recommendations ADD COLUMN assigned_department VARCHAR(50) DEFAULT NULL");
+                    $has_assigned_department = true;
                 } elseif ($column === 'assigned_teacher_id') {
                     $conn->query("ALTER TABLE admission_recommendations ADD COLUMN assigned_teacher_id INT DEFAULT NULL");
+                    $has_assigned_teacher_id = true;
                 } elseif ($column === 'status') {
                     $conn->query("ALTER TABLE admission_recommendations ADD COLUMN status VARCHAR(20) DEFAULT 'pending'");
+                    $has_status = true;
                 } elseif ($column === 'enrollment_status') {
                     $conn->query("ALTER TABLE admission_recommendations ADD COLUMN enrollment_status VARCHAR(20) DEFAULT NULL");
+                    $has_enrollment_status = true;
                 }
             } catch (Exception $e) {
                 error_log("添加字段 $column 失敗: " . $e->getMessage());
@@ -70,44 +125,181 @@ try {
         }
     }
     
-    // 構建SQL查詢，使用COALESCE處理可能為NULL的字段
-    $sql = "SELECT 
-        ar.id, ar.recommender_name, ar.recommender_student_id, ar.recommender_grade, 
-        ar.recommender_department, ar.recommender_phone, ar.recommender_email,
-        ar.student_name, ar.student_school, ar.student_grade, 
-        ar.student_phone, ar.student_email, ar.student_line_id,
-        ar.recommendation_reason, ar.student_interest, ar.additional_info, 
-        COALESCE(ar.status, 'pending') as status, 
-        COALESCE(ar.enrollment_status, '未入學') as enrollment_status, 
-        ar.proof_evidence,
-        ar.assigned_department, ar.assigned_teacher_id,
-        t.name as teacher_name, u.username as teacher_username,
-        ar.created_at, ar.updated_at
-        FROM admission_recommendations ar
-        LEFT JOIN user u ON ar.assigned_teacher_id = u.id
-        LEFT JOIN teacher t ON u.id = t.user_id
-        $where_clause
-        ORDER BY ar.created_at DESC";
+    // 根據用戶角色過濾資料
+    // 學校行政人員（ADM/STA）可以看到所有資料
+    // 科系主任（DI）只能看到自己科系的資料
+    $where_clause = "";
+    if ($is_director && !empty($user_department_code)) {
+        // 主任只能看到學生興趣是自己科系的記錄，或已被分配給自己科系的記錄
+        // student_interest 是科系代碼（如 'IM', 'AF'），需要與 departments 表關聯
+        if ($has_assigned_department) {
+            $where_clause = " WHERE (ar.student_interest = ? OR ar.assigned_department = ?)";
+        } else {
+            $where_clause = " WHERE ar.student_interest = ?";
+        }
+    }
+    
+    // 構建SQL查詢 - 根據資料庫實際結構
+    // 根據資料庫結構，admission_recommendations 表有 status 和 enrollment_status，但沒有 assigned_department 和 assigned_teacher_id
+    $assigned_fields = "NULL as assigned_department, NULL as assigned_teacher_id,";
+    $teacher_joins = "";
+    $teacher_name_field = "'' as teacher_name";
+    $teacher_username_field = "'' as teacher_username";
+    
+    $status_field = $has_status ? "COALESCE(ar.status, 'pending')" : "'pending'";
+    $enrollment_status_field = $has_enrollment_status ? "COALESCE(ar.enrollment_status, '未入學')" : "'未入學'";
+    
+    if ($has_recommender_table && $has_recommended_table) {
+        // 使用新的表結構：recommender 和 recommended 表
+        // 使用 LEFT JOIN 確保即使沒有對應的推薦人或被推薦人記錄，也能顯示主表記錄
+        // 添加 JOIN 來獲取學校、年級、科系的名稱
+        $sql = "SELECT 
+            ar.id,
+            COALESCE(rec.name, '') as recommender_name,
+            COALESCE(rec.id, '') as recommender_student_id,
+            COALESCE(rec.grade, '') as recommender_grade_code,
+            COALESCE(rec_grade.name, '') as recommender_grade,
+            COALESCE(rec.department, '') as recommender_department_code,
+            COALESCE(rec_dept.name, '') as recommender_department,
+            COALESCE(rec.phone, '') as recommender_phone,
+            COALESCE(rec.email, '') as recommender_email,
+            COALESCE(red.name, '') as student_name,
+            COALESCE(red.school, '') as student_school_code,
+            COALESCE(school.name, '') as student_school,
+            COALESCE(red.grade, '') as student_grade_code,
+            COALESCE(red_grade.name, '') as student_grade,
+            COALESCE(red.phone, '') as student_phone,
+            COALESCE(red.email, '') as student_email,
+            COALESCE(red.line_id, '') as student_line_id,
+            ar.recommendation_reason,
+            COALESCE(ar.student_interest, '') as student_interest_code,
+            COALESCE(interest_dept.name, '') as student_interest,
+            ar.additional_info,
+            $status_field as status,
+            $enrollment_status_field as enrollment_status,
+            ar.proof_evidence,
+            $assigned_fields
+            $teacher_name_field,
+            $teacher_username_field,
+            ar.created_at,
+            ar.updated_at
+            FROM admission_recommendations ar
+            LEFT JOIN recommender rec ON ar.id = rec.recommendations_id
+            LEFT JOIN recommended red ON ar.id = red.recommendations_id
+            LEFT JOIN identity_options rec_grade ON rec.grade = rec_grade.code
+            LEFT JOIN departments rec_dept ON rec.department = rec_dept.code
+            LEFT JOIN identity_options red_grade ON red.grade = red_grade.code
+            LEFT JOIN school_data school ON red.school = school.school_code
+            LEFT JOIN departments interest_dept ON ar.student_interest = interest_dept.code";
+        
+        if (!empty($where_clause)) {
+            $sql .= " " . $where_clause;
+        }
+        $sql .= " ORDER BY ar.created_at DESC";
+    } else {
+        // 如果沒有 recommender 和 recommended 表，只查詢主表
+        // 仍然需要 JOIN departments 來獲取 student_interest 的名稱
+        $sql = "SELECT 
+            ar.id,
+            '' as recommender_name,
+            '' as recommender_student_id,
+            '' as recommender_grade,
+            '' as recommender_department,
+            '' as recommender_phone,
+            '' as recommender_email,
+            '' as student_name,
+            '' as student_school,
+            '' as student_grade,
+            '' as student_phone,
+            '' as student_email,
+            '' as student_line_id,
+            ar.recommendation_reason,
+            COALESCE(ar.student_interest, '') as student_interest_code,
+            COALESCE(interest_dept.name, '') as student_interest,
+            ar.additional_info,
+            $status_field as status,
+            $enrollment_status_field as enrollment_status,
+            ar.proof_evidence,
+            $assigned_fields
+            $teacher_name_field,
+            $teacher_username_field,
+            ar.created_at,
+            ar.updated_at
+            FROM admission_recommendations ar
+            LEFT JOIN departments interest_dept ON ar.student_interest = interest_dept.code";
+        
+        if (!empty($where_clause)) {
+            $sql .= " " . $where_clause;
+        }
+        $sql .= " ORDER BY ar.created_at DESC";
+    }
+    
+    // 調試：記錄 SQL 查詢和表檢查結果
+    error_log("招生推薦查詢 - has_recommender_table: " . ($has_recommender_table ? 'true' : 'false') . ", has_recommended_table: " . ($has_recommended_table ? 'true' : 'false'));
+    error_log("where_clause: " . $where_clause);
+    error_log("is_director: " . ($is_director ? 'true' : 'false') . ", user_department_code: " . ($user_department_code ?? 'null'));
+    error_log("is_admin_or_staff: " . ($is_admin_or_staff ? 'true' : 'false'));
+    error_log("SQL: " . $sql);
     
     $stmt = $conn->prepare($sql);
     if (!$stmt) {
-        throw new Exception("SQL 準備失敗: " . $conn->error . " (SQL: " . $sql . ")");
+        $error_msg = "SQL 準備失敗: " . $conn->error . " (SQL: " . $sql . ")";
+        error_log($error_msg);
+        throw new Exception($error_msg);
+    }
+    
+    // 如果是主任，綁定參數
+    if ($is_director && !empty($user_department_code) && !empty($where_clause)) {
+        if ($has_assigned_department) {
+            // 有 assigned_department 欄位，需要綁定兩個參數
+            $stmt->bind_param("ss", $user_department_code, $user_department_code);
+        } else {
+            // 沒有 assigned_department 欄位，只需要綁定一個參數
+            $stmt->bind_param("s", $user_department_code);
+        }
+        error_log("綁定參數: user_department_code = " . $user_department_code . ", has_assigned_department = " . ($has_assigned_department ? 'true' : 'false'));
     }
     
     if (!$stmt->execute()) {
-        throw new Exception("SQL 執行失敗: " . $stmt->error);
+        $error_msg = "SQL 執行失敗: " . $stmt->error . " (SQL: " . $sql . ")";
+        error_log($error_msg);
+        throw new Exception($error_msg);
     }
     
     $result = $stmt->get_result();
     $recommendations = $result->fetch_all(MYSQLI_ASSOC);
     
+    // 調試信息：記錄查詢結果數量
+    error_log("招生推薦查詢結果: " . count($recommendations) . " 筆記錄");
+    
+    // 如果查詢結果為空，但資料庫中有記錄，嘗試簡單查詢
+    if (empty($recommendations)) {
+        $simple_check = $conn->query("SELECT COUNT(*) as total FROM admission_recommendations");
+        if ($simple_check) {
+            $count_row = $simple_check->fetch_assoc();
+            $total_count = $count_row['total'] ?? 0;
+            error_log("admission_recommendations 表總記錄數: " . $total_count);
+            if ($total_count > 0) {
+                error_log("警告：資料庫中有 " . $total_count . " 筆記錄，但查詢結果為空。可能是 JOIN 條件或 WHERE 條件有問題。");
+                // 嘗試執行最簡單的查詢來測試
+                $test_sql = "SELECT ar.id FROM admission_recommendations ar LIMIT 1";
+                $test_result = $conn->query($test_sql);
+                if ($test_result && $test_result->num_rows > 0) {
+                    error_log("簡單查詢成功，問題可能在複雜的 JOIN 或欄位選擇");
+                } else {
+                    error_log("簡單查詢也失敗，可能是資料庫連接問題");
+                }
+            }
+        }
+    }
+    
     // 調試信息：檢查總數（僅在開發環境顯示）
     if (isset($_GET['debug']) && $_GET['debug'] == '1') {
-        $count_sql = "SELECT COUNT(*) as total FROM admission_recommendations" . ($is_imd ? " WHERE ((student_interest LIKE '%資管%' OR student_interest LIKE '%資訊管理%') OR assigned_department = 'IMD')" : "");
+        $count_sql = "SELECT COUNT(*) as total FROM admission_recommendations";
         $count_result = $conn->query($count_sql);
         if ($count_result) {
             $count_row = $count_result->fetch_assoc();
-            error_log("招生推薦總數: " . $count_row['total'] . " (當前用戶: " . $username . ", IMD: " . ($is_imd ? '是' : '否') . ")");
+            error_log("招生推薦總數: " . $count_row['total'] . " (當前用戶: " . $username . ", 角色: " . $user_role . ", 科系: " . ($user_department_code ?? '無') . ")");
         }
     }
 } catch (Exception $e) {
@@ -121,8 +313,10 @@ try {
     }
 }
 
-// 如果是部門用戶（IMD），獲取老師列表
+// 獲取老師列表（用於分配功能）
 $teachers = [];
+$is_department_user = false; // 預設為 false，如果需要可以根據實際需求設定
+$is_admission_center = false; // 預設為 false，如果需要可以根據實際需求設定
 if ($is_department_user) {
     try {
         $table_check = $conn->query("SHOW TABLES LIKE 'user'");
@@ -674,9 +868,10 @@ function getEnrollmentStatusClass($status) {
                                     
                                     if ($total_count > 0) {
                                         // 有數據但查詢結果為空，可能是過濾條件或SQL問題
-                                        if ($is_imd) {
-                                            // 如果是IMD，檢查有多少符合條件的記錄（興趣是資管或已分配給IMD）
-                                            $filter_check = $conn->query("SELECT COUNT(*) as total FROM admission_recommendations WHERE ((student_interest LIKE '%資管%' OR student_interest LIKE '%資訊管理%') OR assigned_department = 'IMD')");
+                                        // 移除 IMD 特定過濾，現在使用角色過濾
+                                        if ($is_director && !empty($user_department_code)) {
+                                            // 如果是主任，檢查有多少符合條件的記錄（興趣是自己科系或已分配給自己科系）
+                                            $filter_check = $conn->query("SELECT COUNT(*) as total FROM admission_recommendations WHERE (student_interest = '" . $conn->real_escape_string($user_department_code) . "' OR assigned_department = '" . $conn->real_escape_string($user_department_code) . "')");
                                             $filter_row = $filter_check ? $filter_check->fetch_assoc() : null;
                                             $filter_count = $filter_row ? $filter_row['total'] : 0;
                                             
@@ -690,15 +885,11 @@ function getEnrollmentStatusClass($status) {
                                             }
                                             
                                             // 檢查已分配給IMD的記錄數
-                                            $assigned_check = $conn->query("SELECT COUNT(*) as total FROM admission_recommendations WHERE assigned_department = 'IMD'");
-                                            $assigned_row = $assigned_check ? $assigned_check->fetch_assoc() : null;
-                                            $assigned_count = $assigned_row ? $assigned_row['total'] : 0;
-                                            
+                                            // 移除身份過濾相關的提示
                                             if ($filter_count == 0) {
-                                                // 顯示提示：有數據但不符合過濾條件
+                                                // 顯示提示：沒有數據
                                                 echo "<div style='background: #fff7e6; border: 1px solid #ffd591; padding: 16px; margin: 16px; border-radius: 4px;'>";
-                                                echo "<p><strong>提示：</strong>資料庫中共有 <strong>{$total_count}</strong> 筆推薦記錄，但沒有符合條件的記錄。</p>";
-                                                echo "<p>IMD 帳號會顯示：學生興趣為「資訊管理科」的記錄，或已被分配給 IMD 部門的記錄。</p>";
+                                                echo "<p><strong>提示：</strong>目前沒有推薦記錄。</p>";
                                                 if ($assigned_count > 0) {
                                                     echo "<p>已分配給 IMD 的記錄數：<strong>{$assigned_count}</strong></p>";
                                                 }
@@ -750,7 +941,8 @@ function getEnrollmentStatusClass($status) {
                                 <?php if (isset($_GET['debug']) && $_GET['debug'] == '1'): ?>
                                     <p style="margin-top: 16px; color: #8c8c8c; font-size: 12px;">
                                         調試模式：當前用戶 = <?php echo htmlspecialchars($username); ?>, 
-                                        IMD = <?php echo $is_imd ? '是' : '否'; ?>
+                                        角色 = <?php echo htmlspecialchars($user_role); ?>, 
+                                        科系 = <?php echo htmlspecialchars($user_department_code ?? '無'); ?>
                                     </p>
                                 <?php endif; ?>
                             </div>
@@ -1130,8 +1322,7 @@ function getEnrollmentStatusClass($status) {
     // 分配推薦學生相關變數
     let currentRecommendationId = null;
 
-    // 開啟分配推薦學生彈出視窗（IMD）
-    <?php if ($is_department_user): ?>
+    // 開啟分配推薦學生彈出視窗
     function openAssignRecommendationModal(recommendationId, studentName, currentTeacherId) {
         currentRecommendationId = recommendationId;
         document.getElementById('recommendationStudentName').textContent = studentName;
@@ -1196,18 +1387,19 @@ function getEnrollmentStatusClass($status) {
     }
 
     // 點擊彈出視窗外部關閉
-    document.getElementById('assignRecommendationModal').addEventListener('click', function(e) {
-        if (e.target === this) {
-            closeAssignRecommendationModal();
-        }
-    });
-    <?php endif; ?>
+    const assignRecommendationModal = document.getElementById('assignRecommendationModal');
+    if (assignRecommendationModal) {
+        assignRecommendationModal.addEventListener('click', function(e) {
+            if (e.target === this) {
+                closeAssignRecommendationModal();
+            }
+        });
+    }
 
     // 分配部門相關變數
     let currentRecommendationDepartmentId = null;
 
-    // 開啟分配部門彈出視窗（admin1）
-    <?php if ($is_admission_center): ?>
+    // 開啟分配部門彈出視窗
     function openAssignRecommendationDepartmentModal(recommendationId, studentName, currentDepartment) {
         currentRecommendationDepartmentId = recommendationId;
         document.getElementById('recommendationDepartmentStudentName').textContent = studentName;
@@ -1272,12 +1464,14 @@ function getEnrollmentStatusClass($status) {
     }
 
     // 點擊分配部門彈出視窗外部關閉
-    document.getElementById('assignRecommendationDepartmentModal').addEventListener('click', function(e) {
-        if (e.target === this) {
-            closeAssignRecommendationDepartmentModal();
-        }
-    });
-    <?php endif; ?>
+    const assignRecommendationDepartmentModal = document.getElementById('assignRecommendationDepartmentModal');
+    if (assignRecommendationDepartmentModal) {
+        assignRecommendationDepartmentModal.addEventListener('click', function(e) {
+            if (e.target === this) {
+                closeAssignRecommendationDepartmentModal();
+            }
+        });
+    }
     </script>
 </body>
 </html>

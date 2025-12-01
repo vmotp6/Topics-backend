@@ -126,12 +126,6 @@ try {
     }
     
     if ($stmt->execute()) {
-        // 記錄分配日誌（可選）
-        $log_stmt = $conn->prepare("INSERT INTO assignment_logs (student_id, teacher_id, assigned_by, assigned_at) VALUES (?, ?, ?, NOW())");
-        $assigned_by = $_SESSION['username'];
-        $log_stmt->bind_param("iis", $student_id, $teacher_id, $assigned_by);
-        $log_stmt->execute();
-        
         echo json_encode([
             'success' => true, 
             'message' => '學生分配成功',

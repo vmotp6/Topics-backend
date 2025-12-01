@@ -114,35 +114,6 @@ try {
     $update->bind_param("si", $department_code, $student_id);
 
     if ($update->execute()) {
-        // 記錄分配日誌
-        // 先檢查表是否存在，如果不存在則創建
-        $table_check = $conn->query("SHOW TABLES LIKE 'assignment_logs'");
-        if ($table_check->num_rows == 0) {
-            $conn->query("CREATE TABLE assignment_logs (
-                id INT AUTO_INCREMENT PRIMARY KEY,
-                student_id INT NOT NULL,
-                teacher_id INT NULL,
-                assigned_by VARCHAR(100) NOT NULL,
-                assigned_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
-        } else {
-            // 如果表已存在，檢查 teacher_id 欄位是否允許 NULL
-            $column_check = $conn->query("SHOW COLUMNS FROM assignment_logs LIKE 'teacher_id'");
-            if ($column_check->num_rows > 0) {
-                $column_info = $column_check->fetch_assoc();
-                if ($column_info['Null'] === 'NO') {
-                    // 如果 teacher_id 不允許 NULL，則修改欄位
-                    $conn->query("ALTER TABLE assignment_logs MODIFY COLUMN teacher_id INT NULL");
-                }
-            }
-        }
-
-        // 插入日誌記錄
-        $log_stmt = $conn->prepare("INSERT INTO assignment_logs (student_id, teacher_id, assigned_by, assigned_at) VALUES (?, NULL, ?, NOW())");
-        $assigned_by = $_SESSION['username'];
-        $log_stmt->bind_param("is", $student_id, $assigned_by);
-        $log_stmt->execute();
-
         echo json_encode([
             'success' => true,
             'message' => '已分配學生至科系',
