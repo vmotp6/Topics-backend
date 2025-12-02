@@ -72,9 +72,10 @@ if ($teacher_id > 0) {
     // 查詢特定教師的活動記錄
     $activity_records = [];
     $teacher_name = '';
-    $records_sql = "SELECT ar.*, t.name AS teacher_name, t.department AS teacher_department
+    $records_sql = "SELECT ar.*, u.name AS teacher_name, t.department AS teacher_department
                     FROM activity_records ar
                     LEFT JOIN teacher t ON ar.teacher_id = t.user_id
+                    LEFT JOIN user u ON t.user_id = u.id
                     WHERE ar.teacher_id = ? $department_filter
                     ORDER BY ar.activity_date DESC, ar.id DESC";
     $stmt = $conn->prepare($records_sql);
@@ -92,19 +93,21 @@ if ($teacher_id > 0) {
 } else {
     // --- 教師列表視圖 ---
     $teachers_with_records = [];
-    $teachers_sql = "SELECT t.user_id, t.name AS teacher_name, t.department AS teacher_department, COUNT(ar.id) AS record_count
+    $teachers_sql = "SELECT t.user_id, u.name AS teacher_name, t.department AS teacher_department, COUNT(ar.id) AS record_count
                      FROM teacher t
                      JOIN activity_records ar ON t.user_id = ar.teacher_id
+                     LEFT JOIN user u ON t.user_id = u.id
                      WHERE 1=1 $department_filter
-                     GROUP BY t.user_id, t.name, t.department
-                     ORDER BY record_count DESC, t.name ASC";
+                     GROUP BY t.user_id, u.name, t.department
+                     ORDER BY record_count DESC, u.name ASC";
     $result = $conn->query($teachers_sql);
 
     // 為了統計圖表，獲取所有活動記錄
     $all_activity_records = [];
-    $all_records_sql = "SELECT ar.*, t.name AS teacher_name, t.department AS teacher_department
+    $all_records_sql = "SELECT ar.*, u.name AS teacher_name, t.department AS teacher_department
                         FROM activity_records ar
                         LEFT JOIN teacher t ON ar.teacher_id = t.user_id
+                        LEFT JOIN user u ON t.user_id = u.id
                         WHERE 1=1 $department_filter
                         ORDER BY ar.activity_date DESC, ar.id DESC";
     $all_records_result = $conn->query($all_records_sql);
