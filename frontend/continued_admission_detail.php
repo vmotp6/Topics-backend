@@ -17,7 +17,7 @@ if ($application_id === 0) {
 
 $conn = getDatabaseConnection();
 
-// 查詢報名資料（注意主鍵是 ID 不是 id）
+// 查詢報名資料
 $stmt = $conn->prepare("SELECT * FROM continued_admission WHERE ID = ?");
 $stmt->bind_param("i", $application_id);
 $stmt->execute();
@@ -240,7 +240,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_status'])) {
                             <div class="detail-section" style="text-align: left !important;">
                                 <h4 style="text-align: left !important;"><i class="fas fa-file-alt"></i> 上傳文件</h4>
                                 <?php
-                                // 定義所有文件類型及其對應的中文名稱
                                 $document_types = [
                                     'exam' => '114 年國中教育會考成績單',
                                     'skill' => '技藝教育課程結業證明',
