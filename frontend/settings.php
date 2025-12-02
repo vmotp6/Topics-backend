@@ -25,20 +25,38 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
         switch ($_POST['action']) {
             // 場次管理
             case 'add_session':
-                $sql = "INSERT INTO admission_sessions (session_name, session_date, session_type, max_participants, description, is_active) VALUES (?, ?, ?, ?, ?, 1)";
+                $sql = "INSERT INTO admission_sessions (session_name, session_date, session_type, max_participants, is_active) VALUES (?, ?, ?, ?, 1)";
                 $stmt = $conn->prepare($sql);
-                $max_participants = !empty($_POST['max_participants']) ? $_POST['max_participants'] : null;
-                $stmt->bind_param("sssis", $_POST['session_name'], $_POST['session_date'], $_POST['session_type'], $max_participants, $_POST['description']);
+                // session_type: 1=線上, 2=實體
+                $session_type = ($_POST['session_type'] === '線上' || $_POST['session_type'] === '1') ? 1 : 2;
+                // 處理日期格式：從 datetime-local 轉換為 date
+                $session_date = date('Y-m-d', strtotime($_POST['session_date']));
+                // 處理 max_participants：如果為空則設為 null（使用變數引用以支持 null）
+                $max_participants = !empty($_POST['max_participants']) ? intval($_POST['max_participants']) : null;
+                // bind_param: session_name(s), session_date(s), session_type(i), max_participants(i/null)
+                // 使用變數引用來處理 null 值
+                $session_name = $_POST['session_name'];
+                $stmt->bind_param("ssii", $session_name, $session_date, $session_type, $max_participants);
                 if ($stmt->execute()) {
                     $message = "場次新增成功！"; $messageType = "success";
                 }
                 break;
 
             case 'update_session':
-                $sql = "UPDATE admission_sessions SET session_name = ?, session_date = ?, session_type = ?, max_participants = ?, description = ?, is_active = ? WHERE id = ?";
+                $sql = "UPDATE admission_sessions SET session_name = ?, session_date = ?, session_type = ?, max_participants = ?, is_active = ? WHERE id = ?";
                 $stmt = $conn->prepare($sql);
-                $max_participants = !empty($_POST['max_participants']) ? $_POST['max_participants'] : null;
-                $stmt->bind_param("sssissi", $_POST['session_name'], $_POST['session_date'], $_POST['session_type'], $max_participants, $_POST['description'], $_POST['is_active'], $_POST['session_id']);
+                // session_type: 1=線上, 2=實體
+                $session_type = ($_POST['session_type'] === '線上' || $_POST['session_type'] === '1') ? 1 : 2;
+                $is_active = intval($_POST['is_active']);
+                $session_id = intval($_POST['session_id']);
+                // 處理日期格式：從 datetime-local 轉換為 date
+                $session_date = date('Y-m-d', strtotime($_POST['session_date']));
+                // 處理 max_participants：如果為空則設為 null（使用變數引用以支持 null）
+                $max_participants = !empty($_POST['max_participants']) ? intval($_POST['max_participants']) : null;
+                // bind_param: session_name(s), session_date(s), session_type(i), max_participants(i/null), is_active(i), session_id(i)
+                // 使用變數引用來處理 null 值
+                $session_name = $_POST['session_name'];
+                $stmt->bind_param("ssiiii", $session_name, $session_date, $session_type, $max_participants, $is_active, $session_id);
                 if ($stmt->execute()) {
                     $message = "場次更新成功！"; $messageType = "success";
                 }
@@ -53,32 +71,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                 }
                 break;
 
-            // 課程管理
+            // 課程管理功能已移除，因為 admission_courses 表不存在
+            // 如果需要管理科系，請使用 departments 表
             case 'add_course':
-                $sql = "INSERT INTO admission_courses (course_name, is_active, sort_order) VALUES (?, 1, 0)";
-                $stmt = $conn->prepare($sql);
-                $stmt->bind_param("s", $_POST['course_name']);
-                if ($stmt->execute()) {
-                    $message = "課程新增成功！"; $messageType = "success";
-                }
-                break;
-
             case 'update_course':
-                $sql = "UPDATE admission_courses SET course_name = ?, is_active = ? WHERE id = ?";
-                $stmt = $conn->prepare($sql);
-                $stmt->bind_param("sii", $_POST['course_name'], $_POST['is_active'], $_POST['course_id']);
-                if ($stmt->execute()) {
-                    $message = "課程更新成功！"; $messageType = "success";
-                }
-                break;
-
             case 'delete_course':
-                $sql = "DELETE FROM admission_courses WHERE id = ?";
-                $stmt = $conn->prepare($sql);
-                $stmt->bind_param("i", $_POST['course_id']);
-                if ($stmt->execute()) {
-                    $message = "課程刪除成功！"; $messageType = "success";
-                }
+                $message = "課程管理功能已停用，因為資料表不存在。如需管理科系，請使用科系管理功能。";
+                $messageType = "error";
                 break;
         }
         if (isset($stmt) && $stmt->error) {
@@ -91,15 +90,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
 }
 
 // 獲取所有資料
-$sessions = $conn->query("SELECT s.*, COUNT(a.id) as registration_count FROM admission_sessions s LEFT JOIN admission_applications a ON s.id = a.session_choice GROUP BY s.id ORDER BY s.session_date DESC")->fetch_all(MYSQLI_ASSOC);
 $sessions_sql = "
     SELECT s.*, 
            COUNT(a.id) as registration_count,
            (s.max_participants - COUNT(a.id)) as remaining_slots
     FROM admission_sessions s
-    LEFT JOIN admission_applications a ON s.id = a.session_id GROUP BY s.id ORDER BY s.session_date DESC";
-$sessions = $conn->query($sessions_sql)->fetch_all(MYSQLI_ASSOC);;
-$courses = $conn->query("SELECT * FROM admission_courses ORDER BY sort_order, id")->fetch_all(MYSQLI_ASSOC);
+    LEFT JOIN admission_applications a ON s.id = a.session_id 
+    GROUP BY s.id 
+    ORDER BY s.session_date DESC";
+$sessions = $conn->query($sessions_sql)->fetch_all(MYSQLI_ASSOC);
+// 課程管理功能已移除，因為 admission_courses 表不存在
+// 如果需要管理科系，請使用 departments 表
+$courses = [];
 
 $conn->close();
 ?>
@@ -243,7 +245,7 @@ $conn->close();
                                     <tr>
                                         <td><?php echo htmlspecialchars($item['session_name']); ?></td>
                                         <td><?php echo date('Y/m/d H:i', strtotime($item['session_date'])); ?></td>
-                                        <td><?php echo htmlspecialchars($item['session_type']); ?></td>
+                                        <td><?php echo ($item['session_type'] == 1) ? '線上' : '實體'; ?></td>
                                         <td><?php echo $item['registration_count']; ?> / <?php echo $item['max_participants'] ?: '無限'; ?></td>
                                         <td>
                                             <?php 
@@ -347,10 +349,6 @@ $conn->close();
                             <input type="number" name="max_participants" class="form-control" min="1">
                         </div>
                     </div>
-                    <div class="form-group">
-                        <label class="form-label">描述 (選填)</label>
-                        <textarea name="description" class="form-control" rows="3"></textarea>
-                    </div>
                 </div>
                 <div class="modal-footer">
                     <button type="button" class="btn" onclick="closeModal('addSessionModal')">取消</button>
@@ -391,10 +389,6 @@ $conn->close();
                             <label class="form-label">人數上限 (選填)</label>
                             <input type="number" name="max_participants" id="edit_max_participants" class="form-control" min="1">
                         </div>
-                    </div>
-                    <div class="form-group">
-                        <label class="form-label">描述 (選填)</label>
-                        <textarea name="description" id="edit_description" class="form-control" rows="3"></textarea>
                     </div>
                     <div class="form-group">
                         <label class="form-label">狀態 *</label>
@@ -495,9 +489,10 @@ $conn->close();
             const date = new Date(item.session_date.replace(' ', 'T'));
             const formattedDate = date.toISOString().slice(0, 16);
             document.getElementById('edit_session_date').value = formattedDate;
-            document.getElementById('edit_session_type').value = item.session_type;
-            document.getElementById('edit_max_participants').value = item.max_participants;
-            document.getElementById('edit_description').value = item.description;
+            // session_type 在資料庫中是數字 (1=線上, 2=實體)，但表單需要顯示文字
+            const sessionTypeMap = {1: '線上', 2: '實體'};
+            document.getElementById('edit_session_type').value = sessionTypeMap[item.session_type] || item.session_type;
+            document.getElementById('edit_max_participants').value = item.max_participants || '';
             document.getElementById('edit_session_is_active').value = item.is_active;
             showModal('editSessionModal');
         }

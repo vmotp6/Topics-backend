@@ -33,12 +33,28 @@ if (!$session) {
     exit;
 }
 
-// 獲取該場次的報名者列表
-$stmt = $conn->prepare("SELECT * FROM admission_applications WHERE session_id = ? ORDER BY id DESC");
-$stmt->bind_param("i", $session_id); // 這裡的 $session_id 是從 GET 參數來的，對應 session_choice
+// 獲取該場次的報名者列表（包含學校名稱）
+$stmt = $conn->prepare("
+    SELECT aa.*, sd.name as school_name_display
+    FROM admission_applications aa
+    LEFT JOIN school_data sd ON aa.school = sd.school_code
+    WHERE aa.session_id = ? 
+    ORDER BY aa.id DESC
+");
+$stmt->bind_param("i", $session_id);
 $stmt->execute();
 $registrations_result = $stmt->get_result();
 $registrations = $registrations_result->fetch_all(MYSQLI_ASSOC);
+
+// 獲取所有科系資料，用於將科系代碼轉換為科系名稱
+$departments_map = [];
+$dept_stmt = $conn->prepare("SELECT code, name FROM departments");
+$dept_stmt->execute();
+$dept_result = $dept_stmt->get_result();
+while ($dept_row = $dept_result->fetch_assoc()) {
+    $departments_map[$dept_row['code']] = $dept_row['name'];
+}
+$dept_stmt->close();
 
 $conn->close();
 
@@ -127,21 +143,27 @@ $page_title = '查看報名名單 - ' . htmlspecialchars($session['session_name'
                                         <td><?php echo htmlspecialchars($reg['student_name']); ?></td>
                                         <td><?php echo htmlspecialchars($reg['email']); ?></td>
                                         <td><?php echo htmlspecialchars($reg['contact_phone']); ?></td>
-                                        <td><?php echo htmlspecialchars($reg['school_name']); ?></td>
+                                        <td><?php echo htmlspecialchars($reg['school_name_display'] ?? $reg['school'] ?? '-'); ?></td>
                                         <td><?php echo htmlspecialchars($reg['grade']); ?></td>
                                         <td>
                                             <?php
                                             $courses = [];
                                             if (!empty($reg['course_priority_1'])) {
-                                                $courses[] = '1. ' . htmlspecialchars($reg['course_priority_1']);
+                                                $dept_name_1 = isset($departments_map[$reg['course_priority_1']]) 
+                                                    ? $departments_map[$reg['course_priority_1']] 
+                                                    : $reg['course_priority_1'];
+                                                $courses[] = '1. ' . htmlspecialchars($dept_name_1);
                                             }
                                             if (!empty($reg['course_priority_2'])) {
-                                                $courses[] = '2. ' . htmlspecialchars($reg['course_priority_2']);
+                                                $dept_name_2 = isset($departments_map[$reg['course_priority_2']]) 
+                                                    ? $departments_map[$reg['course_priority_2']] 
+                                                    : $reg['course_priority_2'];
+                                                $courses[] = '2. ' . htmlspecialchars($dept_name_2);
                                             }
                                             echo empty($courses) ? '未選擇' : implode('<br>', $courses);
                                             ?>
                                         </td>
-                                        <td><?php echo date('Y/m/d H:i', strtotime($reg['email_sent_at'])); ?></td>
+                                        <td><?php echo $reg['created_at'] ? date('Y/m/d H:i', strtotime($reg['created_at'])) : '-'; ?></td>
                                     </tr>
                                     <?php endforeach; ?>
                                 </tbody>
