@@ -2,7 +2,7 @@
 session_start();
 
 // 檢查是否為管理員，如果不是則跳轉
-if (!isset($_SESSION['admin_logged_in']) || !$_SESSION['admin_logged_in'] || !in_array($_SESSION['role'], ['admin', '管理員'])) {
+if (!isset($_SESSION['admin_logged_in']) || !$_SESSION['admin_logged_in'] || $_SESSION['role'] !== 'ADM') {
     header("Location: index.php");
     exit;
 }
@@ -47,14 +47,44 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     } else {
         try {
             $conn = getDatabaseConnection();
+            
+            // 角色代碼映射：將中文名稱或舊代碼轉換為新代碼
+            $roleMap = [
+                '老師' => 'TEA',
+                '學校行政人員' => 'STA',
+                'admin' => 'ADM',
+                '學生' => 'STU',
+                '管理員' => 'ADM',
+                '行政人員' => 'STA',
+                '主任' => 'DI',
+                // 如果已經是正確代碼，保持不變
+                'STU' => 'STU',
+                'TEA' => 'TEA',
+                'ADM' => 'ADM',
+                'STA' => 'STA',
+                'DI' => 'DI'
+            ];
+            $roleCode = $roleMap[$role] ?? $role;
+            
+            // 驗證角色代碼是否存在於 role_types 表
+            $checkRole = $conn->prepare("SELECT code FROM role_types WHERE code = ?");
+            $checkRole->bind_param("s", $roleCode);
+            $checkRole->execute();
+            $roleResult = $checkRole->get_result();
+            
+            if ($roleResult->num_rows === 0) {
+                throw new Exception("無效的角色代碼：{$roleCode}。請選擇有效的角色。");
+            }
+            $checkRole->close();
+            
             $username = '';
             $password = bin2hex(random_bytes(4)); // 產生一個8個字元的隨機密碼
 
             // 根據角色決定帳號前綴
             $prefix = '';
-            if ($role === '學校行政人員') {
+            if ($roleCode === 'STA') {
                 $prefix = 'staff_';
-            } elseif ($role === 'admin') {
+            } elseif ($roleCode === 'ADM') {
                 $prefix = 'admin_';
             } else {
                 $prefix = 'user_';
@@ -89,7 +119,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 // username_changed 設為 0，表示這是系統生成的帳號，尚未修改過
                 $stmt = $conn->prepare("INSERT INTO user (username, password, role, status, name, email, username_changed) VALUES (?, ?, ?, ?, '', ?, 0)");
                 $status_value = (int)$status;
-                $stmt->bind_param("sssis", $username, $hashed_password, $role, $status_value, $email);
+                $stmt->bind_param("sssis", $username, $hashed_password, $roleCode, $status_value, $email);
                 
                 if ($stmt->execute()) {
                     $success_message = "帳號建立成功！";
@@ -108,6 +138,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $error_message = "資料庫操作失敗：" . $e->getMessage();
         }
     }
+}
+
+// 從資料庫獲取所有可用的角色列表
+try {
+    $conn = getDatabaseConnection();
+    $roles_stmt = $conn->query("SELECT code, name FROM role_types ORDER BY code");
+    $available_roles = [];
+    if ($roles_stmt) {
+        $available_roles = $roles_stmt->fetch_all(MYSQLI_ASSOC);
+    }
+    if (isset($conn) && !isset($conn->close_called)) {
+        $conn->close();
+    }
+} catch (Exception $e) {
+    $available_roles = [];
 }
 ?>
 
@@ -213,9 +258,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                             <label for="role">角色 <span class="required">*</span></label>
                             <select id="role" name="role" class="form-control" required>
                                 <option value="">請選擇角色</option>
-                                <option value="老師" <?php echo $role === '老師' ? 'selected' : ''; ?>>老師</option>
-                                <option value="學校行政人員" <?php echo $role === '學校行政人員' ? 'selected' : ''; ?>>學校行政人員</option>
-                                <option value="admin" <?php echo $role === 'admin' ? 'selected' : ''; ?>>管理員</option>
+                                <?php if (!empty($available_roles)): ?>
+                                    <?php foreach ($available_roles as $role_type): ?>
+                                        <option value="<?php echo htmlspecialchars($role_type['code']); ?>" <?php echo $role === $role_type['code'] ? 'selected' : ''; ?>>
+                                            <?php echo htmlspecialchars($role_type['name']); ?>
+                                        </option>
+                                    <?php endforeach; ?>
+                                <?php else: ?>
+                                    <!-- 如果無法從資料庫讀取，使用預設選項 -->
+                                    <option value="STU" <?php echo ($role === 'STU' || $role === '學生') ? 'selected' : ''; ?>>學生</option>
+                                    <option value="TEA" <?php echo ($role === 'TEA' || $role === '老師') ? 'selected' : ''; ?>>老師</option>
+                                    <option value="ADM" <?php echo ($role === 'ADM' || $role === 'admin' || $role === '管理員') ? 'selected' : ''; ?>>管理員</option>
+                                    <option value="STA" <?php echo ($role === 'STA' || $role === '學校行政人員' || $role === '行政人員') ? 'selected' : ''; ?>>行政人員</option>
+                                    <option value="DI" <?php echo ($role === 'DI' || $role === '主任') ? 'selected' : ''; ?>>主任</option>
+                                <?php endif; ?>
                             </select>
                         </div>
 

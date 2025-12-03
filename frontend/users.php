@@ -39,14 +39,42 @@ try {
         $sortOrder = 'desc';
     }
 
-    $sql = "SELECT id, username, name, email, role, status FROM user ORDER BY $sortBy $sortOrder";
+    $sql = "SELECT u.id, u.username, u.name, u.email, u.role, u.status, rt.name as role_name 
+            FROM user u 
+            LEFT JOIN role_types rt ON u.role = rt.code 
+            ORDER BY $sortBy $sortOrder";
     $result = $conn->query($sql);
 
     if ($result) {
         $users = $result->fetch_all(MYSQLI_ASSOC);
+        // 如果沒有從 role_types 表獲取到名稱，使用預設映射
+        foreach ($users as &$user) {
+            if (empty($user['role_name'])) {
+                $user['role_name'] = getRoleName($user['role']);
+            }
+        }
+        unset($user);
     }
 } catch (Exception $e) {
     $error_message = "讀取使用者資料失敗：" . $e->getMessage();
+}
+
+// 角色代碼到中文名稱的映射函數
+function getRoleName($roleCode) {
+    $roleMap = [
+        'STU' => '學生',
+        'TEA' => '老師',
+        'ADM' => '管理員',
+        'STA' => '行政人員',
+        'DI' => '主任',
+        // 兼容舊代碼
+        'student' => '學生',
+        'teacher' => '老師',
+        'admin' => '管理員',
+        'staff' => '行政人員',
+        'director' => '主任'
+    ];
+    return $roleMap[$roleCode] ?? $roleCode;
 }
 ?>
 
@@ -117,9 +145,6 @@ try {
             border: 1px solid #f0f0f0;
         }
         
-        .table-header {
-            /* 這個區塊現在是空的，可以移除或保留結構 */
-        }
         
         .table-search {
             display: flex;
@@ -414,6 +439,11 @@ try {
             font-size: 14px;
             transition: all 0.3s;
             background: #fff;
+            text-decoration: none;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 6px;
         }
         
         .btn-primary {
@@ -584,15 +614,18 @@ try {
         
         users.forEach(user => {
             const roleClass = getRoleClass(user.role);
-            const statusClass = getStatusClass(user.status);
+            // 確保 status 是數字類型
+            const userStatus = parseInt(user.status);
+            const statusClass = getStatusClass(userStatus);
+            const roleName = user.role_name || getRoleName(user.role);
             tableHTML += `
                 <tr>
                     <td>${user.id}</td>
                     <td>${user.username}</td>
                     <td>${user.name}</td>
                     <td>${user.email}</td>
-                    <td><span class="role-badge ${roleClass}">${user.role}</span></td>
-                    <td><span class="status-badge ${statusClass}">${user.status === 0 ? '停用' : '啟用'}</span></td>
+                    <td><span class="role-badge ${roleClass}">${roleName}</span></td>
+                    <td><span class="status-badge ${statusClass}">${userStatus === 0 ? '停用' : '啟用'}</span></td>
                     <td>
                         <div class="action-buttons">
                             <button onclick="viewUser(${user.id})" class="btn-view">查看</button>
@@ -609,20 +642,47 @@ try {
     
     // 獲取角色樣式類別
     function getRoleClass(role) {
-        switch (role) {
-            case 'student': return 'role-student';
-            case 'teacher': return 'role-teacher';
-            case 'admin': return 'role-admin';
+        // 支援新舊代碼格式
+        const roleUpper = role.toUpperCase();
+        switch (roleUpper) {
+            case 'STU':
+            case 'STUDENT': return 'role-student';
+            case 'TEA':
+            case 'TEACHER': return 'role-teacher';
+            case 'ADM':
+            case 'ADMIN': return 'role-admin';
+            case 'STA':
+            case 'STAFF': return 'role-teacher'; // 行政人員使用老師樣式
+            case 'DI':
+            case 'DIRECTOR': return 'role-admin'; // 主任使用管理員樣式
             default: return 'role-student';
         }
+    }
+    
+    // 獲取角色中文名稱
+    function getRoleName(roleCode) {
+        const roleMap = {
+            'STU': '學生', 'student': '學生',
+            'TEA': '老師', 'teacher': '老師',
+            'ADM': '管理員', 'admin': '管理員',
+            'STA': '行政人員', 'staff': '行政人員',
+            'DI': '主任', 'director': '主任'
+        };
+        const roleUpper = roleCode.toUpperCase();
+        return roleMap[roleCode] || roleMap[roleUpper] || roleCode;
     }
 
     // 獲取狀態樣式類別
     function getStatusClass(status) {
-        switch (status) {
-            case 0: return 'status-0';
-            case 1: return 'status-1';
-            default: return 'status-0'; // 預設為停用
+        // 確保 status 是數字類型，處理字符串 "0", "1" 或數字 0, 1
+        const statusNum = parseInt(status, 10);
+        if (isNaN(statusNum)) {
+            return 'status-0'; // 如果無法解析，預設為停用
+        }
+        if (statusNum === 1) {
+            return 'status-1'; // 啟用 - 綠色
+        } else {
+            return 'status-0'; // 停用 - 紅色
         }
     }
     
@@ -637,8 +697,11 @@ try {
             document.getElementById('viewUsername').value = user.username;
             document.getElementById('viewName').value = user.name;
             document.getElementById('viewEmail').value = user.email;
-            document.getElementById('viewRole').value = user.role;
-            document.getElementById('viewStatus').value = user.status == 0 ? '停用' : '啟用';
+            const roleName = user.role_name || getRoleName(user.role);
+            document.getElementById('viewRole').value = roleName;
+            // 確保 status 是數字類型
+            const userStatus = parseInt(user.status);
+            document.getElementById('viewStatus').value = userStatus === 0 ? '停用' : '啟用';
             
             document.getElementById('viewModal').style.display = 'block';
         } else {
