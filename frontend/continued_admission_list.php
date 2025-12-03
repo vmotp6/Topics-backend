@@ -30,23 +30,36 @@ try {
     die("資料庫連接失敗: " . $e->getMessage());
 }
 
+// 排序參數
+$sortBy = $_GET['sort_by'] ?? 'created_at';
+$sortOrder = $_GET['sort_order'] ?? 'desc';
+
+// 驗證排序參數，防止 SQL 注入
+$allowed_columns = ['id', 'apply_no', 'name', 'school', 'status', 'created_at'];
+if (!in_array($sortBy, $allowed_columns)) {
+    $sortBy = 'created_at';
+}
+if (!in_array(strtolower($sortOrder), ['asc', 'desc'])) {
+    $sortOrder = 'desc';
+}
+
 // 獲取續招報名資料（根據用戶權限過濾）
 if ($is_imd_user) {
     // IMD用戶只能看到志願選擇包含"資訊管理科"的續招報名
     // 從 continued_admission_choices 表檢查是否有 IM 科系
-    $stmt = $conn->prepare("SELECT DISTINCT ca.id, ca.apply_no, ca.name, ca.school, ca.status, sd.name as school_name
+    $stmt = $conn->prepare("SELECT DISTINCT ca.id, ca.apply_no, ca.name, ca.school, ca.status, ca.created_at, sd.name as school_name
                           FROM continued_admission ca
                           LEFT JOIN school_data sd ON ca.school = sd.school_code
                           INNER JOIN continued_admission_choices cac ON ca.id = cac.application_id
                           INNER JOIN departments d ON cac.department_code = d.code
                           WHERE d.code = 'IM' OR d.name LIKE '%資訊管理%' OR d.name LIKE '%資管%'
-                          ORDER BY ca.created_at DESC");
+                          ORDER BY ca.$sortBy $sortOrder");
 } else {
     // 一般管理員可以看到所有續招報名
-    $stmt = $conn->prepare("SELECT ca.id, ca.apply_no, ca.name, ca.school, ca.status, sd.name as school_name 
+    $stmt = $conn->prepare("SELECT ca.id, ca.apply_no, ca.name, ca.school, ca.status, ca.created_at, sd.name as school_name 
                           FROM continued_admission ca
                           LEFT JOIN school_data sd ON ca.school = sd.school_code
-                          ORDER BY ca.created_at DESC");
+                          ORDER BY ca.$sortBy $sortOrder");
 }
 $stmt->execute();
 $applications = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
@@ -184,8 +197,41 @@ function getStatusClass($status) {
 
         .table-container { overflow-x: auto; }
         .table { width: 100%; border-collapse: collapse; }
-        .table th, .table td { padding: 16px; text-align: left; border-bottom: 1px solid var(--border-color); font-size: 14px; white-space: nowrap; }
-        .table th { background: #fafafa; font-weight: 600; }
+        .table th, .table td { 
+            padding: 16px 24px; 
+            text-align: left; 
+            border-bottom: 1px solid var(--border-color); 
+            font-size: 16px; 
+            white-space: nowrap; 
+        }
+        .table th { 
+            background: #fafafa; 
+            font-weight: 600; 
+            color: #262626; 
+            cursor: pointer; 
+            user-select: none; 
+            position: relative; 
+        }
+        .table th:hover { 
+            background: #f0f0f0; 
+        }
+        .sort-icon {
+            margin-left: 8px;
+            font-size: 12px;
+            color: #8c8c8c;
+        }
+        .sort-icon.active {
+            color: #1890ff;
+        }
+        .sort-icon.asc::after {
+            content: "↑";
+        }
+        .sort-icon.desc::after {
+            content: "↓";
+        }
+        .table td {
+            color: #595959;
+        }
         .table tr:hover { background: #fafafa; }
 
         .search-input { padding: 8px 12px; border: 1px solid #d9d9d9; border-radius: 6px; font-size: 14px; width: 250px; }
@@ -336,11 +382,11 @@ function getStatusClass($status) {
                             <table class="table" id="applicationTable">
                                 <thead>
                                     <tr>
-                                        <th>報名編號</th>
-                                        <th>姓名</th>
-                                        <th>就讀國中</th>
+                                        <th onclick="sortTable('apply_no')">報名編號 <span class="sort-icon" id="sort-apply_no"></span></th>
+                                        <th onclick="sortTable('name')">姓名 <span class="sort-icon" id="sort-name"></span></th>
+                                        <th onclick="sortTable('school')">就讀國中 <span class="sort-icon" id="sort-school"></span></th>
                                         <th>志願</th>
-                                        <th>審核狀態</th>
+                                        <th onclick="sortTable('status')">審核狀態 <span class="sort-icon" id="sort-status"></span></th>
                                         <th>操作</th>
                                     </tr>
                                 </thead>
@@ -417,6 +463,42 @@ function getStatusClass($status) {
     <div id="toast" style="position: fixed; top: 20px; right: 20px; background-color: #333; color: white; padding: 15px 20px; border-radius: 8px; z-index: 9999; display: none; opacity: 0; transition: opacity 0.5s;"></div>
 
     <script>
+    // 排序表格
+    function sortTable(field) {
+        let newSortOrder = 'asc';
+        
+        // 如果點擊的是當前排序欄位，則切換排序方向
+        const urlParams = new URLSearchParams(window.location.search);
+        const currentSortBy = urlParams.get('sort_by') || 'created_at';
+        const currentSortOrder = urlParams.get('sort_order') || 'desc';
+        
+        if (currentSortBy === field) {
+            newSortOrder = currentSortOrder === 'asc' ? 'desc' : 'asc';
+        }
+        
+        window.location.href = `continued_admission_list.php?sort_by=${field}&sort_order=${newSortOrder}`;
+    }
+    
+    // 更新排序圖標
+    function updateSortIcons() {
+        // 清除所有圖標
+        const icons = document.querySelectorAll('.sort-icon');
+        icons.forEach(icon => {
+            icon.className = 'sort-icon';
+        });
+        
+        // 獲取當前 URL 的排序參數
+        const urlParams = new URLSearchParams(window.location.search);
+        const currentSortBy = urlParams.get('sort_by') || 'created_at';
+        const currentSortOrder = urlParams.get('sort_order') || 'desc';
+        
+        // 設置當前排序欄位的圖標
+        const currentIcon = document.getElementById(`sort-${currentSortBy}`);
+        if (currentIcon) {
+            currentIcon.className = `sort-icon active ${currentSortOrder}`;
+        }
+    }
+    
     function showToast(message, isSuccess = true) {
         const toast = document.getElementById('toast');
         toast.textContent = message;
@@ -429,8 +511,9 @@ function getStatusClass($status) {
         }, 3000);
     }
 
-
     document.addEventListener('DOMContentLoaded', function() {
+        // 更新排序圖標
+        updateSortIcons();
         const searchInput = document.getElementById('searchInput');
         const table = document.getElementById('applicationTable');
         const rows = table ? table.getElementsByTagName('tbody')[0].getElementsByTagName('tr') : [];

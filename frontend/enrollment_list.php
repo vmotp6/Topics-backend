@@ -105,6 +105,19 @@ if ($is_imd_user) {
     $page_title = '就讀意願名單';
 }
 
+// 排序參數
+$sortBy = $_GET['sort_by'] ?? 'created_at';
+$sortOrder = $_GET['sort_order'] ?? 'desc';
+
+// 驗證排序參數，防止 SQL 注入
+$allowed_columns = ['id', 'name', 'junior_high', 'assigned_department', 'created_at'];
+if (!in_array($sortBy, $allowed_columns)) {
+    $sortBy = 'created_at';
+}
+if (!in_array(strtolower($sortOrder), ['asc', 'desc'])) {
+    $sortOrder = 'desc';
+}
+
 // 基礎 SELECT 語句：新增三個志願的名稱、學制名稱和【科系代碼】
 $base_select = "
     SELECT 
@@ -138,7 +151,7 @@ $base_from_join = "
     LEFT JOIN education_systems es3 ON ec3.system_code = es3.code
 ";
 
-$order_by = " ORDER BY ei.created_at DESC";
+$order_by = " ORDER BY ei.$sortBy $sortOrder";
 
 try {
     // 建立資料庫連接
@@ -388,6 +401,29 @@ try {
         .sort-icon.asc::after { content: "↑"; }
         .sort-icon.desc::after { content: "↓"; }
         .table tr:hover { background: #fafafa; }
+        
+        .detail-row {
+            background: #f9f9f9;
+        }
+        
+        .info-row {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+            margin-bottom: 4px;
+        }
+        .info-label {
+            font-weight: 600;
+            color: var(--text-secondary-color);
+            min-width: 80px;
+        }
+        .info-value {
+            color: var(--text-color);
+        }
+        
+        .table-row-clickable {
+            cursor: pointer;
+        }
 
         .search-input {
             padding: 8px 12px;
@@ -780,32 +816,16 @@ try {
                             <table class="table" id="enrollmentTable">
                                 <thead>
                                     <tr>
-                                        <th onclick="sortTable(0)">姓名</th>
-                                        <th onclick="sortTable(1)">身分別</th>
-                                        <th onclick="sortTable(2)">性別</th>
-                                        <th onclick="sortTable(3)">聯絡電話一</th>
-                                        <th onclick="sortTable(4)">聯絡電話二</th>
-                                        <th onclick="sortTable(5)">Email</th>
-                                        <th onclick="sortTable(6)">就讀學校</th>
-                                        <th onclick="sortTable(7)">年級</th>
-                                        <?php if ($is_imd_user): ?>
-                                        <th onclick="sortTable(8)">意願(學制)</th>
-                                        <?php else: ?>
-                                        <th onclick="sortTable(8)">意願一 (學制)</th>
-                                        <th onclick="sortTable(9)">意願二 (學制)</th>
-                                        <th onclick="sortTable(10)">意願三 (學制)</th>
-                                        <?php endif; ?>
-                                        <th onclick="sortTable(11)">Line ID</th>
-                                        <th onclick="sortTable(12)">Facebook</th>
-                                        <th onclick="sortTable(13)">備註</th>
-                                        <th onclick="sortTable(14, 'date')">填寫日期</th>
+                                        <th onclick="sortTable('name')">姓名 <span class="sort-icon" id="sort-name"></span></th>
+                                        <th>意願</th>
+                                        <th onclick="sortTable('junior_high')">就讀國中 <span class="sort-icon" id="sort-junior_high"></span></th>
+                                        <th>年級</th>
                                         <?php if ($is_admission_center): ?>
-                                        <th onclick="sortTable(15)">分配部門</th>
-                                        <th>操作</th>
+                                        <th onclick="sortTable('assigned_department')">分配部門 <span class="sort-icon" id="sort-assigned_department"></span></th>
                                         <?php elseif ($is_department_user): ?>
-                                        <th onclick="sortTable(15)">分配狀態</th>
-                                        <th>操作</th>
+                                        <th>分配狀態</th>
                                         <?php endif; ?>
+                                        <th>操作</th>
                                     </tr>
                                 </thead>
                                 <tbody>
@@ -863,28 +883,23 @@ try {
                                     $chosen_codes_json = json_encode(array_unique($chosen_codes));
                                     
                                     ?>
-                                    <tr>
+                                    <tr class="table-row-clickable" onclick="toggleDetail(<?php echo $item['id']; ?>)">
                                         <td><?php echo htmlspecialchars($item['name']); ?></td>
-                                        <td><?php echo getIdentityText($item['identity'] ?? '', $identity_options); ?></td>
-                                        <td><?php echo getGenderText($item['gender'] ?? ''); ?></td>
-                                        <td><?php echo htmlspecialchars($item['phone1']); ?></td>
-                                        <td><?php echo htmlspecialchars($phone2); ?></td>
-                                        <td><?php echo htmlspecialchars($item['email']); ?></td>
+                                        <td>
+                                            <?php if ($is_imd_user): ?>
+                                                <?php echo $imd_single_display; ?>
+                                            <?php else: ?>
+                                                <?php echo $display_text1; ?>
+                                                <?php if (!empty($display_text2) && $display_text2 !== '無意願'): ?>
+                                                    <br><?php echo $display_text2; ?>
+                                                <?php endif; ?>
+                                                <?php if (!empty($display_text3) && $display_text3 !== '無意願'): ?>
+                                                    <br><?php echo $display_text3; ?>
+                                                <?php endif; ?>
+                                            <?php endif; ?>
+                                        </td>
                                         <td><?php echo getSchoolName($item['junior_high'] ?? '', $school_data); ?></td>
                                         <td><?php echo getIdentityText($item['current_grade'] ?? '', $identity_options); ?></td>
-                                        
-                                        <?php if ($is_imd_user): ?>
-                                        <td><?php echo $imd_single_display; ?></td>
-                                        <?php else: ?>
-                                        <td><?php echo $display_text1; ?></td>
-                                        <td><?php echo $display_text2; ?></td>
-                                        <td><?php echo $display_text3; ?></td>
-                                        <?php endif; ?>
-                                        
-                                        <td><?php echo htmlspecialchars($line_id); ?></td>
-                                        <td><?php echo htmlspecialchars($facebook); ?></td>
-                                        <td><?php echo htmlspecialchars($remarks); ?></td>
-                                        <td><?php echo date('Y/m/d H:i', strtotime($item['created_at'])); ?></td>
                                         <?php if ($is_admission_center): ?>
                                         <td>
                                             <?php if (!empty($item['assigned_department'])): ?>
@@ -898,7 +913,7 @@ try {
                                                 </span>
                                             <?php endif; ?>
                                         </td>
-                                        <td>
+                                        <td onclick="event.stopPropagation();">
                                             <?php if (!empty($item['assigned_department'])): ?>
                                             <button class="assign-btn" 
                                                     style="background: #28a745;"
@@ -906,7 +921,7 @@ try {
                                                     data-student-name="<?php echo htmlspecialchars($item['name'], ENT_QUOTES, 'UTF-8'); ?>"
                                                     data-current-department="<?php echo htmlspecialchars($item['assigned_department'], ENT_QUOTES, 'UTF-8'); ?>"
                                                     data-chosen-codes="<?php echo htmlspecialchars($chosen_codes_json, ENT_QUOTES, 'UTF-8'); ?>"
-                                                    onclick="openAssignDepartmentModalFromButton(this)">
+                                                    onclick="event.stopPropagation(); openAssignDepartmentModalFromButton(this)">
                                                 <i class="fas fa-check-circle"></i> 已分配
                                             </button>
                                             <?php else: ?>
@@ -915,7 +930,7 @@ try {
                                                     data-student-name="<?php echo htmlspecialchars($item['name'], ENT_QUOTES, 'UTF-8'); ?>"
                                                     data-current-department=""
                                                     data-chosen-codes="<?php echo htmlspecialchars($chosen_codes_json, ENT_QUOTES, 'UTF-8'); ?>"
-                                                    onclick="openAssignDepartmentModalFromButton(this)">
+                                                    onclick="event.stopPropagation(); openAssignDepartmentModalFromButton(this)">
                                                 <i class="fas fa-building"></i> 分配
                                             </button>
                                             <?php endif; ?>
@@ -927,14 +942,14 @@ try {
                                                 <span style="color: #52c41a;">
                                                     <i class="fas fa-check-circle"></i> 已分配 - 
                                                     <?php echo htmlspecialchars($item['teacher_name'] ?? $item['teacher_username'] ?? '未知老師'); ?>
-                                                </span >
+                                                </span>
                                             <?php else: ?>
                                                 <span style="color: #8c8c8c;">
                                                     <i class="fas fa-clock"></i> 未分配
-                                                </span >
+                                                </span>
                                             <?php endif; ?>
                                         </td>
-                                        <td>
+                                        <td onclick="event.stopPropagation();">
                                             <div style="display: flex; gap: 8px; flex-wrap: wrap;">
                                                 <?php if (!empty($item['assigned_teacher_id'])): ?>
                                                 <button class="assign-btn" 
@@ -943,7 +958,7 @@ try {
                                                         data-student-name="<?php echo htmlspecialchars($item['name'], ENT_QUOTES, 'UTF-8'); ?>"
                                                         data-current-teacher-id="<?php echo $item['assigned_teacher_id']; ?>"
                                                         data-chosen-codes="<?php echo htmlspecialchars($chosen_codes_json, ENT_QUOTES, 'UTF-8'); ?>"
-                                                        onclick="openAssignModalFromButton(this)">
+                                                        onclick="event.stopPropagation(); openAssignModalFromButton(this)">
                                                     <i class="fas fa-check-circle"></i> 已分配
                                                 </button>
                                                 <?php else: ?>
@@ -952,18 +967,100 @@ try {
                                                         data-student-name="<?php echo htmlspecialchars($item['name'], ENT_QUOTES, 'UTF-8'); ?>"
                                                         data-current-teacher-id=""
                                                         data-chosen-codes="<?php echo htmlspecialchars($chosen_codes_json, ENT_QUOTES, 'UTF-8'); ?>"
-                                                        onclick="openAssignModalFromButton(this)">
+                                                        onclick="event.stopPropagation(); openAssignModalFromButton(this)">
                                                     <i class="fas fa-user-plus"></i> 分配
                                                 </button>
                                                 <?php endif; ?>
                                                 <?php if (!empty($item['assigned_teacher_id'])): ?>
-                                                <button class="assign-btn" style="background: #17a2b8;" onclick="openContactLogsModal(<?php echo $item['id']; ?>, '<?php echo htmlspecialchars($item['name']); ?>')">
+                                                <button class="assign-btn" style="background: #17a2b8;" onclick="event.stopPropagation(); openContactLogsModal(<?php echo $item['id']; ?>, '<?php echo htmlspecialchars($item['name']); ?>')">
                                                     <i class="fas fa-address-book"></i> 查看聯絡紀錄
                                                 </button>
                                                 <?php endif; ?>
                                             </div>
                                         </td>
+                                        <?php else: ?>
+                                        <td></td>
                                         <?php endif; ?>
+                                    </tr>
+                                    <tr id="detail-<?php echo $item['id']; ?>" class="detail-row" style="display: none;">
+                                        <td colspan="<?php echo $is_admission_center || $is_department_user ? '6' : '5'; ?>" style="padding: 20px; background: #f9f9f9; border: 2px solid #b3d9ff; border-radius: 4px;">
+                                            <table style="width: 100%; border-collapse: collapse;">
+                                                <tr>
+                                                    <td style="width: 50%; vertical-align: top; padding-right: 20px;">
+                                                        <h4 style="margin: 0 0 10px 0; font-size: 16px;">基本資料</h4>
+                                                        <table style="width: 100%; border-collapse: collapse; font-size: 14px;">
+                                                            <tr>
+                                                                <td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5; width: 120px;">姓名</td>
+                                                                <td style="padding: 5px; border: 1px solid #ddd;"><?php echo htmlspecialchars($item['name']); ?></td>
+                                                            </tr>
+                                                            <tr>
+                                                                <td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">身分別</td>
+                                                                <td style="padding: 5px; border: 1px solid #ddd;"><?php echo getIdentityText($item['identity'] ?? '', $identity_options); ?></td>
+                                                            </tr>
+                                                            <tr>
+                                                                <td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">性別</td>
+                                                                <td style="padding: 5px; border: 1px solid #ddd;"><?php echo getGenderText($item['gender'] ?? ''); ?></td>
+                                                            </tr>
+                                                            <tr>
+                                                                <td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">聯絡電話一</td>
+                                                                <td style="padding: 5px; border: 1px solid #ddd;"><?php echo htmlspecialchars($item['phone1']); ?></td>
+                                                            </tr>
+                                                            <tr>
+                                                                <td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">聯絡電話二</td>
+                                                                <td style="padding: 5px; border: 1px solid #ddd;"><?php echo htmlspecialchars($phone2); ?></td>
+                                                            </tr>
+                                                            <tr>
+                                                                <td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">Email</td>
+                                                                <td style="padding: 5px; border: 1px solid #ddd;"><?php echo htmlspecialchars($item['email']); ?></td>
+                                                            </tr>
+                                                            <tr>
+                                                                <td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">就讀學校</td>
+                                                                <td style="padding: 5px; border: 1px solid #ddd;"><?php echo getSchoolName($item['junior_high'] ?? '', $school_data); ?></td>
+                                                            </tr>
+                                                            <tr>
+                                                                <td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">年級</td>
+                                                                <td style="padding: 5px; border: 1px solid #ddd;"><?php echo getIdentityText($item['current_grade'] ?? '', $identity_options); ?></td>
+                                                            </tr>
+                                                        </table>
+                                                    </td>
+                                                    <td style="width: 50%; vertical-align: top; padding-left: 20px;">
+                                                        <h4 style="margin: 0 0 10px 0; font-size: 16px;">其他資訊</h4>
+                                                        <table style="width: 100%; border-collapse: collapse; font-size: 14px;">
+                                                            <?php if (!$is_imd_user): ?>
+                                                            <tr>
+                                                                <td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5; width: 120px;">意願一</td>
+                                                                <td style="padding: 5px; border: 1px solid #ddd;"><?php echo $display_text1; ?></td>
+                                                            </tr>
+                                                            <tr>
+                                                                <td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">意願二</td>
+                                                                <td style="padding: 5px; border: 1px solid #ddd;"><?php echo $display_text2; ?></td>
+                                                            </tr>
+                                                            <tr>
+                                                                <td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">意願三</td>
+                                                                <td style="padding: 5px; border: 1px solid #ddd;"><?php echo $display_text3; ?></td>
+                                                            </tr>
+                                                            <?php endif; ?>
+                                                            <tr>
+                                                                <td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">LINE ID</td>
+                                                                <td style="padding: 5px; border: 1px solid #ddd;"><?php echo htmlspecialchars($line_id); ?></td>
+                                                            </tr>
+                                                            <tr>
+                                                                <td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">Facebook</td>
+                                                                <td style="padding: 5px; border: 1px solid #ddd;"><?php echo htmlspecialchars($facebook); ?></td>
+                                                            </tr>
+                                                            <tr>
+                                                                <td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">備註</td>
+                                                                <td style="padding: 5px; border: 1px solid #ddd;"><?php echo htmlspecialchars($remarks); ?></td>
+                                                            </tr>
+                                                            <tr>
+                                                                <td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">填寫日期</td>
+                                                                <td style="padding: 5px; border: 1px solid #ddd;"><?php echo date('Y/m/d H:i', strtotime($item['created_at'])); ?></td>
+                                                            </tr>
+                                                        </table>
+                                                    </td>
+                                                </tr>
+                                            </table>
+                                        </td>
                                     </tr>
                                     <?php endforeach; ?>
                                 </tbody>
@@ -1067,79 +1164,87 @@ try {
                 const filter = searchInput.value.toLowerCase();
                 
                 for (let i = 0; i < rows.length; i++) {
-                    const nameCell = rows[i].getElementsByTagName('td')[0];
-                    const phoneCell = rows[i].getElementsByTagName('td')[3]; // 聯絡電話一的欄位索引
+                    // 跳過詳細資訊行
+                    if (rows[i].classList.contains('detail-row')) {
+                        continue;
+                    }
                     
-                    if (nameCell || phoneCell) {
-                        const nameText = nameCell.textContent || nameCell.innerText;
-                        const phoneText = phoneCell.textContent || phoneCell.innerText;
-                        
-                        if (nameText.toLowerCase().indexOf(filter) > -1 || phoneText.toLowerCase().indexOf(filter) > -1) {
-                            rows[i].style.display = "";
-                        } else {
-                            rows[i].style.display = "none";
+                    const cells = rows[i].getElementsByTagName('td');
+                    let found = false;
+                    
+                    // 搜尋所有可見欄位
+                    for (let j = 0; j < cells.length; j++) {
+                        const cellText = cells[j].textContent || cells[j].innerText;
+                        if (cellText.toLowerCase().indexOf(filter) > -1) {
+                            found = true;
+                            break;
                         }
                     }
-                }
-            });
-        }
-
-        window.sortTable = function(colIndex, type = 'string') {
-            const table = document.getElementById('enrollmentTable');
-            const tbody = table.getElementsByTagName('tbody')[0];
-            const rows = Array.from(tbody.getElementsByTagName('tr'));
-            
-            const currentOrder = sortStates[colIndex] === 'asc' ? 'desc' : 'asc';
-            sortStates = { [colIndex]: currentOrder }; // Reset other column states
-
-            rows.sort((a, b) => {
-                const valA = a.getElementsByTagName('td')[colIndex].textContent.trim();
-                const valB = b.getElementsByTagName('td')[colIndex].textContent.trim();
-
-                let comparison = 0;
-                if (type === 'date') {
-                    comparison = new Date(valA) - new Date(valB);
-                } else if (!isNaN(valA) && !isNaN(valB)) {
-                    comparison = parseFloat(valA) - parseFloat(valB);
-                } else {
-                    comparison = valA.localeCompare(valB, 'zh-Hant');
-                }
-
-                return currentOrder === 'asc' ? comparison : -comparison;
-            });
-
-            // Re-append sorted rows
-            rows.forEach(row => tbody.appendChild(row));
-
-            // Update sort icons
-            updateSortIcons(colIndex, currentOrder);
-        };
-
-        function updateSortIcons(activeIndex, order) {
-            const headers = document.querySelectorAll('#enrollmentTable th');
-            headers.forEach((th, index) => {
-                const icon = th.querySelector('.sort-icon');
-                if (icon) {
-                    if (index === activeIndex) {
-                        icon.className = `sort-icon active ${order}`;
-                    } else {
-                        icon.className = 'sort-icon';
+                    
+                    rows[i].style.display = found ? "" : "none";
+                    // 如果主行隱藏，也隱藏對應的詳細行
+                    const detailRow = rows[i].nextElementSibling;
+                    if (detailRow && detailRow.classList.contains('detail-row')) {
+                        detailRow.style.display = found ? detailRow.style.display : "none";
                     }
                 }
             });
         }
 
-        // Initial sort by date desc
-        function initialSort() {
-            const dateColumnIndex = 14;
-            sortStates = { [dateColumnIndex]: 'desc' };
-            sortTable(dateColumnIndex, 'date'); // Sort once to set desc
-            sortTable(dateColumnIndex, 'date'); // Sort again to trigger desc
+        // 排序表格
+        function sortTable(field) {
+            let newSortOrder = 'asc';
+            
+            // 如果點擊的是當前排序欄位，則切換排序方向
+            const urlParams = new URLSearchParams(window.location.search);
+            const currentSortBy = urlParams.get('sort_by') || 'created_at';
+            const currentSortOrder = urlParams.get('sort_order') || 'desc';
+            
+            if (currentSortBy === field) {
+                newSortOrder = currentSortOrder === 'asc' ? 'desc' : 'asc';
+            }
+            
+            window.location.href = `enrollment_list.php?sort_by=${field}&sort_order=${newSortOrder}`;
         }
-
-        if (rows.length > 0) {
-            initialSort();
+        
+        // 更新排序圖標
+        function updateSortIcons() {
+            // 清除所有圖標
+            const icons = document.querySelectorAll('.sort-icon');
+            icons.forEach(icon => {
+                icon.className = 'sort-icon';
+            });
+            
+            // 獲取當前 URL 的排序參數
+            const urlParams = new URLSearchParams(window.location.search);
+            const currentSortBy = urlParams.get('sort_by') || 'created_at';
+            const currentSortOrder = urlParams.get('sort_order') || 'desc';
+            
+            // 設置當前排序欄位的圖標
+            const currentIcon = document.getElementById(`sort-${currentSortBy}`);
+            if (currentIcon) {
+                currentIcon.className = `sort-icon active ${currentSortOrder}`;
+            }
         }
+        
+        // 展開/收合詳細資訊
+        function toggleDetail(id) {
+            const detailRow = document.getElementById('detail-' + id);
+            if (detailRow) {
+                if (detailRow.style.display === 'none' || detailRow.style.display === '') {
+                    detailRow.style.display = 'table-row';
+                } else {
+                    detailRow.style.display = 'none';
+                }
+            }
+        }
+        
+        // 將函數暴露到全局作用域
+        window.sortTable = sortTable;
+        window.toggleDetail = toggleDetail;
+        
+        // 更新排序圖標
+        updateSortIcons();
     });
 
     // 分配學生相關變數
