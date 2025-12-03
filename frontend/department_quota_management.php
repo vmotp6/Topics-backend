@@ -98,6 +98,7 @@ $current_page = 'department_quota_management';
         .form-group input:focus { outline: none; border-color: var(--primary-color); box-shadow: 0 0 0 2px rgba(24, 144, 255, 0.2); }
         .form-group input[readonly] { background: #f5f5f5; cursor: not-allowed; }
         .empty-state { text-align: center; padding: 40px; color: var(--text-secondary-color); }
+        .required-asterisk { color: var(--danger-color); margin-right: 4px; }
     </style>
 </head>
 <body>
@@ -142,7 +143,7 @@ $current_page = 'department_quota_management';
                     <input type="text" id="quotaDepartmentName" readonly>
                 </div>
                 <div class="form-group">
-                    <label for="quotaValue">招生名額 *</label>
+                    <label for="quotaValue"><span class="required-asterisk">*</span>招生名額</label>
                     <input type="number" id="quotaValue" name="total_quota" min="0" required>
                 </div>
                 <div style="display: flex; gap: 12px; justify-content: flex-end;">

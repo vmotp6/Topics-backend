@@ -255,6 +255,32 @@ function getStatusClass($status) {
             outline: none;
             border-color: var(--primary-color);
         }
+        
+        .btn {
+            padding: 8px 16px;
+            border: 1px solid #d9d9d9;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 14px;
+            transition: all 0.3s;
+            background: #fff;
+            text-decoration: none;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 6px;
+        }
+        
+        .btn-primary {
+            background: #1890ff;
+            color: white;
+            border-color: #1890ff;
+        }
+        
+        .btn-primary:hover {
+            background: #40a9ff;
+            border-color: #40a9ff;
+        }
 
         .btn-view {
             padding: 4px 12px; border: 1px solid #1890ff; border-radius: 4px; cursor: pointer;
@@ -312,12 +338,12 @@ function getStatusClass($status) {
                     <div class="card-header">
                         <h3><i class="fas fa-graduation-cap"></i> 科系名額管理</h3>
                         <?php if (!empty($department_stats)): ?>
-                            <a href="department_quota_management.php" class="btn-secondary">
-                                <i class="fas fa-cog"></i> 管理名額
+                            <a href="department_quota_management.php" class="btn btn-primary" style="padding: 8px 12px; font-size: 14px;">
+                                <i class="fas fa-cog" style="margin-right: 6px;"></i> 管理名額
                             </a>
                         <?php else: ?>
-                            <a href="setup_department_quotas.php" class="btn-primary">
-                                <i class="fas fa-database"></i> 設定名額
+                            <a href="setup_department_quotas.php" class="btn btn-primary" style="padding: 8px 12px; font-size: 14px;">
+                                <i class="fas fa-database" style="margin-right: 6px;"></i> 設定名額
                             </a>
                         <?php endif; ?>
                     </div>

@@ -263,6 +263,7 @@ $conn->close();
         .close:hover { color: var(--text-color); }
         .modal-body { padding: 24px; }
         .modal-footer { padding: 16px 24px; border-top: 1px solid var(--border-color); display: flex; justify-content: flex-end; gap: 8px; background: #fafafa; }
+        .required-asterisk { color: var(--danger-color); margin-right: 4px; }
 
 
          .pagination {
@@ -433,7 +434,7 @@ $conn->close();
                 <input type="hidden" name="action" value="add_contact">
                 <div class="modal-body">
                     <div class="form-group">
-                        <label class="form-label">學校 *</label>
+                        <label class="form-label"><span class="required-asterisk">*</span>學校</label>
                         <select name="school_code" class="form-control" required>
                             <option value="">請選擇學校</option>
                             <?php foreach ($schools as $school): ?>
@@ -449,16 +450,16 @@ $conn->close();
                     </div>
                     <div class="form-row">
                         <div class="form-group">
-                            <label class="form-label">Email *</label>
+                            <label class="form-label"><span class="required-asterisk">*</span> Email</label>
                             <input type="email" name="email" class="form-control" required>
                         </div>
                         <div class="form-group">
-                            <label class="form-label">電話 *</label>
+                            <label class="form-label"><span class="required-asterisk">*</span> 電話</label>
                             <input type="text" name="phone" class="form-control" required>
                         </div>
                     </div>
                     <div class="form-group">
-                        <label class="form-label">職稱 *</label>
+                        <label class="form-label"><span class="required-asterisk">*</span> 職稱</label>
                         <input type="text" name="title" class="form-control" required placeholder="例如：校長、主任、組長">
                     </div>
                 </div>
@@ -482,7 +483,7 @@ $conn->close();
                 <input type="hidden" name="contact_id" id="edit_contact_id">
                 <div class="modal-body">
                     <div class="form-group">
-                        <label class="form-label">學校 *</label>
+                        <label class="form-label"><span class="required-asterisk">*</span> 學校</label>
                         <select name="school_code" id="edit_school_code" class="form-control" required>
                             <option value="">請選擇學校</option>
                             <?php foreach ($schools as $school): ?>
@@ -498,21 +499,21 @@ $conn->close();
                     </div>
                     <div class="form-row">
                         <div class="form-group">
-                            <label class="form-label">Email *</label>
+                            <label class="form-label"><span class="required-asterisk">*</span> Email</label>
                             <input type="email" name="email" id="edit_email" class="form-control" required>
                         </div>
                         <div class="form-group">
-                            <label class="form-label">電話 *</label>
+                            <label class="form-label"><span class="required-asterisk">*</span> 電話</label>
                             <input type="text" name="phone" id="edit_phone" class="form-control" required>
                         </div>
                     </div>
                     <div class="form-row">
                         <div class="form-group">
-                            <label class="form-label">職稱 *</label>
+                            <label class="form-label"><span class="required-asterisk">*</span> 職稱</label>
                             <input type="text" name="title" id="edit_title" class="form-control" required>
                         </div>
                         <div class="form-group">
-                            <label class="form-label">狀態 *</label>
+                            <label class="form-label"><span class="required-asterisk">*</span> 狀態</label>
                             <select name="is_active" id="edit_is_active" class="form-control" required>
                                 <option value="1">啟用</option>
                                 <option value="0">停用</option>

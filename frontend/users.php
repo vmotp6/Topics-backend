@@ -469,6 +469,72 @@ function getRoleName($roleCode) {
             color: #40a9ff;
         }
         
+        /* 分頁樣式 */
+        .pagination {
+            padding: 16px 24px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-top: 1px solid #f0f0f0;
+            background: #fafafa;
+        }
+
+        .pagination-info {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            color: #8c8c8c;
+            font-size: 14px;
+        }
+
+        .pagination-controls {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .pagination select {
+            padding: 6px 12px;
+            border: 1px solid #d9d9d9;
+            border-radius: 6px;
+            font-size: 14px;
+            background: #fff;
+            cursor: pointer;
+        }
+
+        .pagination select:focus {
+            outline: none;
+            border-color: #1890ff;
+            box-shadow: 0 0 0 2px rgba(24,144,255,0.2);
+        }
+
+        .pagination button {
+            padding: 6px 12px;
+            border: 1px solid #d9d9d9;
+            background: #fff;
+            color: #595959;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 14px;
+            transition: all 0.3s;
+        }
+
+        .pagination button:hover:not(:disabled) {
+            border-color: #1890ff;
+            color: #1890ff;
+        }
+
+        .pagination button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .pagination button.active {
+            background: #1890ff;
+            color: white;
+            border-color: #1890ff;
+        }
+
         /* 響應式設計 */
         @media (max-width: 768px) {
             .table-search input {
@@ -514,6 +580,25 @@ function getRoleName($roleCode) {
                 <div class="table-container">
                     <div id="tableContainer" data-users='<?php echo json_encode($users); ?>'>
                         <div class="loading">載入中...</div>
+                    </div>
+                    <!-- 分頁控制 -->
+                    <div class="pagination" id="paginationContainer" style="display: none;">
+                        <div class="pagination-info">
+                            <span>每頁顯示：</span>
+                            <select id="itemsPerPage" onchange="changeItemsPerPage()">
+                                <option value="10" selected>10</option>
+                                <option value="20">20</option>
+                                <option value="50">50</option>
+                                <option value="100">100</option>
+                                <option value="all">全部</option>
+                            </select>
+                            <span id="pageInfo">顯示第 <span id="currentRange">1-10</span> 筆，共 0 筆</span>
+                        </div>
+                        <div class="pagination-controls">
+                            <button id="prevPage" onclick="changePage(-1)" disabled>上一頁</button>
+                            <span id="pageNumbers"></span>
+                            <button id="nextPage" onclick="changePage(1)">下一頁</button>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -638,6 +723,9 @@ function getRoleName($roleCode) {
         
         tableHTML += '</tbody></table>';
         tableContainer.innerHTML = tableHTML;
+        
+        // 初始化分頁
+        initPagination();
     }
     
     // 獲取角色樣式類別
@@ -746,6 +834,164 @@ function getRoleName($roleCode) {
         }, 3000);
     }
     
+    // 分頁相關變數
+    let currentPage = 1;
+    let itemsPerPage = 10;
+    let allRows = [];
+    let filteredRows = [];
+    
+    // 初始化分頁
+    function initPagination() {
+        const table = document.getElementById('userTable');
+        if (!table) return;
+        
+        const tbody = table.getElementsByTagName('tbody')[0];
+        if (!tbody) return;
+        
+        allRows = Array.from(tbody.getElementsByTagName('tr'));
+        filteredRows = allRows;
+        
+        // 顯示分頁控制
+        const paginationContainer = document.getElementById('paginationContainer');
+        if (paginationContainer && allRows.length > 0) {
+            paginationContainer.style.display = 'flex';
+        }
+        
+        // 初始化分頁
+        updatePagination();
+    }
+    
+    function changeItemsPerPage() {
+        const select = document.getElementById('itemsPerPage');
+        itemsPerPage = select.value === 'all' ? 
+                      filteredRows.length : 
+                      parseInt(select.value);
+        currentPage = 1;
+        updatePagination();
+    }
+
+    function changePage(direction) {
+        const totalPages = Math.ceil(filteredRows.length / itemsPerPage);
+        currentPage += direction;
+        
+        if (currentPage < 1) currentPage = 1;
+        if (currentPage > totalPages) currentPage = totalPages;
+        
+        updatePagination();
+    }
+
+    function goToPage(page) {
+        currentPage = page;
+        updatePagination();
+    }
+
+    function updatePagination() {
+        const totalItems = filteredRows.length;
+        const totalPages = itemsPerPage === 'all' ? 1 : Math.ceil(totalItems / itemsPerPage);
+        
+        // 隱藏所有行
+        allRows.forEach(row => row.style.display = 'none');
+        
+        if (itemsPerPage === 'all' || itemsPerPage >= totalItems) {
+            // 顯示所有過濾後的行
+            filteredRows.forEach(row => row.style.display = '');
+            
+            // 更新分頁資訊
+            document.getElementById('currentRange').textContent = 
+                totalItems > 0 ? `1-${totalItems}` : '0-0';
+        } else {
+            // 計算當前頁的範圍
+            const start = (currentPage - 1) * itemsPerPage;
+            const end = Math.min(start + itemsPerPage, totalItems);
+            
+            // 顯示當前頁的行
+            for (let i = start; i < end; i++) {
+                if (filteredRows[i]) {
+                    filteredRows[i].style.display = '';
+                }
+            }
+            
+            // 更新分頁資訊
+            document.getElementById('currentRange').textContent = 
+                totalItems > 0 ? `${start + 1}-${end}` : '0-0';
+        }
+        
+        // 更新總數
+        document.getElementById('pageInfo').innerHTML = 
+            `顯示第 <span id="currentRange">${document.getElementById('currentRange').textContent}</span> 筆，共 ${totalItems} 筆`;
+        
+        // 更新上一頁/下一頁按鈕
+        document.getElementById('prevPage').disabled = currentPage === 1;
+        document.getElementById('nextPage').disabled = currentPage >= totalPages;
+        
+        // 更新頁碼按鈕
+        updatePageNumbers(totalPages);
+    }
+
+    function updatePageNumbers(totalPages) {
+        const pageNumbers = document.getElementById('pageNumbers');
+        pageNumbers.innerHTML = '';
+        
+        if (totalPages <= 1) return;
+        
+        // 顯示最多 5 個頁碼
+        let startPage = Math.max(1, currentPage - 2);
+        let endPage = Math.min(totalPages, currentPage + 2);
+        
+        // 如果接近開頭，顯示前 5 頁
+        if (currentPage <= 3) {
+            startPage = 1;
+            endPage = Math.min(5, totalPages);
+        }
+        
+        // 如果接近結尾，顯示後 5 頁
+        if (currentPage >= totalPages - 2) {
+            startPage = Math.max(1, totalPages - 4);
+            endPage = totalPages;
+        }
+        
+        // 第一頁
+        if (startPage > 1) {
+            const btn = document.createElement('button');
+            btn.textContent = '1';
+            btn.onclick = () => goToPage(1);
+            if (currentPage === 1) btn.classList.add('active');
+            pageNumbers.appendChild(btn);
+            
+            if (startPage > 2) {
+                const ellipsis = document.createElement('span');
+                ellipsis.textContent = '...';
+                ellipsis.style.padding = '0 8px';
+                pageNumbers.appendChild(ellipsis);
+            }
+        }
+        
+        // 中間頁碼
+        for (let i = startPage; i <= endPage; i++) {
+            const btn = document.createElement('button');
+            btn.textContent = i;
+            btn.onclick = () => goToPage(i);
+            if (i === currentPage) btn.classList.add('active');
+            pageNumbers.appendChild(btn);
+        }
+        
+        // 最後一頁
+        if (endPage < totalPages) {
+            if (endPage < totalPages - 1) {
+                const ellipsis = document.createElement('span');
+                ellipsis.textContent = '...';
+                ellipsis.style.padding = '0 8px';
+                pageNumbers.appendChild(ellipsis);
+            }
+            
+            const btn = document.createElement('button');
+            btn.textContent = totalPages;
+            btn.onclick = () => goToPage(totalPages);
+            if (currentPage === totalPages) btn.classList.add('active');
+            pageNumbers.appendChild(btn);
+        }
+    }
+    
     // 表格搜尋功能
     function filterTable() {
         const input = document.getElementById('tableSearchInput');
@@ -754,29 +1000,27 @@ function getRoleName($roleCode) {
         
         if (!table) return;
         
-        const tr = table.getElementsByTagName('tr');
+        const tbody = table.getElementsByTagName('tbody')[0];
+        if (!tbody) return;
         
-        for (let i = 1; i < tr.length; i++) {
-            const td = tr[i].getElementsByTagName('td');
-            let found = false;
-            
-            for (let j = 0; j < td.length; j++) {
-                const cell = td[j];
+        allRows = Array.from(tbody.getElementsByTagName('tr'));
+        
+        filteredRows = allRows.filter(row => {
+            const cells = row.getElementsByTagName('td');
+            for (let j = 0; j < cells.length; j++) {
+                const cell = cells[j];
                 if (cell) {
                     const txtValue = cell.textContent || cell.innerText;
                     if (txtValue.toLowerCase().indexOf(filter) > -1) {
-                        found = true;
-                        break;
+                        return true;
                     }
                 }
             }
-            
-            if (found) {
-                tr[i].style.display = '';
-            } else {
-                tr[i].style.display = 'none';
-            }
-        }
+            return false;
+        });
+        
+        currentPage = 1;
+        updatePagination();
     }
     
     // 頁面載入時執行

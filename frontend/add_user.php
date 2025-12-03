@@ -300,13 +300,13 @@ try {
                     </div>
                     <form method="POST" class="form-body">
                         <div class="form-group">
-                            <label for="email">Email <span class="required">*</span></label>
+                            <label for="email"><span class="required">*</span> Email</label>
                             <textarea id="email" name="email" class="form-control" rows="5" placeholder="example1@gmail.com&#10;example2@gmail.com&#10;或使用逗號分隔：example1@gmail.com, example2@gmail.com" required><?php echo htmlspecialchars($emails_input, ENT_QUOTES, 'UTF-8'); ?></textarea>
                             <small style="display:block;margin-top:6px;color:#8c8c8c;">可一次輸入多個 Email，以換行或逗號分隔。系統將為每個 Email 建立一個帳號並寄送預設帳密，建議填寫 Gmail 以確保可收到通知。</small>
                         </div>
 
                         <div class="form-group">
-                            <label for="role">角色 <span class="required">*</span></label>
+                            <label for="role"><span class="required">*</span> 角色</label>
                             <select id="role" name="role" class="form-control" required>
                                 <option value="">請選擇角色</option>
                                 <?php if (!empty($available_roles)): ?>

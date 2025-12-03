@@ -225,9 +225,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             <button type="submit" class="btn-login">登入系統</button>
         </form>
         
-        <div class="login-info">
-            如忘記密碼請洽管理員
-        </div>
+        <div style="margin-top: 15px; text-align: right;">
+    <a href="forgot_password.php" style="color: #6c757d; text-decoration: none; font-size: 14px; transition: color 0.3s;" onmouseover="this.style.color='#495057'" onmouseout="this.style.color='#6c757d'">
+        忘記密碼？
+    </a>
+</div>
     </div>
 </body>
 </html> 

@@ -549,7 +549,6 @@ try {
                                 <a href="activity_records.php" class="btn-sm btn-outline"><i class="fas fa-chart-bar"></i> 統計報表</a>
                                 <?php if($is_super_user): ?>
                                 <a href="users.php" class="btn-sm btn-outline"><i class="fas fa-users"></i> 用戶管理</a>
-                                <a href="page_management.php?page=homepage" class="btn-sm btn-outline"><i class="fas fa-images"></i> 輪播管理</a>
                                 <a href="ollama_admin.php" class="btn-sm btn-outline"><i class="fas fa-robot"></i> AI 設定</a>
                                 <?php endif; ?>
                             </div>

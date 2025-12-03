@@ -172,6 +172,15 @@ try {
         }
     }
 
+    // 載入科系對應表，用於將科系代碼轉換為科系名稱
+    $department_data = [];
+    $dept_result = $conn->query("SELECT code, name FROM departments");
+    if ($dept_result) {
+        while ($row = $dept_result->fetch_assoc()) {
+            $department_data[$row['code']] = $row['name'];
+        }
+    }
+
     // 輔助函數：轉換代碼為文字（避免直接顯示代碼）
     function getGenderText($code) {
         if ($code === 1 || $code === '1' || $code === '男') return '男';
@@ -193,6 +202,13 @@ try {
             return htmlspecialchars($schools[$code]);
         }
         return '未提供';
+    }
+
+    function getDepartmentName($code, $departments) {
+        if (isset($departments[$code]) && $departments[$code] !== '') {
+            return htmlspecialchars($departments[$code]);
+        }
+        return $code; // 如果找不到名稱，返回代碼
     }
 
     // 根據用戶權限決定 WHERE 條件
@@ -401,6 +417,82 @@ try {
         .sort-icon.asc::after { content: "↑"; }
         .sort-icon.desc::after { content: "↓"; }
         .table tr:hover { background: #fafafa; }
+        
+        /* 主任/IM用戶隱藏不需要的意願欄位 */
+        .enrollment-table.hide-choice1 th.choice1-column,
+        .enrollment-table.hide-choice1 td.choice1-column,
+        .enrollment-table.hide-choice2 th.choice2-column,
+        .enrollment-table.hide-choice2 td.choice2-column,
+        .enrollment-table.hide-choice3 th.choice3-column,
+        .enrollment-table.hide-choice3 td.choice3-column {
+            display: none !important;
+        }
+        
+        /* 分頁樣式 */
+        .pagination {
+            padding: 16px 24px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-top: 1px solid var(--border-color);
+            background: #fafafa;
+        }
+
+        .pagination-info {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            color: var(--text-secondary-color);
+            font-size: 14px;
+        }
+
+        .pagination-controls {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .pagination select {
+            padding: 6px 12px;
+            border: 1px solid #d9d9d9;
+            border-radius: 6px;
+            font-size: 14px;
+            background: #fff;
+            cursor: pointer;
+        }
+
+        .pagination select:focus {
+            outline: none;
+            border-color: #1890ff;
+            box-shadow: 0 0 0 2px rgba(24,144,255,0.2);
+        }
+
+        .pagination button {
+            padding: 6px 12px;
+            border: 1px solid #d9d9d9;
+            background: #fff;
+            color: #595959;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 14px;
+            transition: all 0.3s;
+        }
+
+        .pagination button:hover:not(:disabled) {
+            border-color: #1890ff;
+            color: #1890ff;
+        }
+
+        .pagination button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .pagination button.active {
+            background: #1890ff;
+            color: white;
+            border-color: #1890ff;
+        }
         
         .detail-row {
             background: #f9f9f9;
@@ -813,11 +905,50 @@ try {
                                 <p>目前尚無任何就讀意願登錄資料。</p>
                             </div>
                         <?php else: ?>
-                            <table class="table" id="enrollmentTable">
+                            <?php
+                                // 根據用戶角色決定隱藏哪些欄位
+                                $table_classes = 'table enrollment-table';
+                                if ($is_director && !empty($user_department_code)) {
+                                    // 主任：檢查哪些意願欄位需要顯示
+                                    $has_choice1 = false;
+                                    $has_choice2 = false;
+                                    $has_choice3 = false;
+                                    foreach ($enrollments as $check_item) {
+                                        $check_code1 = $check_item['intention1_code'] ?? '';
+                                        $check_code2 = $check_item['intention2_code'] ?? '';
+                                        $check_code3 = $check_item['intention3_code'] ?? '';
+                                        if ($check_code1 === $user_department_code && !empty($check_item['intention1_name'])) $has_choice1 = true;
+                                        if ($check_code2 === $user_department_code && !empty($check_item['intention2_name'])) $has_choice2 = true;
+                                        if ($check_code3 === $user_department_code && !empty($check_item['intention3_name'])) $has_choice3 = true;
+                                    }
+                                    if (!$has_choice1) $table_classes .= ' hide-choice1';
+                                    if (!$has_choice2) $table_classes .= ' hide-choice2';
+                                    if (!$has_choice3) $table_classes .= ' hide-choice3';
+                                } elseif ($is_imd_user) {
+                                    // IM用戶：檢查哪些意願欄位需要顯示
+                                    $has_choice1 = false;
+                                    $has_choice2 = false;
+                                    $has_choice3 = false;
+                                    foreach ($enrollments as $check_item) {
+                                        $check_code1 = $check_item['intention1_code'] ?? '';
+                                        $check_code2 = $check_item['intention2_code'] ?? '';
+                                        $check_code3 = $check_item['intention3_code'] ?? '';
+                                        if ($check_code1 === 'IM' && !empty($check_item['intention1_name'])) $has_choice1 = true;
+                                        if ($check_code2 === 'IM' && !empty($check_item['intention2_name'])) $has_choice2 = true;
+                                        if ($check_code3 === 'IM' && !empty($check_item['intention3_name'])) $has_choice3 = true;
+                                    }
+                                    if (!$has_choice1) $table_classes .= ' hide-choice1';
+                                    if (!$has_choice2) $table_classes .= ' hide-choice2';
+                                    if (!$has_choice3) $table_classes .= ' hide-choice3';
+                                }
+                            ?>
+                            <table class="<?php echo $table_classes; ?>" id="enrollmentTable">
                                 <thead>
                                     <tr>
                                         <th onclick="sortTable('name')">姓名 <span class="sort-icon" id="sort-name"></span></th>
-                                        <th>意願</th>
+                                        <th class="choice1-column">意願1</th>
+                                        <th class="choice2-column">意願2</th>
+                                        <th class="choice3-column">意願3</th>
                                         <th onclick="sortTable('junior_high')">就讀國中 <span class="sort-icon" id="sort-junior_high"></span></th>
                                         <th>年級</th>
                                         <?php if ($is_admission_center): ?>
@@ -877,6 +1008,59 @@ try {
                                         // 確保至少有一個 IM 志願被顯示，否則顯示無志願 (這與 SQL 過濾邏輯匹配)
                                         $imd_single_display = !empty($imd_choices) ? htmlspecialchars(implode(' | ', $imd_choices)) : '無志願';
                                     }
+                                    
+                                    // 判斷每個志願是否應該顯示（根據用戶角色）
+                                    $show_choice1 = false;
+                                    $show_choice2 = false;
+                                    $show_choice3 = false;
+                                    
+                                    $choice1_text = '';
+                                    $choice2_text = '';
+                                    $choice3_text = '';
+                                    
+                                    if ($is_imd_user) {
+                                        // IM 用戶：只顯示 IM 科系的志願
+                                        if ($intention1_code === 'IM' && !empty($intention1_name)) {
+                                            $show_choice1 = true;
+                                            $choice1_text = $display_text1;
+                                        }
+                                        if ($intention2_code === 'IM' && !empty($intention2_name)) {
+                                            $show_choice2 = true;
+                                            $choice2_text = $display_text2;
+                                        }
+                                        if ($intention3_code === 'IM' && !empty($intention3_name)) {
+                                            $show_choice3 = true;
+                                            $choice3_text = $display_text3;
+                                        }
+                                    } elseif ($is_director && !empty($user_department_code)) {
+                                        // 主任：只顯示自己科系的志願
+                                        if ($intention1_code === $user_department_code && !empty($intention1_name)) {
+                                            $show_choice1 = true;
+                                            $choice1_text = $display_text1;
+                                        }
+                                        if ($intention2_code === $user_department_code && !empty($intention2_name)) {
+                                            $show_choice2 = true;
+                                            $choice2_text = $display_text2;
+                                        }
+                                        if ($intention3_code === $user_department_code && !empty($intention3_name)) {
+                                            $show_choice3 = true;
+                                            $choice3_text = $display_text3;
+                                        }
+                                    } else {
+                                        // 一般用戶：顯示所有志願
+                                        if (!empty($intention1_name) && $display_text1 !== '無意願') {
+                                            $show_choice1 = true;
+                                            $choice1_text = $display_text1;
+                                        }
+                                        if (!empty($intention2_name) && $display_text2 !== '無意願') {
+                                            $show_choice2 = true;
+                                            $choice2_text = $display_text2;
+                                        }
+                                        if (!empty($intention3_name) && $display_text3 !== '無意願') {
+                                            $show_choice3 = true;
+                                            $choice3_text = $display_text3;
+                                        }
+                                    }
 
                                     // 準備要傳遞給 JS 的志願代碼列表
                                     $chosen_codes = array_filter([$intention1_code, $intention2_code, $intention3_code]);
@@ -885,17 +1069,19 @@ try {
                                     ?>
                                     <tr class="table-row-clickable" onclick="toggleDetail(<?php echo $item['id']; ?>)">
                                         <td><?php echo htmlspecialchars($item['name']); ?></td>
-                                        <td>
-                                            <?php if ($is_imd_user): ?>
-                                                <?php echo $imd_single_display; ?>
-                                            <?php else: ?>
-                                                <?php echo $display_text1; ?>
-                                                <?php if (!empty($display_text2) && $display_text2 !== '無意願'): ?>
-                                                    <br><?php echo $display_text2; ?>
-                                                <?php endif; ?>
-                                                <?php if (!empty($display_text3) && $display_text3 !== '無意願'): ?>
-                                                    <br><?php echo $display_text3; ?>
-                                                <?php endif; ?>
+                                        <td class="choice1-column">
+                                            <?php if ($show_choice1): ?>
+                                                <?php echo $choice1_text; ?>
+                                            <?php endif; ?>
+                                        </td>
+                                        <td class="choice2-column">
+                                            <?php if ($show_choice2): ?>
+                                                <?php echo $choice2_text; ?>
+                                            <?php endif; ?>
+                                        </td>
+                                        <td class="choice3-column">
+                                            <?php if ($show_choice3): ?>
+                                                <?php echo $choice3_text; ?>
                                             <?php endif; ?>
                                         </td>
                                         <td><?php echo getSchoolName($item['junior_high'] ?? '', $school_data); ?></td>
@@ -905,7 +1091,7 @@ try {
                                             <?php if (!empty($item['assigned_department'])): ?>
                                                 <span style="color: #52c41a;">
                                                     <i class="fas fa-check-circle"></i> 已分配 - 
-                                                    <?php echo htmlspecialchars($item['assigned_department']); ?>
+                                                    <?php echo getDepartmentName($item['assigned_department'], $department_data); ?>
                                                 </span>
                                             <?php else: ?>
                                                 <span style="color: #8c8c8c;">
@@ -983,7 +1169,7 @@ try {
                                         <?php endif; ?>
                                     </tr>
                                     <tr id="detail-<?php echo $item['id']; ?>" class="detail-row" style="display: none;">
-                                        <td colspan="<?php echo $is_admission_center || $is_department_user ? '6' : '5'; ?>" style="padding: 20px; background: #f9f9f9; border: 2px solid #b3d9ff; border-radius: 4px;">
+                                        <td colspan="<?php echo $is_admission_center || $is_department_user ? '8' : '7'; ?>" style="padding: 20px; background: #f9f9f9; border: 2px solid #b3d9ff; border-radius: 4px;">
                                             <table style="width: 100%; border-collapse: collapse;">
                                                 <tr>
                                                     <td style="width: 50%; vertical-align: top; padding-right: 20px;">
@@ -1026,17 +1212,58 @@ try {
                                                     <td style="width: 50%; vertical-align: top; padding-left: 20px;">
                                                         <h4 style="margin: 0 0 10px 0; font-size: 16px;">其他資訊</h4>
                                                         <table style="width: 100%; border-collapse: collapse; font-size: 14px;">
-                                                            <?php if (!$is_imd_user): ?>
+                                                            <?php if ($is_imd_user): ?>
+                                                            <!-- IM 用戶顯示所有 IM 志願 -->
+                                                            <?php if ($intention1_code === 'IM' && !empty($intention1_name)): ?>
                                                             <tr>
-                                                                <td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5; width: 120px;">意願一</td>
+                                                                <td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5; width: 120px;">第一志願</td>
+                                                                <td style="padding: 5px; border: 1px solid #ddd;"><?php echo $display_text1; ?></td>
+                                                            </tr>
+                                                            <?php endif; ?>
+                                                            <?php if ($intention2_code === 'IM' && !empty($intention2_name)): ?>
+                                                            <tr>
+                                                                <td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">第二志願</td>
+                                                                <td style="padding: 5px; border: 1px solid #ddd;"><?php echo $display_text2; ?></td>
+                                                            </tr>
+                                                            <?php endif; ?>
+                                                            <?php if ($intention3_code === 'IM' && !empty($intention3_name)): ?>
+                                                            <tr>
+                                                                <td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">第三志願</td>
+                                                                <td style="padding: 5px; border: 1px solid #ddd;"><?php echo $display_text3; ?></td>
+                                                            </tr>
+                                                            <?php endif; ?>
+                                                            <?php elseif ($is_director && !empty($user_department_code)): ?>
+                                                            <!-- 主任只顯示自己科系的志願 -->
+                                                            <?php if ($intention1_code === $user_department_code && !empty($intention1_name)): ?>
+                                                            <tr>
+                                                                <td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5; width: 120px;">第一志願</td>
+                                                                <td style="padding: 5px; border: 1px solid #ddd;"><?php echo $display_text1; ?></td>
+                                                            </tr>
+                                                            <?php endif; ?>
+                                                            <?php if ($intention2_code === $user_department_code && !empty($intention2_name)): ?>
+                                                            <tr>
+                                                                <td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">第二志願</td>
+                                                                <td style="padding: 5px; border: 1px solid #ddd;"><?php echo $display_text2; ?></td>
+                                                            </tr>
+                                                            <?php endif; ?>
+                                                            <?php if ($intention3_code === $user_department_code && !empty($intention3_name)): ?>
+                                                            <tr>
+                                                                <td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">第三志願</td>
+                                                                <td style="padding: 5px; border: 1px solid #ddd;"><?php echo $display_text3; ?></td>
+                                                            </tr>
+                                                            <?php endif; ?>
+                                                            <?php else: ?>
+                                                            <!-- 一般用戶顯示所有志願 -->
+                                                            <tr>
+                                                                <td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5; width: 120px;">第一志願</td>
                                                                 <td style="padding: 5px; border: 1px solid #ddd;"><?php echo $display_text1; ?></td>
                                                             </tr>
                                                             <tr>
-                                                                <td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">意願二</td>
+                                                                <td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">第二志願</td>
                                                                 <td style="padding: 5px; border: 1px solid #ddd;"><?php echo $display_text2; ?></td>
                                                             </tr>
                                                             <tr>
-                                                                <td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">意願三</td>
+                                                                <td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">第三志願</td>
                                                                 <td style="padding: 5px; border: 1px solid #ddd;"><?php echo $display_text3; ?></td>
                                                             </tr>
                                                             <?php endif; ?>
@@ -1067,6 +1294,27 @@ try {
                             </table>
                         <?php endif; ?>
                     </div>
+                    <!-- 分頁控制 -->
+                    <?php if (!empty($enrollments)): ?>
+                    <div class="pagination">
+                        <div class="pagination-info">
+                            <span>每頁顯示：</span>
+                            <select id="itemsPerPage" onchange="changeItemsPerPage()">
+                                <option value="10" selected>10</option>
+                                <option value="20">20</option>
+                                <option value="50">50</option>
+                                <option value="100">100</option>
+                                <option value="all">全部</option>
+                            </select>
+                            <span id="pageInfo">顯示第 <span id="currentRange">1-<?php echo min(10, count($enrollments)); ?></span> 筆，共 <?php echo count($enrollments); ?> 筆</span>
+                        </div>
+                        <div class="pagination-controls">
+                            <button id="prevPage" onclick="changePage(-1)" disabled>上一頁</button>
+                            <span id="pageNumbers"></span>
+                            <button id="nextPage" onclick="changePage(1)">下一頁</button>
+                        </div>
+                    </div>
+                    <?php endif; ?>
                 </div>
             </div>
         </div>
@@ -1162,32 +1410,28 @@ try {
         if (searchInput) {
             searchInput.addEventListener('keyup', function() {
                 const filter = searchInput.value.toLowerCase();
+                const table = document.getElementById('enrollmentTable');
                 
-                for (let i = 0; i < rows.length; i++) {
-                    // 跳過詳細資訊行
-                    if (rows[i].classList.contains('detail-row')) {
-                        continue;
-                    }
-                    
-                    const cells = rows[i].getElementsByTagName('td');
-                    let found = false;
-                    
-                    // 搜尋所有可見欄位
+                if (!table) return;
+                
+                const tbody = table.getElementsByTagName('tbody')[0];
+                if (!tbody) return;
+                
+                allRows = Array.from(tbody.getElementsByTagName('tr')).filter(row => !row.classList.contains('detail-row'));
+                
+                filteredRows = allRows.filter(row => {
+                    const cells = row.getElementsByTagName('td');
                     for (let j = 0; j < cells.length; j++) {
                         const cellText = cells[j].textContent || cells[j].innerText;
                         if (cellText.toLowerCase().indexOf(filter) > -1) {
-                            found = true;
-                            break;
+                            return true;
                         }
                     }
-                    
-                    rows[i].style.display = found ? "" : "none";
-                    // 如果主行隱藏，也隱藏對應的詳細行
-                    const detailRow = rows[i].nextElementSibling;
-                    if (detailRow && detailRow.classList.contains('detail-row')) {
-                        detailRow.style.display = found ? detailRow.style.display : "none";
-                    }
-                }
+                    return false;
+                });
+                
+                currentPage = 1;
+                updatePagination();
             });
         }
 
@@ -1245,6 +1489,9 @@ try {
         
         // 更新排序圖標
         updateSortIcons();
+        
+        // 初始化分頁
+        initPagination();
     });
 
     // 分配學生相關變數
