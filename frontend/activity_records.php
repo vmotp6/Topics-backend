@@ -1674,16 +1674,39 @@ $conn->close();
     function showEnrollmentDepartmentStats() {
         console.log('showEnrollmentDepartmentStats 被調用');
         
+        const apiUrl = buildApiUrl('../../Topics-frontend/frontend/api/enrollment_stats_api.php', 'department');
+        console.log('API URL:', apiUrl);
+        
         // 從API獲取就讀意願數據
-        fetch(buildApiUrl('../../Topics-frontend/frontend/api/enrollment_stats_api.php', 'department'))
-            .then(response => response.json())
+        fetch(apiUrl)
+            .then(response => {
+                console.log('API 響應狀態:', response.status, response.statusText);
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                }
+                return response.json();
+            })
             .then(data => {
+                console.log('API 返回數據:', data);
+                
                 if (data.error) {
                     document.getElementById('enrollmentAnalyticsContent').innerHTML = `
                         <div style="text-align: center; padding: 40px; color: #dc3545;">
                             <i class="fas fa-exclamation-triangle fa-3x" style="margin-bottom: 16px;"></i>
                             <h4>數據載入失敗</h4>
                             <p>${data.error}</p>
+                        </div>
+                    `;
+                    return;
+                }
+                
+                // 檢查數據是否為空數組
+                if (!data || !Array.isArray(data) || data.length === 0) {
+                    document.getElementById('enrollmentAnalyticsContent').innerHTML = `
+                        <div style="text-align: center; padding: 40px; color: #6c757d;">
+                            <i class="fas fa-inbox fa-3x" style="margin-bottom: 16px;"></i>
+                            <h4>暫無數據</h4>
+                            <p>目前沒有科系分布統計數據</p>
                         </div>
                     `;
                     return;
@@ -1801,128 +1824,44 @@ $conn->close();
             })
             .catch(error => {
                 console.error('載入科系統計數據失敗:', error);
+                console.error('錯誤詳情:', {
+                    message: error.message,
+                    stack: error.stack,
+                    apiUrl: apiUrl
+                });
                 document.getElementById('enrollmentAnalyticsContent').innerHTML = `
                     <div style="text-align: center; padding: 40px; color: #dc3545;">
                         <i class="fas fa-exclamation-triangle fa-3x" style="margin-bottom: 16px;"></i>
                         <h4>數據載入失敗</h4>
                         <p>無法連接到統計API</p>
+                        <p style="font-size: 0.9em; color: #999; margin-top: 10px;">錯誤: ${error.message}</p>
+                        <p style="font-size: 0.8em; color: #999; margin-top: 5px;">請檢查瀏覽器控制台 (F12) 以獲取詳細錯誤信息</p>
                     </div>
                 `;
             });
     }
     
     function showEnrollmentSystemStats() {
-        console.log('showEnrollmentSystemStats 被調用');
+        console.log('showEnrollmentSystemStats 被調用 - 顯示科系分布統計');
         
-        // 從API獲取學制分布數據
-        fetch(buildApiUrl('../../Topics-frontend/frontend/api/enrollment_stats_api.php', 'system'))
-            .then(response => response.json())
-            .then(data => {
-                if (data.error) {
-                    document.getElementById('enrollmentAnalyticsContent').innerHTML = `
-                        <div style="text-align: center; padding: 40px; color: #dc3545;">
-                            <i class="fas fa-exclamation-triangle fa-3x" style="margin-bottom: 16px;"></i>
-                            <h4>數據載入失敗</h4>
-                            <p>${data.error}</p>
-                        </div>
-                    `;
-                    return;
-                }
-                
-                const content = `
-                    <div style="margin-bottom: 20px;">
-                        <h4 style="color: #667eea; margin-bottom: 15px;">
-                            <i class="fas fa-chart-pie"></i> 學制分布分析
-                        </h4>
-                        
-                        <div class="chart-card">
-                            <div class="chart-title">學制選擇分布</div>
-                            <div class="chart-container">
-                                <canvas id="enrollmentSystemChart"></canvas>
-                            </div>
-                        </div>
-                        
-                        <div style="background: #f8f9fa; padding: 20px; border-radius: 10px; margin-top: 20px;">
-                            <h5 style="color: #333; margin-bottom: 15px;">學制詳細統計</h5>
-                            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px;">
-                                ${data.map((item, index) => {
-                                    const colors = ['#667eea', '#28a745', '#ffc107', '#dc3545', '#17a2b8'];
-                                    const color = colors[index % colors.length];
-                                    const total = data.reduce((sum, d) => sum + d.value, 0);
-                                    const percentage = ((item.value / total) * 100).toFixed(1);
-                                    return `
-                                        <div style="background: white; padding: 15px; border-radius: 8px; border-left: 4px solid ${color};">
-                                            <div style="font-weight: bold; color: #333; margin-bottom: 5px;">${item.name}</div>
-                                            <div style="font-size: 1.5em; font-weight: bold; color: ${color};">${item.value}人</div>
-                                            <div style="font-size: 0.9em; color: #666;">${percentage}%</div>
-                                        </div>
-                                    `;
-                                }).join('')}
-                            </div>
-                        </div>
-                    </div>
-                `;
-                
-                document.getElementById('enrollmentAnalyticsContent').innerHTML = content;
-                
-                // 創建圓餅圖
-                setTimeout(() => {
-                    const canvasElement = document.getElementById('enrollmentSystemChart');
-                    if (!canvasElement) return;
-                    
-                    const ctx = canvasElement.getContext('2d');
-                    new Chart(ctx, {
-                        type: 'doughnut',
-                        data: {
-                            labels: data.map(item => item.name),
-                            datasets: [{
-                                data: data.map(item => item.value),
-                                backgroundColor: [
-                                    '#667eea', '#28a745', '#ffc107', '#dc3545', '#17a2b8'
-                                ],
-                                borderWidth: 2,
-                                borderColor: '#fff'
-                            }]
-                        },
-                        options: {
-                            responsive: true,
-                            maintainAspectRatio: false,
-                            plugins: {
-                                legend: {
-                                    position: 'bottom',
-                                    labels: {
-                                        padding: 20,
-                                        usePointStyle: true,
-                                        font: { size: 16 }
-                                    }
-                                },
-                                tooltip: {
-                                    enabled: true,
-                                    callbacks: {
-                                        label: function(context) {
-                                            const label = context.label || '';
-                                            const value = context.parsed;
-                                            const total = context.dataset.data.reduce((a, b) => a + b, 0);
-                                            const percentage = ((value / total) * 100).toFixed(1);
-                                            return `${label}: ${value}人 (${percentage}%)`;
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    });
-                }, 100);
-            })
-            .catch(error => {
-                console.error('載入學制統計數據失敗:', error);
-                document.getElementById('enrollmentAnalyticsContent').innerHTML = `
-                    <div style="text-align: center; padding: 40px; color: #dc3545;">
-                        <i class="fas fa-exclamation-triangle fa-3x" style="margin-bottom: 16px;"></i>
-                        <h4>數據載入失敗</h4>
-                        <p>無法連接到統計API</p>
-                    </div>
-                `;
-            });
+        // 清除之前的圖表實例
+        Chart.helpers.each(Chart.instances, function(instance) {
+            if (instance.canvas.id.includes('enrollmentDepartmentChart') ||
+                instance.canvas.id.includes('enrollmentSystemChart')) {
+                instance.destroy();
+            }
+        });
+        
+        // 顯示載入中提示
+        document.getElementById('enrollmentAnalyticsContent').innerHTML = `
+            <div style="text-align: center; padding: 40px;">
+                <i class="fas fa-spinner fa-spin fa-3x" style="color: #667eea; margin-bottom: 16px;"></i>
+                <h4>載入科系分布統計中...</h4>
+            </div>
+        `;
+        
+        // 學制分布分析按鈕實際顯示科系分布統計
+        showEnrollmentDepartmentStats();
     }
     
     function showEnrollmentGradeStats() {
