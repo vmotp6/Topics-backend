@@ -6,9 +6,6 @@ $current_page = basename($_SERVER['PHP_SELF'], '.php');
 $user_role = $_SESSION['role'] ?? ''; // 預期為 ADM, STA, DI, TEA, STU 等代碼
 $username = $_SESSION['username'] ?? ''; // 預期為用戶名
 
-// -------------------------------------------------------------
-// 【修改點 1】 重新定義管理員/行政人員的代碼驗證邏輯
-// 只有 ADM (管理員) 和 STA (行政人員) 才能看到主選單
 $allowed_admin_roles = ['ADM', 'STA','DI'];
 $is_admin_or_staff = in_array($user_role, $allowed_admin_roles);
 // -------------------------------------------------------------
@@ -69,12 +66,7 @@ $is_admin_or_staff = in_array($user_role, $allowed_admin_roles);
             
             <a href="settings.php" class="menu-item <?php echo $current_page === 'settings' ? 'active' : ''; ?>">
                 <i class="fas fa-cogs"></i>
-                <span>場次設定</span>
-            </a>
-            
-            <a href="admission_center.php" class="menu-item <?php echo $current_page === 'admission_center' ? 'active' : ''; ?>">
-                <i class="fas fa-graduation-cap"></i>
-                <span>招生中心</span>
+                <span>入學說明會</span>
             </a>
             
             <a href="school_contacts.php" class="menu-item <?php echo $current_page === 'school_contacts' ? 'active' : ''; ?>">

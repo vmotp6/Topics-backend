@@ -71,14 +71,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                 }
                 break;
 
-            // 課程管理功能已移除，因為 admission_courses 表不存在
-            // 如果需要管理科系，請使用 departments 表
-            case 'add_course':
-            case 'update_course':
-            case 'delete_course':
-                $message = "課程管理功能已停用，因為資料表不存在。如需管理科系，請使用科系管理功能。";
-                $messageType = "error";
-                break;
         }
         if (isset($stmt) && $stmt->error) {
             throw new Exception($stmt->error);
@@ -89,6 +81,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
     }
 }
 
+// 排序參數
+$sortBy = $_GET['sort_by'] ?? 'session_date';
+$sortOrder = $_GET['sort_order'] ?? 'desc';
+
+// 驗證排序參數，防止 SQL 注入
+$allowed_columns = ['id', 'session_name', 'session_date', 'session_type', 'max_participants', 'is_active'];
+if (!in_array($sortBy, $allowed_columns)) {
+    $sortBy = 'session_date';
+}
+if (!in_array(strtolower($sortOrder), ['asc', 'desc'])) {
+    $sortOrder = 'desc';
+}
+
 // 獲取所有資料
 $sessions_sql = "
     SELECT s.*, 
@@ -97,11 +102,8 @@ $sessions_sql = "
     FROM admission_sessions s
     LEFT JOIN admission_applications a ON s.id = a.session_id 
     GROUP BY s.id 
-    ORDER BY s.session_date DESC";
+    ORDER BY s.$sortBy $sortOrder";
 $sessions = $conn->query($sessions_sql)->fetch_all(MYSQLI_ASSOC);
-// 課程管理功能已移除，因為 admission_courses 表不存在
-// 如果需要管理科系，請使用 departments 表
-$courses = [];
 
 $conn->close();
 ?>
@@ -128,32 +130,86 @@ $conn->close();
         body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; background: var(--background-color); color: var(--text-color); overflow-x: hidden; }
         .dashboard { display: flex; min-height: 100vh; }
         .content { padding: 24px; }
-        .breadcrumb { margin-bottom: 16px; font-size: 16px; color: var(--text-secondary-color); }
-        .breadcrumb a { color: var(--primary-color); text-decoration: none; }
-        .breadcrumb a:hover { text-decoration: underline; }
         
-        .tabs { display: flex; background: var(--card-background-color); border-radius: 8px 8px 0 0; box-shadow: 0 1px 2px rgba(0,0,0,0.03); border: 1px solid var(--border-color); border-bottom: none; margin-bottom: 0; overflow: hidden; }
-        .tab { flex: 1; padding: 16px 24px; background: var(--card-background-color); border: none; cursor: pointer; font-size: 16px; font-weight: 500; color: var(--text-secondary-color); transition: all 0.3s; border-bottom: 3px solid transparent; }
-        .tab.active { color: var(--primary-color); border-bottom-color: var(--primary-color); }
-        .tab:hover { background: #f5f5f5; }
+        .page-controls { 
+            display: flex; 
+            justify-content: space-between; 
+            align-items: center; 
+            margin-bottom: 16px; 
+            gap: 16px; 
+        }
+        .breadcrumb { 
+            margin-bottom: 0; 
+            font-size: 16px; 
+            color: var(--text-secondary-color); 
+        }
+        .breadcrumb a { 
+            color: var(--primary-color); 
+            text-decoration: none; 
+        }
+        .breadcrumb a:hover { 
+            text-decoration: underline; 
+        }
         
-        .tab-content { display: none; }
-        .tab-content.active { display: block; }
-
-        .card { background: var(--card-background-color); border-radius: 8px; box-shadow: 0 1px 2px rgba(0,0,0,0.03); border: 1px solid var(--border-color); margin-bottom: 24px; }
-        .card-header { padding: 16px 24px; border-bottom: 1px solid var(--border-color); display: flex; justify-content: space-between; align-items: center; background: #fafafa; }
-        .card-header h3 { font-size: 18px; font-weight: 600; color: var(--text-color); }
-        .card-body {
-            padding: 0; /* 移除內邊距 */
-            overflow-x: auto; /* 將水平捲動功能移到這裡 */
+        .table-wrapper {
+            background: var(--card-background-color);
+            border-radius: 8px;
+            box-shadow: 0 1px 2px rgba(0,0,0,0.03);
+            border: 1px solid var(--border-color);
+            margin-bottom: 24px;
         }
 
         .table-container { overflow-x: auto; }
         .table { width: 100%; border-collapse: collapse; }
         .table th, .table td { padding: 16px 24px; text-align: left; border-bottom: 1px solid var(--border-color); font-size: 16px; }
-        .table th { background: #fafafa; font-weight: 600; color: #262626; }
+        .table th { 
+            background: #fafafa; 
+            font-weight: 600; 
+            color: #262626; 
+            cursor: pointer; 
+            user-select: none; 
+            position: relative; 
+        }
+        .table th:hover { 
+            background: #f0f0f0; 
+        }
+        .sort-icon {
+            margin-left: 8px;
+            font-size: 12px;
+            color: #8c8c8c;
+        }
+        .sort-icon.active {
+            color: #1890ff;
+        }
+        .sort-icon.asc::after {
+            content: "↑";
+        }
+        .sort-icon.desc::after {
+            content: "↓";
+        }
         .table td { color: #595959; }
         .table tr:hover { background: #fafafa; }
+        
+        .table-search {
+            display: flex;
+            gap: 8px;
+        }
+        
+        .table-search input {
+            padding: 8px 12px;
+            border: 1px solid #d9d9d9;
+            border-radius: 6px;
+            width: 240px;
+            background: #fff;
+            font-size: 16px;
+            transition: all 0.3s;
+        }
+        
+        .table-search input:focus {
+            outline: none;
+            border-color: #1890ff;
+            box-shadow: 0 0 0 2px rgba(24,144,255,0.2);
+        }
         .table a.btn { text-decoration: none; }
 
         .btn { padding: 8px 16px; border: 1px solid #d9d9d9; border-radius: 6px; cursor: pointer; font-size: 14px; transition: all 0.3s; background: #fff; text-decoration: none; display: inline-flex; align-items: center; justify-content: center; gap: 6px; }
@@ -208,112 +264,73 @@ $conn->close();
         <div class="main-content" id="mainContent">
             <?php include 'header.php'; ?>
             <div class="content">
-                <div class="breadcrumb">
-                    <a href="index.php">首頁</a> / <?php echo $page_title; ?>
-                </div>
-
                 <?php if ($message): ?>
                     <div class="message <?php echo $messageType; ?>"><?php echo htmlspecialchars($message); ?></div>
                 <?php endif; ?>
 
-                <div class="tabs">
-                    <button class="tab active" onclick="switchTab('sessions')"><i class="fas fa-calendar-alt"></i> 說明會場次</button>
-                    <button class="tab" onclick="switchTab('courses')"><i class="fas fa-book-open"></i> 體驗課程</button>
+                <div class="page-controls">
+                    <div class="breadcrumb">
+                        <a href="index.php">首頁</a> / <?php echo $page_title; ?>
+                    </div>
+                    <div class="table-search">
+                        <input type="text" id="tableSearchInput" placeholder="搜尋場次..." onkeyup="filterTable()">
+                        <button class="btn btn-primary" onclick="showModal('addSessionModal')"><i class="fas fa-plus"></i> 新增場次</button>
+                    </div>
                 </div>
 
-                <!-- 場次管理 -->
-                <div id="sessions" class="tab-content active">
-                    <div class="card" style="border-radius: 0 0 8px 8px; border-top: none;">
-                        <div class="card-header" style="justify-content: flex-end; border-top-left-radius: 0; border-top-right-radius: 0;">
-                            <button class="btn btn-primary" onclick="showModal('addSessionModal')"><i class="fas fa-plus"></i> 新增場次</button>
-                        </div>
-                        <div class="card-body">                            
-                            <table class="table">
-                                <thead>
-                                    <tr>
-                                        <th>場次名稱</th>
-                                        <th>日期時間</th>
-                                        <th>類型</th>
-                                        <th>報名/上限</th>
-                                        <th>剩餘名額</th>
-                                        <th>狀態</th>
-                                        <th>操作</th>                                       
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    <?php foreach ($sessions as $item): ?>
-                                    <tr>
-                                        <td><?php echo htmlspecialchars($item['session_name']); ?></td>
-                                        <td><?php echo date('Y/m/d H:i', strtotime($item['session_date'])); ?></td>
-                                        <td><?php echo ($item['session_type'] == 1) ? '線上' : '實體'; ?></td>
-                                        <td><?php echo $item['registration_count']; ?> / <?php echo $item['max_participants'] ?: '無限'; ?></td>
-                                        <td>
-                                            <?php 
-                                            if ($item['max_participants']) {
-                                                if ($item['remaining_slots'] <= 0) {
-                                                    echo ' <span style="color: var(--danger-color);">(已額滿)</span>';
-                                                } else {
-                                                    echo '剩餘 ' . $item['remaining_slots'] . ' 位';
-                                                }
+                <div class="table-wrapper">
+                    <div class="table-container">
+                        <table class="table" id="sessionTable">
+                            <thead>
+                                <tr>
+                                    <th onclick="sortTable('session_name')">場次名稱 <span class="sort-icon" id="sort-session_name"></span></th>
+                                    <th onclick="sortTable('session_date')">日期時間 <span class="sort-icon" id="sort-session_date"></span></th>
+                                    <th onclick="sortTable('session_type')">類型 <span class="sort-icon" id="sort-session_type"></span></th>
+                                    <th onclick="sortTable('max_participants')">報名/上限 <span class="sort-icon" id="sort-max_participants"></span></th>
+                                    <th>剩餘名額</th>
+                                    <th onclick="sortTable('is_active')">狀態 <span class="sort-icon" id="sort-is_active"></span></th>
+                                    <th>操作</th>                                       
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <?php foreach ($sessions as $item): ?>
+                                <tr>
+                                    <td><?php echo htmlspecialchars($item['session_name']); ?></td>
+                                    <td><?php echo date('Y/m/d H:i', strtotime($item['session_date'])); ?></td>
+                                    <td><?php echo ($item['session_type'] == 1) ? '線上' : '實體'; ?></td>
+                                    <td><?php echo $item['registration_count']; ?> / <?php echo $item['max_participants'] ?: '無限'; ?></td>
+                                    <td>
+                                        <?php 
+                                        if ($item['max_participants']) {
+                                            if ($item['remaining_slots'] <= 0) {
+                                                echo ' <span style="color: var(--danger-color);">(已額滿)</span>';
                                             } else {
-                                                echo '無限';
+                                                echo '剩餘 ' . $item['remaining_slots'] . ' 位';
                                             }
-                                            ?>
-                                        </td>
-                                        <td><span class="status-badge <?php echo $item['is_active'] ? 'status-active' : 'status-inactive'; ?>"><?php echo $item['is_active'] ? '啟用' : '停用'; ?></span></td>                                        <td>
-                                            <div class="action-buttons">
-                                            <button class="btn-action btn-edit" onclick='editSession(<?php echo json_encode($item); ?>)'>編輯</button>
-                                            <a href="view_registrations.php?session_id=<?php echo $item['id']; ?>" class="btn-action btn-view-list">查看名單</a>
-                                            <form method="POST" style="display:inline;" onsubmit="return confirm('確定要刪除此場次嗎？');">
-                                                <input type="hidden" name="action" value="delete_session">
-                                                <input type="hidden" name="session_id" value="<?php echo $item['id']; ?>">
-                                                <button type="submit" class="btn-action btn-delete">刪除</button>
-                                            </form>
-                                            </div>
-                                        </td>
-                                    </tr>
-                                    <?php endforeach; ?>
-                                </tbody>
-                            </table>
-                        </div>
+                                        } else {
+                                            echo '無限';
+                                        }
+                                        ?>
+                                    </td>
+                                    <td><span class="status-badge <?php echo $item['is_active'] ? 'status-active' : 'status-inactive'; ?>"><?php echo $item['is_active'] ? '啟用' : '停用'; ?></span></td>
+                                    <td>
+                                        <div class="action-buttons">
+                                        <button class="btn-action btn-edit" onclick='editSession(<?php echo json_encode($item); ?>)'>編輯</button>
+                                        <a href="view_registrations.php?session_id=<?php echo $item['id']; ?>" class="btn-action btn-view-list">查看名單</a>
+                                        <form method="POST" style="display:inline;" onsubmit="return confirm('確定要刪除此場次嗎？');">
+                                            <input type="hidden" name="action" value="delete_session">
+                                            <input type="hidden" name="session_id" value="<?php echo $item['id']; ?>">
+                                            <button type="submit" class="btn-action btn-delete">刪除</button>
+                                        </form>
+                                        </div>
+                                    </td>
+                                </tr>
+                                <?php endforeach; ?>
+                            </tbody>
+                        </table>
                     </div>
                 </div>
 
-                <!-- 課程管理 -->
-                <div id="courses" class="tab-content">
-                    <div class="card" style="border-radius: 0 0 8px 8px; border-top: none;">
-                        <div class="card-header" style="justify-content: flex-end; border-top-left-radius: 0; border-top-right-radius: 0;">
-                            <button class="btn btn-primary" onclick="showModal('addCourseModal')"><i class="fas fa-plus"></i> 新增課程</button>
-                        </div>
-                        <div class="card-body">                            <table class="table">
-                                <thead>
-                                    <tr>
-                                        <th>課程名稱</th>
-                                        <th>狀態</th>
-                                        <th>操作</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    <?php foreach ($courses as $item): ?>
-                                    <tr>
-                                        <td><?php echo htmlspecialchars($item['course_name']); ?></td>
-                                        <td><span class="status-badge <?php echo $item['is_active'] ? 'status-active' : 'status-inactive'; ?>"><?php echo $item['is_active'] ? '啟用' : '停用'; ?></span></td>
-                                        <td>                                            <div class="action-buttons">
-                                            <button class="btn-action btn-edit" onclick='editCourse(<?php echo json_encode($item); ?>)'>編輯</button>
-                                            <form method="POST" style="display:inline;" onsubmit="return confirm('確定要刪除此課程嗎？');">
-                                                <input type="hidden" name="action" value="delete_course">
-                                                <input type="hidden" name="course_id" value="<?php echo $item['id']; ?>">
-                                                <button type="submit" class="btn-action btn-delete">刪除</button>
-                                            </form>
-                                            </div>
-                                        </td>
-                                    </tr>
-                                    <?php endforeach; ?>
-                                </tbody>
-                            </table>
-                        </div>
-                    </div>
-                </div>
             </div>
         </div>
     </div>
@@ -406,66 +423,75 @@ $conn->close();
         </div>
     </div>
 
-    <!-- 新增課程 Modal -->
-    <div id="addCourseModal" class="modal">
-        <div class="modal-content">
-            <div class="modal-header">
-                <h3 class="modal-title">新增課程</h3>
-                <span class="close" onclick="closeModal('addCourseModal')">&times;</span>
-            </div>
-            <form method="POST">
-                <input type="hidden" name="action" value="add_course">
-                <div class="modal-body">
-                    <div class="form-group">
-                        <label class="form-label">課程名稱 *</label>
-                        <input type="text" name="course_name" class="form-control" required>
-                    </div>
-                </div>
-                <div class="modal-footer">
-                    <button type="button" class="btn" onclick="closeModal('addCourseModal')">取消</button>
-                    <button type="submit" class="btn btn-primary">新增</button>
-                </div>
-            </form>
-        </div>
-    </div>
-
-    <!-- 編輯課程 Modal -->
-    <div id="editCourseModal" class="modal">
-        <div class="modal-content">
-            <div class="modal-header">
-                <h3 class="modal-title">編輯課程</h3>
-                <span class="close" onclick="closeModal('editCourseModal')">&times;</span>
-            </div>
-            <form method="POST">
-                <input type="hidden" name="action" value="update_course">
-                <input type="hidden" name="course_id" id="edit_course_id">
-                <div class="modal-body">
-                    <div class="form-group">
-                        <label class="form-label">課程名稱 *</label>
-                        <input type="text" name="course_name" id="edit_course_name" class="form-control" required>
-                    </div>
-                    <div class="form-group">
-                        <label class="form-label">狀態 *</label>
-                        <select name="is_active" id="edit_course_is_active" class="form-control" required>
-                            <option value="1">啟用</option>
-                            <option value="0">停用</option>
-                        </select>
-                    </div>
-                </div>
-                <div class="modal-footer">
-                    <button type="button" class="btn" onclick="closeModal('editCourseModal')">取消</button>
-                    <button type="submit" class="btn btn-primary">儲存</button>
-                </div>
-            </form>
-        </div>
-    </div>
 
     <script>
-        function switchTab(tabName) {
-            document.querySelectorAll('.tab-content').forEach(content => content.classList.remove('active'));
-            document.querySelectorAll('.tab').forEach(tab => tab.classList.remove('active'));
-            document.getElementById(tabName).classList.add('active');
-            event.currentTarget.classList.add('active');
+        // 排序表格
+        function sortTable(field) {
+            let newSortOrder = 'asc';
+            
+            // 如果點擊的是當前排序欄位，則切換排序方向
+            const urlParams = new URLSearchParams(window.location.search);
+            const currentSortBy = urlParams.get('sort_by') || 'session_date';
+            const currentSortOrder = urlParams.get('sort_order') || 'desc';
+            
+            if (currentSortBy === field) {
+                newSortOrder = currentSortOrder === 'asc' ? 'desc' : 'asc';
+            }
+            
+            window.location.href = `settings.php?sort_by=${field}&sort_order=${newSortOrder}`;
+        }
+        
+        // 更新排序圖標
+        function updateSortIcons() {
+            // 清除所有圖標
+            const icons = document.querySelectorAll('.sort-icon');
+            icons.forEach(icon => {
+                icon.className = 'sort-icon';
+            });
+            
+            // 獲取當前 URL 的排序參數
+            const urlParams = new URLSearchParams(window.location.search);
+            const currentSortBy = urlParams.get('sort_by') || 'session_date';
+            const currentSortOrder = urlParams.get('sort_order') || 'desc';
+            
+            // 設置當前排序欄位的圖標
+            const currentIcon = document.getElementById(`sort-${currentSortBy}`);
+            if (currentIcon) {
+                currentIcon.className = `sort-icon active ${currentSortOrder}`;
+            }
+        }
+        
+        // 表格搜尋功能
+        function filterTable() {
+            const input = document.getElementById('tableSearchInput');
+            const filter = input.value.toLowerCase();
+            const table = document.getElementById('sessionTable');
+            
+            if (!table) return;
+            
+            const tr = table.getElementsByTagName('tr');
+            
+            for (let i = 1; i < tr.length; i++) {
+                const td = tr[i].getElementsByTagName('td');
+                let found = false;
+                
+                for (let j = 0; j < td.length; j++) {
+                    const cell = td[j];
+                    if (cell) {
+                        const txtValue = cell.textContent || cell.innerText;
+                        if (txtValue.toLowerCase().indexOf(filter) > -1) {
+                            found = true;
+                            break;
+                        }
+                    }
+                }
+                
+                if (found) {
+                    tr[i].style.display = '';
+                } else {
+                    tr[i].style.display = 'none';
+                }
+            }
         }
 
         function showModal(modalId) {
@@ -481,6 +507,11 @@ $conn->close();
                 event.target.style.display = 'none';
             }
         }
+        
+        // 頁面載入時更新排序圖標
+        document.addEventListener('DOMContentLoaded', function() {
+            updateSortIcons();
+        });
 
         function editSession(item) {
             document.getElementById('edit_session_id').value = item.id;
@@ -497,12 +528,6 @@ $conn->close();
             showModal('editSessionModal');
         }
 
-        function editCourse(item) {
-            document.getElementById('edit_course_id').value = item.id;
-            document.getElementById('edit_course_name').value = item.course_name;
-            document.getElementById('edit_course_is_active').value = item.is_active;
-            showModal('editCourseModal');
-        }
     </script>
 </body>
 </html>
