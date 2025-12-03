@@ -301,24 +301,62 @@ $is_teacher = ($user_role === 'TEA'); // 科助：首頁、就讀意願名單、
 </style>
 
 <script>
-// 側邊欄收合功能 (保持不變)
 document.addEventListener('DOMContentLoaded', function() {
     const collapseBtn = document.getElementById('collapseBtn');
+    const sidebar = document.getElementById('sidebar');
+    const mainContent = document.getElementById('mainContent');
+    
+    // 1. 定義更新 UI 的函式 (包含圖示切換)
+    function updateSidebarState(isCollapsed) {
+        if (isCollapsed) {
+            sidebar.classList.add('collapsed');
+            if(mainContent) mainContent.classList.add('expanded');
+            
+            // 更新按鈕為 "開啟" 狀態的圖示
+            if(collapseBtn) {
+                const icon = collapseBtn.querySelector('i');
+                if(icon) icon.className = 'fas fa-chevron-right';
+                collapseBtn.title = '開啟側邊欄';
+            }
+        } else {
+            sidebar.classList.remove('collapsed');
+            if(mainContent) mainContent.classList.remove('expanded');
+            
+            // 更新按鈕為 "收合" 狀態的圖示
+            if(collapseBtn) {
+                const icon = collapseBtn.querySelector('i');
+                if(icon) icon.className = 'fas fa-bars';
+                collapseBtn.title = '收合側邊欄';
+            }
+        }
+    }
+
+    // 2. 頁面載入時：檢查 localStorage 裡是否有紀錄狀態
+    // 如果紀錄是 'true'，就保持縮起
+    const savedState = localStorage.getItem('sidebarCollapsed') === 'true';
+    updateSidebarState(savedState);
+
+    // 3. 點擊按鈕時：切換狀態並儲存到 localStorage
     if (collapseBtn) {
         collapseBtn.addEventListener('click', function() {
-            const sidebar = document.getElementById('sidebar');
-            const mainContent = document.getElementById('mainContent');
+            // 切換 class
+            const isNowCollapsed = sidebar.classList.toggle('collapsed');
             
-            sidebar.classList.toggle('collapsed');
-            mainContent.classList.toggle('expanded');
-            
-            // 更新按鈕圖標和提示文字
-            const icon = this.querySelector('i');
-            if (sidebar.classList.contains('collapsed')) {
-                icon.className = 'fas fa-chevron-right';
+            // 同步主內容區
+            if (mainContent) {
+                mainContent.classList.toggle('expanded');
+            }
+
+            // 儲存狀態到瀏覽器 (這樣重新整理或換頁後才會記得)
+            localStorage.setItem('sidebarCollapsed', isNowCollapsed);
+
+            // 更新按鈕圖示
+            // 注意：這裡因為我們剛剛 toggle 了 class，所以直接用 sidebar 的狀態來判斷
+            if (isNowCollapsed) {
+                this.querySelector('i').className = 'fas fa-chevron-right';
                 this.title = '開啟側邊欄';
             } else {
-                icon.className = 'fas fa-bars';
+                this.querySelector('i').className = 'fas fa-bars';
                 this.title = '收合側邊欄';
             }
         });

@@ -857,13 +857,11 @@ function getEnrollmentStatusClass($status) {
                                     <tr>
                                         <th>ID</th>
                                         <th>被推薦人姓名</th>
-                                        <th>被推薦人電子郵件</th>
-                                        <th>學校/年級</th>
-                                        <th>聯絡方式</th>
+                                        <th>學校</th>
+                                        <th>年級</th>
                                         <th>學生興趣</th>
                                         <!-- <th>狀態</th> -->
                                         <!-- <th>入學狀態</th> -->
-                                        <th>推薦時間</th>
                                         <?php if ($is_admission_center): ?>
                                         <th>分配部門</th>
                                         <th>操作</th>
@@ -881,41 +879,17 @@ function getEnrollmentStatusClass($status) {
                                         <td><?php echo htmlspecialchars($item['id']); ?></td>
                                         <td>
                                             <div class="info-row">
-                                                <span class="info-value" style="font-weight: 600;"><?php echo htmlspecialchars($item['student_name']); ?></span>
+                                                <span class="info-value"><?php echo htmlspecialchars($item['student_name']); ?></span>
                                             </div>
                                         </td>
                                         <td>
-                                            <?php if (!empty($item['student_email'])): ?>
-                                                <span class="info-value"><?php echo htmlspecialchars($item['student_email']); ?></span>
+                                            <span class="info-value"><?php echo htmlspecialchars($item['student_school']); ?></span>
+                                        </td>
+                                        <td>
+                                            <?php if (!empty($item['student_grade'])): ?>
+                                                <span class="info-value"><?php echo htmlspecialchars($item['student_grade']); ?></span>
                                             <?php else: ?>
                                                 <span style="color: #8c8c8c;">未填寫</span>
-                                            <?php endif; ?>
-                                        </td>
-                                        <td>
-                                            <div class="info-row">
-                                                <span class="info-value"><?php echo htmlspecialchars($item['student_school']); ?></span>
-                                            </div>
-                                            <?php if (!empty($item['student_grade'])): ?>
-                                            <div class="info-row">
-                                                <span class="info-value"><?php echo htmlspecialchars($item['student_grade']); ?></span>
-                                            </div>
-                                            <?php endif; ?>
-                                        </td>
-                                        <td>
-                                            <?php if (!empty($item['student_phone'])): ?>
-                                            <div class="info-row">
-                                                <span class="info-label">電話:</span>
-                                                <span class="info-value"><?php echo htmlspecialchars($item['student_phone']); ?></span>
-                                            </div>
-                                            <?php endif; ?>
-                                            <?php if (!empty($item['student_line_id'])): ?>
-                                            <div class="info-row">
-                                                <span class="info-label">LINE:</span>
-                                                <span class="info-value"><?php echo htmlspecialchars($item['student_line_id']); ?></span>
-                                            </div>
-                                            <?php endif; ?>
-                                            <?php if (empty($item['student_phone']) && empty($item['student_line_id'])): ?>
-                                            <span style="color: #8c8c8c;">未填寫</span>
                                             <?php endif; ?>
                                         </td>
                                         <td>
@@ -937,7 +911,6 @@ function getEnrollmentStatusClass($status) {
                                                 <?php echo getEnrollmentStatusText($item['enrollment_status'] ?? '未入學'); ?>
                                             </span>
                                         </td> -->
-                                        <td><?php echo date('Y/m/d H:i', strtotime($item['created_at'])); ?></td>
                                         <?php if ($is_admission_center): ?>
                                         <td>
                                             <?php if (!empty($item['assigned_department'])): ?>
@@ -955,8 +928,9 @@ function getEnrollmentStatusClass($status) {
                                             <div style="display: flex; gap: 8px; flex-wrap: wrap;">
                                                 <button type="button" 
                                                    class="btn-view" 
-                                                        onclick="toggleDetail(<?php echo $item['id']; ?>)">
-                                                    <i class="fas fa-eye"></i> 查看詳情
+                                                   id="detail-btn-<?php echo $item['id']; ?>"
+                                                   onclick="toggleDetail(<?php echo $item['id']; ?>)">
+                                                    <i class="fas fa-eye"></i> <span class="btn-text">查看詳情</span>
                                                 </button>
                                                 <button class="btn-view" style="background: #1890ff; color: white; border-color: #1890ff;" onclick="openAssignRecommendationDepartmentModal(<?php echo $item['id']; ?>, '<?php echo htmlspecialchars($item['student_name']); ?>', '<?php echo htmlspecialchars($item['assigned_department'] ?? ''); ?>')">
                                                     <i class="fas fa-building"></i> <?php echo !empty($item['assigned_department']) ? '重新分配' : '分配'; ?>
@@ -980,8 +954,9 @@ function getEnrollmentStatusClass($status) {
                                             <div style="display: flex; gap: 8px; flex-wrap: wrap;">
                                                 <button type="button" 
                                                    class="btn-view" 
-                                                        onclick="toggleDetail(<?php echo $item['id']; ?>)">
-                                                    <i class="fas fa-eye"></i> 查看詳情
+                                                   id="detail-btn-<?php echo $item['id']; ?>"
+                                                   onclick="toggleDetail(<?php echo $item['id']; ?>)">
+                                                    <i class="fas fa-eye"></i> <span class="btn-text">查看詳情</span>
                                                 </button>
                                                 <button class="btn-view" style="background: #1890ff; color: white; border-color: #1890ff;" onclick="openAssignRecommendationModal(<?php echo $item['id']; ?>, '<?php echo htmlspecialchars($item['student_name']); ?>', <?php echo !empty($item['assigned_teacher_id']) ? $item['assigned_teacher_id'] : 'null'; ?>)">
                                                     <i class="fas fa-user-plus"></i> <?php echo !empty($item['assigned_teacher_id']) ? '重新分配' : '分配'; ?>
@@ -992,17 +967,51 @@ function getEnrollmentStatusClass($status) {
                                         <td>
                                             <button type="button" 
                                                class="btn-view" 
-                                                    onclick="toggleDetail(<?php echo $item['id']; ?>)">
-                                                <i class="fas fa-eye"></i> 查看詳情
+                                               id="detail-btn-<?php echo $item['id']; ?>"
+                                               onclick="toggleDetail(<?php echo $item['id']; ?>)">
+                                                <i class="fas fa-eye"></i> <span class="btn-text">查看詳情</span>
                                             </button>
                                         </td>
                                         <?php endif; ?>
                                     </tr>
                                     <tr id="detail-<?php echo $item['id']; ?>" class="detail-row" style="display: none;">
-                                        <td colspan="<?php echo $is_admission_center || $is_department_user ? '9' : '8'; ?>" style="padding: 20px; background: #f9f9f9; border: 2px solid #b3d9ff; border-radius: 4px;">
+                                        <td colspan="<?php echo $is_admission_center || $is_department_user ? '7' : '6'; ?>" style="padding: 20px; background: #f9f9f9; border: 2px solid #b3d9ff; border-radius: 4px;">
                                             <table style="width: 100%; border-collapse: collapse;">
                                                 <tr>
                                                     <td style="width: 50%; vertical-align: top; padding-right: 20px;">
+                                                        <h4 style="margin: 0 0 10px 0; font-size: 16px;">被推薦人資訊</h4>
+                                                        <table style="width: 100%; border-collapse: collapse; font-size: 14px;">
+                                                            <tr>
+                                                                <td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5; width: 120px;">姓名</td>
+                                                                <td style="padding: 5px; border: 1px solid #ddd;"><?php echo htmlspecialchars($item['student_name']); ?></td>
+                                                            </tr>
+                                                            <tr>
+                                                                <td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">就讀學校</td>
+                                                                <td style="padding: 5px; border: 1px solid #ddd;"><?php echo htmlspecialchars($item['student_school']); ?></td>
+                                                            </tr>
+                                                            <tr>
+                                                                <td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">年級</td>
+                                                                <td style="padding: 5px; border: 1px solid #ddd;"><?php echo !empty($item['student_grade']) ? htmlspecialchars($item['student_grade']) : '未填寫'; ?></td>
+                                                            </tr>
+                                                            <tr>
+                                                                <td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">電子郵件</td>
+                                                                <td style="padding: 5px; border: 1px solid #ddd;"><?php echo !empty($item['student_email']) ? htmlspecialchars($item['student_email']) : '未填寫'; ?></td>
+                                                            </tr>
+                                                            <tr>
+                                                                <td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">聯絡電話</td>
+                                                                <td style="padding: 5px; border: 1px solid #ddd;"><?php echo !empty($item['student_phone']) ? htmlspecialchars($item['student_phone']) : '未填寫'; ?></td>
+                                                            </tr>
+                                                            <tr>
+                                                                <td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">LINE ID</td>
+                                                                <td style="padding: 5px; border: 1px solid #ddd;"><?php echo !empty($item['student_line_id']) ? htmlspecialchars($item['student_line_id']) : '未填寫'; ?></td>
+                                                            </tr>
+                                                            <tr>
+                                                                <td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">學生興趣</td>
+                                                                <td style="padding: 5px; border: 1px solid #ddd;"><?php echo !empty($item['student_interest']) ? htmlspecialchars($item['student_interest']) : '未填寫'; ?></td>
+                                                            </tr>
+                                                        </table>
+                                                    </td>
+                                                    <td style="width: 50%; vertical-align: top; padding-left: 20px;">
                                                         <h4 style="margin: 0 0 10px 0; font-size: 16px;">推薦人資訊</h4>
                                                         <table style="width: 100%; border-collapse: collapse; font-size: 14px;">
                                                             <tr>
@@ -1031,39 +1040,6 @@ function getEnrollmentStatusClass($status) {
                                                             </tr>
                                                         </table>
                                                     </td>
-                                                    <td style="width: 50%; vertical-align: top; padding-left: 20px;">
-                                                        <h4 style="margin: 0 0 10px 0; font-size: 16px;">被推薦人資訊</h4>
-                                                        <table style="width: 100%; border-collapse: collapse; font-size: 14px;">
-                                                            <tr>
-                                                                <td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5; width: 120px;">姓名</td>
-                                                                <td style="padding: 5px; border: 1px solid #ddd;"><?php echo htmlspecialchars($item['student_name']); ?></td>
-                                                            </tr>
-                                                            <tr>
-                                                                <td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">電子郵件</td>
-                                                                <td style="padding: 5px; border: 1px solid #ddd;"><?php echo !empty($item['student_email']) ? htmlspecialchars($item['student_email']) : '未填寫'; ?></td>
-                                                            </tr>
-                                                            <tr>
-                                                                <td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">就讀學校</td>
-                                                                <td style="padding: 5px; border: 1px solid #ddd;"><?php echo htmlspecialchars($item['student_school']); ?></td>
-                                                            </tr>
-                                                            <tr>
-                                                                <td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">年級</td>
-                                                                <td style="padding: 5px; border: 1px solid #ddd;"><?php echo !empty($item['student_grade']) ? htmlspecialchars($item['student_grade']) : '未填寫'; ?></td>
-                                                            </tr>
-                                                            <tr>
-                                                                <td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">聯絡電話</td>
-                                                                <td style="padding: 5px; border: 1px solid #ddd;"><?php echo htmlspecialchars($item['student_phone']); ?></td>
-                                                            </tr>
-                                                            <tr>
-                                                                <td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">LINE ID</td>
-                                                                <td style="padding: 5px; border: 1px solid #ddd;"><?php echo !empty($item['student_line_id']) ? htmlspecialchars($item['student_line_id']) : '未填寫'; ?></td>
-                                                            </tr>
-                                                            <tr>
-                                                                <td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">學生興趣</td>
-                                                                <td style="padding: 5px; border: 1px solid #ddd;"><?php echo !empty($item['student_interest']) ? htmlspecialchars($item['student_interest']) : '未填寫'; ?></td>
-                                                            </tr>
-                                                        </table>
-                                                    </td>
                                                 </tr>
                                                 <tr>
                                                     <td colspan="2" style="padding-top: 20px;">
@@ -1087,6 +1063,10 @@ function getEnrollmentStatusClass($status) {
                                                                 </td>
                                                             </tr>
                                                             <?php endif; ?>
+                                                            <tr>
+                                                                <td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">推薦時間</td>
+                                                                <td style="padding: 5px; border: 1px solid #ddd;"><?php echo date('Y/m/d H:i', strtotime($item['created_at'])); ?></td>
+                                                            </tr>
                                                         </table>
                                                     </td>
                                                 </tr>
@@ -1213,14 +1193,49 @@ function getEnrollmentStatusClass($status) {
         }
     });
 
+    let currentOpenDetailId = null;
+    
     function toggleDetail(id) {
         const detailRow = document.getElementById('detail-' + id);
-        if (detailRow) {
-            if (detailRow.style.display === 'none' || detailRow.style.display === '') {
-                detailRow.style.display = 'table-row';
-            } else {
-                detailRow.style.display = 'none';
+        const detailBtn = document.getElementById('detail-btn-' + id);
+        const btnText = detailBtn ? detailBtn.querySelector('.btn-text') : null;
+        
+        if (!detailRow) return;
+        
+        // 如果點擊的是當前已打開的詳情，則關閉它
+        if (currentOpenDetailId === id) {
+            detailRow.style.display = 'none';
+            currentOpenDetailId = null;
+            if (btnText) {
+                btnText.textContent = '查看詳情';
+                detailBtn.querySelector('i').className = 'fas fa-eye';
             }
+            return;
+        }
+        
+        // 如果已經有其他詳情打開，先關閉它
+        if (currentOpenDetailId !== null) {
+            const previousDetailRow = document.getElementById('detail-' + currentOpenDetailId);
+            const previousDetailBtn = document.getElementById('detail-btn-' + currentOpenDetailId);
+            const previousBtnText = previousDetailBtn ? previousDetailBtn.querySelector('.btn-text') : null;
+            
+            if (previousDetailRow) {
+                previousDetailRow.style.display = 'none';
+            }
+            if (previousBtnText) {
+                previousBtnText.textContent = '查看詳情';
+                if (previousDetailBtn.querySelector('i')) {
+                    previousDetailBtn.querySelector('i').className = 'fas fa-eye';
+                }
+            }
+        }
+        
+        // 打開新的詳情
+        detailRow.style.display = 'table-row';
+        currentOpenDetailId = id;
+        if (btnText) {
+            btnText.textContent = '關閉詳情';
+            detailBtn.querySelector('i').className = 'fas fa-eye-slash';
         }
     }
 
