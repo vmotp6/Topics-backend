@@ -407,6 +407,9 @@ try {
         }
         .table { width: 100%; border-collapse: collapse; }
         .table th, .table td { padding: 16px 24px; text-align: left; border-bottom: 1px solid var(--border-color); font-size: 16px; white-space: nowrap; }
+        .table th:first-child, .table td:first-child {
+            padding-left: 60px;
+        }
         .table th { background: #fafafa; font-weight: 600; color: #262626; cursor: pointer; user-select: none; position: relative; }
         .table td {
             color: #595959;

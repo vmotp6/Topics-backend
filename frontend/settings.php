@@ -162,6 +162,9 @@ $conn->close();
         .table-container { overflow-x: auto; }
         .table { width: 100%; border-collapse: collapse; }
         .table th, .table td { padding: 16px 24px; text-align: left; border-bottom: 1px solid var(--border-color); font-size: 16px; }
+        .table th:first-child, .table td:first-child {
+            padding-left: 60px;
+        }
         .table th { 
             background: #fafafa; 
             font-weight: 600; 

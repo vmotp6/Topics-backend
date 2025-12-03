@@ -185,6 +185,10 @@ function getRoleName($roleCode) {
             position: relative;
         }
         
+        .user-table th:first-child, .user-table td:first-child {
+            padding-left: 60px;
+        }
+        
         .user-table th:hover {
             background: #f0f0f0;
         }

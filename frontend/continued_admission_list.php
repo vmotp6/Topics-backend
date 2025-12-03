@@ -14,14 +14,57 @@ require_once '../../Topics-frontend/frontend/config.php';
 $page_title = (isset($_SESSION['username']) && $_SESSION['username'] === 'IMD') ? '資管科續招報名管理' : '續招報名管理';
 $current_page = 'continued_admission_list'; // 新增此行
 
-// 獲取使用者角色
+// 獲取使用者角色和用戶名
 $user_role = $_SESSION['role'] ?? '';
+$user_id = $_SESSION['user_id'] ?? 0;
+$username = $_SESSION['username'] ?? '';
 
-// 檢查是否為IMD用戶
-$is_imd_user = (isset($_SESSION['username']) && $_SESSION['username'] === 'IMD');
+// 檢查是否為IMD用戶（保留向後兼容）
+$is_imd_user = ($username === 'IMD');
+
+// 判斷是否為招生中心/行政人員
+$allowed_center_roles = ['ADM', 'STA'];
+$is_admin_or_staff = in_array($user_role, $allowed_center_roles);
+
+// 判斷是否為主任
+$is_director = ($user_role === 'DI');
+$user_department_code = null;
+$is_department_user = false;
+
+// 如果是主任，獲取其科系代碼
+if ($is_director && $user_id > 0) {
+    try {
+        $conn_temp = getDatabaseConnection();
+        $table_check = $conn_temp->query("SHOW TABLES LIKE 'director'");
+        if ($table_check && $table_check->num_rows > 0) {
+            $stmt_dept = $conn_temp->prepare("SELECT department FROM director WHERE user_id = ?");
+        } else {
+            $stmt_dept = $conn_temp->prepare("SELECT department FROM teacher WHERE user_id = ?");
+        }
+        $stmt_dept->bind_param("i", $user_id);
+        $stmt_dept->execute();
+        $result_dept = $stmt_dept->get_result();
+        if ($row = $result_dept->fetch_assoc()) {
+            $user_department_code = $row['department'];
+            if (!empty($user_department_code)) {
+                $is_department_user = true;
+            }
+        }
+        $stmt_dept->close();
+        $conn_temp->close();
+    } catch (Exception $e) {
+        error_log('Error fetching user department: ' . $e->getMessage());
+    }
+}
+
+// 判斷是否為招生中心/行政人員（負責分配部門）
+$is_admission_center = $is_admin_or_staff && !$is_department_user;
 
 // 權限判斷：主任和科助不能管理名單（不能管理名額、不能修改狀態）
 $can_manage_list = in_array($user_role, ['ADM', 'STA']); // 只有管理員和學校行政可以管理
+
+// 主任可以審核分配給他的名單
+$can_review = $can_manage_list || ($is_director && !empty($user_department_code));
 
 // 建立資料庫連接
 try {
@@ -44,10 +87,17 @@ if (!in_array(strtolower($sortOrder), ['asc', 'desc'])) {
 }
 
 // 獲取續招報名資料（根據用戶權限過濾）
-if ($is_imd_user) {
-    // IMD用戶只能看到志願選擇包含"資訊管理科"的續招報名
-    // 從 continued_admission_choices 表檢查是否有 IM 科系
-    $stmt = $conn->prepare("SELECT DISTINCT ca.id, ca.apply_no, ca.name, ca.school, ca.status, ca.created_at, sd.name as school_name
+if ($is_director && !empty($user_department_code)) {
+    // 主任只能看到已分配給他的科系的名單（assigned_department = 他的科系代碼）
+    $stmt = $conn->prepare("SELECT ca.id, ca.apply_no, ca.name, ca.school, ca.status, ca.created_at, ca.assigned_department, sd.name as school_name 
+                          FROM continued_admission ca
+                          LEFT JOIN school_data sd ON ca.school = sd.school_code
+                          WHERE ca.assigned_department = ?
+                          ORDER BY ca.$sortBy $sortOrder");
+    $stmt->bind_param("s", $user_department_code);
+} elseif ($is_imd_user) {
+    // IMD用戶只能看到志願選擇包含"資訊管理科"的續招報名（保留向後兼容）
+    $stmt = $conn->prepare("SELECT DISTINCT ca.id, ca.apply_no, ca.name, ca.school, ca.status, ca.created_at, ca.assigned_department, sd.name as school_name
                           FROM continued_admission ca
                           LEFT JOIN school_data sd ON ca.school = sd.school_code
                           INNER JOIN continued_admission_choices cac ON ca.id = cac.application_id
@@ -55,8 +105,8 @@ if ($is_imd_user) {
                           WHERE d.code = 'IM' OR d.name LIKE '%資訊管理%' OR d.name LIKE '%資管%'
                           ORDER BY ca.$sortBy $sortOrder");
 } else {
-    // 一般管理員可以看到所有續招報名
-    $stmt = $conn->prepare("SELECT ca.id, ca.apply_no, ca.name, ca.school, ca.status, ca.created_at, sd.name as school_name 
+    // 招生中心/管理員可以看到所有續招報名
+    $stmt = $conn->prepare("SELECT ca.id, ca.apply_no, ca.name, ca.school, ca.status, ca.created_at, ca.assigned_department, sd.name as school_name 
                           FROM continued_admission ca
                           LEFT JOIN school_data sd ON ca.school = sd.school_code
                           ORDER BY ca.$sortBy $sortOrder");
@@ -64,7 +114,24 @@ if ($is_imd_user) {
 $stmt->execute();
 $applications = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
 
-// 為每個報名獲取志願選擇
+// 載入科系對應表，用於將科系代碼轉換為科系名稱
+$department_data = [];
+$dept_result = $conn->query("SELECT code, name FROM departments");
+if ($dept_result) {
+    while ($row = $dept_result->fetch_assoc()) {
+        $department_data[$row['code']] = $row['name'];
+    }
+}
+
+// 輔助函數：獲取科系名稱
+function getDepartmentName($code, $departments) {
+    if (isset($departments[$code]) && $departments[$code] !== '') {
+        return htmlspecialchars($departments[$code]);
+    }
+    return $code; // 如果找不到名稱，返回代碼
+}
+
+// 為每個報名獲取志願選擇（包含代碼和名稱）
 foreach ($applications as &$app) {
     $choices_stmt = $conn->prepare("
         SELECT cac.choice_order, d.name as department_name, cac.department_code
@@ -77,10 +144,17 @@ foreach ($applications as &$app) {
     $choices_stmt->execute();
     $choices_result = $choices_stmt->get_result();
     $choices = [];
+    $choices_with_codes = [];
     while ($choice_row = $choices_result->fetch_assoc()) {
         $choices[] = $choice_row['department_name'] ?? $choice_row['department_code'];
+        $choices_with_codes[] = [
+            'order' => $choice_row['choice_order'],
+            'code' => $choice_row['department_code'],
+            'name' => $choice_row['department_name'] ?? $choice_row['department_code']
+        ];
     }
     $app['choices'] = json_encode($choices, JSON_UNESCAPED_UNICODE);
+    $app['choices_with_codes'] = $choices_with_codes; // 保存帶代碼的志願數據
     $choices_stmt->close();
 }
 unset($app);
@@ -194,6 +268,7 @@ function getStatusClass($status) {
         .card-header { padding: 16px 24px; border-bottom: 1px solid var(--border-color); display: flex; justify-content: space-between; align-items: center; background: #fafafa; }
         .card-header h3 { font-size: 18px; font-weight: 600; color: var(--text-color); }
         .card-body { padding: 24px; }
+        .card-body.table-container { padding: 0; }
 
         .table-container { overflow-x: auto; }
         .table { width: 100%; border-collapse: collapse; }
@@ -203,6 +278,9 @@ function getStatusClass($status) {
             border-bottom: 1px solid var(--border-color); 
             font-size: 16px; 
             white-space: nowrap; 
+        }
+        .table th:first-child, .table td:first-child {
+            padding-left: 60px;
         }
         .table th { 
             background: #fafafa; 
@@ -320,6 +398,83 @@ function getStatusClass($status) {
         .choice-item { padding: 4px 8px; border-radius: 4px; font-size: 12px; background: #f5f5f5; color: #8c8c8c; }
         .choice-item.approved { background: var(--primary-color); color: white; font-weight: 500; }
         .no-choices { color: var(--text-secondary-color); font-style: italic; }
+
+        /* TAB 樣式 */
+        .tabs-container { margin-bottom: 24px; }
+        .tabs-nav { display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid var(--border-color); background: var(--card-background-color); border-radius: 8px 8px 0 0; padding: 0 24px; min-height: 56px; }
+        .tabs-nav-left { display: flex; }
+        .tabs-nav-right { display: flex; align-items: center; margin-left: auto; margin-right: 10px; }
+        .tab-item { padding: 16px 24px; cursor: pointer; font-size: 16px; font-weight: 500; color: var(--text-secondary-color); border-bottom: 2px solid transparent; margin-bottom: -2px; transition: all 0.3s; }
+        .tab-item:hover { color: var(--primary-color); }
+        .tab-item.active { color: var(--primary-color); border-bottom-color: var(--primary-color); }
+        .tab-content { display: none; }
+        .tab-content.active { display: block; }
+
+        /* 分頁樣式 */
+        .pagination {
+            padding: 16px 24px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-top: 1px solid var(--border-color);
+            background: #fafafa;
+        }
+
+        .pagination-info {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            color: var(--text-secondary-color);
+            font-size: 14px;
+        }
+
+        .pagination-controls {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .pagination select {
+            padding: 6px 12px;
+            border: 1px solid #d9d9d9;
+            border-radius: 6px;
+            font-size: 14px;
+            background: #fff;
+            cursor: pointer;
+        }
+
+        .pagination select:focus {
+            outline: none;
+            border-color: var(--primary-color);
+            box-shadow: 0 0 0 2px rgba(24,144,255,0.2);
+        }
+
+        .pagination button {
+            padding: 6px 12px;
+            border: 1px solid #d9d9d9;
+            background: #fff;
+            color: #595959;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 14px;
+            transition: all 0.3s;
+        }
+
+        .pagination button:hover:not(:disabled) {
+            border-color: var(--primary-color);
+            color: var(--primary-color);
+        }
+
+        .pagination button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .pagination button.active {
+            background: var(--primary-color);
+            color: white;
+            border-color: var(--primary-color);
+        }
     </style>
 </head>
 <body>
@@ -332,152 +487,250 @@ function getStatusClass($status) {
                     <a href="index.php">首頁</a> / <?php echo $page_title; ?>
                 </div>
 
-                <!-- 科系名額管理卡片 -->
-                <?php if ($can_manage_list): // 只有可以管理的角色才顯示名額管理 ?>
+                <!-- TAB 切換容器 -->
                 <div class="card">
-                    <div class="card-header">
-                        <h3><i class="fas fa-graduation-cap"></i> 科系名額管理</h3>
-                        <?php if (!empty($department_stats)): ?>
-                            <a href="department_quota_management.php" class="btn btn-primary" style="padding: 8px 12px; font-size: 14px;">
-                                <i class="fas fa-cog" style="margin-right: 6px;"></i> 管理名額
-                            </a>
-                        <?php else: ?>
-                            <a href="setup_department_quotas.php" class="btn btn-primary" style="padding: 8px 12px; font-size: 14px;">
-                                <i class="fas fa-database" style="margin-right: 6px;"></i> 設定名額
-                            </a>
-                        <?php endif; ?>
-                    </div>
-                    <div class="card-body" id="quotaManagementContent">
-                        <?php if (!empty($department_stats)): ?>
-                            <div class="quota-grid">
-                                <?php foreach ($department_stats as $name => $stats): ?>
-                                <div class="quota-card">
-                                    <div class="quota-header">
-                                        <h4><?php echo htmlspecialchars($stats['name']); ?></h4>
-                                    </div>
-                                    <div class="quota-stats">
-                                        <div class="stat-item">
-                                            <span class="stat-label">總名額</span>
-                                            <span class="stat-value total"><?php echo $stats['total_quota']; ?></span>
-                                        </div>
-                                        <div class="stat-item">
-                                            <span class="stat-label">已錄取</span>
-                                            <span class="stat-value enrolled"><?php echo $stats['current_enrolled']; ?></span>
-                                        </div>
-                                        <div class="stat-item">
-                                            <span class="stat-label">剩餘名額</span>
-                                            <span class="stat-value remaining <?php echo $stats['remaining'] <= 0 ? 'full' : ''; ?>"><?php echo max(0, $stats['remaining']); ?></span>
-                                        </div>
-                                    </div>
-                                    <div class="quota-progress">
-                                        <div class="progress-bar">
-                                            <div class="progress-fill" style="width: <?php echo $stats['total_quota'] > 0 ? min(100, ($stats['current_enrolled'] / $stats['total_quota']) * 100) : 0; ?>%"></div>
-                                        </div>
-                                    </div>
+                    <div class="tabs-container">
+                        <div class="tabs-nav">
+                            <?php 
+                            // 從 URL 參數獲取當前 TAB，如果沒有則使用預設值
+                            $current_tab = $_GET['tab'] ?? ($can_manage_list ? 'quota' : 'list');
+                            $quota_active = ($current_tab === 'quota') ? 'active' : '';
+                            $list_active = ($current_tab === 'list') ? 'active' : '';
+                            ?>
+                            <div class="tabs-nav-left">
+                                <?php if ($can_manage_list): // 只有可以管理的角色才顯示名額管理 TAB ?>
+                                <div class="tab-item <?php echo $quota_active; ?>" onclick="switchTab('quota')">
+                                    科系名額管理
                                 </div>
-                                <?php endforeach; ?>
+                                <?php endif; ?>
+                                <div class="tab-item <?php echo $list_active; ?>" onclick="switchTab('list')">
+                                   續招報名名單
+                                </div>
                             </div>
-                        <?php else: ?>
-                            <div class="empty-state">
-                                <i class="fas fa-graduation-cap fa-3x" style="margin-bottom: 16px; color: var(--text-secondary-color);"></i>
-                                <h4 style="margin-bottom: 12px;">科系名額管理尚未設定</h4>
-                                <p style="margin-bottom: 20px; color: var(--text-secondary-color);">
-                                    您需要先建立科系名額資料表，才能使用名額管理功能。
-                                </p>
-                                <a href="setup_department_quotas.php" class="btn-primary">
-                                    <i class="fas fa-database"></i> 立即設定科系名額
-                                </a>
+                            <div class="tabs-nav-right" id="tabActionButtons">
+                                <?php if ($can_manage_list): ?>
+                                    <?php if (!empty($department_stats)): ?>
+                                        <a href="department_quota_management.php" class="btn btn-primary quota-action-btn" style="padding: 8px 12px; font-size: 14px; display: none;">
+                                            <i class="fas fa-cog" style="margin-right: 6px;"></i> 管理名額
+                                        </a>
+                                    <?php else: ?>
+                                        <a href="setup_department_quotas.php" class="btn btn-primary quota-action-btn" style="padding: 8px 12px; font-size: 14px; display: none;">
+                                            <i class="fas fa-database" style="margin-right: 6px;"></i> 設定名額
+                                        </a>
+                                    <?php endif; ?>
+                                <?php endif; ?>
+                                <input type="text" id="searchInput" class="search-input list-action-btn" placeholder="搜尋姓名、身分證或電話..." style="display: none;">
                             </div>
-                        <?php endif; ?>
+                        </div>
                     </div>
-                </div>
-                <?php endif; // 結束名額管理卡片的判斷 ?>
 
-                <div class="card">
-                    <div class="card-header">
-                        <h3><?php echo $page_title; ?> (共 <?php echo count($applications); ?> 筆)</h3>
-                        <input type="text" id="searchInput" class="search-input" placeholder="搜尋姓名、身分證或電話...">
+                    <!-- 科系名額管理 TAB 內容 -->
+                    <?php if ($can_manage_list): ?>
+                    <div id="tab-quota" class="tab-content <?php echo $quota_active; ?>">
+                        <div class="card-body" id="quotaManagementContent">
+                            <?php if (!empty($department_stats)): ?>
+                                <div class="quota-grid">
+                                    <?php foreach ($department_stats as $name => $stats): ?>
+                                    <div class="quota-card">
+                                        <div class="quota-header">
+                                            <h4><?php echo htmlspecialchars($stats['name']); ?></h4>
+                                        </div>
+                                        <div class="quota-stats">
+                                            <div class="stat-item">
+                                                <span class="stat-label">總名額</span>
+                                                <span class="stat-value total"><?php echo $stats['total_quota']; ?></span>
+                                            </div>
+                                            <div class="stat-item">
+                                                <span class="stat-label">已錄取</span>
+                                                <span class="stat-value enrolled"><?php echo $stats['current_enrolled']; ?></span>
+                                            </div>
+                                            <div class="stat-item">
+                                                <span class="stat-label">剩餘名額</span>
+                                                <span class="stat-value remaining <?php echo $stats['remaining'] <= 0 ? 'full' : ''; ?>"><?php echo max(0, $stats['remaining']); ?></span>
+                                            </div>
+                                        </div>
+                                        <div class="quota-progress">
+                                            <div class="progress-bar">
+                                                <div class="progress-fill" style="width: <?php echo $stats['total_quota'] > 0 ? min(100, ($stats['current_enrolled'] / $stats['total_quota']) * 100) : 0; ?>%"></div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <?php endforeach; ?>
+                                </div>
+                            <?php else: ?>
+                                <div class="empty-state">
+                                    <i class="fas fa-graduation-cap fa-3x" style="margin-bottom: 16px; color: var(--text-secondary-color);"></i>
+                                    <h4 style="margin-bottom: 12px;">科系名額管理尚未設定</h4>
+                                    <p style="margin-bottom: 20px; color: var(--text-secondary-color);">
+                                        您需要先建立科系名額資料表，才能使用名額管理功能。
+                                    </p>
+                                    <a href="setup_department_quotas.php" class="btn-primary">
+                                        <i class="fas fa-database"></i> 立即設定科系名額
+                                    </a>
+                                </div>
+                            <?php endif; ?>
+                        </div>
                     </div>
-                    <div class="card-body table-container">
-                        <?php if (empty($applications)): ?>
-                            <div class="empty-state">
-                                <i class="fas fa-inbox fa-3x" style="margin-bottom: 16px;"></i>
-                                <p>目前尚無任何續招報名資料。</p>
-                            </div>
-                        <?php else: ?>
-                            <table class="table" id="applicationTable">
-                                <thead>
-                                    <tr>
-                                        <th onclick="sortTable('apply_no')">報名編號 <span class="sort-icon" id="sort-apply_no"></span></th>
-                                        <th onclick="sortTable('name')">姓名 <span class="sort-icon" id="sort-name"></span></th>
-                                        <th onclick="sortTable('school')">就讀國中 <span class="sort-icon" id="sort-school"></span></th>
-                                        <th>志願</th>
-                                        <th onclick="sortTable('status')">審核狀態 <span class="sort-icon" id="sort-status"></span></th>
-                                        <th>操作</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    <?php foreach ($applications as $item): ?>
-                                    <tr>
-                                        <td><?php echo htmlspecialchars($item['apply_no'] ?? $item['id']); ?></td>
-                                        <td><?php echo htmlspecialchars($item['name']); ?></td>
-                                        <td><?php echo htmlspecialchars($item['school_name'] ?? $item['school'] ?? ''); ?></td>
-                                        <td>
-                                            <?php 
-                                            $choices = json_decode($item['choices'], true);
-                                            $is_approved = ($item['status'] === 'approved');
-                                            if (!empty($choices) && is_array($choices)): 
-                                                // 如果是IMD用戶，只顯示資訊管理科相關的志願
-                                                if ($is_imd_user):
-                                                    $filtered_choices = [];
-                                                    foreach ($choices as $index => $choice):
-                                                        // 只保留包含"資訊管理科"或"資管科"的志願
-                                                        if (strpos($choice, '資訊管理科') !== false || strpos($choice, '資管科') !== false):
-                                                            $filtered_choices[] = ['index' => $index, 'choice' => $choice];
-                                                        endif;
-                                                    endforeach;
-                                                    
-                                                    if (!empty($filtered_choices)):
-                                            ?>
+                    <?php endif; ?>
+
+                    <!-- 續招報名名單 TAB 內容 -->
+                    <div id="tab-list" class="tab-content <?php echo $list_active; ?>">
+                        <div class="card-body table-container">
+                            <?php if (empty($applications)): ?>
+                                <div class="empty-state">
+                                    <i class="fas fa-inbox fa-3x" style="margin-bottom: 16px;"></i>
+                                    <p>目前尚無任何續招報名資料。</p>
+                                </div>
+                            <?php else: ?>
+                                <table class="table" id="applicationTable"<?php if ($is_director && !empty($user_department_code)): ?> data-director-view="true"<?php endif; ?>>
+                                    <thead>
+                                        <tr>
+                                            <th onclick="sortTable('apply_no')">報名編號 <span class="sort-icon" id="sort-apply_no"></span></th>
+                                            <th onclick="sortTable('name')">姓名 <span class="sort-icon" id="sort-name"></span></th>
+                                            <th onclick="sortTable('school')">就讀國中 <span class="sort-icon" id="sort-school"></span></th>
+                                            <th>志願</th>
+                                            <?php if ($can_manage_list): ?>
+                                            <th>分配部門</th>
+                                            <?php endif; ?>
+                                            <th onclick="sortTable('status')">審核狀態 <span class="sort-icon" id="sort-status"></span></th>
+                                            <th>操作</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        <?php foreach ($applications as $item): ?>
+                                        <tr>
+                                            <td><?php echo htmlspecialchars($item['apply_no'] ?? $item['id']); ?></td>
+                                            <td><?php echo htmlspecialchars($item['name']); ?></td>
+                                            <td><?php echo htmlspecialchars($item['school_name'] ?? $item['school'] ?? ''); ?></td>
+                                            <td>
+                                                <?php 
+                                                $is_approved = ($item['status'] === 'approved');
+                                                $choices_with_codes = $item['choices_with_codes'] ?? [];
+                                                
+                                                if (!empty($choices_with_codes)): 
+                                                    // 主任：只顯示自己科系的志願（第幾志願）
+                                                    if ($is_director && !empty($user_department_code)):
+                                                        $found_choice = null;
+                                                        foreach ($choices_with_codes as $choice_data):
+                                                            if ($choice_data['code'] === $user_department_code):
+                                                                $found_choice = $choice_data;
+                                                                break;
+                                                            endif;
+                                                        endforeach;
+                                                        
+                                                        if ($found_choice):
+                                                ?>
+                                                            <span class="choice-item <?php echo $is_approved ? 'approved' : ''; ?>">
+                                                                意願<?php echo $found_choice['order']; ?>：<?php echo htmlspecialchars($found_choice['name']); ?>
+                                                            </span>
+                                                        <?php else: ?>
+                                                            <span class="no-choices">無相關志願</span>
+                                                        <?php endif; ?>
+                                                    <?php elseif ($is_imd_user): ?>
+                                                        <!-- IMD用戶：只顯示資訊管理科相關的志願（保留向後兼容） -->
+                                                        <?php
+                                                        $filtered_choices = [];
+                                                        foreach ($choices_with_codes as $choice_data):
+                                                            if ($choice_data['code'] === 'IM' || strpos($choice_data['name'], '資訊管理') !== false || strpos($choice_data['name'], '資管') !== false):
+                                                                $filtered_choices[] = $choice_data;
+                                                            endif;
+                                                        endforeach;
+                                                        
+                                                        if (!empty($filtered_choices)):
+                                                        ?>
+                                                            <div class="choices-display">
+                                                                <?php foreach ($filtered_choices as $choice_data): ?>
+                                                                    <span class="choice-item <?php echo $is_approved ? 'approved' : ''; ?>">
+                                                                        <?php echo $choice_data['order'] . '. ' . htmlspecialchars($choice_data['name']); ?>
+                                                                    </span>
+                                                                <?php endforeach; ?>
+                                                            </div>
+                                                        <?php else: ?>
+                                                            <span class="no-choices">無相關志願</span>
+                                                        <?php endif; ?>
+                                                    <?php else: ?>
+                                                        <!-- 招生中心/管理員：顯示所有志願 -->
                                                         <div class="choices-display">
-                                                            <?php foreach ($filtered_choices as $item_data): ?>
+                                                            <?php foreach ($choices_with_codes as $choice_data): ?>
                                                                 <span class="choice-item <?php echo $is_approved ? 'approved' : ''; ?>">
-                                                                    <?php echo ($item_data['index'] + 1) . '. ' . htmlspecialchars($item_data['choice']); ?>
+                                                                    <?php echo $choice_data['order'] . '. ' . htmlspecialchars($choice_data['name']); ?>
                                                                 </span>
                                                             <?php endforeach; ?>
                                                         </div>
-                                                    <?php else: ?>
-                                                        <span class="no-choices">無相關志願</span>
                                                     <?php endif; ?>
                                                 <?php else: ?>
-                                                    <!-- 一般管理員顯示所有志願 -->
-                                                    <div class="choices-display">
-                                                        <?php foreach ($choices as $index => $choice): ?>
-                                                            <span class="choice-item <?php echo $is_approved ? 'approved' : ''; ?>">
-                                                                <?php echo ($index + 1) . '. ' . htmlspecialchars($choice); ?>
-                                                            </span>
-                                                        <?php endforeach; ?>
-                                                    </div>
+                                                    <span class="no-choices">未選擇</span>
                                                 <?php endif; ?>
-                                            <?php else: ?>
-                                                <span class="no-choices">未選擇</span>
+                                            </td>
+                                            <?php if ($can_manage_list): ?>
+                                            <td>
+                                                <?php 
+                                                $assigned_dept = $item['assigned_department'] ?? '';
+                                                if (!empty($assigned_dept)):
+                                                    echo getDepartmentName($assigned_dept, $department_data);
+                                                else:
+                                                    echo '<span style="color: #8c8c8c;">未分配</span>';
+                                                endif;
+                                                ?>
+                                            </td>
                                             <?php endif; ?>
-                                        </td>
-                                        <td>
-                                            <span class="status-badge <?php echo getStatusClass($item['status']); ?>">
-                                                <?php echo getStatusText($item['status']); ?>
-                                            </span>
-                                        </td>
-                                        <td>
-                                            <a href="continued_admission_detail.php?id=<?php echo $item['id']; ?>" class="btn-view">查看詳情</a>
-                                            <?php if ($item['status'] === 'pending' && $can_manage_list): // 只有可以管理的角色才能審核 ?>
-                                                <a href="continued_admission_detail.php?id=<?php echo $item['id']; ?>&action=review" class="btn-review">審核</a>
-                                            <?php endif; ?>
-                                        </td>
-                                    </tr>
+                                            <td>
+                                                <span class="status-badge <?php echo getStatusClass($item['status']); ?>">
+                                                    <?php echo getStatusText($item['status']); ?>
+                                                </span>
+                                            </td>
+                                            <td>
+                                                <a href="continued_admission_detail.php?id=<?php echo $item['id']; ?>" class="btn-view">查看詳情</a>
+                                                <?php 
+                                                // 檢查是否為待審核狀態（支持 'PE' 和 'pending'）
+                                                $is_pending = ($item['status'] === 'pending' || $item['status'] === 'PE' || !in_array($item['status'], ['approved', 'rejected', 'waitlist']));
+                                                
+                                                // 主任只能審核分配給他的名單
+                                                $can_review_this = false;
+                                                if ($is_pending) {
+                                                    if ($can_manage_list) {
+                                                        // 招生中心可以審核所有待審核的名單
+                                                        $can_review_this = true;
+                                                    } elseif ($is_director && !empty($user_department_code)) {
+                                                        // 主任只能審核分配給他的科系的名單
+                                                        $assigned_dept = $item['assigned_department'] ?? '';
+                                                        $can_review_this = ($assigned_dept === $user_department_code);
+                                                    }
+                                                }
+                                                ?>
+                                                <?php if ($can_review_this): ?>
+                                                    <a href="continued_admission_detail.php?id=<?php echo $item['id']; ?>&action=review" class="btn-review">審核</a>
+                                                <?php endif; ?>
+                                                <?php if ($can_manage_list && $is_pending): ?>
+                                                    <button onclick="showAssignModal(<?php echo $item['id']; ?>, '<?php echo htmlspecialchars($item['name'], ENT_QUOTES); ?>', <?php echo htmlspecialchars(json_encode($item['choices_with_codes'] ?? []), ENT_QUOTES); ?>)" class="btn-view" style="margin-left: 8px;">分配部門</button>
+                                                <?php endif; ?>
+                                            </td>
+                                        </tr>
                                     <?php endforeach; ?>
                                 </tbody>
                             </table>
+                            <?php endif; ?>
+                        </div>
+                        <!-- 分頁控制 -->
+                        <?php if (!empty($applications)): ?>
+                        <div class="pagination" id="paginationContainer">
+                            <div class="pagination-info">
+                                <span>每頁顯示：</span>
+                                <select id="itemsPerPage" onchange="changeItemsPerPage()">
+                                    <option value="10" selected>10</option>
+                                    <option value="20">20</option>
+                                    <option value="50">50</option>
+                                    <option value="100">100</option>
+                                    <option value="all">全部</option>
+                                </select>
+                                <span id="pageInfo">顯示第 <span id="currentRange">1-10</span> 筆，共 <span id="totalItemsCount"><?php echo count($applications); ?></span> 筆</span>
+                            </div>
+                            <div class="pagination-controls">
+                                <button id="prevPage" onclick="changePage(-1)" disabled>上一頁</button>
+                                <span id="pageNumbers"></span>
+                                <button id="nextPage" onclick="changePage(1)">下一頁</button>
+                            </div>
+                        </div>
                         <?php endif; ?>
                     </div>
                 </div>
@@ -488,6 +741,24 @@ function getStatusClass($status) {
     <!-- 訊息提示框 -->
     <div id="toast" style="position: fixed; top: 20px; right: 20px; background-color: #333; color: white; padding: 15px 20px; border-radius: 8px; z-index: 9999; display: none; opacity: 0; transition: opacity 0.5s;"></div>
 
+    <!-- 分配部門模態框 -->
+    <?php if ($can_manage_list): ?>
+    <div id="assignModal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 10000; align-items: center; justify-content: center;">
+        <div style="background: white; border-radius: 8px; padding: 24px; max-width: 500px; width: 90%; box-shadow: 0 4px 12px rgba(0,0,0,0.15);">
+            <h3 style="margin: 0 0 16px 0; font-size: 18px; font-weight: 600;">分配部門</h3>
+            <p style="margin: 0 0 16px 0; color: var(--text-secondary-color);">學生：<span id="assignStudentName"></span></p>
+            <p style="margin: 0 0 16px 0; color: var(--text-secondary-color); font-size: 14px;">請選擇要分配的科系：</p>
+            <select id="assignDepartmentSelect" style="width: 100%; padding: 8px 12px; border: 1px solid #d9d9d9; border-radius: 6px; font-size: 14px; margin-bottom: 16px;">
+                <option value="">請選擇科系</option>
+            </select>
+            <div style="display: flex; justify-content: flex-end; gap: 8px;">
+                <button onclick="closeAssignModal()" style="padding: 8px 16px; border: 1px solid #d9d9d9; border-radius: 6px; background: #fff; cursor: pointer; font-size: 14px;">取消</button>
+                <button onclick="confirmAssign()" style="padding: 8px 16px; border: 1px solid #1890ff; border-radius: 6px; background: #1890ff; color: white; cursor: pointer; font-size: 14px;">確認分配</button>
+            </div>
+        </div>
+    </div>
+    <?php endif; ?>
+
     <script>
     // 排序表格
     function sortTable(field) {
@@ -497,12 +768,13 @@ function getStatusClass($status) {
         const urlParams = new URLSearchParams(window.location.search);
         const currentSortBy = urlParams.get('sort_by') || 'created_at';
         const currentSortOrder = urlParams.get('sort_order') || 'desc';
+        const currentTab = urlParams.get('tab') || 'list'; // 保留當前 TAB
         
         if (currentSortBy === field) {
             newSortOrder = currentSortOrder === 'asc' ? 'desc' : 'asc';
         }
         
-        window.location.href = `continued_admission_list.php?sort_by=${field}&sort_order=${newSortOrder}`;
+        window.location.href = `continued_admission_list.php?sort_by=${field}&sort_order=${newSortOrder}&tab=${currentTab}`;
     }
     
     // 更新排序圖標
@@ -537,39 +809,329 @@ function getStatusClass($status) {
         }, 3000);
     }
 
+    // TAB 切換功能
+    function switchTab(tabName) {
+        // 更新 URL 參數，保留排序參數
+        const urlParams = new URLSearchParams(window.location.search);
+        urlParams.set('tab', tabName);
+        
+        // 保留排序參數
+        const sortBy = urlParams.get('sort_by') || 'created_at';
+        const sortOrder = urlParams.get('sort_order') || 'desc';
+        
+        // 跳轉到新的 URL，保留排序參數和 TAB 參數
+        window.location.href = `continued_admission_list.php?tab=${tabName}&sort_by=${sortBy}&sort_order=${sortOrder}`;
+    }
+
     document.addEventListener('DOMContentLoaded', function() {
+        // 初始化時顯示/隱藏按鈕和搜尋框
+        const activeTab = document.querySelector('.tab-content.active');
+        const searchInput = document.getElementById('searchInput');
+        
+        if (activeTab && activeTab.id === 'tab-quota') {
+            const quotaActionButtons = document.querySelectorAll('.quota-action-btn');
+            quotaActionButtons.forEach(btn => {
+                btn.style.display = 'inline-flex';
+            });
+            if (searchInput) {
+                searchInput.style.display = 'none';
+            }
+        } else {
+            if (searchInput) {
+                searchInput.style.display = 'block';
+            }
+        }
+        
         // 更新排序圖標
         updateSortIcons();
-        const searchInput = document.getElementById('searchInput');
+        const searchInputEl = document.getElementById('searchInput');
         const table = document.getElementById('applicationTable');
         const rows = table ? table.getElementsByTagName('tbody')[0].getElementsByTagName('tr') : [];
 
-        if (searchInput) {
-            searchInput.addEventListener('keyup', function() {
-                const filter = searchInput.value.toLowerCase();
-                
-                for (let i = 0; i < rows.length; i++) {
-                    const nameCell = rows[i].getElementsByTagName('td')[1];
-                    const idCell = rows[i].getElementsByTagName('td')[2];
-                    const phoneCell = rows[i].getElementsByTagName('td')[3];
-                    
-                    if (nameCell || idCell || phoneCell) {
-                        const nameText = nameCell.textContent || nameCell.innerText;
-                        const idText = idCell.textContent || idCell.innerText;
-                        const phoneText = phoneCell.textContent || phoneCell.innerText;
-                        
-                        if (nameText.toLowerCase().indexOf(filter) > -1 || 
-                            idText.toLowerCase().indexOf(filter) > -1 ||
-                            phoneText.toLowerCase().indexOf(filter) > -1) {
-                            rows[i].style.display = "";
-                        } else {
-                            rows[i].style.display = "none";
-                        }
-                    }
-                }
+        if (searchInputEl) {
+            searchInputEl.addEventListener('keyup', function() {
+                filterTable();
             });
         }
+        
+        // 初始化分頁
+        initPagination();
     });
+
+    // 分頁相關變數
+    let currentPage = 1;
+    let itemsPerPage = 10;
+    let allRows = [];
+    let filteredRows = [];
+
+    // 初始化分頁
+    function initPagination() {
+        const table = document.getElementById('applicationTable');
+        if (!table) return;
+        
+        const tbody = table.getElementsByTagName('tbody')[0];
+        if (!tbody) return;
+        
+        allRows = Array.from(tbody.getElementsByTagName('tr'));
+        filteredRows = allRows;
+        
+        // 更新總數
+        updateTotalCount();
+        
+        // 初始化分頁
+        updatePagination();
+    }
+
+    function changeItemsPerPage() {
+        const select = document.getElementById('itemsPerPage');
+        itemsPerPage = select.value === 'all' ? 
+                      filteredRows.length : 
+                      parseInt(select.value);
+        currentPage = 1;
+        updatePagination();
+    }
+
+    function changePage(direction) {
+        const totalPages = Math.ceil(filteredRows.length / itemsPerPage);
+        currentPage += direction;
+        
+        if (currentPage < 1) currentPage = 1;
+        if (currentPage > totalPages) currentPage = totalPages;
+        
+        updatePagination();
+    }
+
+    function goToPage(page) {
+        currentPage = page;
+        updatePagination();
+    }
+
+    function updatePagination() {
+        const totalItems = filteredRows.length;
+        const totalPages = itemsPerPage === 'all' || itemsPerPage >= totalItems ? 1 : Math.ceil(totalItems / itemsPerPage);
+        
+        // 隱藏所有行
+        allRows.forEach(row => row.style.display = 'none');
+        
+        if (itemsPerPage === 'all' || itemsPerPage >= totalItems) {
+            // 顯示所有過濾後的行
+            filteredRows.forEach(row => row.style.display = '');
+            
+            // 更新分頁資訊
+            document.getElementById('currentRange').textContent = 
+                totalItems > 0 ? `1-${totalItems}` : '0-0';
+        } else {
+            // 計算當前頁的範圍
+            const start = (currentPage - 1) * itemsPerPage;
+            const end = Math.min(start + itemsPerPage, totalItems);
+            
+            // 顯示當前頁的行
+            for (let i = start; i < end; i++) {
+                if (filteredRows[i]) {
+                    filteredRows[i].style.display = '';
+                }
+            }
+            
+            // 更新分頁資訊
+            document.getElementById('currentRange').textContent = 
+                totalItems > 0 ? `${start + 1}-${end}` : '0-0';
+        }
+        
+        // 更新總數
+        updateTotalCount();
+        
+        // 更新上一頁/下一頁按鈕
+        const prevBtn = document.getElementById('prevPage');
+        const nextBtn = document.getElementById('nextPage');
+        if (prevBtn) prevBtn.disabled = currentPage === 1;
+        if (nextBtn) nextBtn.disabled = currentPage >= totalPages;
+        
+        // 更新頁碼按鈕
+        updatePageNumbers(totalPages);
+    }
+
+    function updateTotalCount() {
+        const totalCountEl = document.getElementById('totalItemsCount');
+        if (totalCountEl) {
+            totalCountEl.textContent = filteredRows.length;
+        }
+    }
+
+    function updatePageNumbers(totalPages) {
+        const pageNumbers = document.getElementById('pageNumbers');
+        if (!pageNumbers) return;
+        
+        pageNumbers.innerHTML = '';
+        
+        if (totalPages <= 1) return;
+        
+        // 顯示最多 5 個頁碼
+        let startPage = Math.max(1, currentPage - 2);
+        let endPage = Math.min(totalPages, currentPage + 2);
+        
+        // 如果接近開頭，顯示前 5 頁
+        if (currentPage <= 3) {
+            startPage = 1;
+            endPage = Math.min(5, totalPages);
+        }
+        
+        // 如果接近結尾，顯示後 5 頁
+        if (currentPage >= totalPages - 2) {
+            startPage = Math.max(1, totalPages - 4);
+            endPage = totalPages;
+        }
+        
+        // 第一頁
+        if (startPage > 1) {
+            const btn = document.createElement('button');
+            btn.textContent = '1';
+            btn.onclick = () => goToPage(1);
+            if (currentPage === 1) btn.classList.add('active');
+            pageNumbers.appendChild(btn);
+            
+            if (startPage > 2) {
+                const ellipsis = document.createElement('span');
+                ellipsis.textContent = '...';
+                ellipsis.style.padding = '0 8px';
+                pageNumbers.appendChild(ellipsis);
+            }
+        }
+        
+        // 中間頁碼
+        for (let i = startPage; i <= endPage; i++) {
+            const btn = document.createElement('button');
+            btn.textContent = i;
+            btn.onclick = () => goToPage(i);
+            if (i === currentPage) btn.classList.add('active');
+            pageNumbers.appendChild(btn);
+        }
+        
+        // 最後一頁
+        if (endPage < totalPages) {
+            if (endPage < totalPages - 1) {
+                const ellipsis = document.createElement('span');
+                ellipsis.textContent = '...';
+                ellipsis.style.padding = '0 8px';
+                pageNumbers.appendChild(ellipsis);
+            }
+            
+            const btn = document.createElement('button');
+            btn.textContent = totalPages;
+            btn.onclick = () => goToPage(totalPages);
+            if (currentPage === totalPages) btn.classList.add('active');
+            pageNumbers.appendChild(btn);
+        }
+    }
+
+    // 表格搜尋功能
+    function filterTable() {
+        const searchInput = document.getElementById('searchInput');
+        if (!searchInput) return;
+        
+        const filter = searchInput.value.toLowerCase();
+        const table = document.getElementById('applicationTable');
+        
+        if (!table) return;
+        
+        const tbody = table.getElementsByTagName('tbody')[0];
+        if (!tbody) return;
+        
+        allRows = Array.from(tbody.getElementsByTagName('tr'));
+        
+        filteredRows = allRows.filter(row => {
+            const cells = row.getElementsByTagName('td');
+            for (let j = 0; j < cells.length; j++) {
+                const cell = cells[j];
+                if (cell) {
+                    const txtValue = cell.textContent || cell.innerText;
+                    if (txtValue.toLowerCase().indexOf(filter) > -1) {
+                        return true;
+                    }
+                }
+            }
+            return false;
+        });
+        
+        currentPage = 1;
+        updatePagination();
+    }
+
+    <?php if ($can_manage_list): ?>
+    // 分配部門相關變數
+    let currentAssignApplicationId = null;
+    let currentAssignChoices = [];
+
+    // 顯示分配模態框
+    function showAssignModal(applicationId, studentName, choices) {
+        currentAssignApplicationId = applicationId;
+        currentAssignChoices = choices || [];
+        
+        document.getElementById('assignStudentName').textContent = studentName;
+        const select = document.getElementById('assignDepartmentSelect');
+        select.innerHTML = '<option value="">請選擇科系</option>';
+        
+        // 只顯示學生志願中有的科系
+        const departmentCodes = currentAssignChoices.map(c => c.code).filter((v, i, a) => a.indexOf(v) === i);
+        const departmentNames = <?php echo json_encode($department_data, JSON_UNESCAPED_UNICODE); ?>;
+        
+        departmentCodes.forEach(code => {
+            const option = document.createElement('option');
+            option.value = code;
+            option.textContent = departmentNames[code] || code;
+            select.appendChild(option);
+        });
+        
+        document.getElementById('assignModal').style.display = 'flex';
+    }
+
+    // 關閉分配模態框
+    function closeAssignModal() {
+        document.getElementById('assignModal').style.display = 'none';
+        currentAssignApplicationId = null;
+        currentAssignChoices = [];
+    }
+
+    // 確認分配
+    function confirmAssign() {
+        const select = document.getElementById('assignDepartmentSelect');
+        const departmentCode = select.value;
+        
+        if (!departmentCode) {
+            showToast('請選擇要分配的科系', false);
+            return;
+        }
+        
+        if (!currentAssignApplicationId) {
+            showToast('系統錯誤：找不到報名記錄', false);
+            return;
+        }
+        
+        // 發送分配請求
+        const formData = new FormData();
+        formData.append('application_id', currentAssignApplicationId);
+        formData.append('department', departmentCode);
+        
+        fetch('assign_continued_admission_department.php', {
+            method: 'POST',
+            body: formData
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                showToast(data.message || '分配成功', true);
+                setTimeout(() => {
+                    window.location.reload();
+                }, 1000);
+            } else {
+                showToast(data.message || '分配失敗', false);
+            }
+        })
+        .catch(error => {
+            console.error('Error:', error);
+            showToast('系統錯誤，請稍後再試', false);
+        });
+    }
+    <?php endif; ?>
 
     </script>
 </body>

@@ -470,6 +470,9 @@ function getEnrollmentStatusClass($status) {
             font-size: 16px;
             white-space: nowrap;
         }
+        .table th:first-child, .table td:first-child {
+            padding-left: 60px;
+        }
         .table th {
             background: #fafafa;
             font-weight: 600;

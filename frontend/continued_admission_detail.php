@@ -8,20 +8,45 @@ if (!isset($_SESSION['admin_logged_in']) || !$_SESSION['admin_logged_in']) {
 
 require_once '../../Topics-frontend/frontend/config.php';
 
-// 獲取使用者角色
+// 獲取使用者角色和用戶ID
 $user_role = $_SESSION['role'] ?? '';
+$user_id = $_SESSION['user_id'] ?? 0;
 
-// 權限判斷：主任和科助不能管理名單（不能審核）
+// 權限判斷：主任和科助不能管理名單（不能管理名額）
 $can_manage_list = in_array($user_role, ['ADM', 'STA']); // 只有管理員和學校行政可以管理
+
+// 判斷是否為主任
+$is_director = ($user_role === 'DI');
+$user_department_code = null;
+
+// 如果是主任，獲取其科系代碼
+if ($is_director && $user_id > 0) {
+    try {
+        $conn_temp = getDatabaseConnection();
+        $table_check = $conn_temp->query("SHOW TABLES LIKE 'director'");
+        if ($table_check && $table_check->num_rows > 0) {
+            $stmt_dept = $conn_temp->prepare("SELECT department FROM director WHERE user_id = ?");
+        } else {
+            $stmt_dept = $conn_temp->prepare("SELECT department FROM teacher WHERE user_id = ?");
+        }
+        $stmt_dept->bind_param("i", $user_id);
+        $stmt_dept->execute();
+        $result_dept = $stmt_dept->get_result();
+        if ($row = $result_dept->fetch_assoc()) {
+            $user_department_code = $row['department'];
+        }
+        $stmt_dept->close();
+        $conn_temp->close();
+    } catch (Exception $e) {
+        error_log('Error fetching user department: ' . $e->getMessage());
+    }
+}
+
+// 主任可以審核分配給他的名單
+$can_review = $can_manage_list || ($is_director && !empty($user_department_code));
 
 $application_id = isset($_GET['id']) ? (int)$_GET['id'] : 0;
 $action = isset($_GET['action']) ? $_GET['action'] : 'view';
-
-// 如果沒有管理權限但嘗試審核，則重定向到查看頁面
-if ($action === 'review' && !$can_manage_list) {
-    header("Location: continued_admission_detail.php?id=" . $application_id);
-    exit;
-}
 
 if ($application_id === 0) {
     header("Location: continued_admission_list.php");
@@ -42,6 +67,26 @@ if (!$application) {
     $conn->close();
     header("Location: continued_admission_list.php");
     exit;
+}
+
+// 檢查主任是否有權限審核此名單
+if ($action === 'review') {
+    if ($can_manage_list) {
+        // 招生中心可以審核所有名單
+        // 允許繼續
+    } elseif ($is_director && !empty($user_department_code)) {
+        // 主任只能審核分配給他的科系的名單
+        $assigned_dept = $application['assigned_department'] ?? '';
+        if ($assigned_dept !== $user_department_code) {
+            // 沒有權限，重定向到查看頁面
+            header("Location: continued_admission_detail.php?id=" . $application_id);
+            exit;
+        }
+    } else {
+        // 沒有權限，重定向到查看頁面
+        header("Location: continued_admission_detail.php?id=" . $application_id);
+        exit;
+    }
 }
 
 // 查詢學校名稱
