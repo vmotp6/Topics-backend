@@ -18,7 +18,9 @@ $current_user = isset($_SESSION['username']) ? $_SESSION['username'] : '';
 $user_role = isset($_SESSION['role']) ? $_SESSION['role'] : '';
 $user_department = '';
 $department_filter = '';
-$is_school_admin = ($user_role === '學校行政人員' || $user_role === '行政人員' || $current_user === 'IMD');
+// 判斷是否為管理員：角色為 ADM（管理員）或 STA（行政人員），或舊的中文角色名稱
+$is_admin = ($user_role === 'ADM' || $user_role === '管理員' || $current_user === 'admin' || $current_user === 'admin1');
+$is_school_admin = ($user_role === '學校行政人員' || $user_role === '行政人員' || $user_role === 'STA' || $current_user === 'IMD' || $is_admin);
 
 // 如果是 IMD 帳號，只能查看資管科的資料
 if ($current_user === 'IMD') {
@@ -72,9 +74,10 @@ if ($teacher_id > 0) {
     // 查詢特定教師的活動記錄
     $activity_records = [];
     $teacher_name = '';
-    $records_sql = "SELECT ar.*, t.name AS teacher_name, t.department AS teacher_department
+    $records_sql = "SELECT ar.*, u.name AS teacher_name, t.department AS teacher_department
                     FROM activity_records ar
                     LEFT JOIN teacher t ON ar.teacher_id = t.user_id
+                    LEFT JOIN user u ON t.user_id = u.id
                     WHERE ar.teacher_id = ? $department_filter
                     ORDER BY ar.activity_date DESC, ar.id DESC";
     $stmt = $conn->prepare($records_sql);
@@ -92,19 +95,21 @@ if ($teacher_id > 0) {
 } else {
     // --- 教師列表視圖 ---
     $teachers_with_records = [];
-    $teachers_sql = "SELECT t.user_id, t.name AS teacher_name, t.department AS teacher_department, COUNT(ar.id) AS record_count
+    $teachers_sql = "SELECT t.user_id, u.name AS teacher_name, t.department AS teacher_department, COUNT(ar.id) AS record_count
                      FROM teacher t
                      JOIN activity_records ar ON t.user_id = ar.teacher_id
+                     LEFT JOIN user u ON t.user_id = u.id
                      WHERE 1=1 $department_filter
-                     GROUP BY t.user_id, t.name, t.department
-                     ORDER BY record_count DESC, t.name ASC";
+                     GROUP BY t.user_id, u.name, t.department
+                     ORDER BY record_count DESC, u.name ASC";
     $result = $conn->query($teachers_sql);
 
     // 為了統計圖表，獲取所有活動記錄
     $all_activity_records = [];
-    $all_records_sql = "SELECT ar.*, t.name AS teacher_name, t.department AS teacher_department
+    $all_records_sql = "SELECT ar.*, u.name AS teacher_name, t.department AS teacher_department
                         FROM activity_records ar
                         LEFT JOIN teacher t ON ar.teacher_id = t.user_id
+                        LEFT JOIN user u ON t.user_id = u.id
                         WHERE 1=1 $department_filter
                         ORDER BY ar.activity_date DESC, ar.id DESC";
     $all_records_result = $conn->query($all_records_sql);
@@ -523,7 +528,7 @@ $conn->close();
                                 <button class="btn-view" onclick="showEnrollmentMonthlyStats()">
                                     <i class="fas fa-calendar-alt"></i> 月度趨勢分析
                                 </button>
-                                <?php if ($current_user === 'admin1'): ?>
+                                <?php if ($is_admin || $is_school_admin): ?>
                                 <button class="btn-view" onclick="showEnrollmentSchoolDepartmentStats()">
                                     <i class="fas fa-school"></i> 國中選擇科系分析
                                 </button>
@@ -2363,16 +2368,27 @@ $conn->close();
     function showEnrollmentSchoolDepartmentStats() {
         console.log('showEnrollmentSchoolDepartmentStats 被調用');
         
+        const apiUrl = buildApiUrl('../../Topics-frontend/frontend/api/enrollment_stats_api.php', 'school_department');
+        console.log('API URL:', apiUrl);
+        
         // 從API獲取國中選擇科系統計數據
-        fetch(buildApiUrl('../../Topics-frontend/frontend/api/enrollment_stats_api.php', 'school_department'))
-            .then(response => response.json())
+        fetch(apiUrl)
+            .then(response => {
+                console.log('API 響應狀態:', response.status, response.statusText);
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                }
+                return response.json();
+            })
             .then(data => {
+                console.log('API 返回數據:', data);
                 if (data.error) {
                     document.getElementById('enrollmentAnalyticsContent').innerHTML = `
                         <div style="text-align: center; padding: 40px; color: #dc3545;">
                             <i class="fas fa-exclamation-triangle fa-3x" style="margin-bottom: 16px;"></i>
                             <h4>數據載入失敗</h4>
                             <p>${data.error}</p>
+                            <p style="font-size: 0.9em; color: #999; margin-top: 10px;">請檢查瀏覽器控制台以獲取詳細錯誤信息</p>
                         </div>
                     `;
                     return;
@@ -2419,11 +2435,18 @@ $conn->close();
             })
             .catch(error => {
                 console.error('載入國中選擇科系統計數據失敗:', error);
+                console.error('錯誤詳情:', {
+                    message: error.message,
+                    stack: error.stack,
+                    apiUrl: apiUrl
+                });
                 document.getElementById('enrollmentAnalyticsContent').innerHTML = `
                     <div style="text-align: center; padding: 40px; color: #dc3545;">
                         <i class="fas fa-exclamation-triangle fa-3x" style="margin-bottom: 16px;"></i>
                         <h4>數據載入失敗</h4>
                         <p>無法連接到統計API</p>
+                        <p style="font-size: 0.9em; color: #999; margin-top: 10px;">錯誤: ${error.message}</p>
+                        <p style="font-size: 0.8em; color: #999; margin-top: 5px;">請檢查瀏覽器控制台 (F12) 以獲取詳細錯誤信息</p>
                     </div>
                 `;
             });
