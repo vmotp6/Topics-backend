@@ -52,11 +52,6 @@ $is_admin_or_staff = in_array($user_role, $allowed_admin_roles);
                 <span>招生推薦</span>
             </a>
             
-            <a href="admission_applications.php" class="menu-item <?php echo $current_page === 'admission_applications' ? 'active' : ''; ?>">
-                <i class="fas fa-clipboard-list"></i>
-                <span>入學說明會</span>
-            </a>
-            
             <a href="activity_records.php" class="menu-item <?php echo $current_page === 'activity_records' ? 'active' : ''; ?>">
                 <i class="fas fa-tasks"></i>
                 <span>統計分析</span>

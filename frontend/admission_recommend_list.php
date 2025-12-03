@@ -427,8 +427,16 @@ function getEnrollmentStatusClass($status) {
             padding: 24px;
             width: 100%;
         }
+        
+        .page-controls { 
+            display: flex; 
+            justify-content: space-between; 
+            align-items: center; 
+            margin-bottom: 16px; 
+            gap: 16px; 
+        }
         .breadcrumb {
-            margin-bottom: 16px;
+            margin-bottom: 0;
             font-size: 16px;
             color: var(--text-secondary-color);
         }
@@ -440,93 +448,12 @@ function getEnrollmentStatusClass($status) {
             text-decoration: underline;
         }
         
-        /* 統計卡片 */
-        .stats-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-            gap: 16px;
-            margin-bottom: 24px;
-        }
-        
-        .stat-card {
-            background: #fff;
-            padding: 20px;
-            border-radius: 8px;
-            box-shadow: 0 1px 2px rgba(0,0,0,0.03);
-            display: flex;
-            align-items: center;
-            gap: 12px;
-            border: 1px solid #f0f0f0;
-            transition: all 0.3s;
-        }
-        
-        .stat-card:hover {
-            box-shadow: 0 4px 12px rgba(0,0,0,0.08);
-            transform: translateY(-2px);
-        }
-        
-        .stat-icon {
-            width: 48px;
-            height: 48px;
-            border-radius: 8px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-size: 20px;
-            color: white;
-        }
-        
-        .stat-icon.total { 
-            background: linear-gradient(135deg, #1890ff, #40a9ff); 
-        }
-        .stat-icon.pending { 
-            background: linear-gradient(135deg, #fa8c16, #ffa940); 
-        }
-        .stat-icon.contacted { 
-            background: linear-gradient(135deg, #1890ff, #40a9ff); 
-        }
-        .stat-icon.registered { 
-            background: linear-gradient(135deg, #52c41a, #73d13d); 
-        }
-        .stat-icon.rejected { 
-            background: linear-gradient(135deg, #f5222d, #ff4d4f); 
-        }
-        
-        .stat-info h3 {
-            font-size: 24px;
-            margin-bottom: 4px;
-            color: #262626;
-            font-weight: 600;
-        }
-        
-        .stat-info p {
-            color: #8c8c8c;
-            font-weight: 500;
-            font-size: 14px;
-        }
-        
-        .card {
+        .table-wrapper {
             background: var(--card-background-color);
             border-radius: 8px;
             box-shadow: 0 1px 2px rgba(0,0,0,0.03);
             border: 1px solid var(--border-color);
             margin-bottom: 24px;
-        }
-        .card-header {
-            padding: 16px 24px;
-            border-bottom: 1px solid var(--border-color);
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            background: #fafafa;
-        }
-        .card-header h3 {
-            font-size: 18px;
-            font-weight: 600;
-            color: var(--text-color);
-        }
-        .card-body {
-            padding: 24px;
         }
 
         .table-container {
@@ -537,15 +464,39 @@ function getEnrollmentStatusClass($status) {
             border-collapse: collapse;
         }
         .table th, .table td {
-            padding: 12px 16px;
+            padding: 16px 24px;
             text-align: left;
             border-bottom: 1px solid var(--border-color);
-            font-size: 14px;
+            font-size: 16px;
+            white-space: nowrap;
         }
         .table th {
             background: #fafafa;
             font-weight: 600;
-            white-space: nowrap;
+            color: #262626;
+            cursor: pointer;
+            user-select: none;
+            position: relative;
+        }
+        .table td {
+            color: #595959;
+        }
+        .table th:hover {
+            background: #f0f0f0;
+        }
+        .sort-icon {
+            margin-left: 8px;
+            font-size: 12px;
+            color: #8c8c8c;
+        }
+        .sort-icon.active {
+            color: #1890ff;
+        }
+        .sort-icon.asc::after {
+            content: "↑";
+        }
+        .sort-icon.desc::after {
+            content: "↓";
         }
         .table tr:hover {
             background: #fafafa;
@@ -557,6 +508,12 @@ function getEnrollmentStatusClass($status) {
             border-radius: 6px;
             font-size: 14px;
             width: 250px;
+            transition: all 0.3s;
+        }
+        .search-input:focus {
+            outline: none;
+            border-color: #1890ff;
+            box-shadow: 0 0 0 2px rgba(24,144,255,0.2);
         }
         .empty-state {
             text-align: center;
@@ -789,69 +746,17 @@ function getEnrollmentStatusClass($status) {
         <div class="main-content" id="mainContent">
             <?php include 'header.php'; ?>
             <div class="content">
-                <div class="breadcrumb">
-                    <a href="index.php">首頁</a> / <?php echo $page_title; ?>
-                </div>
-
-                <!-- 統計卡片 -->
-                <div class="stats-grid">
-                    <div class="stat-card">
-                        <div class="stat-icon total">
-                            <i class="fas fa-users"></i>
-                        </div>
-                        <div class="stat-info">
-                            <h3><?php echo $stats['total']; ?></h3>
-                            <p>總推薦數</p>
-                        </div>
+                <div class="page-controls">
+                    <div class="breadcrumb">
+                        <a href="index.php">首頁</a> / <?php echo $page_title; ?>
                     </div>
-                    
-                    <div class="stat-card">
-                        <div class="stat-icon pending">
-                            <i class="fas fa-clock"></i>
-                        </div>
-                        <div class="stat-info">
-                            <h3><?php echo $stats['pending']; ?></h3>
-                            <p>待處理</p>
-                        </div>
-                    </div>
-                    
-                    <div class="stat-card">
-                        <div class="stat-icon contacted">
-                            <i class="fas fa-phone"></i>
-                        </div>
-                        <div class="stat-info">
-                            <h3><?php echo $stats['contacted']; ?></h3>
-                            <p>已聯繫</p>
-                        </div>
-                    </div>
-                    
-                    <div class="stat-card">
-                        <div class="stat-icon registered">
-                            <i class="fas fa-check-circle"></i>
-                        </div>
-                        <div class="stat-info">
-                            <h3><?php echo $stats['registered']; ?></h3>
-                            <p>已報名</p>
-                        </div>
-                    </div>
-                    
-                    <div class="stat-card">
-                        <div class="stat-icon rejected">
-                            <i class="fas fa-times-circle"></i>
-                        </div>
-                        <div class="stat-info">
-                            <h3><?php echo $stats['rejected']; ?></h3>
-                            <p>已拒絕</p>
-                        </div>
-                    </div>
-                </div>
-
-                <div class="card">
-                    <div class="card-header">
-                        <h3><?php echo $page_title; ?> (共 <?php echo count($recommendations); ?> 筆)</h3>
+                    <div class="table-search">
                         <input type="text" id="searchInput" class="search-input" placeholder="搜尋被推薦人姓名、學校或電話...">
                     </div>
-                    <div class="card-body table-container">
+                </div>
+
+                <div class="table-wrapper">
+                    <div class="table-container">
                         <?php 
                         // 調試信息：檢查數據庫中的總記錄數
                         if (empty($recommendations)) {
@@ -956,8 +861,8 @@ function getEnrollmentStatusClass($status) {
                                         <th>學校/年級</th>
                                         <th>聯絡方式</th>
                                         <th>學生興趣</th>
-                                        <th>狀態</th>
-                                        <th>入學狀態</th>
+                                        <!-- <th>狀態</th> -->
+                                        <!-- <th>入學狀態</th> -->
                                         <th>推薦時間</th>
                                         <?php if ($is_admission_center): ?>
                                         <th>分配部門</th>
@@ -1022,16 +927,16 @@ function getEnrollmentStatusClass($status) {
                                             }
                                             ?>
                                         </td>
-                                        <td>
+                                        <!-- <td>
                                             <span class="status-badge <?php echo getStatusClass($item['status'] ?? 'pending'); ?>">
                                                 <?php echo getStatusText($item['status'] ?? 'pending'); ?>
                                             </span>
-                                        </td>
-                                        <td>
+                                        </td> -->
+                                        <!-- <td>
                                             <span class="enrollment-status <?php echo getEnrollmentStatusClass($item['enrollment_status'] ?? '未入學'); ?>">
                                                 <?php echo getEnrollmentStatusText($item['enrollment_status'] ?? '未入學'); ?>
                                             </span>
-                                        </td>
+                                        </td> -->
                                         <td><?php echo date('Y/m/d H:i', strtotime($item['created_at'])); ?></td>
                                         <?php if ($is_admission_center): ?>
                                         <td>
@@ -1094,7 +999,7 @@ function getEnrollmentStatusClass($status) {
                                         <?php endif; ?>
                                     </tr>
                                     <tr id="detail-<?php echo $item['id']; ?>" class="detail-row" style="display: none;">
-                                        <td colspan="<?php echo $is_admission_center || $is_department_user ? '11' : '10'; ?>" style="padding: 20px; background: #f9f9f9; border: 2px solid #b3d9ff; border-radius: 4px;">
+                                        <td colspan="<?php echo $is_admission_center || $is_department_user ? '9' : '8'; ?>" style="padding: 20px; background: #f9f9f9; border: 2px solid #b3d9ff; border-radius: 4px;">
                                             <table style="width: 100%; border-collapse: collapse;">
                                                 <tr>
                                                     <td style="width: 50%; vertical-align: top; padding-right: 20px;">

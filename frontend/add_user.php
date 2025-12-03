@@ -31,8 +31,8 @@ function sendNewAccountEmail($email, $username, $password) {
 }
 
 $role = $_POST['role'] ?? '';
-$status = $_POST['status'] ?? '1';
-$email = trim($_POST['email'] ?? '');
+$status = 1; // 預設為啟用
+$emails_input = trim($_POST['email'] ?? '');
 
 // 處理表單提交
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
@@ -40,16 +40,38 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     // 簡單的後端驗證
     if (empty($role)) {
         $error_message = "請選擇要建立的帳號角色。";
-    } elseif (empty($email)) {
+    } elseif (empty($emails_input)) {
         $error_message = "請輸入使用者的 Email（建議使用 Gmail 以確保可收到通知）。";
-    } elseif (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
-        $error_message = "Email 格式不正確，請重新確認。";
     } else {
-        try {
-            $conn = getDatabaseConnection();
-            
-            // 角色代碼映射：將中文名稱或舊代碼轉換為新代碼
-            $roleMap = [
+        // 解析多個 Email（支援逗號和換行分隔）
+        $emails_raw = preg_split('/[,\n\r]+/', $emails_input);
+        $emails = [];
+        $email_validation_error = false;
+        
+        foreach ($emails_raw as $email_raw) {
+            $email = trim($email_raw);
+            if (!empty($email)) {
+                if (filter_var($email, FILTER_VALIDATE_EMAIL)) {
+                    $emails[] = $email;
+                } else {
+                    $error_message = "Email 格式不正確：{$email}。請重新確認。";
+                    $email_validation_error = true;
+                    break;
+                }
+            }
+        }
+        
+        if ($email_validation_error) {
+            // 如果有 Email 格式錯誤，不繼續處理
+            // 不處理，直接跳過
+        } elseif (empty($emails)) {
+            $error_message = "請輸入至少一個有效的 Email。";
+        } else {
+            try {
+                $conn = getDatabaseConnection();
+                
+                // 角色代碼映射：將中文名稱或舊代碼轉換為新代碼
+                $roleMap = [
                 '老師' => 'TEA',
                 '學校行政人員' => 'STA',
                 'admin' => 'ADM',
@@ -62,80 +84,105 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 'TEA' => 'TEA',
                 'ADM' => 'ADM',
                 'STA' => 'STA',
-                'DI' => 'DI'
-            ];
-            $roleCode = $roleMap[$role] ?? $role;
-            
-            // 驗證角色代碼是否存在於 role_types 表
-            $checkRole = $conn->prepare("SELECT code FROM role_types WHERE code = ?");
-            $checkRole->bind_param("s", $roleCode);
-            $checkRole->execute();
-            $roleResult = $checkRole->get_result();
-            
-            if ($roleResult->num_rows === 0) {
-                throw new Exception("無效的角色代碼：{$roleCode}。請選擇有效的角色。");
-            }
-            $checkRole->close();
-            
-            $username = '';
-            $password = bin2hex(random_bytes(4)); // 產生一個8個字元的隨機密碼
-
-            // 根據角色決定帳號前綴
-            $prefix = '';
-            if ($roleCode === 'STA') {
-                $prefix = 'staff_';
-            } elseif ($roleCode === 'ADM') {
-                $prefix = 'admin_';
-            } else {
-                $prefix = 'user_';
-            }
-
-            // 確認 Email 是否已存在
-            $email_check_stmt = $conn->prepare("SELECT id FROM user WHERE email = ? LIMIT 1");
-            $email_check_stmt->bind_param("s", $email);
-            $email_check_stmt->execute();
-            $email_result = $email_check_stmt->get_result();
-            $email_exists = $email_result->num_rows > 0;
-            $email_check_stmt->close();
-
-            if ($email_exists) {
-                $error_message = "此 Email 已被使用，請改用其他 Email。";
-            } else {
-                // 產生一個唯一的帳號
-                do {
-                    $username = $prefix . rand(1000, 9999);
-                    $stmt = $conn->prepare("SELECT id FROM user WHERE username = ?");
-                    $stmt->bind_param("s", $username);
-                    $stmt->execute();
-                    $result = $stmt->get_result();
-                    $is_username_taken = $result->num_rows > 0;
-                    $stmt->close();
-                } while ($is_username_taken);
-
-                // 密碼雜湊
-                $hashed_password = password_hash($password, PASSWORD_DEFAULT);
-
-                // 插入新用戶資料，姓名留空、Email 為使用者輸入
-                // username_changed 設為 0，表示這是系統生成的帳號，尚未修改過
-                $stmt = $conn->prepare("INSERT INTO user (username, password, role, status, name, email, username_changed) VALUES (?, ?, ?, ?, '', ?, 0)");
-                $status_value = (int)$status;
-                $stmt->bind_param("sssis", $username, $hashed_password, $roleCode, $status_value, $email);
+                    'DI' => 'DI'
+                ];
+                $roleCode = $roleMap[$role] ?? $role;
                 
-                if ($stmt->execute()) {
-                    $success_message = "帳號建立成功！";
-                    $generated_username = $username;
-                    $generated_password = $password;
-                    $generated_email = $email;
-    
-                    $email_sent = sendNewAccountEmail($email, $username, $password);
-                } else {
-                    $error_message = "建立使用者失敗：" . $stmt->error;
+                // 驗證角色代碼是否存在於 role_types 表
+                $checkRole = $conn->prepare("SELECT code FROM role_types WHERE code = ?");
+                $checkRole->bind_param("s", $roleCode);
+                $checkRole->execute();
+                $roleResult = $checkRole->get_result();
+                
+                if ($roleResult->num_rows === 0) {
+                    throw new Exception("無效的角色代碼：{$roleCode}。請選擇有效的角色。");
                 }
-                $stmt->close();
-            }
-            $conn->close();
+                $checkRole->close();
+                
+                // 根據角色決定帳號前綴
+                $prefix = '';
+                if ($roleCode === 'STA') {
+                    $prefix = 'staff_';
+                } elseif ($roleCode === 'ADM') {
+                    $prefix = 'admin_';
+                } else {
+                    $prefix = 'user_';
+                }
+
+                // 處理多個 Email
+                $created_accounts = [];
+                $failed_accounts = [];
+                $skipped_accounts = [];
+                
+                foreach ($emails as $email) {
+                    // 確認 Email 是否已存在
+                    $email_check_stmt = $conn->prepare("SELECT id FROM user WHERE email = ? LIMIT 1");
+                    $email_check_stmt->bind_param("s", $email);
+                    $email_check_stmt->execute();
+                    $email_result = $email_check_stmt->get_result();
+                    $email_exists = $email_result->num_rows > 0;
+                    $email_check_stmt->close();
+
+                    if ($email_exists) {
+                        $skipped_accounts[] = $email;
+                        continue;
+                    }
+
+                    // 產生一個唯一的帳號
+                    $username = '';
+                    do {
+                        $username = $prefix . rand(1000, 9999);
+                        $stmt = $conn->prepare("SELECT id FROM user WHERE username = ?");
+                        $stmt->bind_param("s", $username);
+                        $stmt->execute();
+                        $result = $stmt->get_result();
+                        $is_username_taken = $result->num_rows > 0;
+                        $stmt->close();
+                    } while ($is_username_taken);
+
+                    // 產生隨機密碼
+                    $password = bin2hex(random_bytes(4)); // 產生一個8個字元的隨機密碼
+                    // 密碼雜湊
+                    $hashed_password = password_hash($password, PASSWORD_DEFAULT);
+
+                    // 插入新用戶資料，姓名留空、Email 為使用者輸入
+                    // username_changed 設為 0，表示這是系統生成的帳號，尚未修改過
+                    $stmt = $conn->prepare("INSERT INTO user (username, password, role, status, name, email, username_changed) VALUES (?, ?, ?, ?, '', ?, 0)");
+                    $status_value = (int)$status;
+                    $stmt->bind_param("sssis", $username, $hashed_password, $roleCode, $status_value, $email);
+                    
+                    if ($stmt->execute()) {
+                        $created_accounts[] = [
+                            'email' => $email,
+                            'username' => $username,
+                            'password' => $password
+                        ];
+                        
+                        // 發送郵件
+                        sendNewAccountEmail($email, $username, $password);
+                    } else {
+                        $failed_accounts[] = [
+                            'email' => $email,
+                            'error' => $stmt->error
+                        ];
+                    }
+                    $stmt->close();
+                }
+                
+                // 生成結果訊息
+                if (!empty($created_accounts)) {
+                    $success_message = "成功建立 " . count($created_accounts) . " 個帳號！";
+                }
+                if (!empty($failed_accounts)) {
+                    $error_message = "部分帳號建立失敗：" . implode(', ', array_column($failed_accounts, 'email'));
+                }
+                if (!empty($skipped_accounts)) {
+                    $warning_message = "以下 Email 已存在，已跳過：" . implode(', ', $skipped_accounts);
+                }
+                $conn->close();
         } catch (Exception $e) {
             $error_message = "資料庫操作失敗：" . $e->getMessage();
+        }
         }
     }
 }
@@ -204,6 +251,10 @@ try {
         .message { padding: 12px 16px; border-radius: 6px; margin-bottom: 16px; font-weight: 500; }
         .message.success { background: #f6ffed; color: var(--success-color); border: 1px solid #b7eb8f; }
         .message.error { background: #fff2f0; color: var(--danger-color); border: 1px solid #ffccc7; }
+        .message.warning { background: #fff7e6; color: #fa8c16; border: 1px solid #ffd591; }
+        .accounts-list { margin-top: 12px; }
+        .account-item { padding: 8px; margin: 4px 0; background: #f0f2f5; border-radius: 4px; font-family: monospace; }
+        .account-item strong { color: var(--primary-color); }
     </style>
 </head>
 <body>
@@ -218,25 +269,25 @@ try {
 
                 <?php if (isset($success_message)): ?>
                     <div class="message success"><i class="fas fa-check-circle"></i> <?php echo htmlspecialchars($success_message); ?></div>
-                    <div class="message" style="background: #e6f7ff; border: 1px solid #91d5ff; color: #1890ff;">
-                        <p style="margin-bottom: 8px;">請將以下資訊提供給使用者：</p>
-                        <div style="font-size: 16px;">
-                            <p><strong>帳號：</strong> <code style="background: #d9edff; padding: 2px 6px; border-radius: 4px;"><?php echo htmlspecialchars($generated_username); ?></code></p>
-                            <p style="margin-top: 4px;"><strong>密碼：</strong> <code style="background: #d9edff; padding: 2px 6px; border-radius: 4px;"><?php echo htmlspecialchars($generated_password); ?></code></p>
-                        </div>
-                        <p style="margin-top: 12px; font-size: 12px; color: #8c8c8c;">
-                            使用者首次登入後，應引導其至個人資料頁面填寫姓名與Email。
-                        </p>
-                    </div>
-                    <?php if (isset($email_sent) && isset($generated_email)): ?>
-                        <div class="message <?php echo $email_sent ? 'success' : 'error'; ?>">
-                            <?php if ($email_sent): ?>
-                                <i class="fas fa-envelope-circle-check"></i> 已將預設帳密寄送至 <?php echo htmlspecialchars($generated_email, ENT_QUOTES, 'UTF-8'); ?>，請提醒使用者登入後盡速修改。
-                            <?php else: ?>
-                                <i class="fas fa-envelope-open-text"></i> 帳號已建立，但郵件寄送失敗，請自行轉告使用者帳密。
-                            <?php endif; ?>
+                    <?php if (isset($created_accounts) && !empty($created_accounts)): ?>
+                        <div class="message" style="background: #e6f7ff; border: 1px solid #91d5ff; color: #1890ff;">
+                            <p style="margin-bottom: 8px;"><strong>已建立的帳號 Email：</strong></p>
+                            <div class="accounts-list">
+                                <?php foreach ($created_accounts as $account): ?>
+                                    <div class="account-item">
+                                        <div><strong>Email:</strong> <?php echo htmlspecialchars($account['email']); ?></div>
+                                    </div>
+                                <?php endforeach; ?>
+                            </div>
+                            <p style="margin-top: 12px; font-size: 12px; color: #8c8c8c;">
+                                <i class="fas fa-envelope-circle-check"></i> 已將預設帳密寄送至各使用者信箱，請提醒使用者登入後盡速修改。
+                            </p>
                         </div>
                     <?php endif; ?>
+                <?php endif; ?>
+                
+                <?php if (isset($warning_message)): ?>
+                    <div class="message warning"><i class="fas fa-exclamation-triangle"></i> <?php echo htmlspecialchars($warning_message); ?></div>
                 <?php endif; ?>
                 
                 <?php if (isset($error_message)): ?>
@@ -250,8 +301,8 @@ try {
                     <form method="POST" class="form-body">
                         <div class="form-group">
                             <label for="email">Email <span class="required">*</span></label>
-                            <input type="email" id="email" name="email" class="form-control" placeholder="example@gmail.com" value="<?php echo htmlspecialchars($email, ENT_QUOTES, 'UTF-8'); ?>" required>
-                            <small style="display:block;margin-top:6px;color:#8c8c8c;">系統將寄送預設帳密至此信箱，建議填寫 Gmail 以確保可收到通知。</small>
+                            <textarea id="email" name="email" class="form-control" rows="5" placeholder="example1@gmail.com&#10;example2@gmail.com&#10;或使用逗號分隔：example1@gmail.com, example2@gmail.com" required><?php echo htmlspecialchars($emails_input, ENT_QUOTES, 'UTF-8'); ?></textarea>
+                            <small style="display:block;margin-top:6px;color:#8c8c8c;">可一次輸入多個 Email，以換行或逗號分隔。系統將為每個 Email 建立一個帳號並寄送預設帳密，建議填寫 Gmail 以確保可收到通知。</small>
                         </div>
 
                         <div class="form-group">
@@ -272,14 +323,6 @@ try {
                                     <option value="STA" <?php echo ($role === 'STA' || $role === '學校行政人員' || $role === '行政人員') ? 'selected' : ''; ?>>行政人員</option>
                                     <option value="DI" <?php echo ($role === 'DI' || $role === '主任') ? 'selected' : ''; ?>>主任</option>
                                 <?php endif; ?>
-                            </select>
-                        </div>
-
-                        <div class="form-group">
-                            <label for="status">狀態 <span class="required">*</span></label>
-                            <select id="status" name="status" class="form-control" required>
-                                <option value="1" <?php echo $status === '1' ? 'selected' : ''; ?>>啟用</option>
-                                <option value="0" <?php echo $status === '0' ? 'selected' : ''; ?>>停用</option>
                             </select>
                         </div>
 
