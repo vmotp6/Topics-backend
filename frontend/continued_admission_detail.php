@@ -8,8 +8,21 @@ if (!isset($_SESSION['admin_logged_in']) || !$_SESSION['admin_logged_in']) {
 
 require_once '../../Topics-frontend/frontend/config.php';
 
+// 獲取使用者角色
+$user_role = $_SESSION['role'] ?? '';
+
+// 權限判斷：主任和科助不能管理名單（不能審核）
+$can_manage_list = in_array($user_role, ['ADM', 'STA']); // 只有管理員和學校行政可以管理
+
 $application_id = isset($_GET['id']) ? (int)$_GET['id'] : 0;
 $action = isset($_GET['action']) ? $_GET['action'] : 'view';
+
+// 如果沒有管理權限但嘗試審核，則重定向到查看頁面
+if ($action === 'review' && !$can_manage_list) {
+    header("Location: continued_admission_detail.php?id=" . $application_id);
+    exit;
+}
+
 if ($application_id === 0) {
     header("Location: continued_admission_list.php");
     exit;

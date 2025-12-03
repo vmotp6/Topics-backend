@@ -6,8 +6,15 @@ $current_page = basename($_SERVER['PHP_SELF'], '.php');
 $user_role = $_SESSION['role'] ?? ''; // 預期為 ADM, STA, DI, TEA, STU 等代碼
 $username = $_SESSION['username'] ?? ''; // 預期為用戶名
 
-$allowed_admin_roles = ['ADM', 'STA','DI'];
-$is_admin_or_staff = in_array($user_role, $allowed_admin_roles);
+// 允許登入的角色：管理員、學校行政、主任、科助
+$allowed_roles = ['ADM', 'STA', 'DI', 'TEA'];
+$can_access = in_array($user_role, $allowed_roles);
+
+// 權限判斷
+$is_admin = ($user_role === 'ADM'); // 管理員：全部都可以
+$is_staff = ($user_role === 'STA'); // 學校行政：首頁、就讀意願名單(全)、續招(全)、招生推薦、統計分析、入學說明會、學校聯絡人
+$is_director = ($user_role === 'DI'); // 主任：首頁、就讀意願名單、續招(不能管理名單)、統計分析
+$is_teacher = ($user_role === 'TEA'); // 科助：首頁、就讀意願名單、續招(不能管理名單)、統計分析
 // -------------------------------------------------------------
 ?>
 
@@ -20,61 +27,73 @@ $is_admin_or_staff = in_array($user_role, $allowed_admin_roles);
     </div>
     
     <div class="sidebar-menu">
-        <?php if ($is_admin_or_staff): // 僅管理員 (ADM) 和行政人員 (STA) 顯示主選單 ?>
+        <?php if ($can_access): // 允許登入的角色顯示主選單 ?>
             
+            <!-- 首頁 - 所有角色都可以看到 -->
             <a href="index.php" class="menu-item <?php echo $current_page === 'index' ? 'active' : ''; ?>">
                 <i class="fas fa-home"></i>
                 <span>首頁</span>
             </a>
             
-            <?php if ($user_role === 'ADM'): // 僅管理員 (ADM) 顯示使用者管理 ?>
+            <!-- 使用者管理 - 僅管理員 -->
+            <?php if ($is_admin): ?>
                 <a href="users.php" class="menu-item <?php echo in_array($current_page, ['users', 'edit_user', 'add_user']) ? 'active' : ''; ?>">
                     <i class="fas fa-users"></i>
                     <span>使用者管理</span>
                 </a>
             <?php endif; ?>
 
+            <!-- 就讀意願名單 - 所有角色都可以看到 -->
             <a href="enrollment_list.php" class="menu-item <?php echo $current_page === 'enrollment_list' ? 'active' : ''; ?>">
                 <i class="fas fa-file-signature"></i>
                 <span>就讀意願名單</span>
             </a>
 
+            <!-- 續招 - 所有角色都可以看到（但權限不同） -->
             <a href="continued_admission_list.php" class="menu-item <?php echo in_array($current_page, ['continued_admission_list', 'continued_admission_detail']) ? 'active' : ''; ?>">
                 <i class="fas fa-user-plus"></i>
                 <span>續招</span>
             </a>
 
-             <a href="admission_recommend_list.php" class="menu-item <?php echo $current_page === 'admission_recommend_list' ? 'active' : ''; ?>">
-                <i class="fas fa-user-friends"></i>
-                <span>招生推薦</span>
-            </a>
+            <!-- 招生推薦 - 僅學校行政和管理員 -->
+            <?php if ($is_staff || $is_admin): ?>
+                <a href="admission_recommend_list.php" class="menu-item <?php echo $current_page === 'admission_recommend_list' ? 'active' : ''; ?>">
+                    <i class="fas fa-user-friends"></i>
+                    <span>招生推薦</span>
+                </a>
+            <?php endif; ?>
             
+            <!-- 統計分析 - 所有角色都可以看到 -->
             <a href="activity_records.php" class="menu-item <?php echo $current_page === 'activity_records' ? 'active' : ''; ?>">
                 <i class="fas fa-tasks"></i>
                 <span>統計分析</span>
             </a>
-            <!-- 先隱藏期末之後改! 
-            <a href="page_management.php" class="menu-item <?php echo $current_page === 'page_management' ? 'active' : ''; ?>">
-                <i class="fas fa-file-alt"></i>
-                <span>頁面管理</span>
-            </a>-->
             
-            <a href="ollama_admin.php" class="menu-item <?php echo $current_page === 'ollama_admin' ? 'active' : ''; ?>">
-                <i class="fas fa-robot"></i>
-                <span>AI模型管理</span>
-            </a>
+            <!-- AI模型管理 - 僅管理員 -->
+            <?php if ($is_admin): ?>
+                <a href="ollama_admin.php" class="menu-item <?php echo $current_page === 'ollama_admin' ? 'active' : ''; ?>">
+                    <i class="fas fa-robot"></i>
+                    <span>AI模型管理</span>
+                </a>
+            <?php endif; ?>
             
-            <a href="settings.php" class="menu-item <?php echo $current_page === 'settings' ? 'active' : ''; ?>">
-                <i class="fas fa-cogs"></i>
-                <span>入學說明會</span>
-            </a>
+            <!-- 入學說明會 - 僅學校行政和管理員 -->
+            <?php if ($is_staff || $is_admin): ?>
+                <a href="settings.php" class="menu-item <?php echo $current_page === 'settings' ? 'active' : ''; ?>">
+                    <i class="fas fa-cogs"></i>
+                    <span>入學說明會</span>
+                </a>
+            <?php endif; ?>
             
-            <a href="school_contacts.php" class="menu-item <?php echo $current_page === 'school_contacts' ? 'active' : ''; ?>">
-                <i class="fas fa-address-book"></i>
-                <span>學校聯絡人</span>
-            </a>
+            <!-- 學校聯絡人 - 僅學校行政和管理員 -->
+            <?php if ($is_staff || $is_admin): ?>
+                <a href="school_contacts.php" class="menu-item <?php echo $current_page === 'school_contacts' ? 'active' : ''; ?>">
+                    <i class="fas fa-address-book"></i>
+                    <span>學校聯絡人</span>
+                </a>
+            <?php endif; ?>
 
-        <?php endif; // 結束 ADM/STA 主選單的判斷 ?>
+        <?php endif; // 結束主選單的判斷 ?>
 
         <a href="logout.php" class="menu-item">
             <i class="fas fa-sign-out-alt"></i>

@@ -14,8 +14,14 @@ require_once '../../Topics-frontend/frontend/config.php';
 $page_title = (isset($_SESSION['username']) && $_SESSION['username'] === 'IMD') ? '資管科續招報名管理' : '續招報名管理';
 $current_page = 'continued_admission_list'; // 新增此行
 
+// 獲取使用者角色
+$user_role = $_SESSION['role'] ?? '';
+
 // 檢查是否為IMD用戶
 $is_imd_user = (isset($_SESSION['username']) && $_SESSION['username'] === 'IMD');
+
+// 權限判斷：主任和科助不能管理名單（不能管理名額、不能修改狀態）
+$can_manage_list = in_array($user_role, ['ADM', 'STA']); // 只有管理員和學校行政可以管理
 
 // 建立資料庫連接
 try {
@@ -255,6 +261,7 @@ function getStatusClass($status) {
                 </div>
 
                 <!-- 科系名額管理卡片 -->
+                <?php if ($can_manage_list): // 只有可以管理的角色才顯示名額管理 ?>
                 <div class="card">
                     <div class="card-header">
                         <h3><i class="fas fa-graduation-cap"></i> 科系名額管理</h3>
@@ -312,6 +319,7 @@ function getStatusClass($status) {
                         <?php endif; ?>
                     </div>
                 </div>
+                <?php endif; // 結束名額管理卡片的判斷 ?>
 
                 <div class="card">
                     <div class="card-header">
@@ -390,7 +398,7 @@ function getStatusClass($status) {
                                         </td>
                                         <td>
                                             <a href="continued_admission_detail.php?id=<?php echo $item['id']; ?>" class="btn-view">查看詳情</a>
-                                            <?php if ($item['status'] === 'pending'): ?>
+                                            <?php if ($item['status'] === 'pending' && $can_manage_list): // 只有可以管理的角色才能審核 ?>
                                                 <a href="continued_admission_detail.php?id=<?php echo $item['id']; ?>&action=review" class="btn-review">審核</a>
                                             <?php endif; ?>
                                         </td>
