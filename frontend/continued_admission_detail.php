@@ -16,35 +16,90 @@ if ($application_id === 0) {
 }
 
 $conn = getDatabaseConnection();
-$stmt = $conn->prepare("SELECT * FROM continued_admission WHERE id = ?");
+
+// 查詢報名資料
+$stmt = $conn->prepare("SELECT * FROM continued_admission WHERE ID = ?");
 $stmt->bind_param("i", $application_id);
 $stmt->execute();
 $result = $stmt->get_result();
 $application = $result->fetch_assoc();
 $stmt->close();
-$conn->close();
 
 if (!$application) {
+    $conn->close();
     header("Location: continued_admission_list.php");
     exit;
 }
+
+// 查詢學校名稱
+$school_name = '';
+$school_code = $application['school'] ?? '';
+if (!empty($school_code)) {
+    $stmt = $conn->prepare("SELECT name, city, district FROM school_data WHERE school_code = ? LIMIT 1");
+    $stmt->bind_param("s", $school_code);
+    $stmt->execute();
+    $school_result = $stmt->get_result();
+    if ($school_row = $school_result->fetch_assoc()) {
+        $school_name = $school_row['name'] . ' (' . ($school_row['city'] ?? '') . ($school_row['district'] ?? '') . ')';
+    } else {
+        $school_name = $school_code;
+    }
+    $stmt->close();
+}
+
+// 查詢地址資訊
+$address_data = null;
+$stmt = $conn->prepare("SELECT * FROM continued_admission_addres WHERE admission_id = ? LIMIT 1");
+$stmt->bind_param("i", $application_id);
+$stmt->execute();
+$address_result = $stmt->get_result();
+if ($address_row = $address_result->fetch_assoc()) {
+    $address_data = $address_row;
+}
+$stmt->close();
+
+// 查詢志願選擇
+$choices = [];
+$stmt = $conn->prepare("
+    SELECT cac.choice_order, d.name as department_name, cac.department_code
+    FROM continued_admission_choices cac
+    LEFT JOIN departments d ON cac.department_code = d.code
+    WHERE cac.application_id = ?
+    ORDER BY cac.choice_order ASC
+");
+$stmt->bind_param("i", $application_id);
+$stmt->execute();
+$choices_result = $stmt->get_result();
+while ($choice_row = $choices_result->fetch_assoc()) {
+    $choices[] = $choice_row['department_name'] ?? $choice_row['department_code'];
+}
+$stmt->close();
+
+// 查詢審核者名稱
+$reviewer_name = '';
+if (!empty($application['reviewer_id'])) {
+    $stmt = $conn->prepare("SELECT name FROM user WHERE id = ? LIMIT 1");
+    $stmt->bind_param("i", $application['reviewer_id']);
+    $stmt->execute();
+    $reviewer_result = $stmt->get_result();
+    if ($reviewer_row = $reviewer_result->fetch_assoc()) {
+        $reviewer_name = $reviewer_row['name'];
+    }
+    $stmt->close();
+}
+
+$conn->close();
 
 $page_title = ($action === 'review') ? '續招報名審核 - ' . htmlspecialchars($application['name']) : '續招報名詳情 - ' . htmlspecialchars($application['name']);
 $current_page = 'continued_admission_detail';
 
 $documents = json_decode($application['documents'], true);
-$choices = json_decode($application['choices'], true);
 
-function formatAddress($app) {
+function formatAddress($addr) {
+    if (!$addr) return '未填寫';
     $address_parts = [
-        $app['zip_code'], $app['city'], $app['district'], $app['village'],
-        $app['neighbor'] ? $app['neighbor'] . '鄰' : '',
-        $app['road'],
-        $app['section'] ? $app['section'] . '段' : '',
-        $app['lane'] ? $app['lane'] . '巷' : '',
-        $app['alley'] ? $app['alley'] . '弄' : '',
-        $app['house_no'] ? $app['house_no'] . '號' : '',
-        $app['floor'] ? $app['floor'] . '樓' : ''
+        $addr['zip_code'] ?? '',
+        $addr['address'] ?? ''
     ];
     return implode(' ', array_filter($address_parts));
 }
@@ -90,12 +145,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_status'])) {
         .card-body { padding: 24px; }
 
         .detail-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 24px; }
-        .detail-section { background: #fafafa; padding: 20px; border-radius: 6px; border: 1px solid var(--border-color); }
-        .detail-section h4 { font-size: 16px; margin-bottom: 16px; padding-bottom: 8px; border-bottom: 1px solid var(--border-color); }
-        .detail-item { display: grid; grid-template-columns: 120px 1fr; gap: 8px; margin-bottom: 12px; font-size: 14px; }
+        .detail-section { background: #fafafa; padding: 20px; border-radius: 6px; border: 1px solid var(--border-color); text-align: left !important; }
+        .detail-section h4 { font-size: 16px; margin-bottom: 16px; padding-bottom: 8px; border-bottom: 1px solid var(--border-color); text-align: left !important; }
+        .detail-section > * { text-align: left !important; }
+        .detail-item { display: grid; grid-template-columns: 120px 1fr; gap: 8px; margin-bottom: 12px; font-size: 14px; text-align: left !important; width: 100%; justify-items: start; }
         .detail-item-label { font-weight: 500; color: var(--text-secondary-color); text-align: right; }
-        .detail-item-value { word-break: break-all; }
-        .detail-item-value.long-text { white-space: pre-wrap; background: #fff; padding: 8px; border-radius: 4px; border: 1px solid #e8e8e8; }
+        .detail-item-value { word-break: break-all; text-align: left !important; }
+        .detail-item-value.long-text { white-space: pre-wrap; background: #fff; padding: 8px; border-radius: 4px; border: 1px solid #e8e8e8; text-align: left !important; }
 
         .document-list { list-style: none; padding: 0; }
         .document-list li { margin-bottom: 8px; }
@@ -134,66 +190,42 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_status'])) {
 
                 <div class="card">
                     <div class="card-header">
-                        <h3><?php echo ($action === 'review') ? '報名審核' : '報名詳情'; ?> (編號: <?php echo $application['id']; ?>)</h3>
+                        <h3><?php echo ($action === 'review') ? '報名審核' : '報名詳情'; ?> (編號: <?php echo $application['apply_no'] ?? $application['ID']; ?>)</h3>
                         <a href="continued_admission_list.php" class="btn-secondary"><i class="fas fa-arrow-left"></i> 返回列表</a>
                     </div>
                     <div class="card-body">
                         <div class="detail-grid">
-                            <div class="detail-section">
-                                <h4><i class="fas fa-user"></i> 基本資料</h4>
-                                <div class="detail-item"><span class="detail-item-label">姓名:</span> <span class="detail-item-value"><?php echo htmlspecialchars($application['name']); ?></span></div>
-                                <div class="detail-item"><span class="detail-item-label">身分證字號:</span> <span class="detail-item-value"><?php echo htmlspecialchars($application['id_number']); ?></span></div>
-                                <div class="detail-item"><span class="detail-item-label">准考證號碼:</span> <span class="detail-item-value"><?php echo htmlspecialchars($application['exam_no'] ?: '未填寫'); ?></span></div>
-                                <div class="detail-item"><span class="detail-item-label">生日:</span> <span class="detail-item-value"><?php echo "{$application['birth_year']}/{$application['birth_month']}/{$application['birth_day']}"; ?></span></div>
-                                <div class="detail-item"><span class="detail-item-label">性別:</span> <span class="detail-item-value"><?php echo htmlspecialchars($application['gender'] === 'male' ? '男' : '女'); ?></span></div>
-                                <div class="detail-item"><span class="detail-item-label">室內電話:</span> <span class="detail-item-value"><?php echo htmlspecialchars($application['phone'] ?: '未填寫'); ?></span></div>
-                                <div class="detail-item"><span class="detail-item-label">行動電話:</span> <span class="detail-item-value"><?php echo htmlspecialchars($application['mobile']); ?></span></div>
-                                <div class="detail-item"><span class="detail-item-label">就讀國中:</span> <span class="detail-item-value"><?php echo htmlspecialchars($application['school_city'] . ' ' . $application['school_name']); ?></span></div>
-                            </div>
-
-                            <div class="detail-section">
-                                <h4><i class="fas fa-map-marker-alt"></i> 地址資訊</h4>
-                                <div class="detail-item"><span class="detail-item-label">戶籍地址:</span> <span class="detail-item-value"><?php echo htmlspecialchars(formatAddress($application)); ?></span></div>
-                                <div class="detail-item"><span class="detail-item-label">通訊地址:</span> <span class="detail-item-value"><?php echo $application['same_address'] ? '同戶籍地址' : htmlspecialchars($application['contact_address']); ?></span></div>
-                            </div>
-
-                            <div class="detail-section">
-                                <h4><i class="fas fa-user-friends"></i> 監護人資訊</h4>
-                                <div class="detail-item"><span class="detail-item-label">姓名:</span> <span class="detail-item-value"><?php echo htmlspecialchars($application['guardian_name']); ?></span></div>
-                                <div class="detail-item"><span class="detail-item-label">室內電話:</span> <span class="detail-item-value"><?php echo htmlspecialchars($application['guardian_phone'] ?: '未填寫'); ?></span></div>
-                                <div class="detail-item"><span class="detail-item-label">行動電話:</span> <span class="detail-item-value"><?php echo htmlspecialchars($application['guardian_mobile']); ?></span></div>
+                            <div class="detail-section" style="text-align: left !important;">
+                                <h4 style="text-align: left !important;"><i class="fas fa-user"></i> 基本資料</h4>
+                                <div class="detail-item" style="text-align: left !important; justify-items: start;"><span class="detail-item-label">報名編號:</span> <span class="detail-item-value" style="text-align: left !important;"><?php echo htmlspecialchars($application['apply_no'] ?? $application['ID']); ?></span></div>
+                                <div class="detail-item" style="text-align: left !important; justify-items: start;"><span class="detail-item-label">姓名:</span> <span class="detail-item-value" style="text-align: left !important;"><?php echo htmlspecialchars($application['name']); ?></span></div>
+                                <div class="detail-item" style="text-align: left !important; justify-items: start;"><span class="detail-item-label">身分證字號:</span> <span class="detail-item-value" style="text-align: left !important;"><?php echo htmlspecialchars($application['id_number']); ?></span></div>
+                                <div class="detail-item" style="text-align: left !important; justify-items: start;"><span class="detail-item-label">准考證號碼:</span> <span class="detail-item-value" style="text-align: left !important;"><?php echo htmlspecialchars($application['exam_no'] ?: '未填寫'); ?></span></div>
+                                <div class="detail-item" style="text-align: left !important; justify-items: start;"><span class="detail-item-label">生日:</span> <span class="detail-item-value" style="text-align: left !important;"><?php echo $application['birth_date'] ? date('Y/m/d', strtotime($application['birth_date'])) : '未填寫'; ?></span></div>
+                                <div class="detail-item" style="text-align: left !important; justify-items: start;"><span class="detail-item-label">性別:</span> <span class="detail-item-value" style="text-align: left !important;"><?php echo ($application['gender'] == 1) ? '男' : '女'; ?></span></div>
+                                <div class="detail-item" style="text-align: left !important; justify-items: start;"><span class="detail-item-label">外籍生:</span> <span class="detail-item-value" style="text-align: left !important;"><?php echo ($application['foreign_student'] == 1) ? '是' : '否'; ?></span></div>
+                                <div class="detail-item" style="text-align: left !important; justify-items: start;"><span class="detail-item-label">室內電話:</span> <span class="detail-item-value" style="text-align: left !important;"><?php echo htmlspecialchars($application['phone'] ?: '未填寫'); ?></span></div>
+                                <div class="detail-item" style="text-align: left !important; justify-items: start;"><span class="detail-item-label">行動電話:</span> <span class="detail-item-value" style="text-align: left !important;"><?php echo htmlspecialchars($application['mobile']); ?></span></div>
+                                <div class="detail-item" style="text-align: left !important; justify-items: start;"><span class="detail-item-label">就讀國中:</span> <span class="detail-item-value" style="text-align: left !important;"><?php echo htmlspecialchars($school_name); ?></span></div>
+                                <div class="detail-item" style="text-align: left !important; justify-items: start;"><span class="detail-item-label">戶籍地址:</span> <span class="detail-item-value" style="text-align: left !important;"><?php echo htmlspecialchars(formatAddress($address_data)); ?></span></div>
+                                <div class="detail-item" style="text-align: left !important; justify-items: start;"><span class="detail-item-label">通訊地址:</span> <span class="detail-item-value" style="text-align: left !important;"><?php echo ($address_data && $address_data['same_address'] == 1) ? '同戶籍地址' : htmlspecialchars($address_data['contact_address'] ?? '未填寫'); ?></span></div>
+                                <div class="detail-item" style="text-align: left !important; justify-items: start;"><span class="detail-item-label">監護人姓名:</span> <span class="detail-item-value" style="text-align: left !important;"><?php echo htmlspecialchars($application['guardian_name']); ?></span></div>
+                                <div class="detail-item" style="text-align: left !important; justify-items: start;"><span class="detail-item-label">監護人室內電話:</span> <span class="detail-item-value" style="text-align: left !important;"><?php echo htmlspecialchars($application['guardian_phone'] ?: '未填寫'); ?></span></div>
+                                <div class="detail-item" style="text-align: left !important; justify-items: start;"><span class="detail-item-label">監護人行動電話:</span> <span class="detail-item-value" style="text-align: left !important;"><?php echo htmlspecialchars($application['guardian_mobile']); ?></span></div>
                             </div>
 
                             <div class="detail-section">
                                 <h4><i class="fas fa-star"></i> 志願序</h4>
                                 <?php if (!empty($choices)): ?>
-                                    <ol>
+                                    <ol style="margin: 0; padding-left: 20px; text-align: left;">
                                         <?php foreach ($choices as $choice): ?>
-                                            <li><?php echo htmlspecialchars($choice); ?></li>
+                                            <li style="margin-bottom: 8px; text-align: left;"><?php echo htmlspecialchars($choice); ?></li>
                                         <?php endforeach; ?>
                                     </ol>
                                 <?php else: ?>
-                                    <p>未選擇志願</p>
+                                    <p style="margin: 0; text-align: left;">未選擇志願</p>
                                 <?php endif; ?>
                             </div>
-
-                            <div class="detail-section">
-                                <h4><i class="fas fa-file-alt"></i> 上傳文件</h4>
-                                <?php if (!empty($documents)): ?>
-                                    <ul class="document-list">
-                                        <?php foreach ($documents as $doc): ?>
-                                            <li>
-                                                <a href="/Topics-frontend/frontend/<?php echo htmlspecialchars($doc['path']); ?>" target="_blank">
-                                                    <i class="fas fa-link"></i> <?php echo htmlspecialchars($doc['filename']); ?> (<?php echo htmlspecialchars($doc['type']); ?>)
-                                                </a>
-                                            </li>
-                                        <?php endforeach; ?>
-                                    </ul>
-                                <?php else: ?>
-                                    <p>未上傳任何文件</p>
-                                <?php endif; ?>
-                            </div>
-
                             <div class="detail-section">
                                 <h4><i class="fas fa-pen"></i> 自傳/專長</h4>
                                 <div class="detail-item" style="grid-template-columns: 1fr;">
@@ -205,47 +237,97 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_status'])) {
                                     <div class="detail-item-value long-text"><?php echo htmlspecialchars($application['skills']); ?></div>
                                 </div>
                             </div>
+                            <div class="detail-section" style="text-align: left !important;">
+                                <h4 style="text-align: left !important;"><i class="fas fa-file-alt"></i> 上傳文件</h4>
+                                <?php
+                                $document_types = [
+                                    'exam' => '114 年國中教育會考成績單',
+                                    'skill' => '技藝教育課程結業證明',
+                                    'leader' => '擔任班級幹部證明',
+                                    'service' => '服務學習時數證明',
+                                    'fitness' => '體適能成績證明',
+                                    'contest' => '競賽成績證明',
+                                    'other' => '其他相關證明文件'
+                                ];
+                                
+                                // 將上傳的文件按類型組織
+                                $documents_by_type = [];
+                                if (!empty($documents) && is_array($documents)) {
+                                    foreach ($documents as $doc) {
+                                        $doc_type = $doc['type'] ?? '';
+                                        if (!isset($documents_by_type[$doc_type])) {
+                                            $documents_by_type[$doc_type] = [];
+                                        }
+                                        $documents_by_type[$doc_type][] = $doc;
+                                    }
+                                }
+                                ?>
+                                <ul class="document-list" style="list-style: none; padding: 0; margin: 0; text-align: left !important;">
+                                    <?php foreach ($document_types as $type => $type_name): ?>
+                                        <?php 
+                                        $has_file = isset($documents_by_type[$type]) && !empty($documents_by_type[$type]);
+                                        $first_doc = $has_file ? $documents_by_type[$type][0] : null;
+                                        ?>
+                                        <li style="margin-bottom: 12px; padding-bottom: 12px; border-bottom: 1px solid #f0f0f0; text-align: left !important;">
+                                            <div class="detail-item" style="text-align: left !important; justify-items: start; margin: 0; grid-template-columns: 200px 1fr; gap: 16px;">
+                                                <span class="detail-item-label" style="text-align: right;"><?php echo htmlspecialchars($type_name); ?>:</span>
+                                                <?php if ($has_file && $first_doc): ?>
+                                                    <span class="detail-item-value" style="text-align: left !important;">
+                                                        <a href="/Topics-frontend/frontend/<?php echo htmlspecialchars($first_doc['path']); ?>" target="_blank" style="color: var(--primary-color); text-decoration: none; font-weight: 500;">
+                                                            <i class="fas fa-file"></i> <?php echo htmlspecialchars($type_name); ?>
+                                                        </a>
+                                                    </span>
+                                                <?php else: ?>
+                                                    <span class="detail-item-value" style="text-align: left !important; color: var(--text-secondary-color);">無</span>
+                                                <?php endif; ?>
+                                            </div>
+                                        </li>
+                                    <?php endforeach; ?>
+                                </ul>
+                            </div>
+
+
                             
                             <?php if ($action !== 'review' && $application['status'] !== 'pending'): ?>
-                            <div class="detail-section" style="grid-column: 1 / -1; background: #f6ffed; margin-top: 24px;">
-                                <h4 style="color: #52c41a;"><i class="fas fa-info-circle"></i> 審核結果</h4>
-                                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px;">
-                                    <div class="detail-item" style="margin: 0;">
+                            <div class="detail-section" style="background: #f6ffed; text-align: left;">
+                                <h4 style="color: #52c41a; text-align: left;"><i class="fas fa-info-circle"></i> 審核</h4>
+                                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; text-align: left;">
+                                    <div class="detail-item" style="margin: 0; text-align: left;">
                                         <span class="detail-item-label">審核結果:</span>
-                                        <span class="detail-item-value" style="font-weight: bold; color: #52c41a;"><?php echo getStatusText($application['status']); ?></span>
+                                        <span class="detail-item-value" style="font-weight: bold; color: #52c41a; text-align: left;"><?php echo getStatusText($application['status']); ?></span>
                                     </div>
-                                    <?php if (!empty($application['reviewer_id'])): ?>
-                                    <div class="detail-item" style="margin: 0;">
+                                    <?php if (!empty($reviewer_name)): ?>
+                                    <div class="detail-item" style="margin: 0; text-align: left;">
                                         <span class="detail-item-label">審核老師:</span>
-                                        <span class="detail-item-value"><?php echo htmlspecialchars($application['reviewer_id']); ?></span>
+                                        <span class="detail-item-value" style="text-align: left;"><?php echo htmlspecialchars($reviewer_name); ?></span>
                                     </div>
                                     <?php endif; ?>
                                     <?php if (!empty($application['reviewed_at'])): ?>
-                                    <div class="detail-item" style="margin: 0;">
+                                    <div class="detail-item" style="margin: 0; text-align: left;">
                                         <span class="detail-item-label">審核時間:</span>
-                                        <span class="detail-item-value"><?php echo date('Y/m/d H:i', strtotime($application['reviewed_at'])); ?></span>
+                                        <span class="detail-item-value" style="text-align: left;"><?php echo date('Y/m/d H:i', strtotime($application['reviewed_at'])); ?></span>
                                     </div>
                                     <?php endif; ?>
                                 </div>
-                                <div style="margin-top: 16px;">
+                                <div style="margin-top: 16px; text-align: left;">
                                     <span class="detail-item-label" style="display: block; text-align: left; margin-bottom: 8px;">審核備註:</span>
-                                    <div style="background: #fff; padding: 12px; border-radius: 6px; border: 1px solid #d9d9d9; white-space: pre-wrap;"><?php echo htmlspecialchars($application['review_notes'] ?: '無'); ?></div>
+                                    <div style="background: #fff; padding: 12px; border-radius: 6px; border: 1px solid #d9d9d9; white-space: pre-wrap; text-align: left;"><?php echo htmlspecialchars($application['review_notes'] ?: '無'); ?></div>
                                 </div>
                             </div>
                             <?php endif; ?>
 
                             <?php if ($action === 'review'): ?>
-                            <div class="detail-section" style="grid-column: 1 / -1; background: #e6f7ff; margin-top: 24px;">
-                                <h4 style="color: var(--primary-color);"><i class="fas fa-check-circle"></i> 審核操作</h4>
-                                <form id="reviewForm">
-                                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 20px;">
-                                        <div class="detail-item" style="margin: 0;">
+                            <div class="detail-section" style="background: #e6f7ff; text-align: left;">
+                                <h4 style="color: var(--primary-color); text-align: left;"><i class="fas fa-check-circle"></i> 審核</h4>
+                                <form id="reviewForm" style="text-align: left;">
+                                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 20px; text-align: left;">
+                                        <div class="detail-item" style="margin: 0; text-align: left;">
                                             <span class="detail-item-label">目前狀態:</span>
-                                            <span class="detail-item-value" id="currentStatusText" style="font-weight: bold;"><?php echo getStatusText($application['status']); ?></span>
+                                            <span class="detail-item-value" id="currentStatusText" style="font-weight: bold; text-align: left;"><?php echo getStatusText($application['status']); ?></span>
                                         </div>
-                                        <div class="detail-item" style="margin: 0;">
+                                        <div class="detail-item" style="margin: 0; text-align: left;">
                                             <span class="detail-item-label">審核決定:</span>
-                                            <select id="statusSelector" class="status-select" name="status" required>
+                                            <select id="statusSelector" class="status-select" name="status" required style="text-align: left;">
                                                 <option value="">請選擇審核結果</option>
                                                 <option value="approved" <?php echo $application['status'] === 'approved' ? 'selected' : ''; ?>>錄取</option>
                                                 <option value="rejected" <?php echo $application['status'] === 'rejected' ? 'selected' : ''; ?>>不錄取</option>
@@ -253,11 +335,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_status'])) {
                                             </select>
                                         </div>
                                     </div>
-                                    <div style="margin-bottom: 20px;">
-                                        <label for="reviewNotes" style="display: block; margin-bottom: 8px; font-weight: 500;">審核備註 (選填):</label>
-                                        <textarea id="reviewNotes" name="review_notes" rows="4" style="width: 100%; padding: 8px; border: 1px solid #d9d9d9; border-radius: 6px; font-size: 14px; resize: vertical;" placeholder="請輸入審核意見或備註..."><?php echo htmlspecialchars($application['review_notes'] ?? ''); ?></textarea>
+                                    <div style="margin-bottom: 20px; text-align: left;">
+                                        <label for="reviewNotes" style="display: block; margin-bottom: 8px; font-weight: 500; text-align: left;">審核備註 (選填):</label>
+                                        <textarea id="reviewNotes" name="review_notes" rows="4" style="width: 100%; padding: 8px; border: 1px solid #d9d9d9; border-radius: 6px; font-size: 14px; resize: vertical; text-align: left;" placeholder="請輸入審核意見或備註..."><?php echo htmlspecialchars($application['review_notes'] ?? ''); ?></textarea>
                                     </div>
-                                    <div style="display: flex; gap: 12px;">
+                                    <div style="display: flex; gap: 12px; text-align: left;">
                                         <button type="submit" class="btn-primary"><i class="fas fa-save"></i> 送出審核結果</button>
                                         <button type="button" onclick="history.back()" class="btn-secondary"><i class="fas fa-times"></i> 取消</button>
                                     </div>

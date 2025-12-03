@@ -38,48 +38,58 @@ switch ($action) {
 
 function getQuotas($conn) {
     try {
-        $stmt = $pdo->prepare("SELECT * FROM department_quotas WHERE is_active = 1 ORDER BY department_name");
-        // 改為從 admission_courses 讀取，並關聯 department_quotas
+        // 直接從 department_quotas 和 departments 表讀取續招名額資料
         $sql = "
             SELECT 
-                ac.id as course_id, 
-                ac.course_name as department_name,
+                d.code as department_code,
+                d.name as department_name,
                 dq.id as quota_id,
                 COALESCE(dq.total_quota, 0) as total_quota
-            FROM admission_courses ac
-            LEFT JOIN department_quotas dq ON ac.course_name = dq.department_name AND dq.is_active = 1
-            WHERE ac.is_active = 1
-            ORDER BY ac.sort_order, ac.course_name
+            FROM departments d
+            LEFT JOIN department_quotas dq ON d.code = dq.department_code AND dq.is_active = 1
+            ORDER BY d.code
         ";
         $stmt = $conn->prepare($sql);
         $stmt->execute();
-        $courses = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+        $departments = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
         
+        // 先一次性獲取所有已錄取的學生志願（按科系代碼統計）
+        $stmt_approved = $conn->prepare("
+            SELECT ca.id, cac.choice_order, cac.department_code
+            FROM continued_admission ca
+            INNER JOIN continued_admission_choices cac ON ca.id = cac.application_id
+            WHERE ca.status = 'approved'
+            ORDER BY ca.id, cac.choice_order
+        ");
+        $stmt_approved->execute();
+        $approved_result = $stmt_approved->get_result();
+        
+        // 組織已錄取學生的志願數據（按科系代碼統計）
+        $approved_by_department = [];
+        while ($row = $approved_result->fetch_assoc()) {
+            $dept_code = $row['department_code'];
+            // 只統計第一志願
+            if ($row['choice_order'] == 1) {
+                if (!isset($approved_by_department[$dept_code])) {
+                    $approved_by_department[$dept_code] = 0;
+                }
+                $approved_by_department[$dept_code]++;
+            }
+        }
+
         // 計算各科系已錄取人數
         $department_stats = [];
-
-        // 先一次性獲取所有已錄取的學生志願，以提高效率
-        $stmt_approved = $conn->prepare("SELECT choices FROM continued_admission WHERE status = 'approved'");
-        $stmt_approved->execute();
-        $approved_applications = $stmt_approved->get_result()->fetch_all(MYSQLI_ASSOC);
-
-        foreach ($courses as $course) {
-            // 在 PHP 中進行模糊比對，與 continued_admission_list.php 邏輯保持一致
-            $enrolled_count = 0;
-            foreach ($approved_applications as $app) {
-                $choices = json_decode($app['choices'], true);
-                if (is_array($choices) && !empty($choices) && strpos($course['department_name'], $choices[0]) !== false) {
-                    $enrolled_count++;
-                }
-            }
+        foreach ($departments as $dept) {
+            $dept_code = $dept['department_code'];
+            $enrolled_count = isset($approved_by_department[$dept_code]) ? $approved_by_department[$dept_code] : 0;
             
             $department_stats[] = [
-                'id' => $course['course_id'], // 使用 admission_courses 的 ID
-                'name' => $course['department_name'],
-                'code' => 'N/A', // 移除 department_code 的讀取
-                'total_quota' => (int)$course['total_quota'],
+                'id' => $dept['quota_id'] ?: $dept_code, // 使用 quota_id 或 department_code 作為 ID
+                'name' => $dept['department_name'],
+                'code' => $dept_code,
+                'total_quota' => (int)$dept['total_quota'],
                 'current_enrolled' => $enrolled_count,
-                'remaining' => (int)$course['total_quota'] - $enrolled_count
+                'remaining' => max(0, (int)$dept['total_quota'] - $enrolled_count)
             ];
         }
         
@@ -99,14 +109,14 @@ function updateQuota($conn) {
     
     $input = json_decode(file_get_contents('php://input'), true);
     
-    // id 現在是 course_id，name 是 course_name
+    // id 可能是 quota_id 或 department_code，name 是 department_name
     if (!isset($input['id']) || !isset($input['name']) || !isset($input['total_quota'])) {
         http_response_code(400);
         echo json_encode(['success' => false, 'message' => '缺少必要參數']);
         return;
     }
     
-    $course_name = $input['name'];
+    $department_name = $input['name'];
     $total_quota = (int)$input['total_quota'];
     
     if ($total_quota < 0) {
@@ -116,9 +126,23 @@ function updateQuota($conn) {
     }
     
     try {
-        // 檢查記錄是否存在
-        $stmt = $conn->prepare("SELECT id FROM department_quotas WHERE department_name = ?");
-        $stmt->bind_param("s", $course_name);
+        // 從 department_name 取得 department_code
+        $stmt = $conn->prepare("SELECT code FROM departments WHERE name = ? LIMIT 1");
+        $stmt->bind_param("s", $department_name);
+        $stmt->execute();
+        $dept_result = $stmt->get_result()->fetch_assoc();
+        
+        if (!$dept_result) {
+            http_response_code(400);
+            echo json_encode(['success' => false, 'message' => '找不到對應的科系']);
+            return;
+        }
+        
+        $department_code = $dept_result['code'];
+        
+        // 檢查記錄是否存在（根據 department_code）
+        $stmt = $conn->prepare("SELECT id FROM department_quotas WHERE department_code = ?");
+        $stmt->bind_param("s", $department_code);
         $stmt->execute();
         $existing_quota = $stmt->get_result()->fetch_assoc();
         
@@ -130,8 +154,8 @@ function updateQuota($conn) {
             echo json_encode(['success' => true, 'message' => '名額更新成功']);
         } else {
             // 插入新記錄
-            $stmt = $conn->prepare("INSERT INTO department_quotas (department_name, total_quota, is_active) VALUES (?, ?, 1)"); // 移除 department_code
-            $stmt->bind_param("si", $course_name, $total_quota);
+            $stmt = $conn->prepare("INSERT INTO department_quotas (department_code, total_quota, is_active) VALUES (?, ?, 1)");
+            $stmt->bind_param("si", $department_code, $total_quota);
             $stmt->execute();
             echo json_encode(['success' => true, 'message' => '名額設定成功']);
         }

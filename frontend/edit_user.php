@@ -39,12 +39,38 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $role = $_POST['role'] ?? '';
         $status = $_POST['status'] ?? '1';
         
+        // 角色代碼映射：將舊代碼轉換為新代碼
+        $roleMap = [
+            'student' => 'STU',
+            'teacher' => 'TEA',
+            'admin' => 'ADM',
+            'staff' => 'STA',
+            'director' => 'DI',
+            // 如果已經是正確代碼，保持不變
+            'STU' => 'STU',
+            'TEA' => 'TEA',
+            'ADM' => 'ADM',
+            'STA' => 'STA',
+            'DI' => 'DI'
+        ];
+        $roleCode = $roleMap[$role] ?? $role;
+        
         try {
             $conn = getDatabaseConnection();
             
+            // 驗證角色代碼是否存在於 role_types 表
+            $checkRole = $conn->prepare("SELECT code FROM role_types WHERE code = ?");
+            $checkRole->bind_param("s", $roleCode);
+            $checkRole->execute();
+            $roleResult = $checkRole->get_result();
+            
+            if ($roleResult->num_rows === 0) {
+                throw new Exception("無效的角色代碼：{$roleCode}。請選擇有效的角色。");
+            }
+            
             // 更新用戶資料
             $stmt = $conn->prepare("UPDATE user SET name = ?, email = ?, role = ?, status = ? WHERE id = ?");
-            $stmt->bind_param("sssii", $name, $email, $role, $status, $userId);
+            $stmt->bind_param("sssii", $name, $email, $roleCode, $status, $userId);
             $stmt->execute();
             
             $success_message = "用戶資料更新成功！";
@@ -55,7 +81,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $stmt->execute();
             $user = $stmt->get_result()->fetch_assoc();
             
-        } catch(PDOException $e) {
+        } catch(Exception $e) {
+            $error_message = "資料庫更新失敗：" . $e->getMessage();
+        } catch(mysqli_sql_exception $e) {
             $error_message = "資料庫更新失敗：" . $e->getMessage();
         }
         
@@ -73,9 +101,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             
             $success_message = "密碼已重置為 '123456'！";
             
-        } catch(PDOException $e) {
-            $error_message = "密碼重置失敗：" . $e->getMessage();
-        }
+} catch(Exception $e) {
+    $error_message = "密碼重置失敗：" . $e->getMessage();
+} catch(mysqli_sql_exception $e) {
+    $error_message = "密碼重置失敗：" . $e->getMessage();
+}
     }
 }
 
@@ -91,10 +121,18 @@ try {
         header("Location: index.php");
         exit;
     }
-} catch(PDOException $e) {
+    
+    // 獲取所有可用的角色列表
+    $roles_stmt = $conn->query("SELECT code, name FROM role_types ORDER BY code");
+    $available_roles = [];
+    if ($roles_stmt) {
+        $available_roles = $roles_stmt->fetch_all(MYSQLI_ASSOC);
+    }
+} catch(Exception $e) {
     $error_message = "讀取使用者資料失敗：" . $e->getMessage();
     // 發生錯誤時，顯示錯誤訊息，而不是模擬資料
-    $user = []; // 清空user避免顯示不正確的資料
+    $user = [];
+    $available_roles = [];
 }
 ?>
 
@@ -357,9 +395,20 @@ try {
                             <div class="form-group">
                                 <label class="required">角色</label>
                                 <select name="role" class="form-control" required>
-                                    <option value="student" <?php echo $user['role'] === 'student' ? 'selected' : ''; ?>>學生</option>
-                                    <option value="teacher" <?php echo $user['role'] === 'teacher' ? 'selected' : ''; ?>>老師</option>
-                                    <option value="admin" <?php echo $user['role'] === 'admin' ? 'selected' : ''; ?>>管理員</option>
+                                    <?php if (!empty($available_roles)): ?>
+                                        <?php foreach ($available_roles as $role_type): ?>
+                                            <option value="<?php echo htmlspecialchars($role_type['code']); ?>" <?php echo $user['role'] === $role_type['code'] ? 'selected' : ''; ?>>
+                                                <?php echo htmlspecialchars($role_type['name']); ?>
+                                            </option>
+                                        <?php endforeach; ?>
+                                    <?php else: ?>
+                                        <!-- 如果無法從資料庫讀取，使用預設選項 -->
+                                        <option value="STU" <?php echo ($user['role'] === 'STU' || $user['role'] === 'student') ? 'selected' : ''; ?>>學生</option>
+                                        <option value="TEA" <?php echo ($user['role'] === 'TEA' || $user['role'] === 'teacher') ? 'selected' : ''; ?>>老師</option>
+                                        <option value="ADM" <?php echo ($user['role'] === 'ADM' || $user['role'] === 'admin') ? 'selected' : ''; ?>>管理員</option>
+                                        <option value="STA" <?php echo ($user['role'] === 'STA' || $user['role'] === 'staff') ? 'selected' : ''; ?>>行政人員</option>
+                                        <option value="DI" <?php echo ($user['role'] === 'DI' || $user['role'] === 'director') ? 'selected' : ''; ?>>主任</option>
+                                    <?php endif; ?>
                                 </select>
                             </div>
                             

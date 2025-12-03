@@ -61,11 +61,11 @@ $is_admin_or_staff = in_array($user_role, $allowed_admin_roles);
                 <i class="fas fa-tasks"></i>
                 <span>統計分析</span>
             </a>
-            
+            <!-- 先隱藏期末之後改! 
             <a href="page_management.php" class="menu-item <?php echo $current_page === 'page_management' ? 'active' : ''; ?>">
                 <i class="fas fa-file-alt"></i>
                 <span>頁面管理</span>
-            </a>
+            </a>-->
             
             <a href="ollama_admin.php" class="menu-item <?php echo $current_page === 'ollama_admin' ? 'active' : ''; ?>">
                 <i class="fas fa-robot"></i>

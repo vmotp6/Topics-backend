@@ -28,15 +28,19 @@ try {
 if ($is_imd_user) {
     // IMD用戶只能看到志願選擇包含"資訊管理科"的續招報名
     // 從 continued_admission_choices 表檢查是否有 IM 科系
-    $stmt = $conn->prepare("SELECT DISTINCT ca.id, ca.name, ca.id_number, ca.mobile, ca.school, ca.created_at, ca.status
+    $stmt = $conn->prepare("SELECT DISTINCT ca.id, ca.apply_no, ca.name, ca.school, ca.status, sd.name as school_name
                           FROM continued_admission ca
+                          LEFT JOIN school_data sd ON ca.school = sd.school_code
                           INNER JOIN continued_admission_choices cac ON ca.id = cac.application_id
                           INNER JOIN departments d ON cac.department_code = d.code
                           WHERE d.code = 'IM' OR d.name LIKE '%資訊管理%' OR d.name LIKE '%資管%'
                           ORDER BY ca.created_at DESC");
 } else {
     // 一般管理員可以看到所有續招報名
-    $stmt = $conn->prepare("SELECT id, name, id_number, mobile, school, created_at, status FROM continued_admission ORDER BY created_at DESC");
+    $stmt = $conn->prepare("SELECT ca.id, ca.apply_no, ca.name, ca.school, ca.status, sd.name as school_name 
+                          FROM continued_admission ca
+                          LEFT JOIN school_data sd ON ca.school = sd.school_code
+                          ORDER BY ca.created_at DESC");
 }
 $stmt->execute();
 $applications = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
@@ -66,75 +70,63 @@ unset($app);
 $department_stats = [];
 
 try {
-    // 檢查 admission_courses 資料表是否存在
-    $stmt = $conn->prepare("SHOW TABLES LIKE 'admission_courses'");
+    // 直接從 department_quotas 和 departments 表讀取續招名額資料
+    $sql = "
+        SELECT 
+            d.code as department_code,
+            d.name as department_name,
+            COALESCE(dq.total_quota, 0) as total_quota
+        FROM departments d
+        LEFT JOIN department_quotas dq ON d.code = dq.department_code AND dq.is_active = 1
+        ORDER BY d.code
+    ";
+    $stmt = $conn->prepare($sql);
     $stmt->execute();
-    $tableExists = $stmt->get_result()->num_rows > 0;
+    $departments = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
     
-    if ($tableExists) {
-        // 從 admission_courses 讀取科系列表，並與 department_quotas 關聯
-        $sql = "
-            SELECT 
-                ac.course_name as department_name,
-                COALESCE(dq.total_quota, 0) as total_quota
-            FROM admission_courses ac
-            LEFT JOIN department_quotas dq ON ac.course_name = dq.department_name AND dq.is_active = 1
-            WHERE ac.is_active = 1
-            ORDER BY ac.sort_order, ac.course_name
-        ";
-        $stmt = $conn->prepare($sql);
-        $stmt->execute();
-        $courses = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
-        
-        // 先一次性獲取所有已錄取的學生志願
-        $stmt_approved = $conn->prepare("
-            SELECT ca.id, cac.choice_order, d.name as department_name
-            FROM continued_admission ca
-            INNER JOIN continued_admission_choices cac ON ca.id = cac.application_id
-            LEFT JOIN departments d ON cac.department_code = d.code
-            WHERE ca.status = 'approved'
-            ORDER BY ca.id, cac.choice_order
-        ");
-        $stmt_approved->execute();
-        $approved_result = $stmt_approved->get_result();
-        
-        // 組織已錄取學生的志願數據
-        $approved_choices = [];
-        while ($row = $approved_result->fetch_assoc()) {
-            $app_id = $row['id'];
-            if (!isset($approved_choices[$app_id])) {
-                $approved_choices[$app_id] = [];
+    // 先一次性獲取所有已錄取的學生志願
+    $stmt_approved = $conn->prepare("
+        SELECT ca.id, cac.choice_order, cac.department_code, d.name as department_name
+        FROM continued_admission ca
+        INNER JOIN continued_admission_choices cac ON ca.id = cac.application_id
+        LEFT JOIN departments d ON cac.department_code = d.code
+        WHERE ca.status = 'approved'
+        ORDER BY ca.id, cac.choice_order
+    ");
+    $stmt_approved->execute();
+    $approved_result = $stmt_approved->get_result();
+    
+    // 組織已錄取學生的志願數據（按科系代碼統計）
+    $approved_by_department = [];
+    while ($row = $approved_result->fetch_assoc()) {
+        $app_id = $row['id'];
+        $dept_code = $row['department_code'];
+        // 只統計第一志願
+        if ($row['choice_order'] == 1) {
+            if (!isset($approved_by_department[$dept_code])) {
+                $approved_by_department[$dept_code] = 0;
             }
-            if ($row['choice_order'] == 1) {
-                $approved_choices[$app_id][] = $row['department_name'] ?? '';
-            }
-        }
-
-        // 在 PHP 中計算各科系已錄取人數
-        foreach ($courses as $course) {
-            $enrolled_count = 0;
-            foreach ($approved_choices as $app_choices) {
-                if (!empty($app_choices) && isset($app_choices[0])) {
-                    // 檢查第一志願是否匹配 (用科系全名去 LIKE 學生填的簡稱)
-                    if (strpos($course['department_name'], $app_choices[0]) !== false) {
-                        $enrolled_count++;
-                    }
-                }
-            }
-
-            $result = ['count' => $enrolled_count];
-            $department_stats[$course['department_name']] = [ // 使用科系名稱作為 key
-                'name' => $course['department_name'],
-                'code' => 'N/A', // 移除 department_code 的讀取
-                'total_quota' => (int)$course['total_quota'],
-                'current_enrolled' => $result['count'],
-                'remaining' => (int)$course['total_quota'] - $result['count']
-            ];
+            $approved_by_department[$dept_code]++;
         }
     }
-} catch (PDOException $e) {
+
+    // 計算各科系已錄取人數
+    foreach ($departments as $dept) {
+        $dept_code = $dept['department_code'];
+        $enrolled_count = isset($approved_by_department[$dept_code]) ? $approved_by_department[$dept_code] : 0;
+        
+        $department_stats[$dept_code] = [
+            'name' => $dept['department_name'],
+            'code' => $dept_code,
+            'total_quota' => (int)$dept['total_quota'],
+            'current_enrolled' => $enrolled_count,
+            'remaining' => max(0, (int)$dept['total_quota'] - $enrolled_count)
+        ];
+    }
+} catch (Exception $e) {
     // 如果資料表不存在或其他錯誤，設定為空陣列
     $department_stats = [];
+    error_log("獲取科系名額資料失敗: " . $e->getMessage());
 }
 
 function getStatusText($status) {
@@ -247,8 +239,8 @@ function getStatusClass($status) {
 
         /* 志願選擇顯示樣式 */
         .choices-display { display: flex; flex-direction: column; gap: 4px; }
-        .choice-item { padding: 4px 8px; border-radius: 4px; font-size: 12px; background: #f5f5f5; color: var(--text-color); }
-        .choice-item.first-choice { background: var(--primary-color); color: white; font-weight: 500; }
+        .choice-item { padding: 4px 8px; border-radius: 4px; font-size: 12px; background: #f5f5f5; color: #8c8c8c; }
+        .choice-item.approved { background: var(--primary-color); color: white; font-weight: 500; }
         .no-choices { color: var(--text-secondary-color); font-style: italic; }
     </style>
 </head>
@@ -283,7 +275,6 @@ function getStatusClass($status) {
                                 <div class="quota-card">
                                     <div class="quota-header">
                                         <h4><?php echo htmlspecialchars($stats['name']); ?></h4>
-                                        <span class="quota-code"><?php echo htmlspecialchars($stats['code']); ?></span>
                                     </div>
                                     <div class="quota-stats">
                                         <div class="stat-item">
@@ -339,26 +330,22 @@ function getStatusClass($status) {
                                     <tr>
                                         <th>報名編號</th>
                                         <th>姓名</th>
-                                        <th>身分證字號</th>
-                                        <th>行動電話</th>
                                         <th>就讀國中</th>
-                                        <th>志願選擇</th>
+                                        <th>志願</th>
                                         <th>審核狀態</th>
-                                        <th>報名日期</th>
                                         <th>操作</th>
                                     </tr>
                                 </thead>
                                 <tbody>
                                     <?php foreach ($applications as $item): ?>
                                     <tr>
-                                        <td><?php echo htmlspecialchars($item['id']); ?></td>
+                                        <td><?php echo htmlspecialchars($item['apply_no'] ?? $item['id']); ?></td>
                                         <td><?php echo htmlspecialchars($item['name']); ?></td>
-                                        <td><?php echo htmlspecialchars($item['id_number']); ?></td>
-                                        <td><?php echo htmlspecialchars($item['mobile']); ?></td>
-                                        <td><?php echo htmlspecialchars($item['school'] ?? ''); ?></td>
+                                        <td><?php echo htmlspecialchars($item['school_name'] ?? $item['school'] ?? ''); ?></td>
                                         <td>
                                             <?php 
                                             $choices = json_decode($item['choices'], true);
+                                            $is_approved = ($item['status'] === 'approved');
                                             if (!empty($choices) && is_array($choices)): 
                                                 // 如果是IMD用戶，只顯示資訊管理科相關的志願
                                                 if ($is_imd_user):
@@ -374,7 +361,7 @@ function getStatusClass($status) {
                                             ?>
                                                         <div class="choices-display">
                                                             <?php foreach ($filtered_choices as $item_data): ?>
-                                                                <span class="choice-item <?php echo $item_data['index'] === 0 ? 'first-choice' : ''; ?>">
+                                                                <span class="choice-item <?php echo $is_approved ? 'approved' : ''; ?>">
                                                                     <?php echo ($item_data['index'] + 1) . '. ' . htmlspecialchars($item_data['choice']); ?>
                                                                 </span>
                                                             <?php endforeach; ?>
@@ -386,7 +373,7 @@ function getStatusClass($status) {
                                                     <!-- 一般管理員顯示所有志願 -->
                                                     <div class="choices-display">
                                                         <?php foreach ($choices as $index => $choice): ?>
-                                                            <span class="choice-item <?php echo $index === 0 ? 'first-choice' : ''; ?>">
+                                                            <span class="choice-item <?php echo $is_approved ? 'approved' : ''; ?>">
                                                                 <?php echo ($index + 1) . '. ' . htmlspecialchars($choice); ?>
                                                             </span>
                                                         <?php endforeach; ?>
@@ -401,7 +388,6 @@ function getStatusClass($status) {
                                                 <?php echo getStatusText($item['status']); ?>
                                             </span>
                                         </td>
-                                        <td><?php echo date('Y/m/d H:i', strtotime($item['created_at'])); ?></td>
                                         <td>
                                             <a href="continued_admission_detail.php?id=<?php echo $item['id']; ?>" class="btn-view">查看詳情</a>
                                             <?php if ($item['status'] === 'pending'): ?>
