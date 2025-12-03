@@ -403,8 +403,8 @@ $conn->close();
                          <div class="pagination-info">
                              <span>每頁顯示：</span>
                              <select id="itemsPerPage" onchange="changeItemsPerPage()">
-                                 <option value="10">10</option>
-                                 <option value="20" selected>20</option>
+                                 <option value="10" selected>10</option>
+                                 <option value="20" >20</option>
                                  <option value="50">50</option>
                                  <option value="100">100</option>
                                  <option value="all">全部</option>
@@ -556,7 +556,7 @@ $conn->close();
 
          // 分頁相關變數
          let currentPage = 1;
-         let itemsPerPage = 20;
+         let itemsPerPage = 10;
          let allRows = [];
          let filteredRows = [];
          
