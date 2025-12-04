@@ -40,6 +40,16 @@ if (!$application_id || !in_array($new_status, $allowed_statuses)) {
     exit;
 }
 
+// 將前端狀態值轉換為資料庫狀態代碼
+// 資料庫狀態：'PE'=待審核, 'AP'=通過, 'RE'=不通過, 'AD'=備取
+$status_map = [
+    'pending' => 'PE',
+    'approved' => 'AP',
+    'rejected' => 'RE',
+    'waitlist' => 'AD'
+];
+$db_status = $status_map[$new_status] ?? $new_status;
+
 try {
     $conn = getDatabaseConnection();
     
@@ -120,10 +130,20 @@ try {
         }
     }
     
-    // 如果是錄取，確保 assigned_department 有值（使用分配部門或第一志願）
-    $final_department_code = $assigned_department ?? null;
-    if ($new_status === 'approved' && empty($final_department_code)) {
-        // 如果沒有分配部門，使用第一志願的科系代碼
+    // 檢查是否有 review_notes 欄位
+    $stmt_check = $conn->prepare("SHOW COLUMNS FROM continued_admission LIKE 'review_notes'");
+    $stmt_check->execute();
+    $has_review_notes = $stmt_check->get_result()->num_rows > 0;
+    $stmt_check->close();
+
+    // 主任審核：只更新 status 狀態和 review_notes 備註
+    // 不修改 assigned_department（那應該是由招生中心分配的）
+    // 如果是錄取且沒有分配部門，則使用第一志願的科系代碼作為 assigned_department
+    $update_assigned_department = false;
+    $final_department_code = null;
+    
+    if ($new_status === 'approved' && empty($assigned_department)) {
+        // 如果錄取時沒有分配部門，使用第一志願的科系代碼
         $stmt_choice = $conn->prepare("
             SELECT department_code
             FROM continued_admission_choices
@@ -135,25 +155,42 @@ try {
         $choice_result = $stmt_choice->get_result();
         if ($choice_row = $choice_result->fetch_assoc()) {
             $final_department_code = $choice_row['department_code'];
+            // 驗證科系代碼是否存在於 departments 表中
+            $stmt_dept_check = $conn->prepare("SELECT code FROM departments WHERE code = ? LIMIT 1");
+            $stmt_dept_check->bind_param("s", $final_department_code);
+            $stmt_dept_check->execute();
+            $dept_check_result = $stmt_dept_check->get_result();
+            if ($dept_check_result->num_rows > 0) {
+                $update_assigned_department = true;
+            } else {
+                // 如果科系代碼不存在，不更新 assigned_department
+                $final_department_code = null;
+            }
+            $stmt_dept_check->close();
         }
         $stmt_choice->close();
     }
     
-    // 初始化變數
-    $affected_rows = 0;
-    
-    // 檢查是否有 review_notes 欄位
-    $stmt_check = $conn->prepare("SHOW COLUMNS FROM continued_admission LIKE 'review_notes'");
-    $stmt_check->execute();
-    $has_review_notes = $stmt_check->get_result()->num_rows > 0;
-    $stmt_check->close();
+    // 驗證 assigned_department 是否存在（如果已經有值）
+    if (!empty($assigned_department)) {
+        $stmt_dept_check = $conn->prepare("SELECT code FROM departments WHERE code = ? LIMIT 1");
+        $stmt_dept_check->bind_param("s", $assigned_department);
+        $stmt_dept_check->execute();
+        $dept_check_result = $stmt_dept_check->get_result();
+        if ($dept_check_result->num_rows === 0) {
+            // 如果科系代碼不存在，清空 assigned_department
+            $assigned_department = null;
+        }
+        $stmt_dept_check->close();
+    }
 
-    // 準備更新語句
-    if ($has_review_notes && !empty($final_department_code)) {
-        // 如果有 review_notes 欄位且有部門代碼，則更新包含備註和部門代碼（注意：資料表使用 ID 而非 id）
+    // 準備更新語句：始終更新 status 和 reviewed_at，如果有 review_notes 欄位則更新備註
+    // 使用資料庫狀態代碼（db_status）而非前端狀態值
+    if ($has_review_notes && $update_assigned_department) {
+        // 更新狀態、時間、備註和部門代碼
         $stmt = $conn->prepare("UPDATE continued_admission SET status = ?, reviewed_at = NOW(), review_notes = ?, assigned_department = ? WHERE ID = ?");
         if ($stmt) {
-            $stmt->bind_param("ssssi", $new_status, $review_notes, $final_department_code, $application_id);
+            $stmt->bind_param("ssssi", $db_status, $review_notes, $final_department_code, $application_id);
             $stmt->execute();
             $affected_rows = $stmt->affected_rows;
             if ($stmt->error) {
@@ -164,10 +201,10 @@ try {
             throw new Exception("準備 SQL 語句失敗: " . $conn->error);
         }
     } elseif ($has_review_notes) {
-        // 如果有 review_notes 欄位但沒有部門代碼，則只更新狀態、時間和備註
+        // 更新狀態、時間和備註（不修改 assigned_department）
         $stmt = $conn->prepare("UPDATE continued_admission SET status = ?, reviewed_at = NOW(), review_notes = ? WHERE ID = ?");
         if ($stmt) {
-            $stmt->bind_param("ssi", $new_status, $review_notes, $application_id);
+            $stmt->bind_param("ssi", $db_status, $review_notes, $application_id);
             $stmt->execute();
             $affected_rows = $stmt->affected_rows;
             if ($stmt->error) {
@@ -177,11 +214,11 @@ try {
         } else {
             throw new Exception("準備 SQL 語句失敗: " . $conn->error);
         }
-    } elseif (!empty($final_department_code)) {
-        // 如果沒有 review_notes 欄位但有部門代碼，則更新狀態、時間和部門代碼
+    } elseif ($update_assigned_department) {
+        // 如果沒有 review_notes 欄位但有部門代碼需要更新，則更新狀態、時間和部門代碼
         $stmt = $conn->prepare("UPDATE continued_admission SET status = ?, reviewed_at = NOW(), assigned_department = ? WHERE ID = ?");
         if ($stmt) {
-            $stmt->bind_param("ssi", $new_status, $final_department_code, $application_id);
+            $stmt->bind_param("ssi", $db_status, $final_department_code, $application_id);
             $stmt->execute();
             $affected_rows = $stmt->affected_rows;
             if ($stmt->error) {
@@ -192,10 +229,10 @@ try {
             throw new Exception("準備 SQL 語句失敗: " . $conn->error);
         }
     } else {
-        // 如果沒有 review_notes 欄位也沒有部門代碼，則只更新狀態和時間
+        // 只更新狀態和時間
         $stmt = $conn->prepare("UPDATE continued_admission SET status = ?, reviewed_at = NOW() WHERE ID = ?");
         if ($stmt) {
-            $stmt->bind_param("si", $new_status, $application_id);
+            $stmt->bind_param("si", $db_status, $application_id);
             $stmt->execute();
             $affected_rows = $stmt->affected_rows;
             if ($stmt->error) {

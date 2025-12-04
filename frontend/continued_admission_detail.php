@@ -163,10 +163,16 @@ function formatAddress($addr) {
 }
 
 function getStatusText($status) {
+    // 支援資料庫狀態代碼和前端狀態值
     switch ($status) {
+        case 'AP':
         case 'approved': return '錄取';
+        case 'RE':
         case 'rejected': return '未錄取';
+        case 'AD':
         case 'waitlist': return '備取';
+        case 'PE':
+        case 'pending': return '待審核';
         default: return '待審核';
     }
 }
@@ -272,6 +278,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_status'])) {
                                 <div class="detail-item" style="text-align: left !important; justify-items: start;"><span class="detail-item-label">監護人行動電話:</span> <span class="detail-item-value" style="text-align: left !important;"><?php echo htmlspecialchars($application['guardian_mobile']); ?></span></div>
                             </div>
 
+                            <?php if (!($is_director && !empty($user_department_code))): ?>
+                            <!-- 主任不顯示志願序 -->
                             <div class="detail-section">
                                 <h4><i class="fas fa-star"></i> 志願序</h4>
                                 <?php if (!empty($choices)): ?>
@@ -284,6 +292,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_status'])) {
                                     <p style="margin: 0; text-align: left;">未選擇志願</p>
                                 <?php endif; ?>
                             </div>
+                            <?php endif; ?>
                             <div class="detail-section">
                                 <h4><i class="fas fa-pen"></i> 自傳/專長</h4>
                                 <div class="detail-item" style="grid-template-columns: 1fr;">
@@ -346,24 +355,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_status'])) {
 
 
                             
-                            <?php if ($action !== 'review' && $application['status'] !== 'pending'): ?>
+                            <?php if ($action !== 'review' && $application['status'] !== 'pending' && $application['status'] !== 'PE'): ?>
                             <div class="detail-section" style="background: #f6ffed; text-align: left;">
                                 <h4 style="color: #52c41a; text-align: left;"><i class="fas fa-info-circle"></i> 審核</h4>
                                 <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; text-align: left;">
-                                    <div class="detail-item" style="margin: 0; text-align: left;">
-                                        <span class="detail-item-label">審核結果:</span>
-                                        <span class="detail-item-value" style="font-weight: bold; color: #52c41a; text-align: left;"><?php echo getStatusText($application['status']); ?></span>
+                                    <div style="display: flex; flex-direction: column; gap: 4px; text-align: left;">
+                                        <span class="detail-item-label" style="text-align: left;">審核結果:</span>
+                                        <span style="font-weight: bold; color: #52c41a; text-align: left; font-size: 14px;"><?php echo getStatusText($application['status']); ?></span>
                                     </div>
                                     <?php if (!empty($reviewer_name)): ?>
-                                    <div class="detail-item" style="margin: 0; text-align: left;">
-                                        <span class="detail-item-label">審核老師:</span>
-                                        <span class="detail-item-value" style="text-align: left;"><?php echo htmlspecialchars($reviewer_name); ?></span>
+                                    <div style="display: flex; flex-direction: column; gap: 4px; text-align: left;">
+                                        <span class="detail-item-label" style="text-align: left;">審核老師:</span>
+                                        <span style="text-align: left; font-size: 14px;"><?php echo htmlspecialchars($reviewer_name); ?></span>
                                     </div>
                                     <?php endif; ?>
                                     <?php if (!empty($application['reviewed_at'])): ?>
-                                    <div class="detail-item" style="margin: 0; text-align: left;">
-                                        <span class="detail-item-label">審核時間:</span>
-                                        <span class="detail-item-value" style="text-align: left;"><?php echo date('Y/m/d H:i', strtotime($application['reviewed_at'])); ?></span>
+                                    <div style="display: flex; flex-direction: column; gap: 4px; text-align: left;">
+                                        <span class="detail-item-label" style="text-align: left;">審核時間:</span>
+                                        <span style="text-align: left; font-size: 14px;"><?php echo date('Y/m/d H:i', strtotime($application['reviewed_at'])); ?></span>
                                     </div>
                                     <?php endif; ?>
                                 </div>
@@ -379,17 +388,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_status'])) {
                                 <h4 style="color: var(--primary-color); text-align: left;"><i class="fas fa-check-circle"></i> 審核</h4>
                                 <form id="reviewForm" style="text-align: left;">
                                     <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 20px; text-align: left;">
-                                        <div class="detail-item" style="margin: 0; text-align: left;">
-                                            <span class="detail-item-label">目前狀態:</span>
-                                            <span class="detail-item-value" id="currentStatusText" style="font-weight: bold; text-align: left;"><?php echo getStatusText($application['status']); ?></span>
+                                        <div style="display: flex; flex-direction: column; gap: 8px; text-align: left;">
+                                            <span class="detail-item-label" style="text-align: left;">目前狀態:</span>
+                                            <span id="currentStatusText" style="font-weight: bold; text-align: left; font-size: 14px;"><?php echo getStatusText($application['status']); ?></span>
                                         </div>
-                                        <div class="detail-item" style="margin: 0; text-align: left;">
-                                            <span class="detail-item-label">審核決定:</span>
-                                            <select id="statusSelector" class="status-select" name="status" required style="text-align: left;">
+                                        <div style="display: flex; flex-direction: column; gap: 8px; text-align: left;">
+                                            <label for="statusSelector" class="detail-item-label" style="text-align: left;">審核決定:</label>
+                                            <select id="statusSelector" class="status-select" name="status" required style="width: 100%; text-align: left;">
                                                 <option value="">請選擇審核結果</option>
-                                                <option value="approved" <?php echo $application['status'] === 'approved' ? 'selected' : ''; ?>>錄取</option>
-                                                <option value="rejected" <?php echo $application['status'] === 'rejected' ? 'selected' : ''; ?>>不錄取</option>
-                                                <option value="waitlist" <?php echo $application['status'] === 'waitlist' ? 'selected' : ''; ?>>備取</option>
+                                                <option value="approved" <?php echo ($application['status'] === 'approved' || $application['status'] === 'AP') ? 'selected' : ''; ?>>錄取</option>
+                                                <option value="rejected" <?php echo ($application['status'] === 'rejected' || $application['status'] === 'RE') ? 'selected' : ''; ?>>不錄取</option>
+                                                <option value="waitlist" <?php echo ($application['status'] === 'waitlist' || $application['status'] === 'AD') ? 'selected' : ''; ?>>備取</option>
                                             </select>
                                         </div>
                                     </div>

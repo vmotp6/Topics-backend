@@ -223,19 +223,31 @@ try {
 }
 
 function getStatusText($status) {
+    // 支援資料庫狀態代碼和前端狀態值
     switch ($status) {
+        case 'AP':
         case 'approved': return '錄取';
+        case 'RE':
         case 'rejected': return '未錄取';
+        case 'AD':
         case 'waitlist': return '備取';
+        case 'PE':
+        case 'pending': return '待審核';
         default: return '待審核';
     }
 }
 
 function getStatusClass($status) {
+    // 支援資料庫狀態代碼和前端狀態值
     switch ($status) {
+        case 'AP':
         case 'approved': return 'status-approved';
+        case 'RE':
         case 'rejected': return 'status-rejected';
+        case 'AD':
         case 'waitlist': return 'status-waitlist';
+        case 'PE':
+        case 'pending': return 'status-pending';
         default: return 'status-pending';
     }
 }
@@ -475,6 +487,122 @@ function getStatusClass($status) {
             color: white;
             border-color: var(--primary-color);
         }
+
+        /* 彈出視窗樣式 */
+        .modal {
+            position: fixed;
+            z-index: 1000;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0,0,0,0.5);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .modal-content {
+            background-color: white;
+            border-radius: 8px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.15);
+            width: 90%;
+            max-width: 500px;
+            max-height: 80vh;
+            overflow-y: auto;
+        }
+        .modal-header {
+            padding: 20px;
+            border-bottom: 1px solid var(--border-color);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .modal-header h3 {
+            margin: 0;
+            color: var(--text-color);
+        }
+        .close {
+            font-size: 24px;
+            font-weight: bold;
+            cursor: pointer;
+            color: var(--text-secondary-color);
+        }
+        .close:hover {
+            color: var(--text-color);
+        }
+        .modal-body {
+            padding: 20px;
+        }
+        .modal-body p {
+            margin-bottom: 16px;
+            font-size: 16px;
+        }
+        .teacher-list h4 {
+            margin-bottom: 12px;
+            color: var(--text-color);
+        }
+        .teacher-options {
+            max-height: 300px;
+            overflow-y: auto;
+        }
+        .teacher-option {
+            display: block;
+            padding: 12px;
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            margin-bottom: 8px;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+        .teacher-option:hover {
+            background-color: #f5f5f5;
+            border-color: var(--primary-color);
+        }
+        .teacher-option input[type="radio"] {
+            margin-right: 12px;
+        }
+        .teacher-info {
+            display: inline-block;
+            vertical-align: top;
+        }
+        .teacher-info strong {
+            display: block;
+            color: var(--text-color);
+            margin-bottom: 4px;
+        }
+        .teacher-dept {
+            color: var(--text-secondary-color);
+            font-size: 14px;
+        }
+        .modal-footer {
+            padding: 20px;
+            border-top: 1px solid var(--border-color);
+            display: flex;
+            justify-content: flex-end;
+            gap: 12px;
+        }
+        .btn-cancel, .btn-confirm {
+            padding: 8px 16px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+            transition: all 0.3s;
+        }
+        .btn-cancel {
+            background-color: #f5f5f5;
+            color: var(--text-color);
+        }
+        .btn-cancel:hover {
+            background-color: #e8e8e8;
+        }
+        .btn-confirm {
+            background-color: var(--primary-color);
+            color: white;
+        }
+        .btn-confirm:hover {
+            background-color: #40a9ff;
+        }
     </style>
 </head>
 <body>
@@ -680,10 +808,9 @@ function getStatusClass($status) {
                                                 </span>
                                             </td>
                                             <td>
-                                                <a href="continued_admission_detail.php?id=<?php echo $item['id']; ?>" class="btn-view">查看詳情</a>
                                                 <?php 
-                                                // 檢查是否為待審核狀態（支持 'PE' 和 'pending'）
-                                                $is_pending = ($item['status'] === 'pending' || $item['status'] === 'PE' || !in_array($item['status'], ['approved', 'rejected', 'waitlist']));
+                                                // 檢查是否為待審核狀態（支持 'PE' 和 'pending'，以及資料庫狀態代碼）
+                                                $is_pending = ($item['status'] === 'pending' || $item['status'] === 'PE' || !in_array($item['status'], ['approved', 'rejected', 'waitlist', 'AP', 'RE', 'AD']));
                                                 
                                                 // 主任只能審核分配給他的名單
                                                 $can_review_this = false;
@@ -698,11 +825,27 @@ function getStatusClass($status) {
                                                     }
                                                 }
                                                 ?>
-                                                <?php if ($can_review_this): ?>
-                                                    <a href="continued_admission_detail.php?id=<?php echo $item['id']; ?>&action=review" class="btn-review">審核</a>
-                                                <?php endif; ?>
-                                                <?php if ($can_manage_list && $is_pending): ?>
-                                                    <button onclick="showAssignModal(<?php echo $item['id']; ?>, '<?php echo htmlspecialchars($item['name'], ENT_QUOTES); ?>', <?php echo htmlspecialchars(json_encode($item['choices_with_codes'] ?? []), ENT_QUOTES); ?>)" class="btn-view" style="margin-left: 8px;">分配部門</button>
+                                                <?php if ($is_director && !empty($user_department_code)): ?>
+                                                    <!-- 主任：待審核時顯示審核按鈕，已審核後顯示查看詳情按鈕 -->
+                                                    <?php if ($can_review_this): ?>
+                                                        <a href="continued_admission_detail.php?id=<?php echo $item['id']; ?>&action=review" class="btn-review">審核</a>
+                                                    <?php else: ?>
+                                                        <!-- 已審核完成，顯示查看詳情 -->
+                                                        <?php 
+                                                        $assigned_dept = $item['assigned_department'] ?? '';
+                                                        if ($assigned_dept === $user_department_code): ?>
+                                                            <a href="continued_admission_detail.php?id=<?php echo $item['id']; ?>" class="btn-view">查看詳情</a>
+                                                        <?php endif; ?>
+                                                    <?php endif; ?>
+                                                <?php else: ?>
+                                                    <!-- 招生中心/管理員：顯示查看詳情和審核按鈕 -->
+                                                    <a href="continued_admission_detail.php?id=<?php echo $item['id']; ?>" class="btn-view">查看詳情</a>
+                                                    <?php if ($can_review_this): ?>
+                                                        <a href="continued_admission_detail.php?id=<?php echo $item['id']; ?>&action=review" class="btn-review">審核</a>
+                                                    <?php endif; ?>
+                                                    <?php if ($can_manage_list && $is_pending): ?>
+                                                        <button onclick="showAssignModal(<?php echo $item['id']; ?>, '<?php echo htmlspecialchars($item['name'], ENT_QUOTES); ?>', <?php echo htmlspecialchars(json_encode($item['choices_with_codes'] ?? []), ENT_QUOTES); ?>)" class="btn-view" style="margin-left: 8px;">分配部門</button>
+                                                    <?php endif; ?>
                                                 <?php endif; ?>
                                             </td>
                                         </tr>
@@ -743,17 +886,26 @@ function getStatusClass($status) {
 
     <!-- 分配部門模態框 -->
     <?php if ($can_manage_list): ?>
-    <div id="assignModal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 10000; align-items: center; justify-content: center;">
-        <div style="background: white; border-radius: 8px; padding: 24px; max-width: 500px; width: 90%; box-shadow: 0 4px 12px rgba(0,0,0,0.15);">
-            <h3 style="margin: 0 0 16px 0; font-size: 18px; font-weight: 600;">分配部門</h3>
-            <p style="margin: 0 0 16px 0; color: var(--text-secondary-color);">學生：<span id="assignStudentName"></span></p>
-            <p style="margin: 0 0 16px 0; color: var(--text-secondary-color); font-size: 14px;">請選擇要分配的科系：</p>
-            <select id="assignDepartmentSelect" style="width: 100%; padding: 8px 12px; border: 1px solid #d9d9d9; border-radius: 6px; font-size: 14px; margin-bottom: 16px;">
-                <option value="">請選擇科系</option>
-            </select>
-            <div style="display: flex; justify-content: flex-end; gap: 8px;">
-                <button onclick="closeAssignModal()" style="padding: 8px 16px; border: 1px solid #d9d9d9; border-radius: 6px; background: #fff; cursor: pointer; font-size: 14px;">取消</button>
-                <button onclick="confirmAssign()" style="padding: 8px 16px; border: 1px solid #1890ff; border-radius: 6px; background: #1890ff; color: white; cursor: pointer; font-size: 14px;">確認分配</button>
+    <div id="assignModal" class="modal" style="display: none;">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>分配學生至部門</h3>
+                <span class="close" onclick="closeAssignModal()">&times;</span>
+            </div>
+            <div class="modal-body">
+                <p>學生：<span id="assignStudentName"></span></p>
+                <div class="teacher-list">
+                    <h4>選擇部門：</h4>
+                    <div class="teacher-options" id="departmentOptions">
+                        <div style="text-align: center; padding: 10px; color: var(--text-secondary-color);">
+                            <i class="fas fa-spinner fa-spin"></i> 準備部門名單中...
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn-cancel" onclick="closeAssignModal()">取消</button>
+                <button class="btn-confirm" onclick="confirmAssign()">確認分配</button>
             </div>
         </div>
     </div>
@@ -1067,19 +1219,34 @@ function getStatusClass($status) {
         currentAssignChoices = choices || [];
         
         document.getElementById('assignStudentName').textContent = studentName;
-        const select = document.getElementById('assignDepartmentSelect');
-        select.innerHTML = '<option value="">請選擇科系</option>';
+        const optionsContainer = document.getElementById('departmentOptions');
+        optionsContainer.innerHTML = '';
         
-        // 只顯示學生志願中有的科系
-        const departmentCodes = currentAssignChoices.map(c => c.code).filter((v, i, a) => a.indexOf(v) === i);
+        // 按照志願順序排序（choice_order）
+        const sortedChoices = [...currentAssignChoices].sort((a, b) => (a.order || 0) - (b.order || 0));
         const departmentNames = <?php echo json_encode($department_data, JSON_UNESCAPED_UNICODE); ?>;
         
-        departmentCodes.forEach(code => {
-            const option = document.createElement('option');
-            option.value = code;
-            option.textContent = departmentNames[code] || code;
-            select.appendChild(option);
-        });
+        if (sortedChoices.length === 0) {
+            optionsContainer.innerHTML = '<p style="padding: 10px; color: var(--text-secondary-color);">此學生尚未填寫志願，無法進行分配。</p>';
+        } else {
+            // 按照志願順序顯示科系選項
+            sortedChoices.forEach(choice => {
+                const departmentCode = choice.code;
+                const departmentName = departmentNames[departmentCode] || departmentCode;
+                const choiceOrder = choice.order || '';
+                
+                const label = document.createElement('label');
+                label.className = 'teacher-option';
+                label.innerHTML = `
+                    <input type="radio" name="department" value="${departmentCode}">
+                    <div class="teacher-info">
+                        <strong>${departmentName}</strong>
+                        ${choiceOrder ? `<span class="teacher-dept">意願${choiceOrder}</span>` : ''}
+                    </div>
+                `;
+                optionsContainer.appendChild(label);
+            });
+        }
         
         document.getElementById('assignModal').style.display = 'flex';
     }
@@ -1093,13 +1260,14 @@ function getStatusClass($status) {
 
     // 確認分配
     function confirmAssign() {
-        const select = document.getElementById('assignDepartmentSelect');
-        const departmentCode = select.value;
+        const selectedDepartment = document.querySelector('input[name="department"]:checked');
         
-        if (!departmentCode) {
-            showToast('請選擇要分配的科系', false);
+        if (!selectedDepartment) {
+            showToast('請選擇一個部門', false);
             return;
         }
+        
+        const departmentCode = selectedDepartment.value;
         
         if (!currentAssignApplicationId) {
             showToast('系統錯誤：找不到報名記錄', false);
@@ -1131,6 +1299,15 @@ function getStatusClass($status) {
             showToast('系統錯誤，請稍後再試', false);
         });
     }
+    
+    // 點擊分配視窗外部關閉
+    <?php if ($can_manage_list): ?>
+    document.getElementById('assignModal').addEventListener('click', function(e) {
+        if (e.target === this) {
+            closeAssignModal();
+        }
+    });
+    <?php endif; ?>
     <?php endif; ?>
 
     </script>
