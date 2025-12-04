@@ -17,6 +17,70 @@ $current_page = 'school_contacts';
 // 建立資料庫連接
 $conn = getDatabaseConnection();
 
+// 檢查 schools_contacts 表是否存在，如果不存在則創建
+$table_check = $conn->query("SHOW TABLES LIKE 'schools_contacts'");
+if (!$table_check || $table_check->num_rows == 0) {
+    // 創建 schools_contacts 表
+    $create_table_sql = "CREATE TABLE IF NOT EXISTS schools_contacts (
+        id INT AUTO_INCREMENT PRIMARY KEY COMMENT '聯絡人ID',
+        school_code VARCHAR(50) DEFAULT NULL COMMENT '學校代碼（關聯到 school_data 表）',
+        contact_name VARCHAR(100) DEFAULT NULL COMMENT '聯絡人姓名',
+        email VARCHAR(120) NOT NULL COMMENT 'Email地址',
+        phone VARCHAR(50) DEFAULT NULL COMMENT '電話',
+        title VARCHAR(100) DEFAULT NULL COMMENT '職稱',
+        is_active TINYINT(1) DEFAULT 1 COMMENT '是否啟用',
+        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '建立時間',
+        updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新時間',
+        INDEX idx_school_code (school_code),
+        INDEX idx_email (email),
+        INDEX idx_is_active (is_active)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='學校聯絡人資料表'";
+    
+    if (!$conn->query($create_table_sql)) {
+        die("創建 schools_contacts 表失敗: " . $conn->error);
+    }
+} else {
+    // 檢查表結構，確保有必要的欄位
+    $columns_result = $conn->query("DESCRIBE schools_contacts");
+    $columns = [];
+    while ($column = $columns_result->fetch_assoc()) {
+        $columns[] = $column['Field'];
+    }
+    
+    // 如果缺少 school_code 欄位，添加它
+    if (!in_array('school_code', $columns)) {
+        // 檢查是否有 school_id 欄位，如果有則重命名
+        if (in_array('school_id', $columns)) {
+            $conn->query("ALTER TABLE schools_contacts CHANGE school_id school_code VARCHAR(50) DEFAULT NULL COMMENT '學校代碼'");
+        } else {
+            $conn->query("ALTER TABLE schools_contacts ADD COLUMN school_code VARCHAR(50) DEFAULT NULL COMMENT '學校代碼' AFTER id");
+        }
+    }
+    
+    // 如果缺少 contact_name 欄位，添加它（或從 name 欄位重命名）
+    if (!in_array('contact_name', $columns)) {
+        if (in_array('name', $columns)) {
+            $conn->query("ALTER TABLE schools_contacts CHANGE name contact_name VARCHAR(100) DEFAULT NULL COMMENT '聯絡人姓名'");
+        } else {
+            $conn->query("ALTER TABLE schools_contacts ADD COLUMN contact_name VARCHAR(100) DEFAULT NULL COMMENT '聯絡人姓名' AFTER school_code");
+        }
+    }
+    
+    // 如果缺少 title 欄位，添加它（或從 position 欄位重命名）
+    if (!in_array('title', $columns)) {
+        if (in_array('position', $columns)) {
+            $conn->query("ALTER TABLE schools_contacts CHANGE position title VARCHAR(100) DEFAULT NULL COMMENT '職稱'");
+        } else {
+            $conn->query("ALTER TABLE schools_contacts ADD COLUMN title VARCHAR(100) DEFAULT NULL COMMENT '職稱' AFTER phone");
+        }
+    }
+    
+    // 確保有 is_active 欄位
+    if (!in_array('is_active', $columns)) {
+        $conn->query("ALTER TABLE schools_contacts ADD COLUMN is_active TINYINT(1) DEFAULT 1 COMMENT '是否啟用' AFTER title");
+    }
+}
+
 $message = "";
 $messageType = "";
 
