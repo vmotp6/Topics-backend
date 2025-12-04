@@ -73,6 +73,42 @@ try {
     die("資料庫連接失敗: " . $e->getMessage());
 }
 
+// 檢查 continued_admission 表是否存在 assigned_department 欄位，如果不存在則新增
+try {
+    $check_column = $conn->query("SHOW COLUMNS FROM continued_admission LIKE 'assigned_department'");
+    if ($check_column && $check_column->num_rows == 0) {
+        // 檢查表結構以確定欄位位置
+        $table_structure = $conn->query("SHOW COLUMNS FROM continued_admission");
+        $has_status = false;
+        $has_review_notes = false;
+        if ($table_structure) {
+            while ($col = $table_structure->fetch_assoc()) {
+                if ($col['Field'] === 'status') {
+                    $has_status = true;
+                }
+                if ($col['Field'] === 'review_notes') {
+                    $has_review_notes = true;
+                }
+            }
+        }
+        
+        // 根據現有欄位決定插入位置
+        if ($has_review_notes) {
+            $alter_sql = "ALTER TABLE continued_admission ADD COLUMN assigned_department VARCHAR(50) NULL AFTER review_notes";
+        } elseif ($has_status) {
+            $alter_sql = "ALTER TABLE continued_admission ADD COLUMN assigned_department VARCHAR(50) NULL AFTER status";
+        } else {
+            $alter_sql = "ALTER TABLE continued_admission ADD COLUMN assigned_department VARCHAR(50) NULL";
+        }
+        
+        if (!$conn->query($alter_sql)) {
+            error_log("無法新增 assigned_department 欄位: " . $conn->error);
+        }
+    }
+} catch (Exception $e) {
+    error_log("檢查 assigned_department 欄位時發生錯誤: " . $e->getMessage());
+}
+
 // 排序參數
 $sortBy = $_GET['sort_by'] ?? 'created_at';
 $sortOrder = $_GET['sort_order'] ?? 'desc';
