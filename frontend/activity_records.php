@@ -629,9 +629,6 @@ $conn->close();
                                 <button class="btn-view" onclick="showAdmissionCourseStats()">
                                     <i class="fas fa-book-open"></i> 課程選擇分析
                                 </button>
-                                <button class="btn-view" onclick="showAdmissionMonthlyStats()">
-                                    <i class="fas fa-chart-line"></i> 月度趨勢分析
-                                </button>
                                 <button class="btn-view" onclick="showAdmissionReceiveInfoStats()">
                                     <i class="fas fa-envelope"></i> 資訊接收分析
                                 </button>
@@ -4151,116 +4148,6 @@ $conn->close();
             })
             .catch(error => {
                 console.error('載入課程統計數據失敗:', error);
-                document.getElementById('admissionAnalyticsContent').innerHTML = `
-                    <div style="text-align: center; padding: 40px; color: #dc3545;">
-                        <i class="fas fa-exclamation-triangle fa-3x" style="margin-bottom: 16px;"></i>
-                        <h4>數據載入失敗</h4>
-                        <p>無法連接到統計API</p>
-                    </div>
-                `;
-            });
-    }
-    
-    // 五專入學說明會統計 - 月度趨勢分析
-    function showAdmissionMonthlyStats() {
-        console.log('showAdmissionMonthlyStats 被調用');
-        
-        fetch(buildApiUrl('../../Topics-frontend/frontend/api/admission_stats_api.php', 'monthly'))
-            .then(response => response.json())
-            .then(data => {
-                if (data.error) {
-                    document.getElementById('admissionAnalyticsContent').innerHTML = `
-                        <div style="text-align: center; padding: 40px; color: #dc3545;">
-                            <i class="fas fa-exclamation-triangle fa-3x" style="margin-bottom: 16px;"></i>
-                            <h4>數據載入失敗</h4>
-                            <p>${data.error}</p>
-                        </div>
-                    `;
-                    return;
-                }
-                
-                const content = `
-                    <div style="margin-bottom: 20px;">
-                        <h4 style="color: #667eea; margin-bottom: 15px;">
-                            <i class="fas fa-chart-line"></i> 月度趨勢分析
-                        </h4>
-                        
-                        <div class="chart-card">
-                            <div class="chart-title">月度報名趨勢</div>
-                            <div class="chart-container">
-                                <canvas id="admissionMonthlyChart"></canvas>
-                            </div>
-                        </div>
-                        
-                        <div style="background: #f8f9fa; padding: 20px; border-radius: 10px; margin-top: 20px;">
-                            <h5 style="color: #333; margin-bottom: 15px;">月度詳細統計</h5>
-                            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px;">
-                                ${data.map((item, index) => {
-                                    const colors = ['#667eea', '#28a745', '#ffc107', '#dc3545', '#17a2b8'];
-                                    const color = colors[index % colors.length];
-                                    const total = data.reduce((sum, d) => sum + d.value, 0);
-                                    const percentage = ((item.value / total) * 100).toFixed(1);
-                                    return `
-                                        <div style="background: white; padding: 15px; border-radius: 8px; border-left: 4px solid ${color};">
-                                            <div style="font-weight: bold; color: #333; margin-bottom: 5px;">${item.name}</div>
-                                            <div style="font-size: 1.5em; font-weight: bold; color: ${color};">${item.value}人</div>
-                                            <div style="font-size: 0.9em; color: #666;">${percentage}%</div>
-                                        </div>
-                                    `;
-                                }).join('')}
-                            </div>
-                        </div>
-                    </div>
-                `;
-                
-                document.getElementById('admissionAnalyticsContent').innerHTML = content;
-                
-                // 創建線圖
-                setTimeout(() => {
-                    const canvasElement = document.getElementById('admissionMonthlyChart');
-                    if (!canvasElement) return;
-                    
-                    const ctx = canvasElement.getContext('2d');
-                    new Chart(ctx, {
-                        type: 'line',
-                        data: {
-                            labels: data.map(item => item.name),
-                            datasets: [{
-                                label: '報名人數',
-                                data: data.map(item => item.value),
-                                borderColor: '#667eea',
-                                backgroundColor: 'rgba(102, 126, 234, 0.1)',
-                                borderWidth: 3,
-                                fill: true,
-                                tension: 0.4,
-                                pointBackgroundColor: '#667eea',
-                                pointBorderColor: '#fff',
-                                pointBorderWidth: 2,
-                                pointRadius: 6
-                            }]
-                        },
-                        options: {
-                            responsive: true,
-                            maintainAspectRatio: false,
-                            plugins: {
-                                legend: {
-                                    display: false
-                                }
-                            },
-                            scales: {
-                                y: {
-                                    beginAtZero: true,
-                                    ticks: {
-                                        stepSize: 1
-                                    }
-                                }
-                            }
-                        }
-                    });
-                }, 100);
-            })
-            .catch(error => {
-                console.error('載入月度統計數據失敗:', error);
                 document.getElementById('admissionAnalyticsContent').innerHTML = `
                     <div style="text-align: center; padding: 40px; color: #dc3545;">
                         <i class="fas fa-exclamation-triangle fa-3x" style="margin-bottom: 16px;"></i>
