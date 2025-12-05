@@ -101,6 +101,14 @@ $is_teacher = ($user_role === 'TEA'); // 科助：首頁、就讀意願名單、
                 </a>
             <?php endif; ?>
             
+            <!-- 招生問答管理 - 僅學校行政和管理員 -->
+            <?php if ($is_staff || $is_admin): ?>
+                <a href="qa_management.php" class="menu-item <?php echo $current_page === 'qa_management' ? 'active' : ''; ?>">
+                    <i class="fas fa-question-circle"></i>
+                    <span>招生問答管理</span>
+                </a>
+            <?php endif; ?>
+            
             <!-- 學校聯絡人 - 僅學校行政和管理員 -->
             <?php if ($is_staff || $is_admin): ?>
                 <a href="school_contacts.php" class="menu-item <?php echo $current_page === 'school_contacts' ? 'active' : ''; ?>">

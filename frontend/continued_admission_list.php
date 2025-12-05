@@ -86,18 +86,47 @@ if (!in_array(strtolower($sortOrder), ['asc', 'desc'])) {
     $sortOrder = 'desc';
 }
 
+// 檢查 assigned_department 字段是否存在
+$has_assigned_department = false;
+$column_check = $conn->query("SHOW COLUMNS FROM continued_admission LIKE 'assigned_department'");
+if ($column_check && $column_check->num_rows > 0) {
+    $has_assigned_department = true;
+} else {
+    // 字段不存在，嘗試添加
+    try {
+        $conn->query("ALTER TABLE continued_admission ADD COLUMN assigned_department VARCHAR(50) DEFAULT NULL");
+        $has_assigned_department = true;
+    } catch (Exception $e) {
+        error_log("添加 assigned_department 字段失敗: " . $e->getMessage());
+    }
+}
+
 // 獲取續招報名資料（根據用戶權限過濾）
+$assigned_dept_field = $has_assigned_department ? "ca.assigned_department" : "NULL as assigned_department";
+
 if ($is_director && !empty($user_department_code)) {
     // 主任只能看到已分配給他的科系的名單（assigned_department = 他的科系代碼）
-    $stmt = $conn->prepare("SELECT ca.id, ca.apply_no, ca.name, ca.school, ca.status, ca.created_at, ca.assigned_department, sd.name as school_name 
-                          FROM continued_admission ca
-                          LEFT JOIN school_data sd ON ca.school = sd.school_code
-                          WHERE ca.assigned_department = ?
-                          ORDER BY ca.$sortBy $sortOrder");
-    $stmt->bind_param("s", $user_department_code);
+    // 如果沒有 assigned_department 字段，則通過 continued_admission_choices 來過濾
+    if ($has_assigned_department) {
+        $stmt = $conn->prepare("SELECT ca.id, ca.apply_no, ca.name, ca.school, ca.status, ca.created_at, $assigned_dept_field, sd.name as school_name 
+                              FROM continued_admission ca
+                              LEFT JOIN school_data sd ON ca.school = sd.school_code
+                              WHERE ca.assigned_department = ?
+                              ORDER BY ca.$sortBy $sortOrder");
+        $stmt->bind_param("s", $user_department_code);
+    } else {
+        // 如果沒有 assigned_department 字段，通過 continued_admission_choices 來過濾
+        $stmt = $conn->prepare("SELECT DISTINCT ca.id, ca.apply_no, ca.name, ca.school, ca.status, ca.created_at, $assigned_dept_field, sd.name as school_name 
+                              FROM continued_admission ca
+                              LEFT JOIN school_data sd ON ca.school = sd.school_code
+                              INNER JOIN continued_admission_choices cac ON ca.id = cac.application_id
+                              WHERE cac.department_code = ?
+                              ORDER BY ca.$sortBy $sortOrder");
+        $stmt->bind_param("s", $user_department_code);
+    }
 } elseif ($is_imd_user) {
     // IMD用戶只能看到志願選擇包含"資訊管理科"的續招報名（保留向後兼容）
-    $stmt = $conn->prepare("SELECT DISTINCT ca.id, ca.apply_no, ca.name, ca.school, ca.status, ca.created_at, ca.assigned_department, sd.name as school_name
+    $stmt = $conn->prepare("SELECT DISTINCT ca.id, ca.apply_no, ca.name, ca.school, ca.status, ca.created_at, $assigned_dept_field, sd.name as school_name
                           FROM continued_admission ca
                           LEFT JOIN school_data sd ON ca.school = sd.school_code
                           INNER JOIN continued_admission_choices cac ON ca.id = cac.application_id
@@ -106,7 +135,7 @@ if ($is_director && !empty($user_department_code)) {
                           ORDER BY ca.$sortBy $sortOrder");
 } else {
     // 招生中心/管理員可以看到所有續招報名
-    $stmt = $conn->prepare("SELECT ca.id, ca.apply_no, ca.name, ca.school, ca.status, ca.created_at, ca.assigned_department, sd.name as school_name 
+    $stmt = $conn->prepare("SELECT ca.id, ca.apply_no, ca.name, ca.school, ca.status, ca.created_at, $assigned_dept_field, sd.name as school_name 
                           FROM continued_admission ca
                           LEFT JOIN school_data sd ON ca.school = sd.school_code
                           ORDER BY ca.$sortBy $sortOrder");
