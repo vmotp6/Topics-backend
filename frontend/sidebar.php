@@ -69,6 +69,14 @@ $is_teacher = ($user_role === 'TEA'); // 科助：首頁、就讀意願名單、
                 <span>統計分析</span>
             </a>
             
+            <!-- 教師活動紀錄 - 學校行政和主任可以看到 -->
+            <?php if ($is_staff || $is_admin || $is_director): ?>
+                <a href="teacher_activity_records.php" class="menu-item <?php echo $current_page === 'teacher_activity_records' ? 'active' : ''; ?>">
+                    <i class="fas fa-clipboard-list"></i>
+                    <span>教師活動紀錄</span>
+                </a>
+            <?php endif; ?>
+            
             <!-- AI模型管理 - 僅管理員 -->
             <?php if ($is_admin): ?>
                 <a href="ollama_admin.php" class="menu-item <?php echo $current_page === 'ollama_admin' ? 'active' : ''; ?>">

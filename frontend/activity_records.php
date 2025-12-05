@@ -74,10 +74,13 @@ if ($teacher_id > 0) {
     // 查詢特定教師的活動記錄
     $activity_records = [];
     $teacher_name = '';
-    $records_sql = "SELECT ar.*, u.name AS teacher_name, t.department AS teacher_department
+    $records_sql = "SELECT ar.*, u.name AS teacher_name, t.department AS teacher_department,
+                           at.name AS activity_type_name, sd.name AS school_name
                     FROM activity_records ar
                     LEFT JOIN teacher t ON ar.teacher_id = t.user_id
                     LEFT JOIN user u ON t.user_id = u.id
+                    LEFT JOIN activity_types at ON ar.activity_type = at.ID
+                    LEFT JOIN school_data sd ON ar.school = sd.school_code
                     WHERE ar.teacher_id = ? $department_filter
                     ORDER BY ar.activity_date DESC, ar.id DESC";
     $stmt = $conn->prepare($records_sql);
@@ -423,23 +426,225 @@ $conn->close();
             grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
             gap: 20px;
         }
+        
+        /* 教師詳情視圖樣式（與 enrollment_list.php 一致） */
+        <?php if ($teacher_id > 0): ?>
+        :root {
+            --primary-color: #1890ff;
+            --text-color: #262626;
+            --text-secondary-color: #8c8c8c;
+            --border-color: #f0f0f0;
+            --background-color: #f0f2f5;
+            --card-background-color: #fff;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background: var(--background-color);
+            color: var(--text-color);
+            overflow-x: hidden;
+        }
+        .dashboard {
+            display: flex;
+            min-height: 100vh;
+        }
+        .main-content {
+            overflow-x: hidden;
+        }
+        .content {
+            padding: 24px;
+            width: 100%;
+        }
+        .page-controls {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 16px;
+            gap: 16px;
+        }
+        .breadcrumb {
+            margin-bottom: 0;
+            font-size: 16px;
+            color: var(--text-secondary-color);
+        }
+        .breadcrumb a {
+            color: var(--primary-color);
+            text-decoration: none;
+        }
+        .breadcrumb a:hover {
+            text-decoration: underline;
+        }
+        .table-wrapper {
+            background: var(--card-background-color);
+            border-radius: 8px;
+            box-shadow: 0 1px 2px rgba(0,0,0,0.03);
+            border: 1px solid var(--border-color);
+            margin-bottom: 24px;
+        }
+        .table-container {
+            overflow-x: auto;
+        }
+        .table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        .table th, .table td {
+            padding: 16px 24px;
+            text-align: left;
+            border-bottom: 1px solid var(--border-color);
+            font-size: 16px;
+            white-space: nowrap;
+        }
+        .table th:first-child, .table td:first-child {
+            padding-left: 60px;
+        }
+        .table th {
+            background: #fafafa;
+            font-weight: 600;
+            color: #262626;
+            cursor: pointer;
+            user-select: none;
+            position: relative;
+        }
+        .table td {
+            color: #595959;
+        }
+        .table th:hover {
+            background: #f0f0f0;
+        }
+        .table tr:hover {
+            background: #fafafa;
+        }
+        .search-input {
+            padding: 8px 12px;
+            border: 1px solid #d9d9d9;
+            border-radius: 6px;
+            font-size: 14px;
+            width: 250px;
+            transition: all 0.3s;
+        }
+        .search-input:focus {
+            outline: none;
+            border-color: #1890ff;
+            box-shadow: 0 0 0 2px rgba(24,144,255,0.2);
+        }
+        .empty-state {
+            text-align: center;
+            padding: 40px;
+            color: var(--text-secondary-color);
+        }
+        .empty-state i {
+            font-size: 48px;
+            margin-bottom: 16px;
+            color: #d9d9d9;
+        }
+        .btn-view {
+            padding: 4px 12px;
+            border: 1px solid #1890ff;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+            text-decoration: none;
+            display: inline-block;
+            transition: all 0.3s;
+            background: #fff;
+            color: #1890ff;
+        }
+        .btn-view:hover {
+            background: #1890ff;
+            color: white;
+        }
+        button.btn-view {
+            font-family: inherit;
+        }
+        .detail-row {
+            background: #f9f9f9;
+        }
+        .table-row-clickable {
+            cursor: pointer;
+        }
+        .pagination {
+            padding: 16px 24px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-top: 1px solid var(--border-color);
+            background: #fafafa;
+        }
+        .pagination-info {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            color: var(--text-secondary-color);
+            font-size: 14px;
+        }
+        .pagination-controls {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .pagination select {
+            padding: 6px 12px;
+            border: 1px solid #d9d9d9;
+            border-radius: 6px;
+            font-size: 14px;
+            background: #fff;
+            cursor: pointer;
+        }
+        .pagination select:focus {
+            outline: none;
+            border-color: #1890ff;
+            box-shadow: 0 0 0 2px rgba(24,144,255,0.2);
+        }
+        .pagination button {
+            padding: 6px 12px;
+            border: 1px solid #d9d9d9;
+            background: #fff;
+            color: #595959;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 14px;
+            transition: all 0.3s;
+        }
+        .pagination button:hover:not(:disabled) {
+            border-color: #1890ff;
+            color: #1890ff;
+        }
+        .pagination button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+        .pagination button.active {
+            background: #1890ff;
+            color: white;
+            border-color: #1890ff;
+        }
+        <?php endif; ?>
     </style>
 </head>
 <body>
+    <?php if ($teacher_id > 0): ?>
+    <div class="dashboard">
+        <?php include 'sidebar.php'; ?>
+        <div class="main-content" id="mainContent">
+            <?php include 'header.php'; ?>
+    <?php else: ?>
     <div class="container">
         <?php include 'sidebar.php'; ?>
         <div class="main-content">
-                <?php if ($teacher_id > 0): // 詳細記錄視圖 ?>
-                    <div class="breadcrumb">
-                        <a href="index.php">首頁</a> / <a href="activity_records.php">教師活動紀錄</a> / <?php echo htmlspecialchars($teacher_name); ?>
-                    </div>
-
-                    <div class="card">
-                        <div class="card-header">
-                            <h3><?php echo htmlspecialchars($teacher_name); ?> 的紀錄列表 (共 <?php echo count($activity_records); ?> 筆)</h3>
+    <?php endif; ?>
+            <?php if ($teacher_id > 0): // 詳細記錄視圖 ?>
+                <div class="content">
+                    <div class="page-controls">
+                        <div class="breadcrumb">
+                            <a href="index.php">首頁</a> / <a href="teacher_activity_records.php">教師活動紀錄</a> / <?php echo htmlspecialchars($teacher_name); ?>
+                        </div>
+                        <div class="table-search">
                             <input type="text" id="searchInput" class="search-input" placeholder="搜尋學校或類型...">
                         </div>
-                        <div class="card-body table-container">
+                    </div>
+
+                    <div class="table-wrapper">
+                        <div class="table-container">
                             <?php if (empty($activity_records)): ?>
                                 <div class="empty-state">
                                     <i class="fas fa-inbox fa-3x" style="margin-bottom: 16px;"></i>
@@ -459,14 +664,106 @@ $conn->close();
                                     </thead>
                                     <tbody>
                                         <?php foreach ($activity_records as $record): ?>
-                                        <tr>
+                                        <tr class="table-row-clickable" onclick="toggleDetail(<?php echo $record['id']; ?>)">
                                             <td><?php echo htmlspecialchars($record['activity_date']); ?></td>
-                                            <td><?php echo htmlspecialchars($record['school_name']); ?></td>
-                                            <td><?php echo htmlspecialchars($record['activity_type']); ?></td>
-                                            <td><?php echo htmlspecialchars($record['activity_time']); ?></td>
+                                            <td><?php echo htmlspecialchars($record['school_name'] ?? $record['school'] ?? '未設定'); ?></td>
+                                            <td><?php echo htmlspecialchars($record['activity_type_name'] ?? '未設定'); ?></td>
+                                            <td><?php echo ($record['activity_time'] == 1) ? '上班日' : (($record['activity_time'] == 2) ? '假日' : '未設定'); ?></td>
                                             <td><?php echo date('Y/m/d H:i', strtotime($record['created_at'])); ?></td>
-                                            <td>
-                                                <button class="btn-view" onclick='viewRecord(<?php echo json_encode($record, JSON_UNESCAPED_UNICODE); ?>)'>查看</button>
+                                            <td onclick="event.stopPropagation();">
+                                                <button type="button" class="btn-view" id="detail-btn-<?php echo $record['id']; ?>" onclick="event.stopPropagation(); toggleDetail(<?php echo $record['id']; ?>)">
+                                                    <i class="fas fa-eye"></i> <span class="btn-text">查看詳情</span>
+                                                </button>
+                                            </td>
+                                        </tr>
+                                        <tr id="detail-<?php echo $record['id']; ?>" class="detail-row" style="display: none;">
+                                            <td colspan="6" style="padding: 20px; background: #f9f9f9; border: 2px solid #b3d9ff; border-radius: 4px;">
+                                                <table style="width: 100%; border-collapse: collapse;">
+                                                    <tr>
+                                                        <td style="width: 50%; vertical-align: top; padding-right: 20px;">
+                                                            <h4 style="margin: 0 0 10px 0; font-size: 16px;">基本資訊</h4>
+                                                            <table style="width: 100%; border-collapse: collapse; font-size: 14px;">
+                                                                <tr>
+                                                                    <td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5; width: 120px;">活動日期</td>
+                                                                    <td style="padding: 5px; border: 1px solid #ddd;"><?php echo htmlspecialchars($record['activity_date']); ?></td>
+                                                                </tr>
+                                                                <tr>
+                                                                    <td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">學校名稱</td>
+                                                                    <td style="padding: 5px; border: 1px solid #ddd;"><?php echo htmlspecialchars($record['school_name'] ?? $record['school'] ?? '未設定'); ?></td>
+                                                                </tr>
+                                                                <tr>
+                                                                    <td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">活動類型</td>
+                                                                    <td style="padding: 5px; border: 1px solid #ddd;"><?php echo htmlspecialchars($record['activity_type_name'] ?? '未設定'); ?></td>
+                                                                </tr>
+                                                                <tr>
+                                                                    <td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">活動時間</td>
+                                                                    <td style="padding: 5px; border: 1px solid #ddd;"><?php echo ($record['activity_time'] == 1) ? '上班日' : (($record['activity_time'] == 2) ? '假日' : '未設定'); ?></td>
+                                                                </tr>
+                                                                <tr>
+                                                                    <td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">提交時間</td>
+                                                                    <td style="padding: 5px; border: 1px solid #ddd;"><?php echo date('Y/m/d H:i', strtotime($record['created_at'])); ?></td>
+                                                                </tr>
+                                                            </table>
+                                                        </td>
+                                                        <td style="width: 50%; vertical-align: top; padding-left: 20px;">
+                                                            <h4 style="margin: 0 0 10px 0; font-size: 16px;">聯絡資訊</h4>
+                                                            <table style="width: 100%; border-collapse: collapse; font-size: 14px;">
+                                                                <?php if (!empty($record['contact_person'])): ?>
+                                                                <tr>
+                                                                    <td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5; width: 120px;">聯絡人</td>
+                                                                    <td style="padding: 5px; border: 1px solid #ddd;"><?php echo htmlspecialchars($record['contact_person']); ?></td>
+                                                                </tr>
+                                                                <?php endif; ?>
+                                                                <?php if (!empty($record['contact_phone'])): ?>
+                                                                <tr>
+                                                                    <td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">聯絡電話</td>
+                                                                    <td style="padding: 5px; border: 1px solid #ddd;"><?php echo htmlspecialchars($record['contact_phone']); ?></td>
+                                                                </tr>
+                                                                <?php endif; ?>
+                                                            </table>
+                                                            <?php if (!empty($record['participants_other_text']) || !empty($record['feedback_other_text']) || !empty($record['suggestion'])): ?>
+                                                            <h4 style="margin: 20px 0 10px 0; font-size: 16px;">其他資訊</h4>
+                                                            <table style="width: 100%; border-collapse: collapse; font-size: 14px;">
+                                                                <?php if (!empty($record['participants_other_text'])): ?>
+                                                                <tr>
+                                                                    <td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5; width: 120px;">參與者其他說明</td>
+                                                                    <td style="padding: 5px; border: 1px solid #ddd;"><?php echo nl2br(htmlspecialchars($record['participants_other_text'])); ?></td>
+                                                                </tr>
+                                                                <?php endif; ?>
+                                                                <?php if (!empty($record['feedback_other_text'])): ?>
+                                                                <tr>
+                                                                    <td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">回饋其他說明</td>
+                                                                    <td style="padding: 5px; border: 1px solid #ddd;"><?php echo nl2br(htmlspecialchars($record['feedback_other_text'])); ?></td>
+                                                                </tr>
+                                                                <?php endif; ?>
+                                                                <?php if (!empty($record['suggestion'])): ?>
+                                                                <tr>
+                                                                    <td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">建議</td>
+                                                                    <td style="padding: 5px; border: 1px solid #ddd;"><?php echo nl2br(htmlspecialchars($record['suggestion'])); ?></td>
+                                                                </tr>
+                                                                <?php endif; ?>
+                                                                <?php if (!empty($record['uploaded_files'])): ?>
+                                                                <tr>
+                                                                    <td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">上傳檔案</td>
+                                                                    <td style="padding: 5px; border: 1px solid #ddd;">
+                                                                        <?php 
+                                                                        $files = json_decode($record['uploaded_files'], true);
+                                                                        if (is_array($files) && !empty($files)) {
+                                                                            foreach ($files as $file) {
+                                                                                echo '<a href="../../Topics-frontend/frontend/' . htmlspecialchars($file) . '" target="_blank" style="display: block; margin-bottom: 4px;">' . htmlspecialchars(basename($file)) . '</a>';
+                                                                            }
+                                                                        } else {
+                                                                            echo '無檔案';
+                                                                        }
+                                                                        ?>
+                                                                    </td>
+                                                                </tr>
+                                                                <?php endif; ?>
+                                                            </table>
+                                                            <?php endif; ?>
+                                                        </td>
+                                                    </tr>
+                                                </table>
                                             </td>
                                         </tr>
                                         <?php endforeach; ?>
@@ -474,9 +771,27 @@ $conn->close();
                                 </table>
                             <?php endif; ?>
                         </div>
+                        <!-- 分頁控制 -->
+                        <?php if (!empty($activity_records)): ?>
+                        <div class="pagination">
+                            <div class="pagination-info">
+                                <span>每頁顯示：</span>
+                                <select id="itemsPerPage" onchange="changeItemsPerPage()">
+                                    <option value="10" selected>10</option>
+                                    <option value="20">20</option>
+                                    <option value="50">50</option>
+                                    <option value="100">100</option>
+                                    <option value="all">全部</option>
+                                </select>
+                                <span id="pageInfo">顯示第 <span id="currentRange">1-<?php echo min(10, count($activity_records)); ?></span> 筆，共 <?php echo count($activity_records); ?> 筆</span>
+                            </div>
+                            <div class="pagination-controls">
+                                <button id="prevPage" onclick="changePage(-1)" disabled>上一頁</button>
+                                <span id="pageNumbers"></span>
+                                <button id="nextPage" onclick="changePage(1)">下一頁</button>
                     </div>
-
-                <?php else: // 教師列表視圖 ?>
+                </div>
+            <?php else: // 教師列表視圖 ?>
                     <div class="breadcrumb">
                         <a href="index.php">首頁</a> / 教師活動紀錄管理
                     </div>
@@ -4465,6 +4780,259 @@ $conn->close();
             }
         }
     }
+    
+    <?php if ($teacher_id > 0): ?>
+    // 教師詳情視圖的展開/收合和分頁功能
+    let currentOpenDetailId = null;
+    let currentPage = 1;
+    let itemsPerPage = 10;
+    let allRows = [];
+    let filteredRows = [];
+    
+    // 展開/收合詳細資訊
+    function toggleDetail(id) {
+        const detailRow = document.getElementById('detail-' + id);
+        const detailBtn = document.getElementById('detail-btn-' + id);
+        const btnText = detailBtn ? detailBtn.querySelector('.btn-text') : null;
+        
+        if (!detailRow) return;
+        
+        // 如果點擊的是當前已打開的詳情，則關閉它
+        if (currentOpenDetailId === id) {
+            detailRow.style.display = 'none';
+            currentOpenDetailId = null;
+            if (btnText) {
+                btnText.textContent = '查看詳情';
+                detailBtn.querySelector('i').className = 'fas fa-eye';
+            }
+            return;
+        }
+        
+        // 如果已經有其他詳情打開，先關閉它
+        if (currentOpenDetailId !== null) {
+            const previousDetailRow = document.getElementById('detail-' + currentOpenDetailId);
+            const previousDetailBtn = document.getElementById('detail-btn-' + currentOpenDetailId);
+            const previousBtnText = previousDetailBtn ? previousDetailBtn.querySelector('.btn-text') : null;
+            
+            if (previousDetailRow) {
+                previousDetailRow.style.display = 'none';
+            }
+            if (previousBtnText) {
+                previousBtnText.textContent = '查看詳情';
+                if (previousDetailBtn.querySelector('i')) {
+                    previousDetailBtn.querySelector('i').className = 'fas fa-eye';
+                }
+            }
+        }
+        
+        // 打開新的詳情
+        detailRow.style.display = 'table-row';
+        currentOpenDetailId = id;
+        if (btnText) {
+            btnText.textContent = '關閉詳情';
+            detailBtn.querySelector('i').className = 'fas fa-eye-slash';
+        }
+    }
+    
+    // 初始化分頁
+    function initPagination() {
+        const table = document.getElementById('recordsTable');
+        if (!table) return;
+        
+        const tbody = table.getElementsByTagName('tbody')[0];
+        if (!tbody) return;
+        
+        allRows = Array.from(tbody.getElementsByTagName('tr')).filter(row => !row.classList.contains('detail-row'));
+        filteredRows = allRows;
+        
+        updatePagination();
+    }
+    
+    function changeItemsPerPage() {
+        const select = document.getElementById('itemsPerPage');
+        itemsPerPage = select.value === 'all' ? 
+                      filteredRows.length : 
+                      parseInt(select.value);
+        currentPage = 1;
+        updatePagination();
+    }
+
+    function changePage(direction) {
+        const totalPages = Math.ceil(filteredRows.length / itemsPerPage);
+        currentPage += direction;
+        
+        if (currentPage < 1) currentPage = 1;
+        if (currentPage > totalPages) currentPage = totalPages;
+        
+        updatePagination();
+    }
+
+    function goToPage(page) {
+        currentPage = page;
+        updatePagination();
+    }
+
+    function updatePagination() {
+        const totalItems = filteredRows.length;
+        const totalPages = itemsPerPage === 'all' ? 1 : Math.ceil(totalItems / itemsPerPage);
+        
+        // 隱藏所有行（包括詳細行）
+        allRows.forEach(row => {
+            row.style.display = 'none';
+            const detailRow = row.nextElementSibling;
+            if (detailRow && detailRow.classList.contains('detail-row')) {
+                detailRow.style.display = 'none';
+            }
+        });
+        
+        if (itemsPerPage === 'all' || itemsPerPage >= totalItems) {
+            // 顯示所有過濾後的行
+            filteredRows.forEach(row => {
+                row.style.display = '';
+            });
+            
+            // 更新分頁資訊
+            document.getElementById('currentRange').textContent = 
+                totalItems > 0 ? `1-${totalItems}` : '0-0';
+        } else {
+            // 計算當前頁的範圍
+            const start = (currentPage - 1) * itemsPerPage;
+            const end = Math.min(start + itemsPerPage, totalItems);
+            
+            // 顯示當前頁的行
+            for (let i = start; i < end; i++) {
+                if (filteredRows[i]) {
+                    filteredRows[i].style.display = '';
+                }
+            }
+            
+            // 更新分頁資訊
+            document.getElementById('currentRange').textContent = 
+                totalItems > 0 ? `${start + 1}-${end}` : '0-0';
+        }
+        
+        // 更新總數
+        document.getElementById('pageInfo').innerHTML = 
+            `顯示第 <span id="currentRange">${document.getElementById('currentRange').textContent}</span> 筆，共 ${totalItems} 筆`;
+        
+        // 更新上一頁/下一頁按鈕
+        document.getElementById('prevPage').disabled = currentPage === 1;
+        document.getElementById('nextPage').disabled = currentPage >= totalPages;
+        
+        // 更新頁碼按鈕
+        updatePageNumbers(totalPages);
+    }
+
+    function updatePageNumbers(totalPages) {
+        const pageNumbers = document.getElementById('pageNumbers');
+        pageNumbers.innerHTML = '';
+        
+        if (totalPages <= 1) return;
+        
+        // 顯示最多 5 個頁碼
+        let startPage = Math.max(1, currentPage - 2);
+        let endPage = Math.min(totalPages, currentPage + 2);
+        
+        // 如果接近開頭，顯示前 5 頁
+        if (currentPage <= 3) {
+            startPage = 1;
+            endPage = Math.min(5, totalPages);
+        }
+        
+        // 如果接近結尾，顯示後 5 頁
+        if (currentPage >= totalPages - 2) {
+            startPage = Math.max(1, totalPages - 4);
+            endPage = totalPages;
+        }
+        
+        // 第一頁
+        if (startPage > 1) {
+            const btn = document.createElement('button');
+            btn.textContent = '1';
+            btn.onclick = () => goToPage(1);
+            if (currentPage === 1) btn.classList.add('active');
+            pageNumbers.appendChild(btn);
+            
+            if (startPage > 2) {
+                const ellipsis = document.createElement('span');
+                ellipsis.textContent = '...';
+                ellipsis.style.padding = '0 8px';
+                pageNumbers.appendChild(ellipsis);
+            }
+        }
+        
+        // 中間頁碼
+        for (let i = startPage; i <= endPage; i++) {
+            const btn = document.createElement('button');
+            btn.textContent = i;
+            btn.onclick = () => goToPage(i);
+            if (i === currentPage) btn.classList.add('active');
+            pageNumbers.appendChild(btn);
+        }
+        
+        // 最後一頁
+        if (endPage < totalPages) {
+            if (endPage < totalPages - 1) {
+                const ellipsis = document.createElement('span');
+                ellipsis.textContent = '...';
+                ellipsis.style.padding = '0 8px';
+                pageNumbers.appendChild(ellipsis);
+            }
+            
+            const btn = document.createElement('button');
+            btn.textContent = totalPages;
+            btn.onclick = () => goToPage(totalPages);
+            if (currentPage === totalPages) btn.classList.add('active');
+            pageNumbers.appendChild(btn);
+        }
+    }
+
+    document.addEventListener('DOMContentLoaded', function() {
+        const searchInput = document.getElementById('searchInput');
+        const table = document.getElementById('recordsTable');
+
+        if (searchInput && table) {
+            searchInput.addEventListener('keyup', function() {
+                const filter = searchInput.value.toLowerCase();
+                const tbody = table.getElementsByTagName('tbody')[0];
+                
+                if (!tbody) return;
+                
+                allRows = Array.from(tbody.getElementsByTagName('tr')).filter(row => !row.classList.contains('detail-row'));
+                
+                filteredRows = allRows.filter(row => {
+                    const cells = row.getElementsByTagName('td');
+                    for (let j = 0; j < cells.length; j++) {
+                        const cellText = cells[j].textContent || cells[j].innerText;
+                        if (cellText.toLowerCase().indexOf(filter) > -1) {
+                            return true;
+                        }
+                    }
+                    return false;
+                });
+                
+                currentPage = 1;
+                updatePagination();
+            });
+        }
+        
+        // 初始化分頁
+        initPagination();
+    });
+    
+    // 將函數暴露到全局作用域
+    window.toggleDetail = toggleDetail;
+    window.changeItemsPerPage = changeItemsPerPage;
+    window.changePage = changePage;
+    window.goToPage = goToPage;
+    <?php endif; ?>
     </script>
+    <?php if ($teacher_id > 0): ?>
+        </div>
+    </div>
+    <?php else: ?>
+        </div>
+    </div>
+    <?php endif; ?>
 </body>
 </html>
