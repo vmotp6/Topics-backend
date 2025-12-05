@@ -56,7 +56,7 @@ $is_teacher = ($user_role === 'TEA'); // 科助：首頁、就讀意願名單、
             </a>
 
             <!-- 招生推薦 - 僅學校行政和管理員 -->
-            <?php if ($is_staff || $is_admin): ?>
+            <?php if ($is_staff || $is_admin || $is_director): ?>
                 <a href="admission_recommend_list.php" class="menu-item <?php echo $current_page === 'admission_recommend_list' ? 'active' : ''; ?>">
                     <i class="fas fa-user-friends"></i>
                     <span>招生推薦</span>
@@ -82,6 +82,14 @@ $is_teacher = ($user_role === 'TEA'); // 科助：首頁、就讀意願名單、
                 <a href="ollama_admin.php" class="menu-item <?php echo $current_page === 'ollama_admin' ? 'active' : ''; ?>">
                     <i class="fas fa-robot"></i>
                     <span>AI模型管理</span>
+                </a>
+            <?php endif; ?>
+            
+            <!-- 學長姐留言管理 - 僅管理員 -->
+            <?php if ($is_admin): ?>
+                <a href="senior_messages_management.php" class="menu-item <?php echo $current_page === 'senior_messages_management' ? 'active' : ''; ?>">
+                    <i class="fas fa-comments"></i>
+                    <span>學長姐留言管理</span>
                 </a>
             <?php endif; ?>
             
