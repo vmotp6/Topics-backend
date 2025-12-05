@@ -56,7 +56,7 @@ $is_teacher = ($user_role === 'TEA'); // 科助：首頁、就讀意願名單、
             </a>
 
             <!-- 招生推薦 - 僅學校行政和管理員 -->
-            <?php if ($is_staff || $is_admin): ?>
+            <?php if ($is_staff || $is_admin || $is_director): ?>
                 <a href="admission_recommend_list.php" class="menu-item <?php echo $current_page === 'admission_recommend_list' ? 'active' : ''; ?>">
                     <i class="fas fa-user-friends"></i>
                     <span>招生推薦</span>
@@ -85,6 +85,14 @@ $is_teacher = ($user_role === 'TEA'); // 科助：首頁、就讀意願名單、
                 </a>
             <?php endif; ?>
             
+            <!-- 學長姐留言管理 - 僅管理員 -->
+            <?php if ($is_admin): ?>
+                <a href="senior_messages_management.php" class="menu-item <?php echo $current_page === 'senior_messages_management' ? 'active' : ''; ?>">
+                    <i class="fas fa-comments"></i>
+                    <span>學長姐留言管理</span>
+                </a>
+            <?php endif; ?>
+            
             <!-- 入學說明會 - 僅學校行政和管理員 -->
             <?php if ($is_staff || $is_admin): ?>
                 <a href="settings.php" class="menu-item <?php echo $current_page === 'settings' ? 'active' : ''; ?>">
@@ -98,6 +106,14 @@ $is_teacher = ($user_role === 'TEA'); // 科助：首頁、就讀意願名單、
                 <a href="school_contacts.php" class="menu-item <?php echo $current_page === 'school_contacts' ? 'active' : ''; ?>">
                     <i class="fas fa-address-book"></i>
                     <span>學校聯絡人</span>
+                </a>
+            <?php endif; ?>
+            
+            <!-- 國中招生申請名單 - 僅學校行政和管理員 -->
+            <?php if ($is_staff || $is_admin): ?>
+                <a href="mobile_junior_B.php" class="menu-item <?php echo $current_page === 'mobile_junior_B' ? 'active' : ''; ?>">
+                    <i class="fas fa-school"></i>
+                    <span>國中招生申請名單</span>
                 </a>
             <?php endif; ?>
 
