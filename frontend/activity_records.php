@@ -19,8 +19,13 @@ $user_role = isset($_SESSION['role']) ? $_SESSION['role'] : '';
 $user_department = '';
 $department_filter = '';
 // 判斷是否為管理員：角色為 ADM（管理員）或 STA（行政人員），或舊的中文角色名稱
-$is_admin = ($user_role === 'ADM' || $user_role === '管理員' || $current_user === 'admin' || $current_user === 'admin1');
-$is_school_admin = ($user_role === '學校行政人員' || $user_role === '行政人員' || $user_role === 'STA' || $current_user === 'IMD' || $is_admin);
+// 也檢查後台登入狀態和用戶名
+$is_admin = ($user_role === 'ADM' || $user_role === '管理員' || $user_role === 'admin' || 
+             $current_user === 'admin' || $current_user === 'admin1' ||
+             (isset($_SESSION['admin_logged_in']) && $_SESSION['admin_logged_in'] && 
+              ($user_role === 'ADM' || $user_role === '管理員' || $current_user === 'admin')));
+$is_school_admin = ($user_role === '學校行政人員' || $user_role === '行政人員' || $user_role === 'STA' || 
+                    $current_user === 'IMD' || $is_admin);
 
 // 如果是 IMD 帳號，只能查看資管科的資料
 if ($current_user === 'IMD') {
@@ -791,6 +796,7 @@ $conn->close();
                                 <button id="nextPage" onclick="changePage(1)">下一頁</button>
                     </div>
                 </div>
+                        <?php endif; ?>
             <?php else: // 教師列表視圖 ?>
                     <div class="breadcrumb">
                         <a href="index.php">首頁</a> / 教師活動紀錄管理
