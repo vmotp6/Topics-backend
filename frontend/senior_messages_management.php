@@ -25,6 +25,81 @@ $page_title = '學長姐留言管理';
 // 建立資料庫連接
 $conn = getDatabaseConnection();
 
+// 檢查表是否存在（不創建表，只檢查）
+function tableExists($conn, $tableName) {
+    $result = $conn->query("SHOW TABLES LIKE '$tableName'");
+    return $result && $result->num_rows > 0;
+}
+
+// 檢查欄位是否存在
+function columnExists($conn, $tableName, $columnName) {
+    $result = $conn->query("SHOW COLUMNS FROM $tableName LIKE '$columnName'");
+    return $result && $result->num_rows > 0;
+}
+
+// 獲取表的所有欄位
+function getTableColumns($conn, $tableName) {
+    $columns = [];
+    $result = $conn->query("SHOW COLUMNS FROM $tableName");
+    if ($result) {
+        while ($row = $result->fetch_assoc()) {
+            $columns[] = $row['Field'];
+        }
+    }
+    return $columns;
+}
+
+// 檢查必要的表是否存在（檢查多個可能的表名）
+$senior_messages_exists = tableExists($conn, 'senior_messages');
+// 檢查可能的留言表名稱
+$comments_table_name = null;
+$possible_comment_tables = ['senior_message_comments', 'senior_comments', 'message_comments'];
+foreach ($possible_comment_tables as $table_name) {
+    if (tableExists($conn, $table_name)) {
+        $comments_table_name = $table_name;
+        break;
+    }
+}
+$senior_comments_exists = ($comments_table_name !== null);
+
+// 如果主要表不存在，顯示錯誤並停止執行
+if (!$senior_messages_exists) {
+    die("錯誤：資料庫中不存在 senior_messages 表。請先確認資料庫結構。");
+}
+
+// 獲取 senior_messages 表的實際欄位
+$messages_columns = getTableColumns($conn, 'senior_messages');
+$has_is_hidden = in_array('is_hidden', $messages_columns);
+$has_is_published = in_array('is_published', $messages_columns);
+// 如果沒有 is_hidden 但有 is_published，使用 is_published 來實現隱藏功能
+$use_published_for_hide = (!$has_is_hidden && $has_is_published);
+$has_is_system_announcement = in_array('is_system_announcement', $messages_columns);
+$has_admin_edited = in_array('admin_edited', $messages_columns);
+$has_edited_at = in_array('edited_at', $messages_columns);
+
+// 獲取留言表的實際欄位（如果表存在）
+$comments_foreign_key = null; // 用於關聯到 senior_messages 的欄位名稱
+if ($senior_comments_exists && $comments_table_name) {
+    $comments_columns = getTableColumns($conn, $comments_table_name);
+    // 檢查可能的關聯欄位名稱（優先檢查 message_id）
+    $possible_keys = ['message_id', 'post_id', 'senior_message_id', 'parent_id'];
+    foreach ($possible_keys as $key) {
+        if (in_array($key, $comments_columns)) {
+            $comments_foreign_key = $key;
+            break;
+        }
+    }
+    // 如果找不到常見的關聯欄位，嘗試查找包含 'id' 或 'message' 的欄位
+    if (!$comments_foreign_key) {
+        foreach ($comments_columns as $col) {
+            if (stripos($col, 'message') !== false || (stripos($col, 'post') !== false && stripos($col, 'id') !== false)) {
+                $comments_foreign_key = $col;
+                break;
+            }
+        }
+    }
+}
+
 // 處理各種操作
 $message = '';
 $message_type = '';
@@ -34,10 +109,12 @@ if (isset($_POST['action']) && $_POST['action'] === 'delete_post') {
     $post_id = intval($_POST['post_id'] ?? 0);
     if ($post_id > 0) {
         try {
-            // 先刪除相關留言
-            $stmt = $conn->prepare("DELETE FROM senior_comments WHERE post_id = ?");
-            $stmt->bind_param("i", $post_id);
-            $stmt->execute();
+            // 先刪除相關留言（如果表存在且有關聯欄位）
+            if ($senior_comments_exists && $comments_table_name && $comments_foreign_key) {
+                $stmt = $conn->prepare("DELETE FROM $comments_table_name WHERE $comments_foreign_key = ?");
+                $stmt->bind_param("i", $post_id);
+                $stmt->execute();
+            }
             
             // 再刪除貼文
             $stmt = $conn->prepare("DELETE FROM senior_messages WHERE id = ?");
@@ -60,20 +137,49 @@ if (isset($_POST['action']) && $_POST['action'] === 'delete_post') {
 if (isset($_POST['action']) && $_POST['action'] === 'toggle_hide') {
     $post_id = intval($_POST['post_id'] ?? 0);
     $is_hidden = intval($_POST['is_hidden'] ?? 0);
+    
     if ($post_id > 0) {
         try {
-            $stmt = $conn->prepare("UPDATE senior_messages SET is_hidden = ? WHERE id = ?");
-            $stmt->bind_param("ii", $is_hidden, $post_id);
-            if ($stmt->execute()) {
-                $message = $is_hidden ? '貼文已隱藏' : '貼文已顯示';
-                $message_type = 'success';
+            // 如果有 is_hidden 欄位，直接使用
+            if ($has_is_hidden) {
+                $stmt = $conn->prepare("UPDATE senior_messages SET is_hidden = ? WHERE id = ?");
+                $stmt->bind_param("ii", $is_hidden, $post_id);
+            } 
+            // 如果沒有 is_hidden 但有 is_published，使用 is_published（0=隱藏，1=顯示）
+            elseif ($use_published_for_hide) {
+                $published_value = $is_hidden ? 0 : 1; // 隱藏時設為0，顯示時設為1
+                $stmt = $conn->prepare("UPDATE senior_messages SET is_published = ? WHERE id = ?");
+                $stmt->bind_param("ii", $published_value, $post_id);
             } else {
+                $message = '此資料表不支援隱藏功能';
+                $message_type = 'error';
+                $post_id = 0; // 阻止執行
+            }
+            
+            if ($post_id > 0 && $stmt->execute()) {
+                // 確認更新是否成功
+                $affected_rows = $stmt->affected_rows;
+                if ($affected_rows > 0) {
+                    if ($use_published_for_hide) {
+                        $message = $is_hidden 
+                            ? "貼文已隱藏（is_published 已設為 0）" 
+                            : "貼文已顯示（is_published 已設為 1）";
+                    } else {
+                        $message = $is_hidden ? '貼文已隱藏' : '貼文已顯示';
+                    }
+                    $message_type = 'success';
+                } else {
+                    $message = '操作失敗：沒有資料被更新（可能 ID 不存在或值沒有改變）';
+                    $message_type = 'error';
+                }
+            } elseif ($post_id > 0) {
                 $message = '操作失敗：' . $conn->error;
                 $message_type = 'error';
             }
         } catch (Exception $e) {
             $message = '操作失敗：' . $e->getMessage();
             $message_type = 'error';
+            error_log("隱藏貼文錯誤: " . $e->getMessage());
         }
     }
 }
@@ -84,8 +190,24 @@ if (isset($_POST['action']) && $_POST['action'] === 'force_edit') {
     $content = $_POST['content'] ?? '';
     if ($post_id > 0 && !empty($content)) {
         try {
-            $stmt = $conn->prepare("UPDATE senior_messages SET content = ?, admin_edited = 1, edited_at = NOW() WHERE id = ?");
-            $stmt->bind_param("si", $content, $post_id);
+            // 根據實際存在的欄位構建 UPDATE 語句
+            $update_fields = ["content = ?"];
+            $params = [$content];
+            $param_types = "s";
+            
+            if ($has_admin_edited) {
+                $update_fields[] = "admin_edited = 1";
+            }
+            if ($has_edited_at) {
+                $update_fields[] = "edited_at = NOW()";
+            }
+            
+            $sql = "UPDATE senior_messages SET " . implode(", ", $update_fields) . " WHERE id = ?";
+            $params[] = $post_id;
+            $param_types .= "i";
+            
+            $stmt = $conn->prepare($sql);
+            $stmt->bind_param($param_types, ...$params);
             if ($stmt->execute()) {
                 $message = '貼文已成功編輯';
                 $message_type = 'success';
@@ -100,27 +222,6 @@ if (isset($_POST['action']) && $_POST['action'] === 'force_edit') {
     }
 }
 
-// 處理標記敏感內容
-if (isset($_POST['action']) && $_POST['action'] === 'mark_sensitive') {
-    $post_id = intval($_POST['post_id'] ?? 0);
-    $sensitive_type = $_POST['sensitive_type'] ?? '';
-    if ($post_id > 0 && !empty($sensitive_type)) {
-        try {
-            $stmt = $conn->prepare("UPDATE senior_messages SET sensitive_type = ?, sensitive_marked_at = NOW() WHERE id = ?");
-            $stmt->bind_param("si", $sensitive_type, $post_id);
-            if ($stmt->execute()) {
-                $message = '貼文已標記為敏感內容';
-                $message_type = 'success';
-            } else {
-                $message = '標記失敗：' . $conn->error;
-                $message_type = 'error';
-            }
-        } catch (Exception $e) {
-            $message = '標記失敗：' . $e->getMessage();
-            $message_type = 'error';
-        }
-    }
-}
 
 // 處理系統公告推送
 if (isset($_POST['action']) && $_POST['action'] === 'send_announcement') {
@@ -128,10 +229,31 @@ if (isset($_POST['action']) && $_POST['action'] === 'send_announcement') {
     $announcement_title = $_POST['announcement_title'] ?? '系統公告';
     if (!empty($announcement_content)) {
         try {
-            // 假設有系統公告表，如果沒有則插入到 senior_messages 表作為系統貼文
             $admin_user_id = $_SESSION['user_id'] ?? 0;
-            $stmt = $conn->prepare("INSERT INTO senior_messages (user_id, title, content, is_system_announcement, created_at) VALUES (?, ?, ?, 1, NOW())");
-            $stmt->bind_param("iss", $admin_user_id, $announcement_title, $announcement_content);
+            
+            // 根據實際存在的欄位構建 INSERT 語句
+            $fields = ["user_id", "content", "created_at"];
+            $values = ["?", "?", "NOW()"];
+            $params = [$admin_user_id, $announcement_content];
+            $param_types = "is";
+            
+            // 檢查是否有 title 欄位
+            if (in_array('title', $messages_columns)) {
+                $fields[] = "title";
+                $values[] = "?";
+                $params[] = $announcement_title;
+                $param_types .= "s";
+            }
+            
+            // 檢查是否有 is_system_announcement 欄位
+            if ($has_is_system_announcement) {
+                $fields[] = "is_system_announcement";
+                $values[] = "1";
+            }
+            
+            $sql = "INSERT INTO senior_messages (" . implode(", ", $fields) . ") VALUES (" . implode(", ", $values) . ")";
+            $stmt = $conn->prepare($sql);
+            $stmt->bind_param($param_types, ...$params);
             if ($stmt->execute()) {
                 $message = '系統公告已成功推送';
                 $message_type = 'success';
@@ -206,14 +328,28 @@ $total_pages = ceil($total_posts / $per_page);
 
 // 獲取貼文列表
 $offset = ($page - 1) * $per_page;
+// 根據留言表是否存在且有正確的關聯欄位，決定是否查詢留言數
+$comment_count_sql = ($senior_comments_exists && $comments_table_name && $comments_foreign_key) 
+    ? "(SELECT COUNT(*) FROM $comments_table_name sc WHERE sc.$comments_foreign_key = sm.id)" 
+    : "0";
+
 $sql = "SELECT sm.*, 
                u.username, u.name as user_name,
-               (SELECT COUNT(*) FROM senior_comments sc WHERE sc.post_id = sm.id) as comment_count
+               $comment_count_sql as comment_count
         FROM senior_messages sm 
         LEFT JOIN user u ON sm.user_id = u.id 
         $where_clause
         ORDER BY sm.created_at DESC 
         LIMIT ? OFFSET ?";
+
+// 調試信息（如果需要可以取消註釋來查看實際使用的表和欄位）
+// if ($senior_comments_exists) {
+//     error_log("留言表名稱: " . ($comments_table_name ?? '未找到'));
+//     error_log("關聯欄位: " . ($comments_foreign_key ?? '未找到'));
+//     if ($comments_foreign_key && $comments_table_name) {
+//         error_log("查詢留言數的 SQL: $comment_count_sql");
+//     }
+// }
 
 // 為列表查詢添加 LIMIT 和 OFFSET 參數
 $list_params = $params;
@@ -228,17 +364,39 @@ if (!empty($list_param_types)) {
 $stmt->execute();
 $posts_result = $stmt->get_result();
 $posts = [];
+$posts_data = []; // 用於 JavaScript 的數據
 while ($row = $posts_result->fetch_assoc()) {
     $posts[] = $row;
+    // 準備用於 JavaScript 的數據
+    $posts_data[$row['id']] = [
+        'id' => $row['id'],
+        'title' => $row['title'] ?? '無標題',
+        'content' => $row['content'],
+        'user_name' => $row['user_name'] ?? $row['username'] ?? '未知',
+        'created_at' => date('Y-m-d H:i:s', strtotime($row['created_at'])),
+        'comment_count' => $row['comment_count'] ?? 0
+    ];
 }
 
 // 獲取統計數據
-$stats_sql = "SELECT 
-    COUNT(*) as total_posts,
-    SUM((SELECT COUNT(*) FROM senior_comments sc WHERE sc.post_id = sm.id)) as total_comments,
-    COUNT(CASE WHEN sm.is_hidden = 1 THEN 1 END) as hidden_posts,
-    COUNT(CASE WHEN sm.sensitive_type IS NOT NULL THEN 1 END) as sensitive_posts
-FROM senior_messages sm";
+$comments_count_sql = ($senior_comments_exists && $comments_table_name && $comments_foreign_key) 
+    ? "SUM((SELECT COUNT(*) FROM $comments_table_name sc WHERE sc.$comments_foreign_key = sm.id))" 
+    : "0";
+
+// 根據實際存在的欄位構建統計查詢
+$stats_fields = ["COUNT(*) as total_posts", "$comments_count_sql as total_comments"];
+
+// 統計隱藏貼文數
+if ($has_is_hidden) {
+    $stats_fields[] = "COUNT(CASE WHEN sm.is_hidden = 1 THEN 1 END) as hidden_posts";
+} elseif ($use_published_for_hide) {
+    $stats_fields[] = "COUNT(CASE WHEN sm.is_published = 0 THEN 1 END) as hidden_posts";
+} else {
+    $stats_fields[] = "0 as hidden_posts";
+}
+
+
+$stats_sql = "SELECT " . implode(", ", $stats_fields) . " FROM senior_messages sm";
 $stats_result = $conn->query($stats_sql);
 $stats = $stats_result->fetch_assoc();
 ?>
@@ -496,29 +654,9 @@ $stats = $stats_result->fetch_assoc();
             color: #ff4d4f;
         }
         
-        .badge-sensitive {
-            background: #fff7e6;
-            color: #fa8c16;
-        }
-        
         .badge-system {
             background: #e6f7ff;
             color: #1890ff;
-        }
-        
-        .badge-violence {
-            background: #ff4d4f;
-            color: white;
-        }
-        
-        .badge-pornography {
-            background: #eb2f96;
-            color: white;
-        }
-        
-        .badge-hate {
-            background: #722ed1;
-            color: white;
         }
         
         .action-buttons {
@@ -698,11 +836,6 @@ $stats = $stats_result->fetch_assoc();
                         <div class="stat-card-title">已隱藏貼文</div>
                         <div class="stat-card-value"><?php echo number_format($stats['hidden_posts'] ?? 0); ?></div>
                     </div>
-                    <div class="stat-card">
-                        <div class="stat-card-icon"><i class="fas fa-exclamation-triangle"></i></div>
-                        <div class="stat-card-title">敏感內容</div>
-                        <div class="stat-card-value"><?php echo number_format($stats['sensitive_posts'] ?? 0); ?></div>
-                    </div>
                 </div>
                 
                 <!-- 搜尋區域 -->
@@ -774,29 +907,20 @@ $stats = $stats_result->fetch_assoc();
                                 <td><?php echo htmlspecialchars($post['user_name'] ?? $post['username'] ?? '未知'); ?></td>
                                 <td><?php echo htmlspecialchars($post['comment_count'] ?? 0); ?></td>
                                 <td>
-                                    <?php if ($post['is_hidden'] ?? 0): ?>
+                                    <?php 
+                                    // 檢查是否隱藏（支援 is_hidden 或 is_published）
+                                    $is_hidden_status = false;
+                                    if ($has_is_hidden && ($post['is_hidden'] ?? 0)) {
+                                        $is_hidden_status = true;
+                                    } elseif ($use_published_for_hide && ($post['is_published'] ?? 1) == 0) {
+                                        $is_hidden_status = true;
+                                    }
+                                    if ($is_hidden_status): 
+                                    ?>
                                         <span class="badge badge-hidden">已隱藏</span>
                                     <?php endif; ?>
-                                    <?php if ($post['is_system_announcement'] ?? 0): ?>
+                                    <?php if ($has_is_system_announcement && ($post['is_system_announcement'] ?? 0)): ?>
                                         <span class="badge badge-system">系統公告</span>
-                                    <?php endif; ?>
-                                    <?php if (!empty($post['sensitive_type'])): ?>
-                                        <?php
-                                        $sensitive_badge_class = 'badge-sensitive';
-                                        if ($post['sensitive_type'] === 'violence') $sensitive_badge_class = 'badge-violence';
-                                        elseif ($post['sensitive_type'] === 'pornography') $sensitive_badge_class = 'badge-pornography';
-                                        elseif ($post['sensitive_type'] === 'hate') $sensitive_badge_class = 'badge-hate';
-                                        ?>
-                                        <span class="badge <?php echo $sensitive_badge_class; ?>">
-                                            <?php
-                                            $sensitive_labels = [
-                                                'violence' => '暴力',
-                                                'pornography' => '色情',
-                                                'hate' => '仇恨'
-                                            ];
-                                            echo $sensitive_labels[$post['sensitive_type']] ?? '敏感';
-                                            ?>
-                                        </span>
                                     <?php endif; ?>
                                 </td>
                                 <td><?php echo date('Y-m-d H:i', strtotime($post['created_at'])); ?></td>
@@ -805,20 +929,28 @@ $stats = $stats_result->fetch_assoc();
                                         <button class="btn btn-small btn-secondary" onclick="viewPost(<?php echo $post['id']; ?>)">
                                             <i class="fas fa-eye"></i> 查看
                                         </button>
-                                        <?php if ($post['is_hidden'] ?? 0): ?>
-                                            <button class="btn btn-small btn-primary" onclick="toggleHide(<?php echo $post['id']; ?>, 0)">
-                                                <i class="fas fa-eye"></i> 顯示
-                                            </button>
-                                        <?php else: ?>
-                                            <button class="btn btn-small btn-warning" onclick="toggleHide(<?php echo $post['id']; ?>, 1)">
-                                                <i class="fas fa-eye-slash"></i> 隱藏
-                                            </button>
+                                        <?php 
+                                        // 顯示隱藏/顯示按鈕（支援 is_hidden 或 is_published）
+                                        if ($has_is_hidden || $use_published_for_hide): 
+                                            $current_hidden = false;
+                                            if ($has_is_hidden && ($post['is_hidden'] ?? 0)) {
+                                                $current_hidden = true;
+                                            } elseif ($use_published_for_hide && ($post['is_published'] ?? 1) == 0) {
+                                                $current_hidden = true;
+                                            }
+                                        ?>
+                                            <?php if ($current_hidden): ?>
+                                                <button class="btn btn-small btn-primary" onclick="toggleHide(<?php echo $post['id']; ?>, 0)">
+                                                    <i class="fas fa-eye"></i> 顯示
+                                                </button>
+                                            <?php else: ?>
+                                                <button class="btn btn-small btn-warning" onclick="toggleHide(<?php echo $post['id']; ?>, 1)">
+                                                    <i class="fas fa-eye-slash"></i> 隱藏
+                                                </button>
+                                            <?php endif; ?>
                                         <?php endif; ?>
                                         <button class="btn btn-small btn-secondary" onclick="openEditModal(<?php echo $post['id']; ?>, '<?php echo htmlspecialchars(addslashes($post['content'])); ?>')">
                                             <i class="fas fa-edit"></i> 編輯
-                                        </button>
-                                        <button class="btn btn-small btn-warning" onclick="openSensitiveModal(<?php echo $post['id']; ?>)">
-                                            <i class="fas fa-exclamation-triangle"></i> 標記
                                         </button>
                                         <button class="btn btn-small btn-danger" onclick="deletePost(<?php echo $post['id']; ?>)">
                                             <i class="fas fa-trash"></i> 刪除
@@ -880,32 +1012,49 @@ $stats = $stats_result->fetch_assoc();
         </div>
     </div>
     
-    <!-- 標記敏感內容模態對話框 -->
-    <div id="sensitiveModal" class="modal">
-        <div class="modal-content">
+    <!-- 查看留言詳情模態對話框 -->
+    <div id="viewModal" class="modal">
+        <div class="modal-content" style="max-width: 800px;">
             <div class="modal-header">
-                <div class="modal-title">標記敏感內容</div>
-                <button class="modal-close" onclick="closeSensitiveModal()">&times;</button>
+                <div class="modal-title">留言詳情</div>
+                <button class="modal-close" onclick="closeViewModal()">&times;</button>
             </div>
-            <form method="POST" id="sensitiveForm">
-                <div class="modal-body">
-                    <input type="hidden" name="action" value="mark_sensitive">
-                    <input type="hidden" name="post_id" id="sensitive_post_id">
-                    <div class="form-group">
-                        <label>敏感內容類型</label>
-                        <select name="sensitive_type" id="sensitive_type" required>
-                            <option value="">請選擇</option>
-                            <option value="violence">暴力</option>
-                            <option value="pornography">色情</option>
-                            <option value="hate">仇恨</option>
-                        </select>
+            <div class="modal-body" id="viewModalBody">
+                <div style="padding: 20px;">
+                    <div style="margin-bottom: 16px;">
+                        <strong>留言 ID：</strong> <span id="view_post_id"></span>
                     </div>
+                    <div style="margin-bottom: 16px;">
+                        <strong>標題：</strong> <span id="view_post_title"></span>
+                    </div>
+                    <div style="margin-bottom: 16px;">
+                        <strong>發文者：</strong> <span id="view_post_user"></span>
+                    </div>
+                    <div style="margin-bottom: 16px;">
+                        <strong>發文時間：</strong> <span id="view_post_time"></span>
+                    </div>
+                    <div style="margin-bottom: 16px;">
+                        <strong>留言數：</strong> <span id="view_post_comments"></span>
+                    </div>
+                    <div style="margin-bottom: 16px;">
+                        <strong>內容：</strong>
+                    </div>
+                    <div id="view_post_content" style="
+                        background: #f5f5f5;
+                        border: 1px solid #d9d9d9;
+                        border-radius: 6px;
+                        padding: 16px;
+                        min-height: 100px;
+                        white-space: pre-wrap;
+                        word-wrap: break-word;
+                        max-height: 400px;
+                        overflow-y: auto;
+                    "></div>
                 </div>
-                <div class="modal-footer">
-                    <button type="button" class="btn btn-secondary" onclick="closeSensitiveModal()">取消</button>
-                    <button type="submit" class="btn btn-warning">確認標記</button>
-                </div>
-            </form>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" onclick="closeViewModal()">關閉</button>
+            </div>
         </div>
     </div>
     
@@ -978,16 +1127,6 @@ $stats = $stats_result->fetch_assoc();
             document.getElementById('editModal').style.display = 'none';
         }
         
-        function openSensitiveModal(postId) {
-            document.getElementById('sensitive_post_id').value = postId;
-            document.getElementById('sensitive_type').value = '';
-            document.getElementById('sensitiveModal').style.display = 'block';
-        }
-        
-        function closeSensitiveModal() {
-            document.getElementById('sensitiveModal').style.display = 'none';
-        }
-        
         function openAnnouncementModal() {
             document.getElementById('announcementForm').reset();
             document.getElementById('announcementModal').style.display = 'block';
@@ -997,22 +1136,45 @@ $stats = $stats_result->fetch_assoc();
             document.getElementById('announcementModal').style.display = 'none';
         }
         
+        // 留言數據（從 PHP 傳遞）
+        const postsData = <?php echo json_encode($posts_data, JSON_UNESCAPED_UNICODE); ?>;
+        
         function viewPost(postId) {
-            // 這裡可以打開一個新視窗或跳轉到前台查看
-            window.open('http://localhost/Topics-frontend/frontend/senior_messages.php?post_id=' + postId, '_blank');
+            // 在後台彈出模態視窗顯示留言詳情
+            const post = postsData[postId];
+            
+            if (!post) {
+                alert('找不到該留言的資料');
+                return;
+            }
+            
+            // 填充模態對話框內容
+            document.getElementById('view_post_id').textContent = post.id;
+            document.getElementById('view_post_title').textContent = post.title;
+            document.getElementById('view_post_user').textContent = post.user_name;
+            document.getElementById('view_post_time').textContent = post.created_at;
+            document.getElementById('view_post_comments').textContent = post.comment_count + ' 則留言';
+            document.getElementById('view_post_content').textContent = post.content;
+            
+            // 顯示模態對話框
+            document.getElementById('viewModal').style.display = 'block';
+        }
+        
+        function closeViewModal() {
+            document.getElementById('viewModal').style.display = 'none';
         }
         
         // 點擊模態對話框外部關閉
         window.onclick = function(event) {
             const editModal = document.getElementById('editModal');
-            const sensitiveModal = document.getElementById('sensitiveModal');
+            const viewModal = document.getElementById('viewModal');
             const announcementModal = document.getElementById('announcementModal');
             
             if (event.target === editModal) {
                 closeEditModal();
             }
-            if (event.target === sensitiveModal) {
-                closeSensitiveModal();
+            if (event.target === viewModal) {
+                closeViewModal();
             }
             if (event.target === announcementModal) {
                 closeAnnouncementModal();
