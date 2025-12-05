@@ -56,7 +56,7 @@ $is_teacher = ($user_role === 'TEA'); // 科助：首頁、就讀意願名單、
             </a>
 
             <!-- 招生推薦 - 僅學校行政和管理員 -->
-            <?php if ($is_staff || $is_admin): ?>
+            <?php if ($is_staff || $is_admin || $is_director): ?>
                 <a href="admission_recommend_list.php" class="menu-item <?php echo $current_page === 'admission_recommend_list' ? 'active' : ''; ?>">
                     <i class="fas fa-user-friends"></i>
                     <span>招生推薦</span>
