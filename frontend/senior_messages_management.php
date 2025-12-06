@@ -160,27 +160,14 @@ if (isset($_POST['action']) && $_POST['action'] === 'toggle_hide') {
                 // 確認更新是否成功
                 $affected_rows = $stmt->affected_rows;
                 if ($affected_rows > 0) {
-                    // 確認更新後的值
-                    $check_stmt = $conn->prepare("SELECT is_published FROM senior_messages WHERE id = ?");
-                    $check_stmt->bind_param("i", $post_id);
-                    $check_stmt->execute();
-                    $check_result = $check_stmt->get_result();
-                    $check_row = $check_result->fetch_assoc();
-                    $current_value = $check_row['is_published'] ?? 'NULL';
-                    
                     if ($use_published_for_hide) {
                         $message = $is_hidden 
-                            ? "貼文已隱藏（is_published 已設為 0，當前值：$current_value）" 
-                            : "貼文已顯示（is_published 已設為 1，當前值：$current_value）";
+                            ? "貼文已隱藏（is_published 已設為 0）" 
+                            : "貼文已顯示（is_published 已設為 1）";
                     } else {
                         $message = $is_hidden ? '貼文已隱藏' : '貼文已顯示';
                     }
                     $message_type = 'success';
-                    
-                    // 重要提示：前台頁面需要過濾隱藏的貼文
-                    if ($is_hidden && $use_published_for_hide) {
-                        $message .= '。注意：前台頁面需要在查詢時添加 WHERE is_published = 1 條件才能隱藏貼文。';
-                    }
                 } else {
                     $message = '操作失敗：沒有資料被更新（可能 ID 不存在或值沒有改變）';
                     $message_type = 'error';

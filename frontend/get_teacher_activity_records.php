@@ -106,6 +106,75 @@ if ($result) {
     $records = $result->fetch_all(MYSQLI_ASSOC);
     if (!empty($records)) {
         $teacher_name = $records[0]['teacher_name'] ?? '';
+        
+        // 為每個活動紀錄讀取參與對象和活動回饋
+        foreach ($records as &$record) {
+            $activity_id = $record['id'];
+            
+            // 讀取參與對象（從 activity_participants 表 JOIN identity_options 表）
+            $participants = [];
+            $participants_sql = "SELECT io.name 
+                                FROM activity_participants ap
+                                LEFT JOIN identity_options io ON ap.participants = io.code
+                                WHERE ap.activity_id = ?
+                                ORDER BY ap.participants";
+            $participants_stmt = $conn->prepare($participants_sql);
+            if ($participants_stmt) {
+                $participants_stmt->bind_param("i", $activity_id);
+                $participants_stmt->execute();
+                $participants_result = $participants_stmt->get_result();
+                while ($p_row = $participants_result->fetch_assoc()) {
+                    if (!empty($p_row['name'])) {
+                        $participants[] = $p_row['name'];
+                    }
+                }
+                $participants_stmt->close();
+            }
+            $record['participants'] = $participants;
+            $record['participants_display'] = implode(', ', $participants);
+            // 如果有 participants_other_text，也加入顯示
+            if (!empty($record['participants_other_text'])) {
+                $record['participants_display'] .= (empty($record['participants_display']) ? '' : ', ') . '其他: ' . $record['participants_other_text'];
+            }
+            
+            // 讀取活動回饋（從 activity_feedback 表 JOIN activity_feedback_options 表）
+            $feedback = [];
+            $feedback_sql = "SELECT afo.option 
+                            FROM activity_feedback af
+                            LEFT JOIN activity_feedback_options afo ON af.option_id = afo.id
+                            WHERE af.activity_id = ?
+                            ORDER BY af.option_id";
+            $feedback_stmt = $conn->prepare($feedback_sql);
+            if ($feedback_stmt) {
+                $feedback_stmt->bind_param("i", $activity_id);
+                $feedback_stmt->execute();
+                $feedback_result = $feedback_stmt->get_result();
+                $has_other_option = false;
+                while ($f_row = $feedback_result->fetch_assoc()) {
+                    if (!empty($f_row['option'])) {
+                        $feedback[] = $f_row['option'];
+                        if ($f_row['option'] === '其他') {
+                            $has_other_option = true;
+                        }
+                    }
+                }
+                $feedback_stmt->close();
+            }
+            $record['feedback'] = $feedback;
+            $record['feedback_display'] = implode(', ', $feedback);
+            // 如果有 feedback_other_text，加入顯示
+            // 如果選擇了「其他」選項，直接附加文字；如果沒選擇「其他」選項，也顯示「其他: xxx」
+            if (!empty($record['feedback_other_text'])) {
+                if ($has_other_option) {
+                    // 有選擇「其他」選項，直接附加文字
+                    $record['feedback_display'] .= (empty($record['feedback_display']) ? '' : ', ') . $record['feedback_other_text'];
+                } else {
+                    // 沒選擇「其他」選項，但有其他文字，顯示「其他: xxx」
+                    $record['feedback_display'] .= (empty($record['feedback_display']) ? '' : ', ') . '其他: ' . $record['feedback_other_text'];
+                }
+            }
+        }
+        unset($record); // 取消引用
     }
 }
 $stmt->close();

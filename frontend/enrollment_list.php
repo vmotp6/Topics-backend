@@ -1435,7 +1435,18 @@ try {
                 const tbody = table.getElementsByTagName('tbody')[0];
                 if (!tbody) return;
                 
-                allRows = Array.from(tbody.getElementsByTagName('tr')).filter(row => !row.classList.contains('detail-row'));
+                // 重新獲取所有行
+                const allTableRows = Array.from(tbody.getElementsByTagName('tr'));
+                allRows = allTableRows.filter(row => {
+                    if (row.classList.contains('detail-row')) {
+                        return false;
+                    }
+                    const cells = row.getElementsByTagName('td');
+                    if (cells.length === 0) {
+                        return false;
+                    }
+                    return row.classList.contains('table-row-clickable') || cells.length >= 5;
+                });
                 
                 filteredRows = allRows.filter(row => {
                     const cells = row.getElementsByTagName('td');
@@ -1511,6 +1522,199 @@ try {
         // 初始化分頁
         initPagination();
     });
+
+    // 分頁相關變數
+    let currentPage = 1;
+    let itemsPerPage = 10;
+    let allRows = [];
+    let filteredRows = [];
+
+    // 分頁功能
+    function initPagination() {
+        const table = document.getElementById('enrollmentTable');
+        if (table) {
+            const tbody = table.getElementsByTagName('tbody')[0];
+            if (tbody) {
+                // 只獲取真正的數據行，排除 detail-row
+                const allTableRows = Array.from(tbody.getElementsByTagName('tr'));
+                allRows = allTableRows.filter(row => {
+                    if (row.classList.contains('detail-row')) {
+                        return false;
+                    }
+                    const cells = row.getElementsByTagName('td');
+                    if (cells.length === 0) {
+                        return false;
+                    }
+                    // 確保是主數據行（有 table-row-clickable 類或至少有足夠的 td）
+                    return row.classList.contains('table-row-clickable') || cells.length >= 5;
+                });
+                filteredRows = [...allRows];
+            }
+        }
+        
+        const select = document.getElementById('itemsPerPage');
+        if (select) {
+            if (select.value === 'all') {
+                itemsPerPage = filteredRows.length;
+            } else {
+                itemsPerPage = parseInt(select.value) || 10;
+            }
+        }
+        currentPage = 1;
+        updatePagination();
+    }
+
+    function changeItemsPerPage() {
+        const select = document.getElementById('itemsPerPage');
+        filteredRows = allRows.filter(row => {
+            if (row.classList.contains('detail-row')) {
+                return false;
+            }
+            const cells = row.getElementsByTagName('td');
+            if (cells.length === 0) {
+                return false;
+            }
+            return true;
+        });
+        
+        if (select) {
+            itemsPerPage = select.value === 'all' ? filteredRows.length : parseInt(select.value);
+        }
+        currentPage = 1;
+        updatePagination();
+    }
+
+    function changePage(direction) {
+        const totalItems = filteredRows.length;
+        const itemsPerPageNum = typeof itemsPerPage === 'number' ? itemsPerPage : parseInt(itemsPerPage) || 10;
+        const totalPages = totalItems > itemsPerPageNum ? Math.ceil(totalItems / itemsPerPageNum) : 1;
+        
+        currentPage += direction;
+        
+        if (currentPage < 1) currentPage = 1;
+        if (currentPage > totalPages) currentPage = totalPages;
+        
+        updatePagination();
+    }
+
+    function goToPage(page) {
+        currentPage = page;
+        updatePagination();
+    }
+
+    function updatePagination() {
+        // 重新從表格獲取所有行（確保數據是最新的）
+        const table = document.getElementById('enrollmentTable');
+        if (table) {
+            const tbody = table.getElementsByTagName('tbody')[0];
+            if (tbody) {
+                const allTableRows = Array.from(tbody.getElementsByTagName('tr'));
+                allRows = allTableRows.filter(row => {
+                    if (row.classList.contains('detail-row')) {
+                        return false;
+                    }
+                    const cells = row.getElementsByTagName('td');
+                    if (cells.length === 0) {
+                        return false;
+                    }
+                    return row.classList.contains('table-row-clickable') || cells.length >= 5;
+                });
+            }
+        }
+        
+        // 如果 filteredRows 是空的，使用 allRows
+        if (filteredRows.length === 0) {
+            filteredRows = [...allRows];
+        }
+        
+        const totalItems = filteredRows.length;
+        
+        const select = document.getElementById('itemsPerPage');
+        let itemsPerPageNum = 10;
+        if (select) {
+            if (select.value === 'all') {
+                itemsPerPageNum = totalItems;
+            } else {
+                itemsPerPageNum = parseInt(select.value) || 10;
+            }
+        } else {
+            itemsPerPageNum = typeof itemsPerPage === 'number' ? itemsPerPage : parseInt(itemsPerPage) || 10;
+        }
+        
+        const totalPages = totalItems > itemsPerPageNum ? Math.ceil(totalItems / itemsPerPageNum) : 1;
+        
+        if (currentPage > totalPages && totalPages > 0) {
+            currentPage = totalPages;
+        }
+        if (currentPage < 1) {
+            currentPage = 1;
+        }
+        
+        let start, end;
+        if (totalItems === 0) {
+            start = 0;
+            end = 0;
+        } else {
+            if (totalPages <= 1 || itemsPerPageNum >= totalItems) {
+                start = 1;
+                end = totalItems;
+            } else {
+                start = (currentPage - 1) * itemsPerPageNum + 1;
+                end = Math.min(currentPage * itemsPerPageNum, totalItems);
+            }
+            end = Math.min(end, totalItems);
+        }
+        
+        const currentRangeEl = document.getElementById('currentRange');
+        if (currentRangeEl) {
+            currentRangeEl.textContent = `${start}-${end}`;
+        }
+        
+        const prevBtn = document.getElementById('prevPage');
+        const nextBtn = document.getElementById('nextPage');
+        if (prevBtn) prevBtn.disabled = currentPage === 1;
+        if (nextBtn) nextBtn.disabled = currentPage >= totalPages || totalPages <= 1;
+        
+        const pageNumbers = document.getElementById('pageNumbers');
+        if (pageNumbers) {
+            pageNumbers.innerHTML = '';
+            
+            if (totalPages >= 1) {
+                const pagesToShow = totalPages === 1 ? [1] : Array.from({length: totalPages}, (_, i) => i + 1);
+                
+                for (let i of pagesToShow) {
+                    const button = document.createElement('button');
+                    button.textContent = i;
+                    button.className = i === currentPage ? 'active' : '';
+                    button.onclick = () => {
+                        currentPage = i;
+                        updatePagination();
+                    };
+                    pageNumbers.appendChild(button);
+                }
+            }
+        }
+        
+        // 顯示/隱藏行
+        allRows.forEach((row, index) => {
+            const detailRow = row.nextElementSibling;
+            if (filteredRows.includes(row)) {
+                const rowIndex = filteredRows.indexOf(row);
+                const shouldShow = (totalPages <= 1 || itemsPerPageNum >= totalItems) 
+                    ? true 
+                    : (rowIndex >= (currentPage - 1) * itemsPerPageNum && rowIndex < currentPage * itemsPerPageNum);
+                row.style.display = shouldShow ? '' : 'none';
+                if (detailRow && detailRow.classList.contains('detail-row')) {
+                    detailRow.style.display = 'none';
+                }
+            } else {
+                row.style.display = 'none';
+                if (detailRow && detailRow.classList.contains('detail-row')) {
+                    detailRow.style.display = 'none';
+                }
+            }
+        });
+    }
 
     // 分配學生相關變數
     let currentStudentId = null;
