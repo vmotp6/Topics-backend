@@ -1065,9 +1065,22 @@ try {
                                         }
                                     }
 
-                                    // 準備要傳遞給 JS 的志願代碼列表
+                                    // 準備要傳遞給 JS 的志願代碼列表和志願順序映射
                                     $chosen_codes = array_filter([$intention1_code, $intention2_code, $intention3_code]);
                                     $chosen_codes_json = json_encode(array_unique($chosen_codes));
+                                    
+                                    // 創建科系代碼到志願順序的映射（用於顯示第幾志願）
+                                    $choice_order_map = [];
+                                    if (!empty($intention1_code)) {
+                                        $choice_order_map[$intention1_code] = 1;
+                                    }
+                                    if (!empty($intention2_code)) {
+                                        $choice_order_map[$intention2_code] = 2;
+                                    }
+                                    if (!empty($intention3_code)) {
+                                        $choice_order_map[$intention3_code] = 3;
+                                    }
+                                    $choice_order_map_json = json_encode($choice_order_map);
                                     
                                     ?>
                                     <tr class="table-row-clickable" onclick="toggleDetail(<?php echo $item['id']; ?>)">
@@ -1110,6 +1123,7 @@ try {
                                                     data-student-name="<?php echo htmlspecialchars($item['name'], ENT_QUOTES, 'UTF-8'); ?>"
                                                     data-current-department="<?php echo htmlspecialchars($item['assigned_department'], ENT_QUOTES, 'UTF-8'); ?>"
                                                     data-chosen-codes="<?php echo htmlspecialchars($chosen_codes_json, ENT_QUOTES, 'UTF-8'); ?>"
+                                                    data-choice-order-map="<?php echo htmlspecialchars($choice_order_map_json, ENT_QUOTES, 'UTF-8'); ?>"
                                                     onclick="event.stopPropagation(); openAssignDepartmentModalFromButton(this)">
                                                 <i class="fas fa-check-circle"></i> 已分配
                                             </button>
@@ -1119,6 +1133,7 @@ try {
                                                     data-student-name="<?php echo htmlspecialchars($item['name'], ENT_QUOTES, 'UTF-8'); ?>"
                                                     data-current-department=""
                                                     data-chosen-codes="<?php echo htmlspecialchars($chosen_codes_json, ENT_QUOTES, 'UTF-8'); ?>"
+                                                    data-choice-order-map="<?php echo htmlspecialchars($choice_order_map_json, ENT_QUOTES, 'UTF-8'); ?>"
                                                     onclick="event.stopPropagation(); openAssignDepartmentModalFromButton(this)">
                                                 <i class="fas fa-building"></i> 分配
                                             </button>
@@ -1660,8 +1675,9 @@ try {
         const studentName = button.getAttribute('data-student-name');
         const currentDepartment = button.getAttribute('data-current-department') || '';
         const chosenCodesJson = button.getAttribute('data-chosen-codes') || '[]';
+        const choiceOrderMapJson = button.getAttribute('data-choice-order-map') || '{}';
         
-        openAssignDepartmentModal(studentId, studentName, currentDepartment, chosenCodesJson);
+        openAssignDepartmentModal(studentId, studentName, currentDepartment, chosenCodesJson, choiceOrderMapJson);
     }
 
     /**
@@ -1670,8 +1686,9 @@ try {
      * @param {string} studentName 學生姓名
      * @param {string} currentDepartment 當前分配的部門代碼
      * @param {string} chosenCodesJson 學生志願的科系代碼 JSON 陣列
+     * @param {string} choiceOrderMapJson 科系代碼到志願順序的映射 JSON 物件
      */
-    function openAssignDepartmentModal(studentId, studentName, currentDepartment, chosenCodesJson) {
+    function openAssignDepartmentModal(studentId, studentName, currentDepartment, chosenCodesJson, choiceOrderMapJson) {
         currentDepartmentStudentId = studentId;
         document.getElementById('departmentStudentName').textContent = studentName;
         document.getElementById('assignDepartmentModal').style.display = 'flex';
@@ -1685,16 +1702,26 @@ try {
             chosenCodes = [];
         }
         
-        // 步驟 2: 呼叫篩選函數
-        filterAndDisplayDepartments(currentDepartment, chosenCodes);
+        // 步驟 2: 解析志願順序映射
+        let choiceOrderMap = {};
+        try {
+            choiceOrderMap = JSON.parse(choiceOrderMapJson);
+        } catch (e) {
+            console.error("解析 choiceOrderMapJson 失敗:", e);
+            choiceOrderMap = {};
+        }
+        
+        // 步驟 3: 呼叫篩選函數
+        filterAndDisplayDepartments(currentDepartment, chosenCodes, choiceOrderMap);
     }
     
     /**
      * 篩選並動態顯示部門名單（只顯示學生志願裡有的科系）
      * @param {string} currentDepartment 當前分配的部門代碼
      * @param {string[]} chosenCodes 學生選擇的科系代碼陣列 (e.g., ['IM', 'AF'])
+     * @param {Object} choiceOrderMap 科系代碼到志願順序的映射 (e.g., {'IM': 1, 'AF': 2})
      */
-    function filterAndDisplayDepartments(currentDepartment, chosenCodes) {
+    function filterAndDisplayDepartments(currentDepartment, chosenCodes, choiceOrderMap) {
         const optionsContainer = document.getElementById('departmentOptions');
         optionsContainer.innerHTML = ''; // 清空選項
 
@@ -1721,15 +1748,25 @@ try {
                 html = '<p class="empty-state" style="padding: 10px;">此學生尚未填寫志願，無法進行分配。請先確認學生是否已填寫志願。</p>';
             }
         } else {
-            // 渲染篩選過後的部門名單（行政人員：大字顯示科系，灰字顯示主任名字）
+            // 按照志願順序排序（第1志願到第3志願）
+            filteredDepartments.sort((a, b) => {
+                const orderA = choiceOrderMap[a.code] || 999; // 如果沒有志願順序，排在最後
+                const orderB = choiceOrderMap[b.code] || 999;
+                return orderA - orderB; // 升序排列（1, 2, 3）
+            });
+            
+            // 渲染篩選過後的部門名單（行政人員：大字顯示科系，灰字顯示主任名字和志願順序）
             filteredDepartments.forEach(dept => {
                 const isChecked = (currentDepartment && dept.code === currentDepartment);
                 const directorNames = dept.director_names || '無主任';
+                // 獲取該科系是第幾志願
+                const choiceOrder = choiceOrderMap[dept.code] || null;
+                const choiceOrderText = choiceOrder ? `（第${choiceOrder}志願）` : '';
                 html += `
                     <label class="teacher-option">
                         <input type="radio" name="department" value="${dept.code}" ${isChecked ? 'checked' : ''}>
                         <div class="teacher-info">
-                            <strong>${dept.name}</strong>
+                            <strong>${dept.name}${choiceOrderText}</strong>
                             <span class="teacher-dept">${directorNames}</span>
                         </div>
                     </label>
