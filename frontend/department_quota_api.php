@@ -53,28 +53,23 @@ function getQuotas($conn) {
         $stmt->execute();
         $departments = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
         
-        // 先一次性獲取所有已錄取的學生志願（按科系代碼統計）
+        // 統計已錄取的學生（根據 assigned_department，狀態為 'approved' 或 'AP'）
         $stmt_approved = $conn->prepare("
-            SELECT ca.id, cac.choice_order, cac.department_code
-            FROM continued_admission ca
-            INNER JOIN continued_admission_choices cac ON ca.id = cac.application_id
-            WHERE ca.status = 'approved'
-            ORDER BY ca.id, cac.choice_order
+            SELECT assigned_department, COUNT(*) as enrolled_count
+            FROM continued_admission
+            WHERE (status = 'approved' OR status = 'AP')
+            AND assigned_department IS NOT NULL
+            AND assigned_department != ''
+            GROUP BY assigned_department
         ");
         $stmt_approved->execute();
         $approved_result = $stmt_approved->get_result();
         
-        // 組織已錄取學生的志願數據（按科系代碼統計）
+        // 組織已錄取學生的數據（按科系代碼統計）
         $approved_by_department = [];
         while ($row = $approved_result->fetch_assoc()) {
-            $dept_code = $row['department_code'];
-            // 只統計第一志願
-            if ($row['choice_order'] == 1) {
-                if (!isset($approved_by_department[$dept_code])) {
-                    $approved_by_department[$dept_code] = 0;
-                }
-                $approved_by_department[$dept_code]++;
-            }
+            $dept_code = $row['assigned_department'];
+            $approved_by_department[$dept_code] = (int)$row['enrolled_count'];
         }
 
         // 計算各科系已錄取人數
@@ -139,6 +134,30 @@ function updateQuota($conn) {
         }
         
         $department_code = $dept_result['code'];
+        
+        // 檢查該科系已錄取的人數（狀態為 'approved' 或 'AP'，且 assigned_department 為該科系）
+        // 注意：已錄取人數應該根據 assigned_department 統計，而不是根據志願
+        $stmt_count = $conn->prepare("
+            SELECT COUNT(*) as enrolled_count
+            FROM continued_admission
+            WHERE (status = 'approved' OR status = 'AP')
+            AND assigned_department = ?
+        ");
+        $stmt_count->bind_param("s", $department_code);
+        $stmt_count->execute();
+        $count_result = $stmt_count->get_result()->fetch_assoc();
+        $enrolled_count = (int)($count_result['enrolled_count'] ?? 0);
+        $stmt_count->close();
+        
+        // 檢查新名額是否低於已錄取人數
+        if ($total_quota < $enrolled_count) {
+            http_response_code(400);
+            echo json_encode([
+                'success' => false, 
+                'message' => "無法將名額調整為 {$total_quota}，因為該科系目前已錄取 {$enrolled_count} 人，名額不能低於已錄取人數。"
+            ]);
+            return;
+        }
         
         // 檢查記錄是否存在（根據 department_code）
         $stmt = $conn->prepare("SELECT id FROM department_quotas WHERE department_code = ?");

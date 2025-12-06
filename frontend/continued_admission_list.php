@@ -206,30 +206,23 @@ try {
     $stmt->execute();
     $departments = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
     
-    // 先一次性獲取所有已錄取的學生志願
+    // 統計已錄取的學生（根據 assigned_department，狀態為 'approved' 或 'AP'）
     $stmt_approved = $conn->prepare("
-        SELECT ca.id, cac.choice_order, cac.department_code, d.name as department_name
-        FROM continued_admission ca
-        INNER JOIN continued_admission_choices cac ON ca.id = cac.application_id
-        LEFT JOIN departments d ON cac.department_code = d.code
-        WHERE ca.status = 'approved'
-        ORDER BY ca.id, cac.choice_order
+        SELECT assigned_department, COUNT(*) as enrolled_count
+        FROM continued_admission
+        WHERE (status = 'approved' OR status = 'AP')
+        AND assigned_department IS NOT NULL
+        AND assigned_department != ''
+        GROUP BY assigned_department
     ");
     $stmt_approved->execute();
     $approved_result = $stmt_approved->get_result();
     
-    // 組織已錄取學生的志願數據（按科系代碼統計）
+    // 組織已錄取學生的數據（按科系代碼統計）
     $approved_by_department = [];
     while ($row = $approved_result->fetch_assoc()) {
-        $app_id = $row['id'];
-        $dept_code = $row['department_code'];
-        // 只統計第一志願
-        if ($row['choice_order'] == 1) {
-            if (!isset($approved_by_department[$dept_code])) {
-                $approved_by_department[$dept_code] = 0;
-            }
-            $approved_by_department[$dept_code]++;
-        }
+        $dept_code = $row['assigned_department'];
+        $approved_by_department[$dept_code] = (int)$row['enrolled_count'];
     }
 
     // 計算各科系已錄取人數
@@ -253,18 +246,28 @@ try {
 
 function getStatusText($status) {
     switch ($status) {
-        case 'approved': return '錄取';
-        case 'rejected': return '未錄取';
-        case 'waitlist': return '備取';
+        case 'approved':
+        case 'AP': return '錄取';
+        case 'rejected':
+        case 'RE': return '未錄取';
+        case 'waitlist':
+        case 'AD': return '備取';
+        case 'pending':
+        case 'PE': return '待審核';
         default: return '待審核';
     }
 }
 
 function getStatusClass($status) {
     switch ($status) {
-        case 'approved': return 'status-approved';
-        case 'rejected': return 'status-rejected';
-        case 'waitlist': return 'status-waitlist';
+        case 'approved':
+        case 'AP': return 'status-approved';
+        case 'rejected':
+        case 'RE': return 'status-rejected';
+        case 'waitlist':
+        case 'AD': return 'status-waitlist';
+        case 'pending':
+        case 'PE': return 'status-pending';
         default: return 'status-pending';
     }
 }
@@ -344,7 +347,7 @@ function getStatusClass($status) {
         .search-input { padding: 8px 12px; border: 1px solid #d9d9d9; border-radius: 6px; font-size: 14px; width: 250px; }
         .empty-state { text-align: center; padding: 40px; color: var(--text-secondary-color); }
 
-        .status-badge { padding: 4px 8px; border-radius: 4px; font-size: 12px; font-weight: 500; border: 1px solid; }
+        .status-badge { padding: 4px 8px; border-radius: 4px; font-size: 16px; font-weight: 500; border: 1px solid; }
         .status-approved { background: var(--status-approved-bg); color: var(--status-approved-text); border-color: var(--status-approved-border); }
         .status-rejected { background: var(--status-rejected-bg); color: var(--status-rejected-text); border-color: var(--status-rejected-border); }
         .status-waitlist { background: var(--status-waitlist-bg); color: var(--status-waitlist-text); border-color: var(--status-waitlist-border); }
@@ -422,11 +425,18 @@ function getStatusClass($status) {
         .progress-bar { width: 100%; height: 8px; background: #f0f0f0; border-radius: 4px; overflow: hidden; }
         .progress-fill { height: 100%; background: linear-gradient(90deg, var(--success-color), var(--warning-color)); transition: width 0.3s; }
 
-        /* 志願選擇顯示樣式 */
+        /* 主任/IM用戶隱藏不需要的意願欄位 */
+        .application-table.hide-choice1 th.choice1-column,
+        .application-table.hide-choice1 td.choice1-column,
+        .application-table.hide-choice2 th.choice2-column,
+        .application-table.hide-choice2 td.choice2-column,
+        .application-table.hide-choice3 th.choice3-column,
+        .application-table.hide-choice3 td.choice3-column {
+            display: none !important;
+        }
+
+        /* 志願選擇顯示樣式（保留用於其他可能的用途） */
         .choices-display { display: flex; flex-direction: column; gap: 4px; }
-        .choice-item { padding: 4px 8px; border-radius: 4px; font-size: 12px; background: #f5f5f5; color: #8c8c8c; }
-        .choice-item.approved { background: var(--primary-color); color: white; font-weight: 500; }
-        .no-choices { color: var(--text-secondary-color); font-style: italic; }
 
         /* TAB 樣式 */
         .tabs-container { margin-bottom: 24px; }
@@ -503,6 +513,122 @@ function getStatusClass($status) {
             background: var(--primary-color);
             color: white;
             border-color: var(--primary-color);
+        }
+
+        /* 彈出視窗樣式 */
+        .modal {
+            position: fixed;
+            z-index: 1000;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0,0,0,0.5);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .modal-content {
+            background-color: white;
+            border-radius: 8px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.15);
+            width: 90%;
+            max-width: 500px;
+            max-height: 80vh;
+            overflow-y: auto;
+        }
+        .modal-header {
+            padding: 20px;
+            border-bottom: 1px solid var(--border-color);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .modal-header h3 {
+            margin: 0;
+            color: var(--text-color);
+        }
+        .close {
+            font-size: 24px;
+            font-weight: bold;
+            cursor: pointer;
+            color: var(--text-secondary-color);
+        }
+        .close:hover {
+            color: var(--text-color);
+        }
+        .modal-body {
+            padding: 20px;
+        }
+        .modal-body p {
+            margin-bottom: 16px;
+            font-size: 16px;
+        }
+        .teacher-list h4 {
+            margin-bottom: 12px;
+            color: var(--text-color);
+        }
+        .teacher-options {
+            max-height: 300px;
+            overflow-y: auto;
+        }
+        .teacher-option {
+            display: block;
+            padding: 12px;
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            margin-bottom: 8px;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+        .teacher-option:hover {
+            background-color: #f5f5f5;
+            border-color: var(--primary-color);
+        }
+        .teacher-option input[type="radio"] {
+            margin-right: 12px;
+        }
+        .teacher-info {
+            display: inline-block;
+            vertical-align: top;
+        }
+        .teacher-info strong {
+            display: block;
+            color: var(--text-color);
+            margin-bottom: 4px;
+        }
+        .teacher-dept {
+            color: var(--text-secondary-color);
+            font-size: 14px;
+        }
+        .modal-footer {
+            padding: 20px;
+            border-top: 1px solid var(--border-color);
+            display: flex;
+            justify-content: flex-end;
+            gap: 12px;
+        }
+        .btn-cancel, .btn-confirm {
+            padding: 8px 16px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+            transition: all 0.3s;
+        }
+        .btn-cancel {
+            background-color: #f5f5f5;
+            color: var(--text-color);
+        }
+        .btn-cancel:hover {
+            background-color: #e8e8e8;
+        }
+        .btn-confirm {
+            background-color: var(--primary-color);
+            color: white;
+        }
+        .btn-confirm:hover {
+            background-color: #40a9ff;
         }
     </style>
 </head>
@@ -610,17 +736,57 @@ function getStatusClass($status) {
                                     <i class="fas fa-inbox fa-3x" style="margin-bottom: 16px;"></i>
                                     <p>目前尚無任何續招報名資料。</p>
                                 </div>
-                            <?php else: ?>
-                                <table class="table" id="applicationTable"<?php if ($is_director && !empty($user_department_code)): ?> data-director-view="true"<?php endif; ?>>
+                            <?php else: 
+                                // 根據用戶角色決定隱藏哪些欄位
+                                $table_classes = 'table application-table';
+                                if ($is_director && !empty($user_department_code)) {
+                                    // 主任：檢查哪些意願欄位需要顯示
+                                    $has_choice1 = false;
+                                    $has_choice2 = false;
+                                    $has_choice3 = false;
+                                    foreach ($applications as $check_item) {
+                                        $check_choices = $check_item['choices_with_codes'] ?? [];
+                                        foreach ($check_choices as $check_choice) {
+                                            if ($check_choice['code'] === $user_department_code) {
+                                                $order = $check_choice['order'] ?? 0;
+                                                if ($order == 1) $has_choice1 = true;
+                                                elseif ($order == 2) $has_choice2 = true;
+                                                elseif ($order == 3) $has_choice3 = true;
+                                            }
+                                        }
+                                    }
+                                    if (!$has_choice1) $table_classes .= ' hide-choice1';
+                                    if (!$has_choice2) $table_classes .= ' hide-choice2';
+                                    if (!$has_choice3) $table_classes .= ' hide-choice3';
+                                } elseif ($is_imd_user) {
+                                    // IM用戶：檢查哪些意願欄位需要顯示
+                                    $has_choice1 = false;
+                                    $has_choice2 = false;
+                                    $has_choice3 = false;
+                                    foreach ($applications as $check_item) {
+                                        $check_choices = $check_item['choices_with_codes'] ?? [];
+                                        foreach ($check_choices as $check_choice) {
+                                            if ($check_choice['code'] === 'IM' || strpos($check_choice['name'], '資訊管理') !== false || strpos($check_choice['name'], '資管') !== false) {
+                                                $order = $check_choice['order'] ?? 0;
+                                                if ($order == 1) $has_choice1 = true;
+                                                elseif ($order == 2) $has_choice2 = true;
+                                                elseif ($order == 3) $has_choice3 = true;
+                                            }
+                                        }
+                                    }
+                                    if (!$has_choice1) $table_classes .= ' hide-choice1';
+                                    if (!$has_choice2) $table_classes .= ' hide-choice2';
+                                    if (!$has_choice3) $table_classes .= ' hide-choice3';
+                                }
+                            ?>
+                                <table class="<?php echo $table_classes; ?>" id="applicationTable"<?php if ($is_director && !empty($user_department_code)): ?> data-director-view="true"<?php endif; ?>>
                                     <thead>
                                         <tr>
                                             <th onclick="sortTable('apply_no')">報名編號 <span class="sort-icon" id="sort-apply_no"></span></th>
                                             <th onclick="sortTable('name')">姓名 <span class="sort-icon" id="sort-name"></span></th>
-                                            <th onclick="sortTable('school')">就讀國中 <span class="sort-icon" id="sort-school"></span></th>
-                                            <th>志願</th>
-                                            <?php if ($can_manage_list): ?>
-                                            <th>分配部門</th>
-                                            <?php endif; ?>
+                                            <th class="choice1-column">志願1</th>
+                                            <th class="choice2-column">志願2</th>
+                                            <th class="choice3-column">志願3</th>
                                             <th onclick="sortTable('status')">審核狀態 <span class="sort-icon" id="sort-status"></span></th>
                                             <th>操作</th>
                                         </tr>
@@ -630,109 +796,129 @@ function getStatusClass($status) {
                                         <tr>
                                             <td><?php echo htmlspecialchars($item['apply_no'] ?? $item['id']); ?></td>
                                             <td><?php echo htmlspecialchars($item['name']); ?></td>
-                                            <td><?php echo htmlspecialchars($item['school_name'] ?? $item['school'] ?? ''); ?></td>
-                                            <td>
-                                                <?php 
-                                                $is_approved = ($item['status'] === 'approved');
-                                                $choices_with_codes = $item['choices_with_codes'] ?? [];
-                                                
-                                                if (!empty($choices_with_codes)): 
-                                                    // 主任：只顯示自己科系的志願（第幾志願）
-                                                    if ($is_director && !empty($user_department_code)):
-                                                        $found_choice = null;
-                                                        foreach ($choices_with_codes as $choice_data):
-                                                            if ($choice_data['code'] === $user_department_code):
-                                                                $found_choice = $choice_data;
-                                                                break;
-                                                            endif;
-                                                        endforeach;
-                                                        
-                                                        if ($found_choice):
-                                                ?>
-                                                            <span class="choice-item <?php echo $is_approved ? 'approved' : ''; ?>">
-                                                                意願<?php echo $found_choice['order']; ?>：<?php echo htmlspecialchars($found_choice['name']); ?>
-                                                            </span>
-                                                        <?php else: ?>
-                                                            <span class="no-choices">無相關志願</span>
-                                                        <?php endif; ?>
-                                                    <?php elseif ($is_imd_user): ?>
-                                                        <!-- IMD用戶：只顯示資訊管理科相關的志願（保留向後兼容） -->
-                                                        <?php
-                                                        $filtered_choices = [];
-                                                        foreach ($choices_with_codes as $choice_data):
-                                                            if ($choice_data['code'] === 'IM' || strpos($choice_data['name'], '資訊管理') !== false || strpos($choice_data['name'], '資管') !== false):
-                                                                $filtered_choices[] = $choice_data;
-                                                            endif;
-                                                        endforeach;
-                                                        
-                                                        if (!empty($filtered_choices)):
-                                                        ?>
-                                                            <div class="choices-display">
-                                                                <?php foreach ($filtered_choices as $choice_data): ?>
-                                                                    <span class="choice-item <?php echo $is_approved ? 'approved' : ''; ?>">
-                                                                        <?php echo $choice_data['order'] . '. ' . htmlspecialchars($choice_data['name']); ?>
-                                                                    </span>
-                                                                <?php endforeach; ?>
-                                                            </div>
-                                                        <?php else: ?>
-                                                            <span class="no-choices">無相關志願</span>
-                                                        <?php endif; ?>
-                                                    <?php else: ?>
-                                                        <!-- 招生中心/管理員：顯示所有志願 -->
-                                                        <div class="choices-display">
-                                                            <?php foreach ($choices_with_codes as $choice_data): ?>
-                                                                <span class="choice-item <?php echo $is_approved ? 'approved' : ''; ?>">
-                                                                    <?php echo $choice_data['order'] . '. ' . htmlspecialchars($choice_data['name']); ?>
-                                                                </span>
-                                                            <?php endforeach; ?>
-                                                        </div>
-                                                    <?php endif; ?>
+                                            <?php 
+                                            $current_status = $item['status'] ?? '';
+                                            $is_approved = ($current_status === 'approved' || $current_status === 'AP');
+                                            $choices_with_codes = $item['choices_with_codes'] ?? [];
+                                            
+                                            // 準備三個意願的資料
+                                            $choice1 = null;
+                                            $choice2 = null;
+                                            $choice3 = null;
+                                            
+                                            foreach ($choices_with_codes as $choice_data) {
+                                                $order = $choice_data['order'] ?? 0;
+                                                if ($order == 1) $choice1 = $choice_data;
+                                                elseif ($order == 2) $choice2 = $choice_data;
+                                                elseif ($order == 3) $choice3 = $choice_data;
+                                            }
+                                            
+                                            // 根據用戶角色決定顯示哪些志願
+                                            $display_choice1 = false;
+                                            $display_choice2 = false;
+                                            $display_choice3 = false;
+                                            
+                                            if ($is_director && !empty($user_department_code)) {
+                                                // 主任：只顯示自己科系的志願
+                                                if ($choice1 && $choice1['code'] === $user_department_code) $display_choice1 = true;
+                                                if ($choice2 && $choice2['code'] === $user_department_code) $display_choice2 = true;
+                                                if ($choice3 && $choice3['code'] === $user_department_code) $display_choice3 = true;
+                                            } elseif ($is_imd_user) {
+                                                // IMD用戶：只顯示資訊管理科相關的志願
+                                                if ($choice1 && ($choice1['code'] === 'IM' || strpos($choice1['name'], '資訊管理') !== false || strpos($choice1['name'], '資管') !== false)) $display_choice1 = true;
+                                                if ($choice2 && ($choice2['code'] === 'IM' || strpos($choice2['name'], '資訊管理') !== false || strpos($choice2['name'], '資管') !== false)) $display_choice2 = true;
+                                                if ($choice3 && ($choice3['code'] === 'IM' || strpos($choice3['name'], '資訊管理') !== false || strpos($choice3['name'], '資管') !== false)) $display_choice3 = true;
+                                            } else {
+                                                // 招生中心/管理員：顯示所有志願
+                                                $display_choice1 = ($choice1 !== null);
+                                                $display_choice2 = ($choice2 !== null);
+                                                $display_choice3 = ($choice3 !== null);
+                                            }
+                                            
+                                            // 顯示意願1
+                                            ?>
+                                            <td class="choice1-column">
+                                                <?php if ($display_choice1 && $choice1): ?>
+                                                    <span class="choice-item <?php echo $is_approved ? 'approved' : ''; ?>">
+                                                        <?php echo htmlspecialchars($choice1['name']); ?>
+                                                    </span>
                                                 <?php else: ?>
-                                                    <span class="no-choices">未選擇</span>
+                                                    <span class="no-choices">-</span>
                                                 <?php endif; ?>
                                             </td>
-                                            <?php if ($can_manage_list): ?>
+                                            <td class="choice2-column">
+                                                <?php if ($display_choice2 && $choice2): ?>
+                                                    <span class="choice-item <?php echo $is_approved ? 'approved' : ''; ?>">
+                                                        <?php echo htmlspecialchars($choice2['name']); ?>
+                                                    </span>
+                                                <?php else: ?>
+                                                    <span class="no-choices">-</span>
+                                                <?php endif; ?>
+                                            </td>
+                                            <td class="choice3-column">
+                                                <?php if ($display_choice3 && $choice3): ?>
+                                                    <span class="choice-item <?php echo $is_approved ? 'approved' : ''; ?>">
+                                                        <?php echo htmlspecialchars($choice3['name']); ?>
+                                                    </span>
+                                                <?php else: ?>
+                                                    <span class="no-choices">-</span>
+                                                <?php endif; ?>
+                                            </td>
                                             <td>
                                                 <?php 
-                                                $assigned_dept = $item['assigned_department'] ?? '';
-                                                if (!empty($assigned_dept)):
-                                                    echo getDepartmentName($assigned_dept, $department_data);
-                                                else:
-                                                    echo '<span style="color: #8c8c8c;">未分配</span>';
-                                                endif;
+                                                $current_status = $item['status'] ?? '';
+                                                $status_text = getStatusText($current_status);
+                                                
+                                                // 如果是錄取狀態，顯示錄取科系
+                                                if (($current_status === 'approved' || $current_status === 'AP')) {
+                                                    $assigned_dept = $item['assigned_department'] ?? '';
+                                                    if (!empty($assigned_dept)) {
+                                                        $dept_name = getDepartmentName($assigned_dept, $department_data);
+                                                        $status_text .= ' - ' . $dept_name;
+                                                    }
+                                                }
                                                 ?>
-                                            </td>
-                                            <?php endif; ?>
-                                            <td>
-                                                <span class="status-badge <?php echo getStatusClass($item['status']); ?>">
-                                                    <?php echo getStatusText($item['status']); ?>
+                                                <span class="status-badge <?php echo getStatusClass($current_status); ?>">
+                                                    <?php echo htmlspecialchars($status_text); ?>
                                                 </span>
                                             </td>
                                             <td>
                                                 <a href="continued_admission_detail.php?id=<?php echo $item['id']; ?>" class="btn-view">查看詳情</a>
                                                 <?php 
-                                                // 檢查是否為待審核狀態（支持 'PE' 和 'pending'）
-                                                $is_pending = ($item['status'] === 'pending' || $item['status'] === 'PE' || !in_array($item['status'], ['approved', 'rejected', 'waitlist']));
+                                                // 檢查是否為待審核狀態（支持 'PE' 和 'pending'，排除已審核狀態）
+                                                $is_pending = ($current_status === 'pending' || $current_status === 'PE');
+                                                $is_approved = ($current_status === 'approved' || $current_status === 'AP');
+                                                $is_rejected = ($current_status === 'rejected' || $current_status === 'RE');
+                                                $is_waitlist = ($current_status === 'waitlist' || $current_status === 'AD');
                                                 
-                                                // 主任只能審核分配給他的名單
+                                                $assigned_dept = $item['assigned_department'] ?? '';
+                                                
+                                                // 只有主任（DI）可以審核，學校行政（STA）不能審核
+                                                // 且只有在待審核狀態時才顯示審核按鈕
                                                 $can_review_this = false;
-                                                if ($is_pending) {
-                                                    if ($can_manage_list) {
-                                                        // 招生中心可以審核所有待審核的名單
-                                                        $can_review_this = true;
-                                                    } elseif ($is_director && !empty($user_department_code)) {
-                                                        // 主任只能審核分配給他的科系的名單
-                                                        $assigned_dept = $item['assigned_department'] ?? '';
-                                                        $can_review_this = ($assigned_dept === $user_department_code);
-                                                    }
+                                                if ($is_pending && $is_director && !empty($user_department_code)) {
+                                                    // 主任只能審核分配給他的科系的名單
+                                                    $can_review_this = ($assigned_dept === $user_department_code);
                                                 }
-                                                ?>
-                                                <?php if ($can_review_this): ?>
+                                                
+                                                // 顯示審核按鈕（只有主任可以看到，且狀態為待審核）
+                                                if ($can_review_this && $is_pending): ?>
                                                     <a href="continued_admission_detail.php?id=<?php echo $item['id']; ?>&action=review" class="btn-review">審核</a>
-                                                <?php endif; ?>
-                                                <?php if ($can_manage_list && $is_pending): ?>
-                                                    <button onclick="showAssignModal(<?php echo $item['id']; ?>, '<?php echo htmlspecialchars($item['name'], ENT_QUOTES); ?>', <?php echo htmlspecialchars(json_encode($item['choices_with_codes'] ?? []), ENT_QUOTES); ?>)" class="btn-view" style="margin-left: 8px;">分配部門</button>
-                                                <?php endif; ?>
+                                                <?php endif; 
+                                                
+                                                // 學校行政（STA）和管理員（ADM）可以分配部門（只有待審核狀態時）
+                                                if ($can_manage_list && $is_pending): 
+                                                    if (!empty($assigned_dept)): 
+                                                        // 已經分配給主任，顯示"已分配"按鈕（可點擊來重新分配）
+                                                        $dept_name = getDepartmentName($assigned_dept, $department_data);
+                                                ?>
+                                                    <button onclick="showAssignModal(<?php echo $item['id']; ?>, '<?php echo htmlspecialchars($item['name'], ENT_QUOTES); ?>', <?php echo htmlspecialchars(json_encode($item['choices_with_codes'] ?? []), ENT_QUOTES); ?>, '<?php echo htmlspecialchars($assigned_dept, ENT_QUOTES); ?>')" class="btn-view" style="margin-left: 8px; background: #28a745; color: white; border-color: #28a745;">
+                                                        <i class="fas fa-check-circle"></i> 已分配 - <?php echo htmlspecialchars($dept_name); ?>
+                                                    </button>
+                                                <?php else: ?>
+                                                    <button onclick="showAssignModal(<?php echo $item['id']; ?>, '<?php echo htmlspecialchars($item['name'], ENT_QUOTES); ?>', <?php echo htmlspecialchars(json_encode($item['choices_with_codes'] ?? []), ENT_QUOTES); ?>, '<?php echo htmlspecialchars($assigned_dept, ENT_QUOTES); ?>')" class="btn-view" style="margin-left: 8px;">分配部門</button>
+                                                <?php endif; 
+                                                endif; ?>
                                             </td>
                                         </tr>
                                     <?php endforeach; ?>
@@ -772,17 +958,26 @@ function getStatusClass($status) {
 
     <!-- 分配部門模態框 -->
     <?php if ($can_manage_list): ?>
-    <div id="assignModal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 10000; align-items: center; justify-content: center;">
-        <div style="background: white; border-radius: 8px; padding: 24px; max-width: 500px; width: 90%; box-shadow: 0 4px 12px rgba(0,0,0,0.15);">
-            <h3 style="margin: 0 0 16px 0; font-size: 18px; font-weight: 600;">分配部門</h3>
-            <p style="margin: 0 0 16px 0; color: var(--text-secondary-color);">學生：<span id="assignStudentName"></span></p>
-            <p style="margin: 0 0 16px 0; color: var(--text-secondary-color); font-size: 14px;">請選擇要分配的科系：</p>
-            <select id="assignDepartmentSelect" style="width: 100%; padding: 8px 12px; border: 1px solid #d9d9d9; border-radius: 6px; font-size: 14px; margin-bottom: 16px;">
-                <option value="">請選擇科系</option>
-            </select>
-            <div style="display: flex; justify-content: flex-end; gap: 8px;">
-                <button onclick="closeAssignModal()" style="padding: 8px 16px; border: 1px solid #d9d9d9; border-radius: 6px; background: #fff; cursor: pointer; font-size: 14px;">取消</button>
-                <button onclick="confirmAssign()" style="padding: 8px 16px; border: 1px solid #1890ff; border-radius: 6px; background: #1890ff; color: white; cursor: pointer; font-size: 14px;">確認分配</button>
+    <div id="assignModal" class="modal" style="display: none;">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>分配部門</h3>
+                <span class="close" onclick="closeAssignModal()">&times;</span>
+            </div>
+            <div class="modal-body">
+                <p>學生：<span id="assignStudentName"></span></p>
+                <div class="teacher-list">
+                    <h4>選擇部門：</h4>
+                    <div class="teacher-options" id="assignDepartmentOptions">
+                        <div style="text-align: center; padding: 20px; color: var(--text-secondary-color);">
+                            <i class="fas fa-spinner fa-spin"></i> 準備部門名單中...
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn-cancel" onclick="closeAssignModal()">取消</button>
+                <button class="btn-confirm" onclick="confirmAssign()">確認分配</button>
             </div>
         </div>
     </div>
@@ -1091,24 +1286,38 @@ function getStatusClass($status) {
     let currentAssignChoices = [];
 
     // 顯示分配模態框
-    function showAssignModal(applicationId, studentName, choices) {
+    function showAssignModal(applicationId, studentName, choices, currentDepartment) {
         currentAssignApplicationId = applicationId;
         currentAssignChoices = choices || [];
+        currentDepartment = currentDepartment || '';
         
         document.getElementById('assignStudentName').textContent = studentName;
-        const select = document.getElementById('assignDepartmentSelect');
-        select.innerHTML = '<option value="">請選擇科系</option>';
+        const optionsContainer = document.getElementById('assignDepartmentOptions');
+        optionsContainer.innerHTML = '';
         
         // 只顯示學生志願中有的科系
         const departmentCodes = currentAssignChoices.map(c => c.code).filter((v, i, a) => a.indexOf(v) === i);
         const departmentNames = <?php echo json_encode($department_data, JSON_UNESCAPED_UNICODE); ?>;
         
-        departmentCodes.forEach(code => {
-            const option = document.createElement('option');
-            option.value = code;
-            option.textContent = departmentNames[code] || code;
-            select.appendChild(option);
-        });
+        if (departmentCodes.length === 0) {
+            optionsContainer.innerHTML = '<p style="padding: 10px; color: var(--text-secondary-color); text-align: center;">找不到符合學生志願的科系。請確認學生是否已填寫志願。</p>';
+        } else {
+            // 渲染部門選項（使用 radio button）
+            departmentCodes.forEach(code => {
+                const isChecked = (currentDepartment && code === currentDepartment);
+                const deptName = departmentNames[code] || code;
+                
+                const label = document.createElement('label');
+                label.className = 'teacher-option';
+                label.innerHTML = `
+                    <input type="radio" name="department" value="${code}" ${isChecked ? 'checked' : ''}>
+                    <div class="teacher-info">
+                        <strong>${deptName}</strong>
+                    </div>
+                `;
+                optionsContainer.appendChild(label);
+            });
+        }
         
         document.getElementById('assignModal').style.display = 'flex';
     }
@@ -1122,13 +1331,14 @@ function getStatusClass($status) {
 
     // 確認分配
     function confirmAssign() {
-        const select = document.getElementById('assignDepartmentSelect');
-        const departmentCode = select.value;
+        const selectedDepartment = document.querySelector('input[name="department"]:checked');
         
-        if (!departmentCode) {
+        if (!selectedDepartment) {
             showToast('請選擇要分配的科系', false);
             return;
         }
+        
+        const departmentCode = selectedDepartment.value;
         
         if (!currentAssignApplicationId) {
             showToast('系統錯誤：找不到報名記錄', false);
@@ -1160,6 +1370,20 @@ function getStatusClass($status) {
             showToast('系統錯誤，請稍後再試', false);
         });
     }
+    
+    // 點擊彈出視窗外部關閉
+    <?php if ($can_manage_list): ?>
+    document.addEventListener('DOMContentLoaded', function() {
+        const assignModal = document.getElementById('assignModal');
+        if (assignModal) {
+            assignModal.addEventListener('click', function(e) {
+                if (e.target === this) {
+                    closeAssignModal();
+                }
+            });
+        }
+    });
+    <?php endif; ?>
     <?php endif; ?>
 
     </script>

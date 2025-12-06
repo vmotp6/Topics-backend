@@ -125,6 +125,10 @@ $is_teacher = ($user_role === 'TEA'); // 科助：首頁、就讀意願名單、
                 </a>
             <?php endif; ?>
 
+            <a href="page_management.php" class="menu-item <?php echo $current_page === 'page_management' ? 'active' : ''; ?>">
+                <i class="fas fa-file-alt"></i>
+                <span>頁面管理</span>
+            </a>
         <?php endif; // 結束主選單的判斷 ?>
 
         <a href="logout.php" class="menu-item">

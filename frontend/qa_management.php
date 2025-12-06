@@ -141,9 +141,14 @@ $conn->close();
             box-shadow: 0 1px 2px rgba(0,0,0,0.03);
             border: 1px solid var(--border-color);
             margin-bottom: 24px;
+            display: flex;
+            flex-direction: column;
         }
 
-        .table-container { overflow-x: auto; }
+        .table-container { 
+            overflow-x: auto;
+            flex: 1;
+        }
         .table { width: 100%; border-collapse: collapse; }
         .table th, .table td { padding: 16px 24px; text-align: left; border-bottom: 1px solid var(--border-color); font-size: 16px; }
         .table th:first-child, .table td:first-child {
@@ -250,6 +255,72 @@ $conn->close();
             -webkit-line-clamp: 3;
             -webkit-box-orient: vertical;
         }
+        
+        /* 分頁樣式 */
+        .pagination {
+            padding: 16px 24px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-top: 1px solid var(--border-color);
+            background: #fafafa;
+        }
+
+        .pagination-info {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            color: var(--text-secondary-color);
+            font-size: 14px;
+        }
+
+        .pagination-controls {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .pagination select {
+            padding: 6px 12px;
+            border: 1px solid #d9d9d9;
+            border-radius: 6px;
+            font-size: 14px;
+            background: #fff;
+            cursor: pointer;
+        }
+
+        .pagination select:focus {
+            outline: none;
+            border-color: #1890ff;
+            box-shadow: 0 0 0 2px rgba(24,144,255,0.2);
+        }
+
+        .pagination button {
+            padding: 6px 12px;
+            border: 1px solid #d9d9d9;
+            background: #fff;
+            color: #595959;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 14px;
+            transition: all 0.3s;
+        }
+
+        .pagination button:hover:not(:disabled) {
+            border-color: #1890ff;
+            color: #1890ff;
+        }
+
+        .pagination button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .pagination button.active {
+            background: #1890ff;
+            color: white;
+            border-color: #1890ff;
+        }
     </style>
 </head>
 <body>
@@ -314,6 +385,27 @@ $conn->close();
                             </tbody>
                         </table>
                     </div>
+                    <!-- 分頁控制 -->
+                    <?php if (!empty($qa_list)): ?>
+                    <div class="pagination">
+                        <div class="pagination-info">
+                            <span>每頁顯示：</span>
+                            <select id="itemsPerPage" onchange="changeItemsPerPage()">
+                                <option value="10" selected>10</option>
+                                <option value="20">20</option>
+                                <option value="50">50</option>
+                                <option value="100">100</option>
+                                <option value="all">全部</option>
+                            </select>
+                            <span id="pageInfo">顯示第 <span id="currentRange">1-<?php echo min(10, count($qa_list)); ?></span> 筆，共 <?php echo count($qa_list); ?> 筆</span>
+                        </div>
+                        <div class="pagination-controls">
+                            <button id="prevPage" onclick="changePage(-1)" disabled>上一頁</button>
+                            <span id="pageNumbers"></span>
+                            <button id="nextPage" onclick="changePage(1)">下一頁</button>
+                        </div>
+                    </div>
+                    <?php endif; ?>
                 </div>
 
             </div>
@@ -383,6 +475,12 @@ $conn->close();
     </div>
 
     <script>
+        // 分頁相關變數
+        let currentPage = 1;
+        let itemsPerPage = 10; // 預設每頁顯示 10 筆
+        let allRows = [];
+        let filteredRows = [];
+        
         // 排序表格
         function sortTable(field) {
             let newSortOrder = 'asc';
@@ -430,25 +528,181 @@ $conn->close();
             const tbody = table.getElementsByTagName('tbody')[0];
             if (!tbody) return;
             
-            const rows = tbody.getElementsByTagName('tr');
+            // 獲取所有行
+            allRows = Array.from(tbody.getElementsByTagName('tr'));
             
-            for (let i = 0; i < rows.length; i++) {
-                const row = rows[i];
+            // 過濾行
+            filteredRows = allRows.filter(row => {
                 const cells = row.getElementsByTagName('td');
-                let found = false;
-                
-                // 搜尋問題和答案欄位（第2和第3欄）
+                // 搜尋問題和答案欄位（第2和第3欄，索引1和2）
                 for (let j = 1; j < 3; j++) {
                     if (cells[j]) {
                         const cellText = cells[j].textContent || cells[j].innerText;
                         if (cellText.toLowerCase().indexOf(filter) > -1) {
-                            found = true;
-                            break;
+                            return true;
                         }
                     }
                 }
+                return false;
+            });
+            
+            // 重置到第一頁並更新分頁
+            currentPage = 1;
+            updatePagination();
+        }
+        
+        // 分頁相關函數
+        function changeItemsPerPage() {
+            const selectValue = document.getElementById('itemsPerPage').value;
+            itemsPerPage = selectValue === 'all' ? 'all' : parseInt(selectValue);
+            currentPage = 1;
+            updatePagination();
+        }
+
+        function changePage(direction) {
+            const totalItems = filteredRows.length;
+            let pageSize;
+            if (itemsPerPage === 'all') {
+                pageSize = totalItems;
+            } else {
+                pageSize = typeof itemsPerPage === 'number' ? itemsPerPage : parseInt(itemsPerPage);
+            }
+            const totalPages = pageSize >= totalItems ? 1 : Math.ceil(totalItems / pageSize);
+            
+            currentPage += direction;
+            
+            if (currentPage < 1) currentPage = 1;
+            if (currentPage > totalPages) currentPage = totalPages;
+            
+            updatePagination();
+        }
+
+        function goToPage(page) {
+            currentPage = page;
+            updatePagination();
+        }
+
+        function updatePagination() {
+            const totalItems = filteredRows.length;
+            
+            // 確保 itemsPerPage 是正確的數字或 'all'
+            let pageSize;
+            if (itemsPerPage === 'all') {
+                pageSize = totalItems;
+            } else {
+                pageSize = typeof itemsPerPage === 'number' ? itemsPerPage : parseInt(itemsPerPage);
+                if (isNaN(pageSize) || pageSize <= 0) {
+                    pageSize = 10;
+                    itemsPerPage = 10;
+                }
+            }
+            
+            const totalPages = pageSize >= totalItems ? 1 : Math.ceil(totalItems / pageSize);
+            
+            // 隱藏所有行
+            allRows.forEach(row => row.style.display = 'none');
+            
+            if (itemsPerPage === 'all' || pageSize >= totalItems) {
+                // 顯示所有過濾後的行
+                filteredRows.forEach(row => row.style.display = '');
                 
-                row.style.display = found ? '' : 'none';
+                // 更新分頁資訊
+                document.getElementById('currentRange').textContent = 
+                    totalItems > 0 ? `1-${totalItems}` : '0-0';
+            } else {
+                // 計算當前頁的範圍
+                const start = (currentPage - 1) * pageSize;
+                const end = Math.min(start + pageSize, totalItems);
+                
+                // 顯示當前頁的行
+                for (let i = start; i < end; i++) {
+                    if (filteredRows[i]) {
+                        filteredRows[i].style.display = '';
+                    }
+                }
+                
+                // 更新分頁資訊
+                document.getElementById('currentRange').textContent = 
+                    totalItems > 0 ? `${start + 1}-${end}` : '0-0';
+            }
+            
+            // 更新總數
+            document.getElementById('pageInfo').innerHTML = 
+                `顯示第 <span id="currentRange">${document.getElementById('currentRange').textContent}</span> 筆，共 ${totalItems} 筆`;
+            
+            // 更新上一頁/下一頁按鈕 - 只有一頁時禁用
+            const prevBtn = document.getElementById('prevPage');
+            const nextBtn = document.getElementById('nextPage');
+            if (prevBtn) prevBtn.disabled = (currentPage === 1) || (totalPages <= 1);
+            if (nextBtn) nextBtn.disabled = (currentPage >= totalPages) || (totalPages <= 1);
+            
+            // 更新頁碼按鈕
+            updatePageNumbers(totalPages);
+        }
+
+        function updatePageNumbers(totalPages) {
+            const pageNumbers = document.getElementById('pageNumbers');
+            if (!pageNumbers) return;
+            
+            pageNumbers.innerHTML = '';
+            
+            if (totalPages <= 1) return;
+            
+            // 顯示最多 5 個頁碼
+            let startPage = Math.max(1, currentPage - 2);
+            let endPage = Math.min(totalPages, currentPage + 2);
+            
+            // 如果接近開頭，顯示前 5 頁
+            if (currentPage <= 3) {
+                startPage = 1;
+                endPage = Math.min(5, totalPages);
+            }
+            
+            // 如果接近結尾，顯示後 5 頁
+            if (currentPage >= totalPages - 2) {
+                startPage = Math.max(1, totalPages - 4);
+                endPage = totalPages;
+            }
+            
+            // 第一頁
+            if (startPage > 1) {
+                const btn = document.createElement('button');
+                btn.textContent = '1';
+                btn.onclick = () => goToPage(1);
+                if (currentPage === 1) btn.classList.add('active');
+                pageNumbers.appendChild(btn);
+                
+                if (startPage > 2) {
+                    const ellipsis = document.createElement('span');
+                    ellipsis.textContent = '...';
+                    ellipsis.style.padding = '0 8px';
+                    pageNumbers.appendChild(ellipsis);
+                }
+            }
+            
+            // 中間頁碼
+            for (let i = startPage; i <= endPage; i++) {
+                const btn = document.createElement('button');
+                btn.textContent = i;
+                btn.onclick = () => goToPage(i);
+                if (i === currentPage) btn.classList.add('active');
+                pageNumbers.appendChild(btn);
+            }
+            
+            // 最後一頁
+            if (endPage < totalPages) {
+                if (endPage < totalPages - 1) {
+                    const ellipsis = document.createElement('span');
+                    ellipsis.textContent = '...';
+                    ellipsis.style.padding = '0 8px';
+                    pageNumbers.appendChild(ellipsis);
+                }
+                
+                const btn = document.createElement('button');
+                btn.textContent = totalPages;
+                btn.onclick = () => goToPage(totalPages);
+                if (currentPage === totalPages) btn.classList.add('active');
+                pageNumbers.appendChild(btn);
             }
         }
 
@@ -466,9 +720,20 @@ $conn->close();
             }
         }
         
-        // 頁面載入時更新排序圖標
+        // 頁面載入時更新排序圖標和初始化分頁
         document.addEventListener('DOMContentLoaded', function() {
             updateSortIcons();
+            
+            // 初始化分頁
+            const table = document.getElementById('qaTable');
+            if (table) {
+                const tbody = table.getElementsByTagName('tbody')[0];
+                if (tbody) {
+                    allRows = Array.from(tbody.getElementsByTagName('tr'));
+                    filteredRows = allRows;
+                    updatePagination();
+                }
+            }
         });
 
         function editQA(item) {
