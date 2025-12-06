@@ -703,12 +703,26 @@ $conn->close();
 
          function updatePagination() {
              const totalItems = filteredRows.length;
-             const totalPages = itemsPerPage === 'all' ? 1 : Math.ceil(totalItems / itemsPerPage);
+             
+             // 確保 itemsPerPage 是正確的數字或 'all'
+             let pageSize;
+             if (itemsPerPage === 'all') {
+                 pageSize = totalItems;
+             } else {
+                 pageSize = typeof itemsPerPage === 'number' ? itemsPerPage : parseInt(itemsPerPage);
+                 if (isNaN(pageSize) || pageSize <= 0) {
+                     pageSize = 10;
+                     itemsPerPage = 10;
+                 }
+             }
+             
+             // 計算總頁數：只有當資料筆數大於每頁顯示筆數時，才需要多頁
+             const totalPages = totalItems > pageSize ? Math.ceil(totalItems / pageSize) : 1;
              
              // 隱藏所有行
              allRows.forEach(row => row.style.display = 'none');
              
-             if (itemsPerPage === 'all' || itemsPerPage >= totalItems) {
+             if (itemsPerPage === 'all' || pageSize >= totalItems) {
                  // 顯示所有過濾後的行
                  filteredRows.forEach(row => row.style.display = '');
                  
@@ -717,8 +731,8 @@ $conn->close();
                      totalItems > 0 ? `1-${totalItems}` : '0-0';
              } else {
                  // 計算當前頁的範圍
-                 const start = (currentPage - 1) * itemsPerPage;
-                 const end = Math.min(start + itemsPerPage, totalItems);
+                 const start = (currentPage - 1) * pageSize;
+                 const end = Math.min(start + pageSize, totalItems);
                  
                  // 顯示當前頁的行
                  for (let i = start; i < end; i++) {
@@ -738,7 +752,7 @@ $conn->close();
              
              // 更新上一頁/下一頁按鈕
              document.getElementById('prevPage').disabled = currentPage === 1;
-             document.getElementById('nextPage').disabled = currentPage >= totalPages;
+             document.getElementById('nextPage').disabled = currentPage >= totalPages || totalPages <= 1;
              
              // 更新頁碼按鈕
              updatePageNumbers(totalPages);
@@ -746,65 +760,23 @@ $conn->close();
 
          function updatePageNumbers(totalPages) {
              const pageNumbers = document.getElementById('pageNumbers');
+             if (!pageNumbers) return;
+             
              pageNumbers.innerHTML = '';
              
-             if (totalPages <= 1) return;
-             
-             // 顯示最多 5 個頁碼
-             let startPage = Math.max(1, currentPage - 2);
-             let endPage = Math.min(totalPages, currentPage + 2);
-             
-             // 如果接近開頭，顯示前 5 頁
-             if (currentPage <= 3) {
-                 startPage = 1;
-                 endPage = Math.min(5, totalPages);
-             }
-             
-             // 如果接近結尾，顯示後 5 頁
-             if (currentPage >= totalPages - 2) {
-                 startPage = Math.max(1, totalPages - 4);
-                 endPage = totalPages;
-             }
-             
-             // 第一頁
-             if (startPage > 1) {
-                 const btn = document.createElement('button');
-                 btn.textContent = '1';
-                 btn.onclick = () => goToPage(1);
-                 if (currentPage === 1) btn.classList.add('active');
-                 pageNumbers.appendChild(btn);
+             // 總是顯示頁碼按鈕（即使只有1頁）
+             if (totalPages >= 1) {
+                 // 如果只有1頁，只顯示"1"
+                 // 如果有多頁，顯示所有頁碼
+                 const pagesToShow = totalPages === 1 ? [1] : Array.from({length: totalPages}, (_, i) => i + 1);
                  
-                 if (startPage > 2) {
-                     const ellipsis = document.createElement('span');
-                     ellipsis.textContent = '...';
-                     ellipsis.style.padding = '0 8px';
-                     pageNumbers.appendChild(ellipsis);
+                 for (let i of pagesToShow) {
+                     const btn = document.createElement('button');
+                     btn.textContent = i;
+                     btn.onclick = () => goToPage(i);
+                     if (i === currentPage) btn.classList.add('active');
+                     pageNumbers.appendChild(btn);
                  }
-             }
-             
-             // 中間頁碼
-             for (let i = startPage; i <= endPage; i++) {
-                 const btn = document.createElement('button');
-                 btn.textContent = i;
-                 btn.onclick = () => goToPage(i);
-                 if (i === currentPage) btn.classList.add('active');
-                 pageNumbers.appendChild(btn);
-             }
-             
-             // 最後一頁
-             if (endPage < totalPages) {
-                 if (endPage < totalPages - 1) {
-                     const ellipsis = document.createElement('span');
-                     ellipsis.textContent = '...';
-                     ellipsis.style.padding = '0 8px';
-                     pageNumbers.appendChild(ellipsis);
-                 }
-                 
-                 const btn = document.createElement('button');
-                 btn.textContent = totalPages;
-                 btn.onclick = () => goToPage(totalPages);
-                 if (currentPage === totalPages) btn.classList.add('active');
-                 pageNumbers.appendChild(btn);
              }
          }
 
