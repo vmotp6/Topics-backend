@@ -116,6 +116,14 @@ $is_teacher = ($user_role === 'TEA'); // 科助：首頁、就讀意願名單、
                     <span>國中招生申請名單</span>
                 </a>
             <?php endif; ?>
+            
+            <!-- 聯絡人與群組管理 - 僅管理員 -->
+            <?php if ($is_admin): ?>
+                <a href="chat_B.php" class="menu-item <?php echo $current_page === 'chat_B' ? 'active' : ''; ?>">
+                    <i class="fas fa-users-cog"></i>
+                    <span>聯絡人與群組管理</span>
+                </a>
+            <?php endif; ?>
 
         <?php endif; // 結束主選單的判斷 ?>
 

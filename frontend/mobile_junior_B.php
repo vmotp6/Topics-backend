@@ -1324,7 +1324,7 @@ try {
         // 更新按鈕狀態
         const prevBtn = document.getElementById('prevPage');
         const nextBtn = document.getElementById('nextPage');
-        if (prevBtn) prevBtn.disabled = currentPage === 1 || totalPages <= 1;
+        if (prevBtn) prevBtn.disabled = currentPage === 1;
         if (nextBtn) nextBtn.disabled = currentPage >= totalPages || totalPages <= 1;
         
         // 更新頁碼 - 先清空所有按鈕
@@ -1332,17 +1332,13 @@ try {
         if (pageNumbers) {
             pageNumbers.innerHTML = '';
             
-            // 如果只有一頁或沒有資料，不顯示頁碼按鈕
-            if (totalPages > 1) {
-                const maxPagesToShow = 5;
-                let startPage = Math.max(1, currentPage - Math.floor(maxPagesToShow / 2));
-                let endPage = Math.min(totalPages, startPage + maxPagesToShow - 1);
+            // 總是顯示頁碼按鈕（即使只有1頁）
+            if (totalPages >= 1) {
+                // 如果只有1頁，只顯示"1"
+                // 如果有多頁，顯示所有頁碼
+                const pagesToShow = totalPages === 1 ? [1] : Array.from({length: totalPages}, (_, i) => i + 1);
                 
-                if (endPage - startPage < maxPagesToShow - 1) {
-                    startPage = Math.max(1, endPage - maxPagesToShow + 1);
-                }
-                
-                for (let i = startPage; i <= endPage; i++) {
+                for (let i of pagesToShow) {
                     const button = document.createElement('button');
                     button.textContent = i;
                     button.className = i === currentPage ? 'active' : '';
