@@ -131,6 +131,75 @@ if ($selected_teacher_id > 0) {
         $records_result = $records_stmt->get_result();
         if ($records_result) {
             $selected_teacher_records = $records_result->fetch_all(MYSQLI_ASSOC);
+            
+            // 為每個活動紀錄讀取參與對象和活動回饋
+            foreach ($selected_teacher_records as &$record) {
+                $activity_id = $record['id'];
+                
+                // 讀取參與對象（從 activity_participants 表 JOIN identity_options 表）
+                $participants = [];
+                $participants_sql = "SELECT io.name 
+                                    FROM activity_participants ap
+                                    LEFT JOIN identity_options io ON ap.participants = io.code
+                                    WHERE ap.activity_id = ?
+                                    ORDER BY ap.participants";
+                $participants_stmt = $conn->prepare($participants_sql);
+                if ($participants_stmt) {
+                    $participants_stmt->bind_param("i", $activity_id);
+                    $participants_stmt->execute();
+                    $participants_result = $participants_stmt->get_result();
+                    while ($p_row = $participants_result->fetch_assoc()) {
+                        if (!empty($p_row['name'])) {
+                            $participants[] = $p_row['name'];
+                        }
+                    }
+                    $participants_stmt->close();
+                }
+                $record['participants'] = $participants;
+                $record['participants_display'] = implode(', ', $participants);
+                // 如果有 participants_other_text，也加入顯示
+                if (!empty($record['participants_other_text'])) {
+                    $record['participants_display'] .= (empty($record['participants_display']) ? '' : ', ') . '其他: ' . $record['participants_other_text'];
+                }
+                
+                // 讀取活動回饋（從 activity_feedback 表 JOIN activity_feedback_options 表）
+                $feedback = [];
+                $feedback_sql = "SELECT afo.option 
+                                FROM activity_feedback af
+                                LEFT JOIN activity_feedback_options afo ON af.option_id = afo.id
+                                WHERE af.activity_id = ?
+                                ORDER BY af.option_id";
+                $feedback_stmt = $conn->prepare($feedback_sql);
+                if ($feedback_stmt) {
+                    $feedback_stmt->bind_param("i", $activity_id);
+                    $feedback_stmt->execute();
+                    $feedback_result = $feedback_stmt->get_result();
+                    $has_other_option = false;
+                    while ($f_row = $feedback_result->fetch_assoc()) {
+                        if (!empty($f_row['option'])) {
+                            $feedback[] = $f_row['option'];
+                            if ($f_row['option'] === '其他') {
+                                $has_other_option = true;
+                            }
+                        }
+                    }
+                    $feedback_stmt->close();
+                }
+                $record['feedback'] = $feedback;
+                $record['feedback_display'] = implode(', ', $feedback);
+                // 如果有 feedback_other_text，加入顯示
+                // 如果選擇了「其他」選項，直接附加文字；如果沒選擇「其他」選項，也顯示「其他: xxx」
+                if (!empty($record['feedback_other_text'])) {
+                    if ($has_other_option) {
+                        // 有選擇「其他」選項，直接附加文字
+                        $record['feedback_display'] .= (empty($record['feedback_display']) ? '' : ', ') . $record['feedback_other_text'];
+                    } else {
+                        // 沒選擇「其他」選項，但有其他文字，顯示「其他: xxx」
+                        $record['feedback_display'] .= (empty($record['feedback_display']) ? '' : ', ') . '其他: ' . $record['feedback_other_text'];
+                    }
+                }
+            }
+            unset($record); // 取消引用
         }
         $records_stmt->close();
     }
@@ -387,6 +456,7 @@ $page_title = $department_name . ' - 教師活動紀錄';
     <script>
         let currentOpenTeacherId = null;
         let loadedTeachers = new Set();
+        let currentOpenRecordId = null; // 追蹤當前打開的活動紀錄詳情
         
         // 切換教師活動紀錄的展開/收合
         function toggleTeacherRecords(teacherId) {
@@ -533,14 +603,58 @@ $page_title = $department_name . ' - 教師活動紀錄';
                 if (record.contact_phone) {
                     html += '<tr><td>聯絡電話</td><td>' + escapeHtml(record.contact_phone) + '</td></tr>';
                 }
-                if (record.participants_other_text) {
-                    html += '<tr><td>參與對象</td><td>' + escapeHtml(record.participants_other_text) + '</td></tr>';
+                // 顯示參與對象（從 activity_participants 表讀取的完整資料）
+                if (record.participants_display || record.participants_other_text) {
+                    var participantsText = record.participants_display || '';
+                    if (!participantsText && record.participants_other_text) {
+                        participantsText = '其他: ' + record.participants_other_text;
+                    }
+                    if (participantsText) {
+                        html += '<tr><td>參與對象</td><td>' + escapeHtml(participantsText) + '</td></tr>';
+                    }
                 }
-                if (record.feedback_other_text) {
-                    html += '<tr><td>活動回饋</td><td>' + escapeHtml(record.feedback_other_text) + '</td></tr>';
+                // 顯示活動回饋（從 activity_feedback 表讀取的完整資料）
+                // feedback_display 已經包含了從 activity_feedback 表讀取的選項和 feedback_other_text
+                if (record.feedback_display) {
+                    html += '<tr><td>活動回饋</td><td>' + escapeHtml(record.feedback_display) + '</td></tr>';
+                } else if (record.feedback_other_text) {
+                    // 如果沒有選項但有其他文字，也顯示
+                    html += '<tr><td>活動回饋</td><td>其他: ' + escapeHtml(record.feedback_other_text) + '</td></tr>';
                 }
                 if (record.suggestion) {
                     html += '<tr><td>建議事項</td><td>' + escapeHtml(record.suggestion) + '</td></tr>';
+                }
+                // 顯示佐證資料（uploaded_files）
+                if (record.uploaded_files) {
+                    try {
+                        var files = [];
+                        if (typeof record.uploaded_files === 'string') {
+                            // 如果是字符串，嘗試解析 JSON
+                            files = JSON.parse(record.uploaded_files);
+                        } else if (Array.isArray(record.uploaded_files)) {
+                            // 如果已經是數組，直接使用
+                            files = record.uploaded_files;
+                        }
+                        
+                        if (Array.isArray(files) && files.length > 0) {
+                            var filesHtml = '';
+                            files.forEach(function(filePath) {
+                                if (filePath) {
+                                    var fileName = filePath.split('/').pop() || filePath.split('\\\\').pop() || filePath;
+                                    // 使用相對路徑指向前端目錄的文件
+                                    var fileUrl = '../../Topics-frontend/frontend/' + filePath;
+                                    filesHtml += '<a href="' + escapeHtml(fileUrl) + '" target="_blank" style="display: block; margin-bottom: 8px; color: #1890ff; text-decoration: none;">';
+                                    filesHtml += '<i class="fas fa-file"></i> ' + escapeHtml(fileName);
+                                    filesHtml += '</a>';
+                                }
+                            });
+                            if (filesHtml) {
+                                html += '<tr><td>佐證資料</td><td>' + filesHtml + '</td></tr>';
+                            }
+                        }
+                    } catch (e) {
+                        console.error('解析 uploaded_files 失敗:', e);
+                    }
                 }
                 html += '<tr><td>建立時間</td><td>' + escapeHtml(record.created_at || '未填寫') + '</td></tr>';
                 html += '</table>';
@@ -560,19 +674,10 @@ $page_title = $department_name . ' - 教師活動紀錄';
             
             if (!detailRow) return;
             
-            if (detailRow.style.display === 'none') {
-                detailRow.style.display = '';
-                if (btnText) {
-                    btnText.textContent = '關閉詳情';
-                }
-                if (detailBtn) {
-                    const icon = detailBtn.querySelector('i');
-                    if (icon) {
-                        icon.className = 'fas fa-eye-slash';
-                    }
-                }
-            } else {
+            // 如果點擊的是當前已打開的詳情，則關閉它
+            if (currentOpenRecordId === recordId) {
                 detailRow.style.display = 'none';
+                currentOpenRecordId = null;
                 if (btnText) {
                     btnText.textContent = '查看詳情';
                 }
@@ -581,6 +686,40 @@ $page_title = $department_name . ' - 教師活動紀錄';
                     if (icon) {
                         icon.className = 'fas fa-eye';
                     }
+                }
+                return;
+            }
+            
+            // 如果已經有其他詳情打開，先關閉它
+            if (currentOpenRecordId !== null) {
+                const previousDetailRow = document.getElementById('record-detail-' + currentOpenRecordId);
+                const previousDetailBtn = document.getElementById('record-detail-btn-' + currentOpenRecordId);
+                const previousBtnText = previousDetailBtn ? previousDetailBtn.querySelector('.btn-text') : null;
+                
+                if (previousDetailRow) {
+                    previousDetailRow.style.display = 'none';
+                }
+                if (previousBtnText) {
+                    previousBtnText.textContent = '查看詳情';
+                }
+                if (previousDetailBtn) {
+                    const icon = previousDetailBtn.querySelector('i');
+                    if (icon) {
+                        icon.className = 'fas fa-eye';
+                    }
+                }
+            }
+            
+            // 打開新的詳情
+            detailRow.style.display = '';
+            currentOpenRecordId = recordId;
+            if (btnText) {
+                btnText.textContent = '關閉詳情';
+            }
+            if (detailBtn) {
+                const icon = detailBtn.querySelector('i');
+                if (icon) {
+                    icon.className = 'fas fa-eye-slash';
                 }
             }
         }
