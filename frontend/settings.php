@@ -442,7 +442,7 @@ $conn->close();
                     </div>
                     <div class="form-group">
                         <label class="form-label"><span class="required-asterisk">*</span>場次日期</label>
-                        <input type="datetime-local" name="session_date" class="form-control" required>
+                        <input type="datetime-local" name="session_date" id="add_session_date" class="form-control" required>
                     </div>
                     <div class="form-row">
                         <div class="form-group">
@@ -736,6 +736,23 @@ $conn->close();
 
         function showModal(modalId) {
             document.getElementById(modalId).style.display = 'block';
+            
+            // 如果是新增場次模態框，設置日期最小值為今天
+            if (modalId === 'addSessionModal') {
+                const dateInput = document.getElementById('add_session_date');
+                if (dateInput) {
+                    // 獲取今天的日期時間，格式為 YYYY-MM-DDTHH:mm
+                    const now = new Date();
+                    const year = now.getFullYear();
+                    const month = String(now.getMonth() + 1).padStart(2, '0');
+                    const day = String(now.getDate()).padStart(2, '0');
+                    const hours = String(now.getHours()).padStart(2, '0');
+                    const minutes = String(now.getMinutes()).padStart(2, '0');
+                    const minDateTime = `${year}-${month}-${day}T${hours}:${minutes}`;
+                    dateInput.setAttribute('min', minDateTime);
+                    dateInput.value = ''; // 清空之前的值
+                }
+            }
         }
 
         function closeModal(modalId) {

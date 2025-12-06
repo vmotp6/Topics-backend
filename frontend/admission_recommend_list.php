@@ -454,10 +454,13 @@ function getEnrollmentStatusClass($status) {
             box-shadow: 0 1px 2px rgba(0,0,0,0.03);
             border: 1px solid var(--border-color);
             margin-bottom: 24px;
+            display: flex;
+            flex-direction: column;
         }
 
         .table-container {
             overflow-x: auto;
+            flex: 1;
         }
         .table {
             width: 100%;
@@ -505,71 +508,6 @@ function getEnrollmentStatusClass($status) {
             background: #fafafa;
         }
         
-        /* 分頁樣式 */
-        .pagination {
-            padding: 16px 24px;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            border-top: 1px solid var(--border-color);
-            background: #fafafa;
-        }
-
-        .pagination-info {
-            display: flex;
-            align-items: center;
-            gap: 16px;
-            color: var(--text-secondary-color);
-            font-size: 14px;
-        }
-
-        .pagination-controls {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-        }
-
-        .pagination select {
-            padding: 6px 12px;
-            border: 1px solid #d9d9d9;
-            border-radius: 6px;
-            font-size: 14px;
-            background: #fff;
-            cursor: pointer;
-        }
-
-        .pagination select:focus {
-            outline: none;
-            border-color: #1890ff;
-            box-shadow: 0 0 0 2px rgba(24,144,255,0.2);
-        }
-
-        .pagination button {
-            padding: 6px 12px;
-            border: 1px solid #d9d9d9;
-            background: #fff;
-            color: #595959;
-            border-radius: 6px;
-            cursor: pointer;
-            font-size: 14px;
-            transition: all 0.3s;
-        }
-
-        .pagination button:hover:not(:disabled) {
-            border-color: #1890ff;
-            color: #1890ff;
-        }
-
-        .pagination button:disabled {
-            opacity: 0.5;
-            cursor: not-allowed;
-        }
-
-        .pagination button.active {
-            background: #1890ff;
-            color: white;
-            border-color: #1890ff;
-        }
 
         .search-input {
             padding: 8px 12px;
@@ -807,6 +745,72 @@ function getEnrollmentStatusClass($status) {
         .btn-confirm:hover {
             background-color: #40a9ff;
         }
+        
+        /* 分頁樣式 */
+        .pagination {
+            padding: 16px 24px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-top: 1px solid var(--border-color);
+            background: #fafafa;
+        }
+
+        .pagination-info {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            color: var(--text-secondary-color);
+            font-size: 14px;
+        }
+
+        .pagination-controls {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .pagination select {
+            padding: 6px 12px;
+            border: 1px solid #d9d9d9;
+            border-radius: 6px;
+            font-size: 14px;
+            background: #fff;
+            cursor: pointer;
+        }
+
+        .pagination select:focus {
+            outline: none;
+            border-color: #1890ff;
+            box-shadow: 0 0 0 2px rgba(24,144,255,0.2);
+        }
+
+        .pagination button {
+            padding: 6px 12px;
+            border: 1px solid #d9d9d9;
+            background: #fff;
+            color: #595959;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 14px;
+            transition: all 0.3s;
+        }
+
+        .pagination button:hover:not(:disabled) {
+            border-color: #1890ff;
+            color: #1890ff;
+        }
+
+        .pagination button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .pagination button.active {
+            background: #1890ff;
+            color: white;
+            border-color: #1890ff;
+        }
     </style>
 </head>
 <body>
@@ -818,6 +822,11 @@ function getEnrollmentStatusClass($status) {
                 <div class="page-controls">
                     <div class="breadcrumb">
                         <a href="index.php">首頁</a> / <?php echo $page_title; ?>
+                        <?php if (!empty($recommendations)): ?>
+                        <span style="margin-left: 16px; color: var(--text-secondary-color); font-size: 14px;">
+                            (共 <?php echo count($recommendations); ?> 筆資料)
+                        </span>
+                        <?php endif; ?>
                     </div>
                     <div class="table-search">
                         <input type="text" id="searchInput" class="search-input" placeholder="搜尋被推薦人姓名、學校或電話...">
@@ -1128,7 +1137,22 @@ function getEnrollmentStatusClass($status) {
                                                             <tr>
                                                                 <td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">證明文件</td>
                                                                 <td style="padding: 5px; border: 1px solid #ddd;">
-                                                                    <a href="<?php echo htmlspecialchars($item['proof_evidence']); ?>" target="_blank">查看文件</a>
+                                                                    <?php 
+                                                                    // 構建文件路徑：文件存儲在前端目錄
+                                                                    // 資料庫中存儲的路徑是 uploads/proof_evidence/xxx.jpg（相對於 frontend 目錄）
+                                                                    if (!empty($item['proof_evidence'])) {
+                                                                        // 確保路徑使用正斜線（Web 標準）
+                                                                        $file_path = str_replace('\\', '/', $item['proof_evidence']);
+                                                                        // 使用絕對 URL 路徑，從網站根目錄開始
+                                                                        // 假設網站根目錄是 Topics-frontend 或 Topics-backend 的父目錄
+                                                                        $file_url = '/Topics-frontend/frontend/' . $file_path;
+                                                                        echo '<a href="' . htmlspecialchars($file_url) . '" target="_blank" style="color: #1890ff; text-decoration: none;">';
+                                                                        echo '<i class="fas fa-file-download"></i> 查看文件';
+                                                                        echo '</a>';
+                                                                    } else {
+                                                                        echo '<span style="color: #8c8c8c;">無文件</span>';
+                                                                    }
+                                                                    ?>
                                                                 </td>
                                                             </tr>
                                                             <?php endif; ?>
@@ -1247,35 +1271,109 @@ function getEnrollmentStatusClass($status) {
     <script>
     // 分頁相關變數
     let currentPage = 1;
-    let itemsPerPage = 10;
+    let itemsPerPage = 10; // 預設每頁顯示 10 筆
     let allRows = [];
     let filteredRows = [];
     
-    // 初始化分頁
-    function initPagination() {
+    // 搜索功能
+    document.addEventListener('DOMContentLoaded', function() {
+        const searchInput = document.getElementById('searchInput');
         const table = document.getElementById('recommendationTable');
-        if (!table) return;
-        
-        const tbody = table.getElementsByTagName('tbody')[0];
-        if (!tbody) return;
-        
-        allRows = Array.from(tbody.getElementsByTagName('tr')).filter(row => !row.classList.contains('detail-row'));
-        filteredRows = allRows;
-        
-        updatePagination();
-    }
+
+        if (searchInput && table) {
+            const tbody = table.getElementsByTagName('tbody')[0];
+            if (tbody) {
+                // 初始化：獲取所有行（排除詳情行和嵌套表格的行）
+                // 只獲取 tbody 的直接子 tr 元素，排除 detail-row 和嵌套表格中的行
+                const allTrElements = Array.from(tbody.getElementsByTagName('tr'));
+                
+                // 過濾：只保留主表格的資料行
+                // 1. 排除 detail-row 本身
+                // 2. 排除 detail-row 內部嵌套表格的所有行
+                allRows = allTrElements.filter(row => {
+                    // 排除詳情行本身
+                    if (row.classList.contains('detail-row')) {
+                        return false;
+                    }
+                    // 檢查是否是嵌套表格中的行
+                    // 如果父元素鏈中有 detail-row，則這是嵌套表格中的行
+                    let parent = row.parentElement;
+                    while (parent && parent !== document.body) {
+                        // 如果遇到 detail-row，說明這個 tr 在 detail-row 內部，應該排除
+                        if (parent.classList && parent.classList.contains('detail-row')) {
+                            return false;
+                        }
+                        // 如果遇到主表格的 tbody，說明這是主表格的行，保留
+                        if (parent === tbody) {
+                            return true;
+                        }
+                        parent = parent.parentElement;
+                    }
+                    // 如果沒有找到 tbody，可能是其他情況，排除
+                    return false;
+                });
+                
+                filteredRows = allRows;
+                
+                // 調試：確認行數
+                console.log('總行數（過濾後）:', allRows.length);
+                console.log('所有 tr 元素數:', allTrElements.length);
+                console.log('itemsPerPage:', itemsPerPage);
+                
+                // 確保 itemsPerPage 是數字
+                if (typeof itemsPerPage !== 'number') {
+                    itemsPerPage = 10;
+                }
+                
+                // 初始化分頁
+                updatePagination();
+            }
+            
+            searchInput.addEventListener('keyup', function() {
+                const filter = searchInput.value.toLowerCase();
+                
+                if (!tbody) return;
+                
+                // 過濾行
+                filteredRows = allRows.filter(row => {
+                    const cells = row.getElementsByTagName('td');
+                    let shouldShow = false;
+                    
+                    for (let j = 0; j < cells.length; j++) {
+                        const cellText = cells[j].textContent || cells[j].innerText;
+                        if (cellText.toLowerCase().indexOf(filter) > -1) {
+                            shouldShow = true;
+                            break;
+                        }
+                    }
+                    
+                    return shouldShow;
+                });
+                
+                // 重置到第一頁並更新分頁
+                currentPage = 1;
+                updatePagination();
+            });
+        }
+    });
     
     function changeItemsPerPage() {
-        const select = document.getElementById('itemsPerPage');
-        itemsPerPage = select.value === 'all' ? 
-                      filteredRows.length : 
-                      parseInt(select.value);
+        const selectValue = document.getElementById('itemsPerPage').value;
+        itemsPerPage = selectValue === 'all' ? 'all' : parseInt(selectValue);
         currentPage = 1;
         updatePagination();
     }
 
     function changePage(direction) {
-        const totalPages = Math.ceil(filteredRows.length / itemsPerPage);
+        const totalItems = filteredRows.length;
+        let pageSize;
+        if (itemsPerPage === 'all') {
+            pageSize = totalItems;
+        } else {
+            pageSize = typeof itemsPerPage === 'number' ? itemsPerPage : parseInt(itemsPerPage);
+        }
+        const totalPages = pageSize >= totalItems ? 1 : Math.ceil(totalItems / pageSize);
+        
         currentPage += direction;
         
         if (currentPage < 1) currentPage = 1;
@@ -1291,30 +1389,44 @@ function getEnrollmentStatusClass($status) {
 
     function updatePagination() {
         const totalItems = filteredRows.length;
-        const totalPages = itemsPerPage === 'all' ? 1 : Math.ceil(totalItems / itemsPerPage);
         
-        // 隱藏所有行（包括詳細行）
-        allRows.forEach(row => {
-            row.style.display = 'none';
-            const detailRow = row.nextElementSibling;
-            if (detailRow && detailRow.classList.contains('detail-row')) {
-                detailRow.style.display = 'none';
+        // 確保 itemsPerPage 是正確的數字或 'all'
+        let pageSize;
+        if (itemsPerPage === 'all') {
+            pageSize = totalItems;
+        } else {
+            // 確保是數字類型
+            pageSize = typeof itemsPerPage === 'number' ? itemsPerPage : parseInt(itemsPerPage);
+            // 如果解析失敗，使用預設值 10
+            if (isNaN(pageSize) || pageSize <= 0) {
+                pageSize = 10;
+                itemsPerPage = 10;
             }
-        });
+        }
         
-        if (itemsPerPage === 'all' || itemsPerPage >= totalItems) {
-            // 顯示所有過濾後的行
-            filteredRows.forEach(row => {
-                row.style.display = '';
-            });
+        const totalPages = pageSize >= totalItems ? 1 : Math.ceil(totalItems / pageSize);
+        
+        // 調試信息
+        console.log('updatePagination - totalItems:', totalItems, 'pageSize:', pageSize, 'totalPages:', totalPages, 'currentPage:', currentPage);
+        
+        // 隱藏所有行（包括詳情行）
+        allRows.forEach(row => row.style.display = 'none');
+        // 隱藏所有詳情行
+        document.querySelectorAll('.detail-row').forEach(row => row.style.display = 'none');
+        
+        if (itemsPerPage === 'all' || pageSize >= totalItems) {
+            // 顯示所有過濾後的行（總數小於等於每頁顯示數，或選擇顯示全部）
+            filteredRows.forEach(row => row.style.display = '');
             
             // 更新分頁資訊
             document.getElementById('currentRange').textContent = 
                 totalItems > 0 ? `1-${totalItems}` : '0-0';
         } else {
             // 計算當前頁的範圍
-            const start = (currentPage - 1) * itemsPerPage;
-            const end = Math.min(start + itemsPerPage, totalItems);
+            const start = (currentPage - 1) * pageSize;
+            const end = Math.min(start + pageSize, totalItems);
+            
+            console.log('顯示範圍:', start, '到', end);
             
             // 顯示當前頁的行
             for (let i = start; i < end; i++) {
@@ -1332,9 +1444,11 @@ function getEnrollmentStatusClass($status) {
         document.getElementById('pageInfo').innerHTML = 
             `顯示第 <span id="currentRange">${document.getElementById('currentRange').textContent}</span> 筆，共 ${totalItems} 筆`;
         
-        // 更新上一頁/下一頁按鈕
-        document.getElementById('prevPage').disabled = currentPage === 1;
-        document.getElementById('nextPage').disabled = currentPage >= totalPages;
+        // 更新上一頁/下一頁按鈕 - 只有一頁時禁用
+        const prevBtn = document.getElementById('prevPage');
+        const nextBtn = document.getElementById('nextPage');
+        if (prevBtn) prevBtn.disabled = (currentPage === 1) || (totalPages <= 1);
+        if (nextBtn) nextBtn.disabled = (currentPage >= totalPages) || (totalPages <= 1);
         
         // 更新頁碼按鈕
         updatePageNumbers(totalPages);
@@ -1342,6 +1456,8 @@ function getEnrollmentStatusClass($status) {
 
     function updatePageNumbers(totalPages) {
         const pageNumbers = document.getElementById('pageNumbers');
+        if (!pageNumbers) return;
+        
         pageNumbers.innerHTML = '';
         
         if (totalPages <= 1) return;
@@ -1403,39 +1519,6 @@ function getEnrollmentStatusClass($status) {
             pageNumbers.appendChild(btn);
         }
     }
-
-    document.addEventListener('DOMContentLoaded', function() {
-        const searchInput = document.getElementById('searchInput');
-        const table = document.getElementById('recommendationTable');
-
-        if (searchInput && table) {
-            searchInput.addEventListener('keyup', function() {
-                const filter = searchInput.value.toLowerCase();
-                const tbody = table.getElementsByTagName('tbody')[0];
-                
-                if (!tbody) return;
-                
-                allRows = Array.from(tbody.getElementsByTagName('tr')).filter(row => !row.classList.contains('detail-row'));
-                
-                filteredRows = allRows.filter(row => {
-                    const cells = row.getElementsByTagName('td');
-                    for (let j = 0; j < cells.length; j++) {
-                        const cellText = cells[j].textContent || cells[j].innerText;
-                        if (cellText.toLowerCase().indexOf(filter) > -1) {
-                            return true;
-                        }
-                    }
-                    return false;
-                });
-                
-                currentPage = 1;
-                updatePagination();
-            });
-        }
-        
-        // 初始化分頁
-        initPagination();
-    });
 
     let currentOpenDetailId = null;
     
