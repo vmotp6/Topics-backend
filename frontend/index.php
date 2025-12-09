@@ -90,7 +90,7 @@ try {
     // A. 統計數據查詢
     
     // 1. 待審核續招 (Continued Admission Pending)
-    $sql_pending = "SELECT COUNT(*) as cnt FROM continued_admission WHERE status = 'pending'";
+    $sql_pending = "SELECT COUNT(*) as cnt FROM continued_admission WHERE status = 'PE'";
     if ($user_department_code) {
         // 如果有科系限制，只查該科系相關的申請
         // 這裡假設 choices 欄位存 JSON，需用 LIKE 或 JSON 函數過濾
@@ -121,11 +121,11 @@ try {
     // 3. 未分配/待處理推薦 (Recommendations)
     if ($is_super_user) {
         // 管理員：看未分配部門的
-        $sql_rec = "SELECT COUNT(*) as cnt FROM admission_recommendations WHERE assigned_department IS NULL";
+        $sql_rec = "SELECT COUNT(*) as cnt FROM enrollment_intention WHERE assigned_department IS NULL";
     } elseif ($user_department_code) {
         // 主任：看已分配給自己但未分配給老師的，或是尚未處理的
         $dept = $conn->real_escape_string($user_department_code);
-        $sql_rec = "SELECT COUNT(*) as cnt FROM admission_recommendations WHERE assigned_department = '$dept' AND assigned_teacher_id IS NULL";
+        $sql_rec = "SELECT COUNT(*) as cnt FROM enrollment_intention WHERE assigned_department = '$dept' AND assigned_teacher_id IS NULL";
     } else {
         $sql_rec = "SELECT 0 as cnt";
     }
@@ -175,7 +175,7 @@ try {
     $sql_todo = "
         SELECT id, name, school, created_at, '續招審核' as type
         FROM continued_admission 
-        WHERE status = 'pending'
+        WHERE status = 'PE'
     ";
     if ($user_department_code) {
         $dept_search = "%" . $conn->real_escape_string($user_department_name) . "%";
@@ -389,7 +389,7 @@ try {
                         </div>
                     </a>
 
-                    <a href="admission_recommend_list.php" style="text-decoration: none;">
+                    <a href="enrollment_list.php" style="text-decoration: none;">
                         <div class="stat-card warning">
                             <div class="stat-icon bg-orange-light">
                                 <i class="fas fa-user-clock"></i>
@@ -478,7 +478,7 @@ try {
                                 <div class="list-item-main">
                                     <div class="list-item-title" style="color: #d48806;">有 <?php echo $stats['unassigned_recommends']; ?> 筆推薦名單未分配</div>
                                 </div>
-                                <a href="admission_recommend_list.php" class="btn-sm btn-outline" style="color: #d48806; border-color: #d48806;">前往分配</a>
+                                <a href="enrollment_list.php" class="btn-sm btn-outline" style="color: #d48806; border-color: #d48806;">前往分配</a>
                             </div>
                             <?php endif; ?>
                         </div>
