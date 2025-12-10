@@ -82,9 +82,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                 $display_order = intval($_POST['display_order'] ?? 0);
                 $is_active = isset($_POST['is_active']) ? 1 : 0;
                 
-                if (empty($title)) {
-                    throw new Exception('標題不能為空');
-                }
+                
                 
                 // 處理圖片上傳
                 $image_url = '';
@@ -119,9 +117,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                 $display_order = intval($_POST['display_order'] ?? 0);
                 $is_active = isset($_POST['is_active']) ? 1 : 0;
                 
-                if (empty($title)) {
-                    throw new Exception('標題不能為空');
-                }
                 
                 // 獲取現有的圖片 URL
                 $stmt_get = $conn->prepare("SELECT image_url FROM carousel_items WHERE id = ?");
@@ -544,7 +539,7 @@ $conn->close();
                 <div class="modal-body">
                     <div class="form-group">
                         <label class="form-label"><span class="required-asterisk">*</span>標題</label>
-                        <input type="text" name="title" class="form-control" required placeholder="請輸入輪播標題...">
+                        <input type="text" name="title" class="form-control" ">
                     </div>
                     <div class="form-group">
                         <label class="form-label">描述</label>
@@ -606,8 +601,8 @@ $conn->close();
                 <input type="hidden" name="carousel_id" id="edit_carousel_id">
                 <div class="modal-body">
                     <div class="form-group">
-                        <label class="form-label"><span class="required-asterisk">*</span>標題</label>
-                        <input type="text" name="title" id="edit_title" class="form-control" required>
+                        <label class="form-label">標題</label>
+                        <input type="text" name="title" id="edit_title" class="form-control" >
                     </div>
                     <div class="form-group">
                         <label class="form-label">描述</label>
