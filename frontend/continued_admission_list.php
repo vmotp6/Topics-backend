@@ -685,7 +685,11 @@ function getStatusClass($status) {
                         <div class="card-body" id="quotaManagementContent">
                             <?php if (!empty($department_stats)): ?>
                                 <div class="quota-grid">
-                                    <?php foreach ($department_stats as $name => $stats): ?>
+                                    <?php foreach ($department_stats as $name => $stats):
+                                        if ($name == 'AA'){
+                                            continue;
+                                        }
+                                         ?>
                                     <div class="quota-card">
                                         <div class="quota-header">
                                             <h4><?php echo htmlspecialchars($stats['name']); ?></h4>
