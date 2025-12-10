@@ -73,33 +73,73 @@ if (!$conn) {
     die('資料庫連接失敗');
 }
 
-// 查詢科系列表及其活動紀錄總數
-$departments_with_records = [];
+// 獲取搜尋參數
+$search_keyword = $_GET['keyword'] ?? '';
+$page = max(1, intval($_GET['page'] ?? 1));
+$per_page = 20;
+
+// 構建查詢條件
+$where_conditions = [];
+$params = [];
+$param_types = '';
+
+if (!empty($search_keyword)) {
+    $where_conditions[] = "(d.name LIKE ? OR d.code LIKE ?)";
+    $keyword_param = "%{$search_keyword}%";
+    $params[] = $keyword_param;
+    $params[] = $keyword_param;
+    $param_types .= 'ss';
+}
 
 // 如果是主任，只查詢該科系
 if ($is_director && !empty($user_department_code)) {
-    $dept_sql = "SELECT d.code, d.name, COUNT(ar.id) AS total_records
-                 FROM departments d
-                 LEFT JOIN teacher t ON d.code = t.department
-                 LEFT JOIN activity_records ar ON t.user_id = ar.teacher_id
-                 WHERE d.code = ?
-                 GROUP BY d.code, d.name
-                 ORDER BY total_records DESC, d.name ASC";
-    $stmt = $conn->prepare($dept_sql);
-    $stmt->bind_param("s", $user_department_code);
-} else {
-    // 學校行政和管理員：查詢所有科系
-    $dept_sql = "SELECT d.code, d.name, COUNT(ar.id) AS total_records
-                 FROM departments d
-                 LEFT JOIN teacher t ON d.code = t.department
-                 LEFT JOIN activity_records ar ON t.user_id = ar.teacher_id
-                 GROUP BY d.code, d.name
-                 ORDER BY total_records DESC, d.name ASC";
-    $stmt = $conn->prepare($dept_sql);
+    $where_conditions[] = "d.code = ?";
+    $params[] = $user_department_code;
+    $param_types .= 's';
 }
 
+$where_clause = !empty($where_conditions) ? 'WHERE ' . implode(' AND ', $where_conditions) : '';
+
+// 獲取總數
+$count_params = $params;
+$count_param_types = $param_types;
+$count_sql = "SELECT COUNT(*) as total FROM departments d 
+              LEFT JOIN teacher t ON d.code = t.department
+              LEFT JOIN activity_records ar ON t.user_id = ar.teacher_id
+              $where_clause";
+$count_stmt = $conn->prepare($count_sql);
+if (!empty($count_params)) {
+    $count_stmt->bind_param($count_param_types, ...$count_params);
+}
+$count_stmt->execute();
+$total_result = $count_stmt->get_result();
+$total_departments = $total_result->fetch_assoc()['total'] ?? 0;
+$total_pages = ceil($total_departments / $per_page);
+
+// 獲取科系列表及其活動紀錄總數
+$offset = ($page - 1) * $per_page;
+$dept_sql = "SELECT d.code, d.name, COUNT(ar.id) AS total_records
+             FROM departments d
+             LEFT JOIN teacher t ON d.code = t.department
+             LEFT JOIN activity_records ar ON t.user_id = ar.teacher_id
+             $where_clause
+             GROUP BY d.code, d.name
+             ORDER BY total_records DESC, d.name ASC
+             LIMIT ? OFFSET ?";
+
+// 為列表查詢添加 LIMIT 和 OFFSET 參數
+$list_params = $params;
+$list_params[] = $per_page;
+$list_params[] = $offset;
+$list_param_types = $param_types . 'ii';
+
+$stmt = $conn->prepare($dept_sql);
+if (!empty($list_param_types)) {
+    $stmt->bind_param($list_param_types, ...$list_params);
+}
 $stmt->execute();
 $result = $stmt->get_result();
+$departments_with_records = [];
 if ($result) {
     $departments_with_records = $result->fetch_all(MYSQLI_ASSOC);
 }
@@ -208,6 +248,48 @@ $conn->close();
         .empty-state { text-align: center; padding: 40px; color: var(--text-secondary-color); }
         .empty-state i { font-size: 48px; margin-bottom: 16px; color: #d9d9d9; }
         .empty-state h4 { margin-bottom: 8px; color: #595959; }
+
+        /* 分頁 */
+        .pagination {
+            padding: 16px 24px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-top: 1px solid var(--border-color);
+            background: #fafafa;
+        }
+
+        .pagination-info {
+            color: var(--text-secondary-color);
+            font-size: 14px;
+        }
+
+        .pagination-controls {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+        }
+
+        .pagination button {
+            padding: 6px 12px;
+            border: 1px solid #d9d9d9;
+            background: #fff;
+            color: #595959;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 14px;
+            transition: all 0.3s;
+        }
+
+        .pagination button:hover:not(:disabled) {
+            border-color: var(--primary-color);
+            color: var(--primary-color);
+        }
+
+        .pagination button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
     </style>
 </head>
 <body>
@@ -220,7 +302,7 @@ $conn->close();
                     <div class="breadcrumb">
                         <a href="index.php">首頁</a> / <?php echo $page_title; ?>
                     </div>
-                    <div class="table-search">
+                    <div style="display: flex; gap: 8px; align-items: center;">
                         <input type="text" id="searchInput" class="search-input" placeholder="搜尋科系名稱...">
                     </div>
                 </div>
@@ -262,21 +344,47 @@ $conn->close();
                             </table>
                         <?php endif; ?>
                     </div>
+
+                    <!-- 分頁 -->
+                    <?php if ($total_pages > 1): ?>
+                    <div class="pagination">
+                        <div class="pagination-info">
+                            顯示第 <?php echo ($page - 1) * $per_page + 1; ?>-<?php echo min($page * $per_page, $total_departments); ?> 筆，共 <?php echo $total_departments; ?> 筆
+                        </div>
+                        <div class="pagination-controls">
+                            <button onclick="goToPage(<?php echo max(1, $page - 1); ?>)" <?php echo $page <= 1 ? 'disabled' : ''; ?>>
+                                <i class="fas fa-chevron-left"></i> 上一頁
+                            </button>
+                            <span style="padding: 6px 12px;">第 <?php echo $page; ?> / <?php echo $total_pages; ?> 頁</span>
+                            <button onclick="goToPage(<?php echo min($total_pages, $page + 1); ?>)" <?php echo $page >= $total_pages ? 'disabled' : ''; ?>>
+                                下一頁 <i class="fas fa-chevron-right"></i>
+                            </button>
+                        </div>
+                    </div>
+                    <?php endif; ?>
                 </div>
             </div>
         </div>
     </div>
 
     <script>
+        function goToPage(page) {
+            const url = new URL(window.location.href);
+            url.searchParams.set('page', page);
+            window.location.href = url.toString();
+        }
+
         document.addEventListener('DOMContentLoaded', function() {
             const searchInput = document.getElementById('searchInput');
-            const table = document.getElementById('departmentTable');
+            const departmentTable = document.getElementById('departmentTable');
             
-            if (searchInput && table) {
+            if (searchInput) {
                 searchInput.addEventListener('keyup', function() {
                     const filter = searchInput.value.toLowerCase();
-                    const tbody = table.getElementsByTagName('tbody')[0];
                     
+                    if (!departmentTable) return;
+                    
+                    const tbody = departmentTable.getElementsByTagName('tbody')[0];
                     if (!tbody) return;
                     
                     const rows = tbody.getElementsByTagName('tr');
