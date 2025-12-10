@@ -155,10 +155,12 @@ try {
                     sc.contact_name,
                     sc.email as contact_email,
                     sc.phone as contact_phone,
-                    sc.title as contact_title
+                    sc.title as contact_title,
+                    v.name as venue_name
                 FROM junior_school_recruitment_applications jsra
                 LEFT JOIN school_data sd ON jsra.school_code = sd.school_code
                 LEFT JOIN schools_contacts sc ON jsra.contacts_id = sc.id
+                LEFT JOIN venue v ON jsra.venue_type = v.code
                 ORDER BY jsra.$sortBy $sortOrder";
 
         $result = $conn->query($sql);
@@ -601,7 +603,7 @@ try {
                                         <td><?php echo formatDate($item['preferred_date'] ?? ''); ?></td>
                                         <td><?php echo htmlspecialchars($item['preferred_time'] ?? '未提供'); ?></td>
                                         <td><?php echo htmlspecialchars($item['expected_students'] ?? '未提供'); ?></td>
-                                        <td><?php echo htmlspecialchars($item['venue_type'] ?? '未提供'); ?></td>
+                                        <td><?php echo htmlspecialchars($item['venue_name'] ?? $item['venue_type'] ?? '未提供'); ?></td>
                                         <td>
                                             <span class="status-badge <?php echo getStatusClass($item['status'] ?? 'pending'); ?>">
                                                 <?php echo getStatusText($item['status'] ?? 'pending'); ?>
@@ -683,7 +685,7 @@ try {
                                                             </tr>
                                                             <tr>
                                                                 <td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">場地類型</td>
-                                                                <td style="padding: 5px; border: 1px solid #ddd;"><?php echo htmlspecialchars($item['venue_type'] ?? '未提供'); ?></td>
+                                                                <td style="padding: 5px; border: 1px solid #ddd;"><?php echo htmlspecialchars($item['venue_name'] ?? $item['venue_type'] ?? '未提供'); ?></td>
                                                             </tr>
                                                         </table>
                                                     </td>
