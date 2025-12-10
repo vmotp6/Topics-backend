@@ -428,6 +428,71 @@ $conn->close();
             margin-bottom: 8px;
             font-weight: 500;
         }
+    /* 分頁樣式 */
+    .pagination {
+        padding: 16px 24px;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        border-top: 1px solid #f0f0f0;
+        background: #fafafa;
+    }
+
+    .pagination-info {
+        display: flex;
+        align-items: center;
+        gap: 16px;
+        color: #8c8c8c;
+        font-size: 14px;
+    }
+
+    .pagination-controls {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+    }
+
+    .pagination select {
+        padding: 6px 12px;
+        border: 1px solid #d9d9d9;
+        border-radius: 6px;
+        font-size: 14px;
+        background: #fff;
+        cursor: pointer;
+    }
+
+    .pagination select:focus {
+        outline: none;
+        border-color: #1890ff;
+        box-shadow: 0 0 0 2px rgba(24,144,255,0.2);
+    }
+
+    .pagination button {
+        padding: 6px 12px;
+        border: 1px solid #d9d9d9;
+        background: #fff;
+        color: #595959;
+        border-radius: 6px;
+        cursor: pointer;
+        font-size: 14px;
+        transition: all 0.3s;
+    }
+
+    .pagination button:hover:not(:disabled) {
+        border-color: #1890ff;
+        color: #1890ff;
+    }
+
+    .pagination button:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+    }
+
+    .pagination button.active {
+        background: #1890ff;
+        color: white;
+        border-color: #1890ff;
+    }
     </style>
 </head>
 <body>
@@ -520,6 +585,25 @@ $conn->close();
                                 <?php endif; ?>
                             </tbody>
                         </table>
+                        <!-- 分頁控制 -->
+                    <div class="pagination" id="paginationContainer" style="display: none;">
+                        <div class="pagination-info">
+                            <span>每頁顯示：</span>
+                            <select id="itemsPerPage" onchange="changeItemsPerPage()">
+                                <option value="10" selected>10</option>
+                                <option value="20">20</option>
+                                <option value="50">50</option>
+                                <option value="100">100</option>
+                                <option value="all">全部</option>
+                            </select>
+                            <span id="pageInfo">顯示第 <span id="currentRange">1-10</span> 筆，共 0 筆</span>
+                        </div>
+                        <div class="pagination-controls">
+                            <button id="prevPage" onclick="changePage(-1)" disabled>上一頁</button>
+                            <span id="pageNumbers"></span>
+                            <button id="nextPage" onclick="changePage(1)">下一頁</button>
+                        </div>
+                    </div>
                     </div>
                 </div>
 
@@ -659,6 +743,90 @@ $conn->close();
     </div>
 
     <script>
+    let currentPage = 1;
+    let itemsPerPage = 10;
+    let allRows = [];
+    let filteredRows = [];
+
+    document.addEventListener('DOMContentLoaded', () => {
+        initPagination();
+    });
+
+    function initPagination() {
+        const table = document.getElementById('carouselTable');
+        if (!table) return;
+
+        const tbody = table.getElementsByTagName('tbody')[0];
+        if (!tbody) return;
+
+        allRows = Array.from(tbody.getElementsByTagName('tr'));
+        filteredRows = allRows;
+
+        const paginationContainer = document.getElementById('paginationContainer');
+        if (paginationContainer && allRows.length > 0) {
+            paginationContainer.style.display = 'flex';
+        }
+
+        updatePagination();
+    }
+
+    function changeItemsPerPage() {
+        const select = document.getElementById('itemsPerPage');
+        itemsPerPage = select.value === 'all' ? filteredRows.length : parseInt(select.value);
+        currentPage = 1;
+        updatePagination();
+    }
+
+    function updatePagination() {
+    const start = (currentPage - 1) * itemsPerPage;
+    const end = start + itemsPerPage;
+
+    // 顯示對應的行
+    allRows.forEach((row, index) => {
+        if (itemsPerPage === filteredRows.length || (index >= start && index < end)) {
+            row.style.display = '';
+        } else {
+            row.style.display = 'none';
+        }
+    });
+
+    // 更新頁碼範圍顯示
+    const currentRange = document.getElementById('currentRange');
+    if (currentRange) {
+        currentRange.textContent = `${Math.min(start + 1, filteredRows.length)}-${Math.min(end, filteredRows.length)}`;
+    }
+
+    // 更新上一頁/下一頁按鈕狀態
+    document.getElementById('prevPage').disabled = currentPage === 1;
+    document.getElementById('nextPage').disabled = end >= filteredRows.length;
+
+    // **生成中間的頁碼按鈕**
+    const pageNumbers = document.getElementById('pageNumbers');
+    if (pageNumbers) {
+        pageNumbers.innerHTML = '';
+        const totalPages = Math.ceil(filteredRows.length / itemsPerPage);
+
+        for (let i = 1; i <= totalPages; i++) {
+            const btn = document.createElement('button');
+            btn.textContent = i;
+            btn.className = (i === currentPage) ? 'page-btn active' : 'page-btn';
+            btn.onclick = () => {
+                currentPage = i;
+                updatePagination();
+            };
+            pageNumbers.appendChild(btn);
+        }
+    }
+}
+
+    function changePage(delta) {
+        const totalPages = Math.ceil(filteredRows.length / itemsPerPage);
+        currentPage = Math.min(Math.max(currentPage + delta, 1), totalPages);
+        updatePagination();
+    }
+
+
+
         function showModal(modalId) {
             document.getElementById(modalId).style.display = 'block';
         }
