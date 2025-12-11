@@ -103,10 +103,11 @@ if ($teacher_id > 0) {
 } else {
     // --- 教師列表視圖 ---
     $teachers_with_records = [];
-    $teachers_sql = "SELECT t.user_id, u.name AS teacher_name, t.department AS teacher_department, COUNT(ar.id) AS record_count
+    $teachers_sql = "SELECT t.user_id, u.name AS teacher_name, COALESCE(d.name, t.department) AS teacher_department, COUNT(ar.id) AS record_count
                      FROM teacher t
                      JOIN activity_records ar ON t.user_id = ar.teacher_id
                      LEFT JOIN user u ON t.user_id = u.id
+                     LEFT JOIN departments d ON t.department = d.code
                      WHERE 1=1 $department_filter
                      GROUP BY t.user_id, u.name, t.department
                      ORDER BY record_count DESC, u.name ASC";
@@ -114,10 +115,13 @@ if ($teacher_id > 0) {
 
     // 為了統計圖表，獲取所有活動記錄
     $all_activity_records = [];
-    $all_records_sql = "SELECT ar.*, u.name AS teacher_name, t.department AS teacher_department
+    $all_records_sql = "SELECT ar.*, u.name AS teacher_name, COALESCE(d.name, t.department) AS teacher_department, at.name AS activity_type_name, COALESCE(sd.name, ar.school) AS school_name
                         FROM activity_records ar
                         LEFT JOIN teacher t ON ar.teacher_id = t.user_id
+                        LEFT JOIN departments d ON t.department = d.code
                         LEFT JOIN user u ON t.user_id = u.id
+                        LEFT JOIN activity_types at ON ar.activity_type = at.ID
+                        LEFT JOIN school_data sd ON ar.school = sd.school_code
                         WHERE 1=1 $department_filter
                         ORDER BY ar.activity_date DESC, ar.id DESC";
     $all_records_result = $conn->query($all_records_sql);
@@ -1151,13 +1155,13 @@ $conn->close();
         function showActivityTypeStats() {
         console.log('showActivityTypeStats 被調用');
         
-        // 統計活動類型
+        // 統計活動類型（使用 activity_type_name 若可用）
             const typeStats = {};
             activityRecords.forEach(record => {
-                const type = record.activity_type || '未知類型';
-            if (!typeStats[type]) {
-                typeStats[type] = 0;
-            }
+                const type = record.activity_type_name || record.activity_type || '未知類型';
+                if (!typeStats[type]) {
+                    typeStats[type] = 0;
+                }
                 typeStats[type]++;
             });
         
@@ -1412,10 +1416,10 @@ $conn->close();
         function showSchoolStats() {
         console.log('showSchoolStats 被調用');
         
-        // 統計合作學校
+        // 統計合作學校（直接使用 school 欄位文字）
             const schoolStats = {};
             activityRecords.forEach(record => {
-            const schoolName = record.school_name || '未知學校';
+            const schoolName = record.school_name || record.school || '未知學校';
             if (!schoolStats[schoolName]) {
                 schoolStats[schoolName] = {
                     name: schoolName,
@@ -1907,6 +1911,7 @@ $conn->close();
     }
     
     // 顯示教師詳細活動紀錄
+// 顯示教師詳細活動紀錄
     function showTeacherActivityDetails(teacherId, teacherName) {
         console.log(`顯示教師 ${teacherName} 的詳細活動紀錄`);
         
@@ -1959,12 +1964,20 @@ $conn->close();
                                         formattedCreatedAt = `${year}/${month}/${day} ${hours}:${minutes}`;
                                     }
                                     
+                                    // [修正] 轉換活動時間代碼為中文
+                                    let activityTimeText = '未設定';
+                                    if (activity.activity_time == 1) activityTimeText = '上班日';
+                                    else if (activity.activity_time == 2) activityTimeText = '假日';
+
+                                    // [修正] 顯示活動類型名稱而非ID (如果API有傳回 activity_type_name)
+                                    let activityTypeName = activity.activity_type_name || activity.activity_type;
+                                    
                                     return `
                                         <tr style="transition: background 0.2s;" onmouseover="this.style.background='#f8f9fa'" onmouseout="this.style.background='white'">
                                             <td style="padding: 12px 15px; text-align: left; border-bottom: 1px solid #e9ecef;">${activity.activity_date}</td>
-                                            <td style="padding: 12px 15px; text-align: left; border-bottom: 1px solid #e9ecef;">${activity.school_name}</td>
-                                            <td style="padding: 12px 15px; text-align: left; border-bottom: 1px solid #e9ecef;">${activity.activity_type}</td>
-                                            <td style="padding: 12px 15px; text-align: left; border-bottom: 1px solid #e9ecef;">${activity.activity_time || '上班日'}</td>
+                                            <td style="padding: 12px 15px; text-align: left; border-bottom: 1px solid #e9ecef;">${activity.school_name || activity.school}</td>
+                                            <td style="padding: 12px 15px; text-align: left; border-bottom: 1px solid #e9ecef;">${activityTypeName}</td>
+                                            <td style="padding: 12px 15px; text-align: left; border-bottom: 1px solid #e9ecef;">${activityTimeText}</td>
                                             <td style="padding: 12px 15px; text-align: left; border-bottom: 1px solid #e9ecef;">${formattedCreatedAt}</td>
                                             <td style="padding: 12px 15px; text-align: left; border-bottom: 1px solid #e9ecef;">
                                                 <button class="btn-view" onclick='viewRecord(${JSON.stringify(activity)})'
@@ -1983,8 +1996,6 @@ $conn->close();
         `;
         
         document.getElementById('departmentTeacherListContainer').innerHTML = content;
-        
-        // 平滑滾動到詳細紀錄
         document.getElementById('departmentTeacherListContainer').scrollIntoView({ behavior: 'smooth', block: 'start' });
     }
     
@@ -4750,13 +4761,22 @@ $conn->close();
     // 查看記錄詳情
     function viewRecord(record) {
         const modalBody = document.getElementById('viewModalBody');
+        
+        // [修正] 轉換活動時間為中文
+        let activityTimeText = '未設定';
+        if (record.activity_time == 1) activityTimeText = '上班日';
+        else if (record.activity_time == 2) activityTimeText = '假日';
+
+        // [修正] 優先使用中文活動類型名稱
+        let activityTypeName = record.activity_type_name || record.activity_type || 'N/A';
+
         let content = `
             <p><strong>活動日期:</strong> ${record.activity_date || 'N/A'}</p>
             <p><strong>教師姓名:</strong> ${record.teacher_name || 'N/A'}</p>
             <p><strong>所屬系所:</strong> ${record.teacher_department || 'N/A'}</p>
             <p><strong>學校名稱:</strong> ${record.school_name || 'N/A'}</p>
-            <p><strong>活動類型:</strong> ${record.activity_type || 'N/A'}</p>
-            <p><strong>活動時間:</strong> ${record.activity_time || 'N/A'}</p>
+            <p><strong>活動類型:</strong> ${activityTypeName}</p>
+            <p><strong>活動時間:</strong> ${activityTimeText}</p>
             <p><strong>提交時間:</strong> ${new Date(record.created_at).toLocaleString()}</p>
             <hr>
             <p><strong>聯絡窗口:</strong> ${record.contact_person || '未填寫'}</p>
