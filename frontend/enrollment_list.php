@@ -122,10 +122,6 @@ if (!in_array(strtolower($sortOrder), ['asc', 'desc'])) {
 $base_select = "
     SELECT 
         ei.*, 
-        /* 新增以下兩行 */
-        ei.assigned_at,
-        ei.current_choice_order,
-        /* ---------------- */
         u.name AS teacher_name, 
         u.username AS teacher_username,
         d1.name AS intention1_name, d1.code AS intention1_code,
@@ -1043,28 +1039,6 @@ try {
                                                         <i class="fas fa-check-circle"></i> 
                                                         <?php echo getDepartmentName($item['assigned_department'], $department_data); ?>
                                                     </span>
-                                                    
-                                                    <?php if (!empty($item['current_choice_order'])): ?>
-                                                        <span style="font-size: 12px; color: #666; background: #f0f0f0; padding: 2px 6px; border-radius: 4px; margin-left: 5px;">
-                                                            第 <?php echo $item['current_choice_order']; ?> 志願
-                                                        </span>
-                                                    <?php endif; ?>
-                                                    
-                                                    <?php if (!empty($item['assigned_at'])): ?>
-                                                        <div style="font-size: 12px; color: #8c8c8c; margin-top: 4px;">
-                                                            <i class="far fa-clock"></i> 分配於: <?php echo date('m/d H:i', strtotime($item['assigned_at'])); ?>
-                                                            <?php 
-                                                                // 計算是否快超時 (例如超過 2 天顯示黃色，超過 3 天顯示紅色)
-                                                                $assigned_time = strtotime($item['assigned_at']);
-                                                                $hours_diff = (time() - $assigned_time) / 3600;
-                                                                if ($hours_diff > 72) {
-                                                                    echo '<span style="color: red; margin-left: 5px;">(已超時)</span>';
-                                                                } elseif ($hours_diff > 48) {
-                                                                    echo '<span style="color: orange; margin-left: 5px;">(即將超時)</span>';
-                                                                }
-                                                            ?>
-                                                        </div>
-                                                    <?php endif; ?>
                                                 </div>
                                             <?php else: ?>
                                                 <span style="color: #8c8c8c;">
@@ -1110,12 +1084,6 @@ try {
                                                         <i class="fas fa-check-circle"></i> 已分配 - 
                                                         <?php echo htmlspecialchars($item['teacher_name'] ?? $item['teacher_username'] ?? '未知老師'); ?>
                                                     </span>
-                                                    
-                                                    <?php if (!empty($item['assigned_at'])): ?>
-                                                        <div style="font-size: 12px; color: #8c8c8c; margin-top: 4px;">
-                                                            <i class="far fa-clock"></i> <?php echo date('m/d H:i', strtotime($item['assigned_at'])); ?> 分配
-                                                        </div>
-                                                    <?php endif; ?>
                                                 </div>
                                             <?php else: ?>
                                                 <div style="line-height: 1.4;">
@@ -1125,12 +1093,6 @@ try {
                                                     <?php if ($is_assigned_to_me): ?>
                                                         <div style="font-size: 12px; color: #e6a23c; margin-top: 4px;">
                                                             (目前在您名下，請指派老師)
-                                                        </div>
-                                                    <?php endif; ?>
-                                                    
-                                                    <?php if (!empty($item['assigned_at'])): ?>
-                                                        <div style="font-size: 12px; color: #8c8c8c; margin-top: 4px;">
-                                                            <i class="far fa-clock"></i> 接單於: <?php echo date('m/d H:i', strtotime($item['assigned_at'])); ?>
                                                         </div>
                                                     <?php endif; ?>
                                                 </div>
