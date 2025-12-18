@@ -35,9 +35,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         if ($video) {
             // 刪除影片文件
             if (!empty($video['video_url'])) {
-                $video_path = parse_url($video['video_url'], PHP_URL_PATH);
-                // 注意：這裡假設 DOCUMENT_ROOT 配置正確，若路徑有誤需根據實際環境調整
-                $video_file = $_SERVER['DOCUMENT_ROOT'] . $video_path;
+                $backend_frontend = dirname(__FILE__);
+                $backend_dir = dirname($backend_frontend);
+                $topics_root = dirname($backend_dir);
+                $frontend_root = $topics_root . DIRECTORY_SEPARATOR . 'Topics-frontend' . DIRECTORY_SEPARATOR . 'frontend';
+                $video_file = $frontend_root . DIRECTORY_SEPARATOR . str_replace('/', DIRECTORY_SEPARATOR, $video['video_url']);
                 if (file_exists($video_file)) {
                     @unlink($video_file);
                 }
@@ -45,8 +47,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             
             // 刪除縮圖文件
             if (!empty($video['thumbnail_url'])) {
-                $thumb_path = parse_url($video['thumbnail_url'], PHP_URL_PATH);
-                $thumb_file = $_SERVER['DOCUMENT_ROOT'] . $thumb_path;
+                $backend_frontend = dirname(__FILE__);
+                $backend_dir = dirname($backend_frontend);
+                $topics_root = dirname($backend_dir);
+                $frontend_root = $topics_root . DIRECTORY_SEPARATOR . 'Topics-frontend' . DIRECTORY_SEPARATOR . 'frontend';
+                $thumb_file = $frontend_root . DIRECTORY_SEPARATOR . str_replace('/', DIRECTORY_SEPARATOR, $video['thumbnail_url']);
                 if (file_exists($thumb_file)) {
                     @unlink($thumb_file);
                 }
@@ -470,7 +475,7 @@ $conn->close();
                                         <tr>
                                             <td>
                                                 <?php if (!empty($video['thumbnail_url'])): ?>
-                                                    <img src="<?php echo htmlspecialchars($video['thumbnail_url']); ?>" alt="縮圖" class="thumbnail-preview">
+                                                    <img src="../../Topics-frontend/frontend/<?php echo htmlspecialchars($video['thumbnail_url']); ?>" alt="縮圖" class="thumbnail-preview">
                                                 <?php else: ?>
                                                     <div class="thumbnail-preview" style="display: flex; align-items: center; justify-content: center; background: #eee; color: #999;">
                                                         <i class="fas fa-image"></i>

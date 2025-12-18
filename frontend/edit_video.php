@@ -46,15 +46,18 @@ if ($video_id > 0) {
     }
 }
 
-// === 設定上傳路徑 (修正為相對專案路徑) ===
-// 實體路徑：指向上層目錄的 uploads 資料夾 (例如: D:\Topics\Topics-backend\uploads\)
-$fs_root = dirname(__DIR__); 
-$upload_dir = $fs_root . '/uploads/videos/';
-$thumb_dir = $fs_root . '/uploads/thumbnails/';
+// === 設定上傳路徑 (改為指向 Topics-frontend\frontend\uploads\vid) ===
+// 使用絕對路徑確保正確：从 Topics-backend/frontend 回到 Topics，然後進入 Topics-frontend/frontend/uploads/vid
+$backend_frontend = dirname(__FILE__);  // d:\Topics\Topics-backend\frontend
+$backend_dir = dirname($backend_frontend);  // d:\Topics\Topics-backend
+$topics_root = dirname($backend_dir);  // d:\Topics
+$frontend_root = $topics_root . DIRECTORY_SEPARATOR . 'Topics-frontend' . DIRECTORY_SEPARATOR . 'frontend';
+$upload_dir = $frontend_root . DIRECTORY_SEPARATOR . 'uploads' . DIRECTORY_SEPARATOR . 'vid' . DIRECTORY_SEPARATOR . 'videos' . DIRECTORY_SEPARATOR;
+$thumb_dir = $frontend_root . DIRECTORY_SEPARATOR . 'uploads' . DIRECTORY_SEPARATOR . 'vid' . DIRECTORY_SEPARATOR . 'thumbnails' . DIRECTORY_SEPARATOR;
 
-// 網頁路徑：儲存在資料庫的路徑，讓瀏覽器從 frontend 資料夾往上找 (例如: ../uploads/videos/...)
-$web_upload_path = '../uploads/videos/';
-$web_thumb_path = '../uploads/thumbnails/';
+// 網頁路徑：儲存在資料庫的路徑
+$web_upload_path = 'uploads/vid/videos/';
+$web_thumb_path = 'uploads/vid/thumbnails/';
 
 // 確保上傳目錄存在
 if (!is_dir($upload_dir)) { @mkdir($upload_dir, 0755, true); }
@@ -86,11 +89,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $file_name = 'video_' . time() . '_' . rand(1000, 9999) . '.' . $file_ext;
             $file_path = $upload_dir . $file_name;
             
-            // 刪除舊文件 (支援相對路徑刪除)
+            // 刪除舊文件 (支援新路徑)
             if (!empty($video['video_url'])) {
-                $old_file = (strpos($video['video_url'], '..') === 0) ? 
-                            __DIR__ . '/' . $video['video_url'] : 
-                            $_SERVER['DOCUMENT_ROOT'] . $video['video_url'];
+                $old_file = $frontend_root . '/' . ltrim($video['video_url'], '/');
                 if (file_exists($old_file)) @unlink($old_file);
             }
             
@@ -113,9 +114,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             
             // 刪除舊文件
             if (!empty($video['thumbnail_url'])) {
-                $old_file = (strpos($video['thumbnail_url'], '..') === 0) ? 
-                            __DIR__ . '/' . $video['thumbnail_url'] : 
-                            $_SERVER['DOCUMENT_ROOT'] . $video['thumbnail_url'];
+                $old_file = $frontend_root . '/' . ltrim($video['thumbnail_url'], '/');
                 if (file_exists($old_file)) @unlink($old_file);
             }
             
