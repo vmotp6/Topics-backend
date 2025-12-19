@@ -93,11 +93,17 @@ $is_teacher = ($user_role === 'TEA'); // 科助：首頁、就讀意願名單、
                 </a>
             <?php endif; ?>
             
-            <!-- 影片管理 - 僅管理員 -->
             <?php if ($is_staff ||$is_admin): ?>
                 <a href="video_management.php" class="menu-item <?php echo $current_page === 'video_management' ? 'active' : ''; ?>">
                     <i class="fas fa-video"></i>
                     <span>影片管理</span>
+                </a>
+            <?php endif; ?>
+
+            <?php if ($is_staff ||$is_admin): ?>
+                <a href="game_management.php" class="menu-item <?php echo $current_page === 'game_management' ? 'active' : ''; ?>">
+                    <i class="fas fa-gamepad"></i>
+                    <span>遊戲管理</span>
                 </a>
             <?php endif; ?>
             
