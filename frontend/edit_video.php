@@ -46,11 +46,10 @@ if ($video_id > 0) {
     }
 }
 
-// === 設定上傳路徑 (改為指向 Topics-frontend\frontend\uploads\vid) ===
-// 使用絕對路徑確保正確：从 Topics-backend/frontend 回到 Topics，然後進入 Topics-frontend/frontend/uploads/vid
-$backend_frontend = dirname(__FILE__);  // d:\Topics\Topics-backend\frontend
-$backend_dir = dirname($backend_frontend);  // d:\Topics\Topics-backend
-$topics_root = dirname($backend_dir);  // d:\Topics
+// === 設定上傳路徑 ===
+$backend_frontend = dirname(__FILE__);
+$backend_dir = dirname($backend_frontend);
+$topics_root = dirname($backend_dir);
 $frontend_root = $topics_root . DIRECTORY_SEPARATOR . 'Topics-frontend' . DIRECTORY_SEPARATOR . 'frontend';
 $upload_dir = $frontend_root . DIRECTORY_SEPARATOR . 'uploads' . DIRECTORY_SEPARATOR . 'vid' . DIRECTORY_SEPARATOR . 'videos' . DIRECTORY_SEPARATOR;
 $thumb_dir = $frontend_root . DIRECTORY_SEPARATOR . 'uploads' . DIRECTORY_SEPARATOR . 'vid' . DIRECTORY_SEPARATOR . 'thumbnails' . DIRECTORY_SEPARATOR;
@@ -78,7 +77,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $video_url = $video['video_url'] ?? '';
         $thumbnail_url = $video['thumbnail_url'] ?? '';
         
-        // 處理影片文件上傳
+        // 1. 處理影片文件上傳
         if (isset($_FILES['video_file']) && $_FILES['video_file']['error'] === UPLOAD_ERR_OK) {
             $file = $_FILES['video_file'];
             $allowed_types = ['video/mp4', 'video/webm', 'video/ogg'];
@@ -89,7 +88,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $file_name = 'video_' . time() . '_' . rand(1000, 9999) . '.' . $file_ext;
             $file_path = $upload_dir . $file_name;
             
-            // 刪除舊文件 (支援新路徑)
+            // 刪除舊文件
             if (!empty($video['video_url'])) {
                 $old_file = $frontend_root . '/' . ltrim($video['video_url'], '/');
                 if (file_exists($old_file)) @unlink($old_file);
@@ -97,12 +96,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             
             if (!move_uploaded_file($file['tmp_name'], $file_path)) throw new Exception('影片上傳失敗，請檢查資料夾權限');
             
-            // 儲存相對路徑
             $video_url = $web_upload_path . $file_name;
         }
         
-        // 處理縮圖上傳
+        // 2. 處理縮圖 (優先順序: 手動上傳 > 自動截圖 > 舊縮圖)
         if (isset($_FILES['thumbnail_file']) && $_FILES['thumbnail_file']['error'] === UPLOAD_ERR_OK) {
+            // A. 使用者手動上傳了縮圖
             $file = $_FILES['thumbnail_file'];
             $allowed_types = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
             if (!in_array($file['type'], $allowed_types)) throw new Exception('只允許上傳 JPG, PNG, GIF, WebP 格式的圖片');
@@ -120,8 +119,34 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             
             if (!move_uploaded_file($file['tmp_name'], $file_path)) throw new Exception('縮圖上傳失敗');
             
-            // 儲存相對路徑
             $thumbnail_url = $web_thumb_path . $file_name;
+
+        } elseif (isset($_POST['auto_thumbnail']) && !empty($_POST['auto_thumbnail'])) {
+            // B. 使用者沒上傳縮圖，但有前端自動截取的畫面 (Base64)
+            $data_uri = $_POST['auto_thumbnail'];
+            
+            // 簡單驗證並分離 Base64 Header (例如: data:image/jpeg;base64,....)
+            if (preg_match('/^data:image\/(\w+);base64,/', $data_uri, $matches)) {
+                $image_type = strtolower($matches[1]); // jpg, png...
+                $base64_data = substr($data_uri, strpos($data_uri, ',') + 1);
+                $decoded_data = base64_decode($base64_data);
+                
+                if ($decoded_data !== false) {
+                    $file_ext = ($image_type == 'jpeg') ? 'jpg' : $image_type;
+                    $file_name = 'thumb_auto_' . time() . '_' . rand(1000, 9999) . '.' . $file_ext;
+                    $file_path = $thumb_dir . $file_name;
+
+                    // 刪除舊文件 (如果是換影片觸發的自動截圖，應刪除舊縮圖)
+                    if (!empty($video['thumbnail_url'])) {
+                        $old_file = $frontend_root . '/' . ltrim($video['thumbnail_url'], '/');
+                        if (file_exists($old_file)) @unlink($old_file);
+                    }
+
+                    if (file_put_contents($file_path, $decoded_data)) {
+                        $thumbnail_url = $web_thumb_path . $file_name;
+                    }
+                }
+            }
         }
         
         // 驗證是否已有影片
@@ -132,7 +157,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if ($is_edit) {
             // 更新影片
             $stmt = $conn->prepare("UPDATE videos SET title = ?, description = ?, category_id = ?, video_url = ?, thumbnail_url = ?, duration = ?, published = ? WHERE id = ?");
-            // 參數: title(s), desc(s), cat(i), url(s), thumb(s), dur(s), pub(i), id(i)
             $stmt->bind_param("ssisssii", $title, $description, $category_id, $video_url, $thumbnail_url, $duration, $published, $video_id);
             
             if ($stmt->execute()) {
@@ -151,7 +175,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         } else {
             // 新增影片
             $stmt = $conn->prepare("INSERT INTO videos (title, description, category_id, video_url, thumbnail_url, duration, published, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, NOW(), NOW())");
-            // 參數: title(s), desc(s), cat(i), url(s), thumb(s), dur(s), pub(i) => 7個參數
             $stmt->bind_param("ssisssi", $title, $description, $category_id, $video_url, $thumbnail_url, $duration, $published);
             
             if ($stmt->execute()) {
@@ -275,6 +298,8 @@ $page_title = $is_edit && $video ? '編輯影片' : '新增影片';
                 <?php endif; ?>
 
                 <form method="POST" enctype="multipart/form-data" class="form-wrapper">
+                    <input type="hidden" name="auto_thumbnail" id="auto_thumbnail">
+
                     <div class="section">
                         <div class="section-title">基本信息</div>
                         <div class="form-group">
@@ -315,7 +340,7 @@ $page_title = $is_edit && $video ? '編輯影片' : '新增影片';
                             <input type="file" id="video_file" name="video_file" class="file-input" accept="video/*" <?php echo $is_edit ? '' : 'required'; ?>>
                             <?php if (isset($video['video_url']) && !empty($video['video_url'])): ?>
                                 <div class="help-text" style="margin-top: 12px;">
-                                    ✓ 已上傳：<a href="<?php echo htmlspecialchars($video['video_url']); ?>" target="_blank"><?php echo basename($video['video_url']); ?></a>
+                                    ✓ 已上傳：<a href="../../Topics-frontend/frontend/<?php echo htmlspecialchars($video['video_url']); ?>" target="_blank"><?php echo basename($video['video_url']); ?></a>
                                 </div>
                             <?php endif; ?>
                             <div id="videoPreview" class="preview-container"></div>
@@ -323,9 +348,9 @@ $page_title = $is_edit && $video ? '編輯影片' : '新增影片';
                     </div>
 
                     <div class="section">
-                        <div class="section-title">縮圖</div>
+                        <div class="section-title">縮圖 (選填)</div>
                         <div class="form-group">
-                            <label for="thumbnail_file">上傳縮圖</label>
+                            <label for="thumbnail_file">上傳縮圖 (若未上傳，系統將自動截取影片畫面)</label>
                             <div class="upload-area" id="thumbnailUploadArea">
                                 <i class="fas fa-cloud-upload-alt"></i>
                                 <p>點擊或拖放圖片文件到此區域</p>
@@ -334,7 +359,8 @@ $page_title = $is_edit && $video ? '編輯影片' : '新增影片';
                             <input type="file" id="thumbnail_file" name="thumbnail_file" class="file-input" accept="image/*">
                             <?php if (isset($video['thumbnail_url']) && !empty($video['thumbnail_url'])): ?>
                                 <div class="preview-container">
-                                    <img src="<?php echo htmlspecialchars($video['thumbnail_url']); ?>" alt="縮圖預覽" class="preview-image">
+                                    <div style="margin-bottom:4px;font-size:12px;color:#666">目前縮圖：</div>
+                                    <img src="../../Topics-frontend/frontend/<?php echo htmlspecialchars($video['thumbnail_url']); ?>" alt="縮圖預覽" class="preview-image">
                                 </div>
                             <?php endif; ?>
                             <div id="thumbnailPreview" class="preview-container"></div>
@@ -373,6 +399,7 @@ $page_title = $is_edit && $video ? '編輯影片' : '新增影片';
         const videoInput = document.getElementById('video_file');
         const videoPreview = document.getElementById('videoPreview');
         const durationInput = document.getElementById('duration');
+        const autoThumbnailInput = document.getElementById('auto_thumbnail');
 
         setupUploadArea(videoUploadArea, videoInput, videoPreview, 'video');
 
@@ -425,22 +452,49 @@ $page_title = $is_edit && $video ? '編輯影片' : '新增影片';
                 };
                 reader.readAsDataURL(file);
             } else if (type === 'video') {
-                // 創建臨時影片元素來讀取時長
-                const tempVideo = document.createElement('video');
-                tempVideo.preload = 'metadata';
+                const objectUrl = URL.createObjectURL(file);
                 
+                // 1. 隱藏的 video 元素，用於計算時長和截圖
+                const tempVideo = document.createElement('video');
+                tempVideo.preload = 'auto'; // 確保載入數據
+                tempVideo.src = objectUrl;
+                tempVideo.muted = true;
+                
+                // 元數據載入後：獲取時長，並設定時間點以觸發 seeked
                 tempVideo.onloadedmetadata = function() {
-                    window.URL.revokeObjectURL(tempVideo.src);
                     const duration = tempVideo.duration;
                     if (isFinite(duration)) {
                         durationInput.value = formatDuration(duration);
                     }
+                    // 跳到 0.5 秒或影片的一半位置（如果影片很短），避免截到黑畫面
+                    tempVideo.currentTime = Math.min(0.5, duration > 0 ? duration / 2 : 0);
+                };
+                
+                // Seek 完成後：截圖
+                tempVideo.onseeked = function() {
+                    const canvas = document.createElement('canvas');
+                    canvas.width = tempVideo.videoWidth;
+                    canvas.height = tempVideo.videoHeight;
+                    const ctx = canvas.getContext('2d');
+                    ctx.drawImage(tempVideo, 0, 0, canvas.width, canvas.height);
+                    
+                    // 轉為 JPEG Base64
+                    const dataURL = canvas.toDataURL('image/jpeg', 0.85);
+                    
+                    // 填入隱藏欄位
+                    autoThumbnailInput.value = dataURL;
+                    
+                    // 只有當使用者「沒有」選擇手動縮圖時，才在預覽區顯示自動截圖
+                    if (!thumbnailInput.files.length) {
+                        thumbnailPreview.innerHTML = '<div style="margin-bottom:4px;font-size:12px;color:#666">（預覽）系統自動擷取的畫面：</div>';
+                        const img = document.createElement('img');
+                        img.src = dataURL;
+                        img.className = 'preview-image';
+                        thumbnailPreview.appendChild(img);
+                    }
                 };
 
-                const objectUrl = URL.createObjectURL(file);
-                tempVideo.src = objectUrl;
-
-                // 同時顯示預覽
+                // 2. 顯示給使用者看的預覽影片控件
                 const video = document.createElement('video');
                 video.src = objectUrl; 
                 video.className = 'preview-video';
