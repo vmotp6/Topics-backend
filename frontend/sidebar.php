@@ -114,6 +114,13 @@ $is_teacher = ($user_role === 'TEA'); // 科助：首頁、就讀意願名單、
                     <span>入學說明會</span>
                 </a>
             <?php endif; ?>
+
+            <?php if ($is_staff || $is_admin): ?>
+                <a href="bulletin_board.php" class="menu-item <?php echo in_array($current_page, ['bulletin_board', 'edit_bulletin']) ? 'active' : ''; ?>">
+                    <i class="fas fa-bullhorn"></i>
+                    <span>招生公告管理</span>
+                </a>
+            <?php endif; ?>
             
             <!-- 招生問答管理 - 僅學校行政和管理員 -->
             <?php if ($is_staff || $is_admin): ?>
