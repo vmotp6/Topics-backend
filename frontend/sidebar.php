@@ -3,11 +3,12 @@
 $current_page = basename($_SERVER['PHP_SELF'], '.php');
 
 // 獲取使用者角色
-$user_role = $_SESSION['role'] ?? ''; // 預期為 ADM, STA, DI, TEA, STU 等代碼
+$user_role = $_SESSION['role'] ?? ''; // 預期為 ADM, STA, DI, TEA, STAM 等代碼
 $username = $_SESSION['username'] ?? ''; // 預期為用戶名
+$user_id = $_SESSION['user_id'] ?? null; // 用戶ID，用於權限檢查
 
-// 允許登入的角色：管理員、學校行政、主任、科助
-$allowed_roles = ['ADM', 'STA', 'DI', 'TEA'];
+// 允許登入的角色：管理員、學校行政、主任、科助、招生中心組員
+$allowed_roles = ['ADM', 'STA', 'DI', 'TEA', 'STAM'];
 $can_access = in_array($user_role, $allowed_roles);
 
 // 權限判斷
@@ -15,6 +16,51 @@ $is_admin = ($user_role === 'ADM'); // 管理員：全部都可以
 $is_staff = ($user_role === 'STA'); // 學校行政：首頁、就讀意願名單(全)、續招(全)、招生推薦、統計分析、入學說明會、學校聯絡人
 $is_director = ($user_role === 'DI'); // 主任：首頁、就讀意願名單、續招(不能管理名單)、統計分析
 $is_teacher = ($user_role === 'TEA'); // 科助：首頁、就讀意願名單、續招(不能管理名單)、統計分析
+$is_stam = ($user_role === 'STAM'); // 招生中心組員：根據分配的權限顯示
+
+// 如果是STAM角色，獲取其分配的權限
+$stam_permissions = [];
+if ($is_stam) {
+    // 如果user_id不在session中，嘗試從username獲取
+    if (!$user_id && $username) {
+        require_once '../../Topics-frontend/frontend/config.php';
+        $conn = getDatabaseConnection();
+        $user_stmt = $conn->prepare("SELECT id FROM user WHERE username = ? AND role = 'STAM'");
+        $user_stmt->bind_param("s", $username);
+        $user_stmt->execute();
+        $user_result = $user_stmt->get_result();
+        if ($user_row = $user_result->fetch_assoc()) {
+            $user_id = $user_row['id'];
+        }
+        $user_stmt->close();
+        $conn->close();
+    }
+    
+    // 如果有user_id，獲取權限
+    if ($user_id) {
+        require_once '../../Topics-frontend/frontend/config.php';
+        $conn = getDatabaseConnection();
+        $perm_stmt = $conn->prepare("SELECT permission_code FROM staff_member_permissions WHERE user_id = ?");
+        $perm_stmt->bind_param("i", $user_id);
+        $perm_stmt->execute();
+        $perm_result = $perm_stmt->get_result();
+        while ($row = $perm_result->fetch_assoc()) {
+            $stam_permissions[] = $row['permission_code'];
+        }
+        $perm_stmt->close();
+        $conn->close();
+    }
+}
+
+// 權限檢查函數（用於STAM角色）
+function hasPermission($permission_code, $user_role, $stam_permissions) {
+    if ($user_role === 'ADM') return true; // 管理員擁有所有權限
+    if ($user_role === 'STAM') {
+        return in_array($permission_code, $stam_permissions);
+    }
+    // 其他角色根據原有邏輯判斷
+    return false;
+}
 // -------------------------------------------------------------
 ?>
 
@@ -29,11 +75,13 @@ $is_teacher = ($user_role === 'TEA'); // 科助：首頁、就讀意願名單、
     <div class="sidebar-menu">
         <?php if ($can_access): // 允許登入的角色顯示主選單 ?>
             
-            <!-- 首頁 - 所有角色都可以看到 -->
-            <a href="index.php" class="menu-item <?php echo $current_page === 'index' ? 'active' : ''; ?>">
-                <i class="fas fa-home"></i>
-                <span>首頁</span>
-            </a>
+            <!-- 首頁 - 所有角色都可以看到，但STAM用戶不顯示 -->
+            <?php if (!$is_stam): ?>
+                <a href="index.php" class="menu-item <?php echo $current_page === 'index' ? 'active' : ''; ?>">
+                    <i class="fas fa-home"></i>
+                    <span>首頁</span>
+                </a>
+            <?php endif; ?>
             
             <!-- 使用者管理 - 僅管理員 -->
             <?php if ($is_admin): ?>
@@ -43,34 +91,40 @@ $is_teacher = ($user_role === 'TEA'); // 科助：首頁、就讀意願名單、
                 </a>
             <?php endif; ?>
 
-            <!-- 就讀意願名單 - 所有角色都可以看到 -->
-            <a href="enrollment_list.php" class="menu-item <?php echo $current_page === 'enrollment_list' ? 'active' : ''; ?>">
-                <i class="fas fa-file-signature"></i>
-                <span>就讀意願名單</span>
-            </a>
+            <!-- 就讀意願名單 - 所有角色都可以看到，STAM需要權限 -->
+            <?php if (!$is_stam || hasPermission('enrollment_list', $user_role, $stam_permissions)): ?>
+                <a href="enrollment_list.php" class="menu-item <?php echo $current_page === 'enrollment_list' ? 'active' : ''; ?>">
+                    <i class="fas fa-file-signature"></i>
+                    <span>就讀意願名單</span>
+                </a>
+            <?php endif; ?>
 
-            <!-- 續招 - 所有角色都可以看到（但權限不同） -->
-            <a href="continued_admission_list.php" class="menu-item <?php echo in_array($current_page, ['continued_admission_list', 'continued_admission_detail']) ? 'active' : ''; ?>">
-                <i class="fas fa-user-plus"></i>
-                <span>續招</span>
-            </a>
+            <!-- 續招 - 所有角色都可以看到（但權限不同），STAM需要權限 -->
+            <?php if (!$is_stam || hasPermission('continued_admission_list', $user_role, $stam_permissions)): ?>
+                <a href="continued_admission_list.php" class="menu-item <?php echo in_array($current_page, ['continued_admission_list', 'continued_admission_detail']) ? 'active' : ''; ?>">
+                    <i class="fas fa-user-plus"></i>
+                    <span>續招</span>
+                </a>
+            <?php endif; ?>
 
-            <!-- 招生推薦 - 僅學校行政和管理員 -->
-            <?php if ($is_staff || $is_admin || $is_director): ?>
+            <!-- 招生推薦 - 僅學校行政和管理員，STAM需要權限 -->
+            <?php if (($is_staff || $is_admin || $is_director) || ($is_stam && hasPermission('admission_recommend_list', $user_role, $stam_permissions))): ?>
                 <a href="admission_recommend_list.php" class="menu-item <?php echo $current_page === 'admission_recommend_list' ? 'active' : ''; ?>">
                     <i class="fas fa-user-friends"></i>
                     <span>招生推薦</span>
                 </a>
             <?php endif; ?>
             
-            <!-- 統計分析 - 所有角色都可以看到 -->
-            <a href="activity_records.php" class="menu-item <?php echo $current_page === 'activity_records' ? 'active' : ''; ?>">
-                <i class="fas fa-tasks"></i>
-                <span>統計分析</span>
-            </a>
+            <!-- 統計分析 - 所有角色都可以看到，STAM需要權限 -->
+            <?php if (!$is_stam || hasPermission('activity_records', $user_role, $stam_permissions)): ?>
+                <a href="activity_records.php" class="menu-item <?php echo $current_page === 'activity_records' ? 'active' : ''; ?>">
+                    <i class="fas fa-tasks"></i>
+                    <span>統計分析</span>
+                </a>
+            <?php endif; ?>
             
-            <!-- 教師活動紀錄 - 學校行政和主任可以看到 -->
-            <?php if ($is_staff || $is_admin || $is_director): ?>
+            <!-- 教師活動紀錄 - 學校行政和主任可以看到，STAM需要權限 -->
+            <?php if (($is_staff || $is_admin || $is_director) || ($is_stam && hasPermission('teacher_activity_records', $user_role, $stam_permissions))): ?>
                 <a href="teacher_activity_records.php" class="menu-item <?php echo $current_page === 'teacher_activity_records' ? 'active' : ''; ?>">
                     <i class="fas fa-clipboard-list"></i>
                     <span>教師活動紀錄</span>
@@ -107,8 +161,8 @@ $is_teacher = ($user_role === 'TEA'); // 科助：首頁、就讀意願名單、
                 </a>
             <?php endif; ?>
             
-            <!-- 入學說明會 - 僅學校行政和管理員 -->
-            <?php if ($is_staff || $is_admin): ?>
+            <!-- 入學說明會 - 僅學校行政和管理員，STAM需要權限 -->
+            <?php if (($is_staff || $is_admin) || ($is_stam && hasPermission('settings', $user_role, $stam_permissions))): ?>
                 <a href="settings.php" class="menu-item <?php echo $current_page === 'settings' ? 'active' : ''; ?>">
                     <i class="fas fa-cogs"></i>
                     <span>入學說明會</span>
@@ -138,8 +192,16 @@ $is_teacher = ($user_role === 'TEA'); // 科助：首頁、就讀意願名單、
                 </a>
             <?php endif; ?>
             
-            <!-- 國中招生申請名單 - 僅學校行政和管理員 -->
+            <!-- 權限管理 - 僅學校行政和管理員 -->
             <?php if ($is_staff || $is_admin): ?>
+                <a href="permission_management.php" class="menu-item <?php echo $current_page === 'permission_management' ? 'active' : ''; ?>">
+                    <i class="fas fa-key"></i>
+                    <span>權限管理</span>
+                </a>
+            <?php endif; ?>
+            
+            <!-- 國中招生申請名單 - 僅學校行政和管理員，STAM需要權限 -->
+            <?php if (($is_staff || $is_admin) || ($is_stam && hasPermission('mobile_junior_B', $user_role, $stam_permissions))): ?>
                 <a href="mobile_junior_B.php" class="menu-item <?php echo $current_page === 'mobile_junior_B' ? 'active' : ''; ?>">
                     <i class="fas fa-school"></i>
                     <span>國中招生申請名單</span>
@@ -154,10 +216,13 @@ $is_teacher = ($user_role === 'TEA'); // 科助：首頁、就讀意願名單、
                 </a>
             <?php endif; ?>
 
-            <a href="page_management.php" class="menu-item <?php echo $current_page === 'page_management' ? 'active' : ''; ?>">
-                <i class="fas fa-file-alt"></i>
-                <span>頁面管理</span>
-            </a>
+            <!-- 頁面管理 - STAM用戶不顯示 -->
+            <?php if (!$is_stam): ?>
+                <a href="page_management.php" class="menu-item <?php echo $current_page === 'page_management' ? 'active' : ''; ?>">
+                    <i class="fas fa-file-alt"></i>
+                    <span>頁面管理</span>
+                </a>
+            <?php endif; ?>
         <?php endif; // 結束主選單的判斷 ?>
 
         <a href="logout.php" class="menu-item">
