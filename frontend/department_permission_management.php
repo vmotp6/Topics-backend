@@ -7,11 +7,42 @@ if (!isset($_SESSION['admin_logged_in']) || !$_SESSION['admin_logged_in']) {
     exit;
 }
 
-// 檢查角色權限 - 僅允許管理員和學校行政訪問
+// 檢查角色權限 - 僅允許資管科主任(IM)訪問
+// 資管科主任可能是role=IM，也可能是role=DI且部門代碼=IM
 $user_role = $_SESSION['role'] ?? '';
-$allowed_roles = ['ADM', 'STA', '管理員', '行政人員'];
+$user_id = $_SESSION['user_id'] ?? null;
+$is_im_director = false;
 
-if (!in_array($user_role, $allowed_roles)) {
+// 檢查是否為資管科主任
+if ($user_role === 'IM' || $user_role === '資管科主任') {
+    $is_im_director = true;
+} elseif ($user_role === 'DI' && $user_id) {
+    // 如果role是DI，檢查部門代碼是否為IM
+    require_once '../../Topics-frontend/frontend/config.php';
+    $conn_check = getDatabaseConnection();
+    try {
+        $table_check = $conn_check->query("SHOW TABLES LIKE 'director'");
+        if ($table_check && $table_check->num_rows > 0) {
+            $stmt_dept = $conn_check->prepare("SELECT department FROM director WHERE user_id = ?");
+        } else {
+            $stmt_dept = $conn_check->prepare("SELECT department FROM teacher WHERE user_id = ?");
+        }
+        $stmt_dept->bind_param("i", $user_id);
+        $stmt_dept->execute();
+        $result_dept = $stmt_dept->get_result();
+        if ($row = $result_dept->fetch_assoc()) {
+            if ($row['department'] === 'IM') {
+                $is_im_director = true;
+            }
+        }
+        $stmt_dept->close();
+    } catch (Exception $e) {
+        error_log('Error checking IM director in department_permission_management: ' . $e->getMessage());
+    }
+    $conn_check->close();
+}
+
+if (!$is_im_director) {
     header("Location: index.php");
     exit;
 }
@@ -20,60 +51,77 @@ if (!in_array($user_role, $allowed_roles)) {
 require_once '../../Topics-frontend/frontend/config.php';
 
 // 設置頁面標題
-$page_title = '權限管理';
+$page_title = '科助權限管理';
 
 // 建立資料庫連接
 $conn = getDatabaseConnection();
 
-// 確保STAM角色存在於role_types表中
-$check_stam_role = $conn->prepare("SELECT code FROM role_types WHERE code = 'STAM'");
-$check_stam_role->execute();
-$stam_role_result = $check_stam_role->get_result();
-if ($stam_role_result->num_rows === 0) {
+// 確保AS角色存在於role_types表中
+$check_as_role = $conn->prepare("SELECT code FROM role_types WHERE code = 'AS'");
+$check_as_role->execute();
+$as_role_result = $check_as_role->get_result();
+if ($as_role_result->num_rows === 0) {
     // 檢查表是否有description欄位
     $desc_check = $conn->query("SHOW COLUMNS FROM role_types LIKE 'description'");
     if ($desc_check && $desc_check->num_rows > 0) {
-        $insert_stam_role = $conn->prepare("INSERT INTO role_types (code, name, description) VALUES ('STAM', '招生中心組員', '招生中心組員，可被分配特定權限')");
+        $insert_as_role = $conn->prepare("INSERT INTO role_types (code, name, description) VALUES ('AS', '科助', '科助，可被分配特定權限')");
     } else {
-        $insert_stam_role = $conn->prepare("INSERT INTO role_types (code, name) VALUES ('STAM', '招生中心組員')");
+        $insert_as_role = $conn->prepare("INSERT INTO role_types (code, name) VALUES ('AS', '科助')");
     }
-    $insert_stam_role->execute();
-    $insert_stam_role->close();
+    $insert_as_role->execute();
+    $insert_as_role->close();
 }
-$check_stam_role->close();
+$check_as_role->close();
 
-// 創建權限表（如果不存在）
+// 確保IM角色存在於role_types表中
+$check_im_role = $conn->prepare("SELECT code FROM role_types WHERE code = 'IM'");
+$check_im_role->execute();
+$im_role_result = $check_im_role->get_result();
+if ($im_role_result->num_rows === 0) {
+    // 檢查表是否有description欄位
+    $desc_check = $conn->query("SHOW COLUMNS FROM role_types LIKE 'description'");
+    if ($desc_check && $desc_check->num_rows > 0) {
+        $insert_im_role = $conn->prepare("INSERT INTO role_types (code, name, description) VALUES ('IM', '資管科主任', '資管科主任，可分配權限給科助')");
+    } else {
+        $insert_im_role = $conn->prepare("INSERT INTO role_types (code, name) VALUES ('IM', '資管科主任')");
+    }
+    $insert_im_role->execute();
+    $insert_im_role->close();
+}
+$check_im_role->close();
+
+// 創建科助權限表（如果不存在）
 $create_permission_table_sql = "
-CREATE TABLE IF NOT EXISTS staff_member_permissions (
+CREATE TABLE IF NOT EXISTS assistant_permissions (
     id INT AUTO_INCREMENT PRIMARY KEY,
-    user_id INT NOT NULL COMMENT '用戶ID（role=STAM的用戶）',
+    user_id INT NOT NULL COMMENT '用戶ID（role=AS的用戶）',
     permission_code VARCHAR(50) NOT NULL COMMENT '權限代碼',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     UNIQUE KEY uk_user_permission (user_id, permission_code),
     INDEX idx_user_id (user_id),
     INDEX idx_permission_code (permission_code)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='招生中心組員權限表';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='科助權限表';
 ";
 
-// 嘗試創建表，如果外鍵約束失敗則不添加外鍵
+// 嘗試創建表
 $conn->query($create_permission_table_sql);
 
 // 檢查表是否存在，如果不存在則嘗試不帶外鍵的版本
-$check_table = $conn->query("SHOW TABLES LIKE 'staff_member_permissions'");
+$check_table = $conn->query("SHOW TABLES LIKE 'assistant_permissions'");
 if ($check_table->num_rows == 0) {
     // 如果表不存在，嘗試創建不帶外鍵的版本
     $create_permission_table_sql_no_fk = "
-    CREATE TABLE IF NOT EXISTS staff_member_permissions (
+    CREATE TABLE IF NOT EXISTS assistant_permissions (
         id INT AUTO_INCREMENT PRIMARY KEY,
-        user_id INT NOT NULL COMMENT '用戶ID（role=STAM的用戶）',
+        user_id INT NOT NULL COMMENT '用戶ID（role=AS的用戶）',
         permission_code VARCHAR(50) NOT NULL COMMENT '權限代碼',
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
         UNIQUE KEY uk_user_permission (user_id, permission_code),
         INDEX idx_user_id (user_id),
         INDEX idx_permission_code (permission_code)
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='招生中心組員權限表';
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='科助權限表';
     ";
     $conn->query($create_permission_table_sql_no_fk);
 }
@@ -84,9 +132,7 @@ $available_permissions = [
     'continued_admission_list' => '續招',
     'admission_recommend_list' => '招生推薦',
     'activity_records' => '統計分析',
-    'teacher_activity_records' => '教師活動紀錄',
-    'settings' => '入學說明會',
-    'mobile_junior_B' => '國中招生申請名單'
+    'teacher_activity_records' => '教師活動紀錄'
 ];
 
 $message = "";
@@ -112,8 +158,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                 // 開始事務
                 $conn->begin_transaction();
                 
-                // 驗證用戶是否存在且角色為STAM
-                $check_user = $conn->prepare("SELECT id, role FROM user WHERE id = ? AND role = 'STAM'");
+                // 驗證用戶是否存在且角色為AS
+                $check_user = $conn->prepare("SELECT id, role FROM user WHERE id = ? AND role = 'AS'");
                 $check_user->bind_param("i", $user_id);
                 $check_user->execute();
                 $user_result = $check_user->get_result();
@@ -121,12 +167,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                 if ($user_result->num_rows === 0) {
                     $check_user->close();
                     $conn->rollback();
-                    throw new Exception("找不到該用戶或該用戶不是招生中心組員（STAM）。");
+                    throw new Exception("找不到該用戶或該用戶不是科助（AS）。");
                 }
                 $check_user->close();
                 
                 // 刪除該用戶的所有現有權限
-                $delete_stmt = $conn->prepare("DELETE FROM staff_member_permissions WHERE user_id = ?");
+                $delete_stmt = $conn->prepare("DELETE FROM assistant_permissions WHERE user_id = ?");
                 $delete_stmt->bind_param("i", $user_id);
                 if (!$delete_stmt->execute()) {
                     $delete_stmt->close();
@@ -137,7 +183,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                 
                 // 插入新權限
                 if (isset($_POST['permissions']) && is_array($_POST['permissions']) && count($_POST['permissions']) > 0) {
-                    $insert_stmt = $conn->prepare("INSERT INTO staff_member_permissions (user_id, permission_code) VALUES (?, ?)");
+                    $insert_stmt = $conn->prepare("INSERT INTO assistant_permissions (user_id, permission_code) VALUES (?, ?)");
                     foreach ($_POST['permissions'] as $permission_code) {
                         if (array_key_exists($permission_code, $available_permissions)) {
                             $insert_stmt->bind_param("is", $user_id, $permission_code);
@@ -155,7 +201,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                 $conn->commit();
                 
                 // 重定向到當前頁面，避免重複提交並刷新數據
-                header("Location: permission_management.php?msg=success");
+                header("Location: department_permission_management.php?msg=success");
                 exit;
                 break;
         }
@@ -174,22 +220,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
     }
 }
 
-// 獲取所有STAM角色的用戶
-$stam_users_sql = "
+// 獲取所有AS角色的用戶
+$as_users_sql = "
     SELECT u.id, u.username, u.name, u.email, u.role,
-           GROUP_CONCAT(DISTINCT smp.permission_code ORDER BY smp.permission_code SEPARATOR ',') as permissions
+           GROUP_CONCAT(DISTINCT ap.permission_code ORDER BY ap.permission_code SEPARATOR ',') as permissions
     FROM user u
-    LEFT JOIN staff_member_permissions smp ON u.id = smp.user_id
-    WHERE u.role = 'STAM'
+    LEFT JOIN assistant_permissions ap ON u.id = ap.user_id
+    WHERE u.role = 'AS'
     GROUP BY u.id, u.username, u.name, u.email, u.role
     ORDER BY u.id DESC
 ";
-$stam_users_result = $conn->query($stam_users_sql);
-$stam_users = [];
-if ($stam_users_result) {
-    $stam_users = $stam_users_result->fetch_all(MYSQLI_ASSOC);
+$as_users_result = $conn->query($as_users_sql);
+$as_users = [];
+if ($as_users_result) {
+    $as_users = $as_users_result->fetch_all(MYSQLI_ASSOC);
     // 調試：檢查每個用戶的權限數據
-    foreach ($stam_users as &$user) {
+    foreach ($as_users as &$user) {
         // 確保權限字段存在
         if (!isset($user['permissions'])) {
             $user['permissions'] = '';
@@ -330,7 +376,6 @@ $conn->close();
             margin: 0; 
         }
         
-        
         .permissions-badge { 
             display: inline-block; 
             padding: 4px 8px; 
@@ -395,15 +440,15 @@ $conn->close();
                                 </tr>
                             </thead>
                             <tbody>
-                                <?php if (empty($stam_users)): ?>
+                                <?php if (empty($as_users)): ?>
                                     <tr>
                                         <td colspan="5" class="empty-state">
                                             <i class="fas fa-users"></i>
-                                            <p>目前沒有招生中心組員（STAM）用戶</p>
+                                            <p>目前沒有科助（AS）用戶</p>
                                         </td>
                                     </tr>
                                 <?php else: ?>
-                                    <?php foreach ($stam_users as $user): ?>
+                                    <?php foreach ($as_users as $user): ?>
                                         <tr>
                                             <td><?php echo htmlspecialchars($user['name'] ?? $user['username']); ?></td>
                                             <td><?php echo htmlspecialchars($user['username']); ?></td>
@@ -424,10 +469,6 @@ $conn->close();
                                                     $permissions = array_map('trim', $permissions);
                                                     $permissions = array_filter($permissions); // 移除空值
                                                     $permissions = array_values($permissions); // 重新索引陣列
-                                                    
-                                                    // 調試：檢查從資料庫獲取的權限（僅在開發時使用）
-                                                    // error_log("User ID: " . $user['id'] . ", Raw permissions: " . $user['permissions']);
-                                                    // error_log("Parsed permissions: " . print_r($permissions, true));
                                                     
                                                     // 按照$available_permissions的順序顯示權限
                                                     $displayed_codes = [];
@@ -456,12 +497,6 @@ $conn->close();
                                                             }
                                                         }
                                                     }
-                                                    
-                                                    // 調試：如果權限數量不匹配，顯示警告（僅在開發時使用）
-                                                    // if (count($permissions) > count($displayed_permissions)) {
-                                                    //     error_log("警告：用戶 " . $user['id'] . " 有 " . count($permissions) . " 個權限，但只顯示了 " . count($displayed_permissions) . " 個");
-                                                    //     error_log("未匹配的權限: " . print_r(array_diff($permissions, $displayed_permissions), true));
-                                                    // }
                                                 } else {
                                                     echo '<span class="empty-permissions">尚未分配權限</span>';
                                                 }

@@ -45,11 +45,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
 
             // 如果密碼驗證成功，繼續檢查帳號狀態和角色
             if ($login_successful) {
-                // 優先檢查角色是否不允許登入後台（允許管理員、行政人員、主任、科助、招生中心組員）
-                // 使用角色代碼：'ADM'=管理員, 'STA'=行政人員, 'DI'=主任, 'TEA'=科助, 'STAM'=招生中心組員
-                $allowed_roles = ['ADM', 'STA', 'DI', 'TEA', 'STAM'];
+                // 優先檢查角色是否不允許登入後台（允許管理員、行政人員、主任、科助、招生中心組員、資管科主任、科助）
+                // 使用角色代碼：'ADM'=管理員, 'STA'=行政人員, 'DI'=主任, 'TEA'=科助, 'STAM'=招生中心組員, 'IM'=資管科主任, 'AS'=科助
+                $allowed_roles = ['ADM', 'STA', 'DI', 'TEA', 'STAM', 'IM', 'AS'];
                 // 向後兼容：也檢查舊的中文角色名稱
-                $allowed_role_names = ['管理員', '行政人員', '主任', '老師', '招生中心組員'];
+                $allowed_role_names = ['管理員', '行政人員', '主任', '老師', '招生中心組員', '資管科主任', '科助'];
                 
                 if (!in_array($user['role'], $allowed_roles) && !in_array($user['role'], $allowed_role_names)) {
                     $error_message = "帳號或密碼錯誤。"; // 對不允許的角色顯示一樣的錯誤訊息，避免透露帳號存在
