@@ -176,24 +176,32 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
 
 // 獲取所有STAM角色的用戶
 $stam_users_sql = "
-    SELECT u.id, u.username, u.name, u.email, u.role,
-           GROUP_CONCAT(DISTINCT smp.permission_code ORDER BY smp.permission_code SEPARATOR ',') as permissions
+    SELECT u.id, u.username, u.name, u.email, u.role
     FROM user u
-    LEFT JOIN staff_member_permissions smp ON u.id = smp.user_id
     WHERE u.role = 'STAM'
-    GROUP BY u.id, u.username, u.name, u.email, u.role
     ORDER BY u.id DESC
 ";
 $stam_users_result = $conn->query($stam_users_sql);
 $stam_users = [];
 if ($stam_users_result) {
     $stam_users = $stam_users_result->fetch_all(MYSQLI_ASSOC);
-    // 調試：檢查每個用戶的權限數據
+    
+    // 為每個用戶獲取權限詳情（包括分配時間）
     foreach ($stam_users as &$user) {
-        // 確保權限字段存在
-        if (!isset($user['permissions'])) {
-            $user['permissions'] = '';
+        $user_id = $user['id'];
+        $perm_sql = "SELECT permission_code, updated_at FROM staff_member_permissions WHERE user_id = ? ORDER BY permission_code";
+        $perm_stmt = $conn->prepare($perm_sql);
+        $perm_stmt->bind_param("i", $user_id);
+        $perm_stmt->execute();
+        $perm_result = $perm_stmt->get_result();
+        
+        $user['permissions'] = [];
+        $user['permission_times'] = [];
+        while ($perm_row = $perm_result->fetch_assoc()) {
+            $user['permissions'][] = $perm_row['permission_code'];
+            $user['permission_times'][$perm_row['permission_code']] = $perm_row['updated_at'];
         }
+        $perm_stmt->close();
     }
     unset($user); // 取消引用
 }
@@ -333,12 +341,12 @@ $conn->close();
         
         .permissions-badge { 
             display: inline-block; 
-            padding: 4px 8px; 
+            padding: 6px 12px; 
             margin: 2px; 
             background: #e6f7ff; 
             color: var(--primary-color); 
             border-radius: 4px; 
-            font-size: 12px; 
+            font-size: 14px; 
         }
         .empty-permissions { 
             color: var(--text-secondary-color); 
@@ -410,58 +418,53 @@ $conn->close();
                                             <td><?php echo htmlspecialchars($user['email'] ?? '-'); ?></td>
                                             <td>
                                                 <?php 
-                                                // 臨時調試：顯示原始權限數據（用於排查問題，確認後可移除）
-                                                if (isset($_GET['debug']) && $_GET['debug'] == '1') {
-                                                    echo '<div style="font-size: 12px; color: #999; margin-bottom: 4px;">原始數據: ' . htmlspecialchars($user['permissions'] ?? 'NULL') . '</div>';
-                                                }
-                                                
-                                                if (!empty($user['permissions'])) {
-                                                    // 先清理權限字符串，去除空格
-                                                    $permissions_str = trim($user['permissions']);
-                                                    $permissions = explode(',', $permissions_str);
-                                                    
-                                                    // 清理每個權限代碼，去除空格
-                                                    $permissions = array_map('trim', $permissions);
-                                                    $permissions = array_filter($permissions); // 移除空值
-                                                    $permissions = array_values($permissions); // 重新索引陣列
-                                                    
-                                                    // 調試：檢查從資料庫獲取的權限（僅在開發時使用）
-                                                    // error_log("User ID: " . $user['id'] . ", Raw permissions: " . $user['permissions']);
-                                                    // error_log("Parsed permissions: " . print_r($permissions, true));
+                                                if (!empty($user['permissions']) && is_array($user['permissions'])) {
+                                                    $permission_times = $user['permission_times'] ?? [];
                                                     
                                                     // 按照$available_permissions的順序顯示權限
                                                     $displayed_codes = [];
                                                     
                                                     // 先顯示已定義的權限（按順序）
                                                     foreach ($available_permissions as $code => $name) {
-                                                        if (in_array($code, $permissions, true)) { // 使用嚴格比較
+                                                        if (in_array($code, $user['permissions'], true)) {
                                                             $displayed_codes[] = $code;
+                                                            $assigned_time = isset($permission_times[$code]) ? $permission_times[$code] : null;
+                                                            
+                                                            echo '<div style="margin-bottom: 8px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">';
                                                             echo '<span class="permissions-badge">' . htmlspecialchars($name) . '</span>';
+                                                            if ($assigned_time) {
+                                                                $time_obj = new DateTime($assigned_time);
+                                                                echo '<span style="font-size: 14px; color: #8c8c8c;">';
+                                                                echo '<i class="fas fa-clock" style="margin-right: 4px;"></i>';
+                                                                echo $time_obj->format('Y-m-d H:i:s');
+                                                                echo '</span>';
+                                                            }
+                                                            echo '</div>';
                                                         }
                                                     }
                                                     
                                                     // 再顯示未定義的權限代碼（以防萬一）
-                                                    foreach ($permissions as $perm_code) {
-                                                        $perm_code = trim($perm_code);
-                                                        if (!empty($perm_code) && !in_array($perm_code, $displayed_codes, true)) {
+                                                    foreach ($user['permissions'] as $perm_code) {
+                                                        if (!in_array($perm_code, $displayed_codes, true)) {
+                                                            $assigned_time = isset($permission_times[$perm_code]) ? $permission_times[$perm_code] : null;
+                                                            
+                                                            echo '<div style="margin-bottom: 8px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">';
                                                             if (isset($available_permissions[$perm_code])) {
-                                                                // 如果存在但之前沒顯示，再次顯示
-                                                                if (!in_array($perm_code, $displayed_codes, true)) {
-                                                                    echo '<span class="permissions-badge">' . htmlspecialchars($available_permissions[$perm_code]) . '</span>';
-                                                                    $displayed_codes[] = $perm_code;
-                                                                }
+                                                                echo '<span class="permissions-badge">' . htmlspecialchars($available_permissions[$perm_code]) . '</span>';
                                                             } else {
-                                                                // 未定義的權限代碼
                                                                 echo '<span class="permissions-badge" style="background: #ffccc7; color: #a8071a;">' . htmlspecialchars($perm_code) . ' (未定義)</span>';
                                                             }
+                                                            if ($assigned_time) {
+                                                                $time_obj = new DateTime($assigned_time);
+                                                                echo '<span style="font-size: 14px; color: #8c8c8c;">';
+                                                                echo '<i class="fas fa-clock" style="margin-right: 4px;"></i>';
+                                                                echo $time_obj->format('Y-m-d H:i:s');
+                                                                echo '</span>';
+                                                            }
+                                                            echo '</div>';
+                                                            $displayed_codes[] = $perm_code;
                                                         }
                                                     }
-                                                    
-                                                    // 調試：如果權限數量不匹配，顯示警告（僅在開發時使用）
-                                                    // if (count($permissions) > count($displayed_permissions)) {
-                                                    //     error_log("警告：用戶 " . $user['id'] . " 有 " . count($permissions) . " 個權限，但只顯示了 " . count($displayed_permissions) . " 個");
-                                                    //     error_log("未匹配的權限: " . print_r(array_diff($permissions, $displayed_permissions), true));
-                                                    // }
                                                 } else {
                                                     echo '<span class="empty-permissions">尚未分配權限</span>';
                                                 }
@@ -471,7 +474,7 @@ $conn->close();
                                                 <button class="btn btn-edit assign-permission-btn" 
                                                         data-user-id="<?php echo intval($user['id']); ?>"
                                                         data-user-name="<?php echo htmlspecialchars($user['name'] ?? $user['username'], ENT_QUOTES, 'UTF-8'); ?>"
-                                                        data-permissions="<?php echo htmlspecialchars($user['permissions'] ?? '', ENT_QUOTES, 'UTF-8'); ?>">
+                                                        data-permissions="<?php echo htmlspecialchars(implode(',', $user['permissions'] ?? []), ENT_QUOTES, 'UTF-8'); ?>">
                                                     <i class="fas fa-edit"></i> 分配權限
                                                 </button>
                                             </td>
