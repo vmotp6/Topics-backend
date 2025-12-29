@@ -63,7 +63,7 @@ $conn->query($create_permission_table_sql);
 $check_table = $conn->query("SHOW TABLES LIKE 'staff_member_permissions'");
 if ($check_table->num_rows == 0) {
     // 如果表不存在，嘗試創建不帶外鍵的版本
-    $create_permission_table_sql_no_fk = "
+    $create_permission_table_sql_no_fk = " 
     CREATE TABLE IF NOT EXISTS staff_member_permissions (
         id INT AUTO_INCREMENT PRIMARY KEY,
         user_id INT NOT NULL COMMENT '用戶ID（role=STAM的用戶）',

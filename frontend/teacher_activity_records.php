@@ -19,9 +19,29 @@ $username = $_SESSION['username'] ?? '';
 $is_admin = ($user_role === 'ADM');
 $is_staff = ($user_role === 'STA');
 $is_director = ($user_role === 'DI');
+$is_stam = ($user_role === 'STAM');
 
-// 檢查權限：只有學校行政、管理員和主任可以訪問
-if (!($is_admin || $is_staff || $is_director)) {
+// 檢查 STAM 是否有教師活動紀錄權限
+$stam_has_permission = false;
+if ($is_stam && $user_id) {
+    try {
+        $conn_temp = getDatabaseConnection();
+        $perm_stmt = $conn_temp->prepare("SELECT permission_code FROM staff_member_permissions WHERE user_id = ? AND permission_code = 'teacher_activity_records'");
+        $perm_stmt->bind_param("i", $user_id);
+        $perm_stmt->execute();
+        $perm_result = $perm_stmt->get_result();
+        if ($perm_result->num_rows > 0) {
+            $stam_has_permission = true;
+        }
+        $perm_stmt->close();
+        $conn_temp->close();
+    } catch (Exception $e) {
+        error_log('Error checking STAM permission: ' . $e->getMessage());
+    }
+}
+
+// 檢查權限：只有學校行政、管理員、主任或有權限的STAM可以訪問
+if (!($is_admin || $is_staff || $is_director || ($is_stam && $stam_has_permission))) {
     header("Location: index.php");
     exit;
 }
