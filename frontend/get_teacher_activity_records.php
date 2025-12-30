@@ -87,12 +87,13 @@ if ($is_director) {
 }
 
 // 查詢教師的活動紀錄
-$records_sql = "SELECT ar.*, at.name AS activity_type_name, sd.name AS school_name, u.name AS teacher_name
+$records_sql = "SELECT ar.*, at.name AS activity_type_name, sd.name AS school_name, COALESCE(u.name, u2.name) AS teacher_name
                FROM activity_records ar
                LEFT JOIN activity_types at ON ar.activity_type = at.ID
                LEFT JOIN school_data sd ON ar.school = sd.school_code
                LEFT JOIN teacher t ON ar.teacher_id = t.user_id
                LEFT JOIN user u ON t.user_id = u.id
+               LEFT JOIN user u2 ON ar.teacher_id = u2.id
                WHERE ar.teacher_id = ?
                ORDER BY ar.activity_date DESC, ar.id DESC";
 $stmt = $conn->prepare($records_sql);
