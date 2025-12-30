@@ -1,12 +1,7 @@
 <?php
-session_start();
+require_once __DIR__ . '/session_config.php';
 
-// 檢查是否已登入且為部門帳號（IMD/FLD）
-if (!isset($_SESSION['admin_logged_in']) || !$_SESSION['admin_logged_in'] || !in_array($_SESSION['username'], ['IMD','FLD'])) {
-    http_response_code(403);
-    echo json_encode(['success' => false, 'message' => '權限不足']);
-    exit;
-}
+checkBackendLogin();
 
 // 檢查請求方法
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') {

@@ -1,11 +1,7 @@
 <?php
-session_start();
+require_once __DIR__ . '/session_config.php';
 
-// 檢查是否已登入
-if (!isset($_SESSION['admin_logged_in']) || !$_SESSION['admin_logged_in']) {
-    header("Location: login.php");
-    exit;
-}
+checkBackendLogin();
 
 // 資料庫連接設定
 $host = '100.79.58.120';

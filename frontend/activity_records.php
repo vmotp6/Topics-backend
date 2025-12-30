@@ -1,11 +1,7 @@
 <?php
-session_start();
+require_once __DIR__ . '/session_config.php';
 
-// 移除登入檢查，允許直接查看統計分析
-// if (!isset($_SESSION['admin_logged_in']) || !$_SESSION['admin_logged_in']) {
-//     header("Location: login.php");
-//     exit;
-// }
+checkBackendLogin();
 
 // 引入資料庫設定
 require_once '../../Topics-frontend/frontend/config.php';

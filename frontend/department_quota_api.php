@@ -1,12 +1,7 @@
 <?php
-session_start();
+require_once __DIR__ . '/session_config.php';
 
-// 檢查是否已登入
-if (!isset($_SESSION['admin_logged_in']) || !$_SESSION['admin_logged_in']) {
-    http_response_code(401);
-    echo json_encode(['success' => false, 'message' => '未授權存取']);
-    exit;
-}
+checkBackendLogin();
 
 // 引入資料庫設定
 require_once '../../Topics-frontend/frontend/config.php';

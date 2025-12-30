@@ -1,12 +1,7 @@
 <?php
-session_start();
+require_once __DIR__ . '/session_config.php';
 
-// 檢查登入狀態
-if (!isset($_SESSION['user_id']) || !isset($_SESSION['role'])) {
-    header('Content-Type: application/json');
-    echo json_encode(['success' => false, 'message' => '未登入']);
-    exit;
-}
+checkBackendLogin();
 
 // 引入資料庫設定
 require_once '../../Topics-frontend/frontend/config.php';

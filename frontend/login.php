@@ -1,8 +1,22 @@
 <?php
-session_start();
+require_once __DIR__ . '/session_config.php';
 
 // 如果已經登入，直接跳轉到管理介面
-if (isset($_SESSION['admin_logged_in']) && $_SESSION['admin_logged_in']) {
+// 支援後台登入（admin_logged_in）和前台登入轉過來的情況（logged_in + 驗證角色）
+$isAlreadyLoggedIn = (isset($_SESSION['admin_logged_in']) && $_SESSION['admin_logged_in']);
+
+// 如果是從前台傳過來且已登入，檢查角色是否可以進入後台
+if (!$isAlreadyLoggedIn && isset($_SESSION['logged_in']) && $_SESSION['logged_in'] === true) {
+    $user_role = $_SESSION['role'] ?? '';
+    // 檢查角色是否允許進入後台（管理員、行政人員、主任）
+    $allowed_roles = ['ADM', 'STA', 'DI', '管理員', '行政人員', '主任'];
+    if (in_array($user_role, $allowed_roles)) {
+        $_SESSION['admin_logged_in'] = true;
+        $isAlreadyLoggedIn = true;
+    }
+}
+
+if ($isAlreadyLoggedIn) {
     header("Location: index.php");
     exit;
 }
@@ -64,7 +78,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         // 3. 登入成功
         if ($login_successful && !isset($error_message)) {
             // 根據角色設定 Session
-            $_SESSION['admin_logged_in'] = true; // 保持登入狀態
+            $_SESSION['admin_logged_in'] = true; // 後台登入狀態
+            $_SESSION['logged_in'] = true;        // 前台登入狀態（保持同步）
             $_SESSION['user_id'] = $user['id'];
             $_SESSION['username'] = $user['username'];
             $_SESSION['role'] = $user['role']; // 儲存角色
