@@ -1,10 +1,7 @@
 <?php
-session_start();
-// 確保使用者已登入並有權限
-// if (!isset($_SESSION['user_id']) || !$_SESSION['is_admin']) {
-//     header("Location: login.php");
-//     exit();
-// }
+require_once __DIR__ . '/session_config.php';
+
+checkBackendLogin();
 
 // 引用設定檔和資料庫連接
 require_once __DIR__ . '/../../Topics-frontend/frontend/config.php'; 

@@ -1,8 +1,11 @@
 <?php
-session_start();
+require_once __DIR__ . '/session_config.php';
 
-// 1. 檢查登入狀態
-if (!isset($_SESSION['admin_logged_in']) || !$_SESSION['admin_logged_in']) {
+// 1. 檢查登入狀態 - 支援前台和後台的登入狀態
+$isLoggedIn = (isset($_SESSION['admin_logged_in']) && $_SESSION['admin_logged_in'] === true) ||
+              (isset($_SESSION['logged_in']) && $_SESSION['logged_in'] === true);
+
+if (!$isLoggedIn) {
     header("Location: login.php");
     exit;
 }
@@ -21,6 +24,17 @@ $is_admin = in_array($user_role, ['ADM', 'admin', '管理員']);
 $is_staff = in_array($user_role, ['STA', 'staff', '行政人員']);
 $is_director = in_array($user_role, ['DI', 'director', '主任']);
 $is_teacher = in_array($user_role, ['TEA', 'teacher', '老師']);
+
+// 檢查用戶角色是否被允許進入後台
+// 只允許管理員、行政人員、主任進入後台
+$allowed_backend_roles = ['ADM', 'STA', 'DI', '管理員', '行政人員', '主任'];
+if (!in_array($user_role, $allowed_backend_roles)) {
+    // 角色不允許進入後台，清除登入狀態
+    $_SESSION['admin_logged_in'] = false;
+    session_destroy();
+    header("Location: login.php");
+    exit;
+}
 
 // 全域權限標記 (Admin 或 Staff)
 $is_super_user = ($is_admin || $is_staff);

@@ -1,14 +1,9 @@
 <?php
-session_start();
+require_once __DIR__ . '/session_config.php';
 
 header('Content-Type: application/json; charset=utf-8');
 
-// 僅允許後台已登入的管理端查看
-if (!isset($_SESSION['admin_logged_in']) || !$_SESSION['admin_logged_in']) {
-    http_response_code(401);
-    echo json_encode(['success' => false, 'message' => '未授權']);
-    exit;
-}
+checkBackendLogin();
 
 require_once '../../Topics-frontend/frontend/config.php';
 

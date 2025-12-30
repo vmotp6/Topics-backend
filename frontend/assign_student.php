@@ -1,12 +1,7 @@
 <?php
-session_start();
+require_once __DIR__ . '/session_config.php';
 
-// 檢查是否已登入且為部門或主任帳號（允許 department users 或 role 為 DI/TEA）
-if (!isset($_SESSION['admin_logged_in']) || !$_SESSION['admin_logged_in']) {
-    http_response_code(403);
-    echo json_encode(['success' => false, 'message' => '權限不足']);
-    exit;
-}
+checkBackendLogin();
 
 $session_username = isset($_SESSION['username']) ? $_SESSION['username'] : '';
 $session_role = isset($_SESSION['role']) ? $_SESSION['role'] : '';

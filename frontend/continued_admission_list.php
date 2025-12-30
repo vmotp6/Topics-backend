@@ -1,11 +1,8 @@
 <?php
-session_start();
+require_once __DIR__ . '/session_config.php';
 
-// 檢查是否已登入
-if (!isset($_SESSION['admin_logged_in']) || !$_SESSION['admin_logged_in']) {
-    header("Location: login.php");
-    exit;
-}
+// 檢查登入狀態和角色權限
+checkBackendLogin();
 
 // 引入資料庫設定
 require_once '../../Topics-frontend/frontend/config.php';

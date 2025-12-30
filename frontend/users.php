@@ -1,11 +1,8 @@
 <?php
-session_start();
+require_once __DIR__ . '/session_config.php';
 
-// 檢查是否已登入，如果沒有登入則跳轉到登入頁面
-if (!isset($_SESSION['admin_logged_in']) || !$_SESSION['admin_logged_in']) {
-    header("Location: login.php");
-    exit;
-}
+// 檢查登入狀態和角色權限
+checkBackendLogin();
 
 // 處理登出
 if (isset($_GET['action']) && $_GET['action'] == 'logout') {

@@ -1,8 +1,11 @@
 <?php
-session_start();
+require_once __DIR__ . '/session_config.php';
 
-// 檢查是否為管理員，如果不是則跳轉
-if (!isset($_SESSION['admin_logged_in']) || !$_SESSION['admin_logged_in'] || $_SESSION['role'] !== 'ADM') {
+// 檢查登入狀態和角色權限
+checkBackendLogin();
+
+// 檢查是否為管理員
+if (!isAdmin()) {
     header("Location: index.php");
     exit;
 }

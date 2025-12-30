@@ -1,12 +1,7 @@
 <?php
-session_start();
+require_once __DIR__ . '/session_config.php';
 
-// 檢查是否已登入
-if (!isset($_SESSION['admin_logged_in']) || !$_SESSION['admin_logged_in']) {
-    http_response_code(403);
-    echo json_encode(['success' => false, 'message' => '未登入']);
-    exit;
-}
+checkBackendLogin();
 
 // 檢查權限：招生中心/行政人員可以分配學生至主任
 $username = isset($_SESSION['username']) ? $_SESSION['username'] : '';
