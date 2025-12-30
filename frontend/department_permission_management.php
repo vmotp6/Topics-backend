@@ -479,7 +479,7 @@ $conn->close();
                                                             echo '<span class="permissions-badge">' . htmlspecialchars($name) . '</span>';
                                                             if ($assigned_time) {
                                                                 $time_obj = new DateTime($assigned_time);
-                                                                echo '<span style="font-size: 14px; color: #8c8c8c;">';
+                                                                echo '<span style="font-size: 16px; color: #8c8c8c;">';
                                                                 echo '<i class="fas fa-clock" style="margin-right: 4px;"></i>';
                                                                 echo $time_obj->format('Y-m-d H:i:s');
                                                                 echo '</span>';
@@ -501,7 +501,7 @@ $conn->close();
                                                             }
                                                             if ($assigned_time) {
                                                                 $time_obj = new DateTime($assigned_time);
-                                                                echo '<span style="font-size: 14px; color: #8c8c8c;">';
+                                                                echo '<span style="font-size: 16px; color: #8c8c8c;">';
                                                                 echo '<i class="fas fa-clock" style="margin-right: 4px;"></i>';
                                                                 echo $time_obj->format('Y-m-d H:i:s');
                                                                 echo '</span>';
