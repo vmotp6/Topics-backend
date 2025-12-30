@@ -99,10 +99,11 @@ if ($teacher_id > 0) {
 } else {
     // --- 教師列表視圖 ---
     $teachers_with_records = [];
-    $teachers_sql = "SELECT t.user_id, u.name AS teacher_name, t.department AS teacher_department, COUNT(ar.id) AS record_count
+    $teachers_sql = "SELECT t.user_id, u.name AS teacher_name, COALESCE(d.name, t.department) AS teacher_department, COUNT(ar.id) AS record_count
                      FROM teacher t
                      JOIN activity_records ar ON t.user_id = ar.teacher_id
                      LEFT JOIN user u ON t.user_id = u.id
+                     LEFT JOIN departments d ON t.department = d.code
                      WHERE 1=1 $department_filter
                      GROUP BY t.user_id, u.name, t.department
                      ORDER BY record_count DESC, u.name ASC";
@@ -110,10 +111,13 @@ if ($teacher_id > 0) {
 
     // 為了統計圖表，獲取所有活動記錄
     $all_activity_records = [];
-    $all_records_sql = "SELECT ar.*, u.name AS teacher_name, t.department AS teacher_department
+    $all_records_sql = "SELECT ar.*, u.name AS teacher_name, COALESCE(d.name, t.department) AS teacher_department, at.name AS activity_type_name, COALESCE(sd.name, ar.school) AS school_name
                         FROM activity_records ar
                         LEFT JOIN teacher t ON ar.teacher_id = t.user_id
+                        LEFT JOIN departments d ON t.department = d.code
                         LEFT JOIN user u ON t.user_id = u.id
+                        LEFT JOIN activity_types at ON ar.activity_type = at.ID
+                        LEFT JOIN school_data sd ON ar.school = sd.school_code
                         WHERE 1=1 $department_filter
                         ORDER BY ar.activity_date DESC, ar.id DESC";
     $all_records_result = $conn->query($all_records_sql);
@@ -1147,13 +1151,13 @@ $conn->close();
         function showActivityTypeStats() {
         console.log('showActivityTypeStats 被調用');
         
-        // 統計活動類型
+        // 統計活動類型（使用 activity_type_name 若可用）
             const typeStats = {};
             activityRecords.forEach(record => {
-                const type = record.activity_type || '未知類型';
-            if (!typeStats[type]) {
-                typeStats[type] = 0;
-            }
+                const type = record.activity_type_name || record.activity_type || '未知類型';
+                if (!typeStats[type]) {
+                    typeStats[type] = 0;
+                }
                 typeStats[type]++;
             });
         
@@ -1408,10 +1412,10 @@ $conn->close();
         function showSchoolStats() {
         console.log('showSchoolStats 被調用');
         
-        // 統計合作學校
+        // 統計合作學校（直接使用 school 欄位文字）
             const schoolStats = {};
             activityRecords.forEach(record => {
-            const schoolName = record.school_name || '未知學校';
+            const schoolName = record.school_name || record.school || '未知學校';
             if (!schoolStats[schoolName]) {
                 schoolStats[schoolName] = {
                     name: schoolName,
@@ -1903,6 +1907,7 @@ $conn->close();
     }
     
     // 顯示教師詳細活動紀錄
+// 顯示教師詳細活動紀錄
     function showTeacherActivityDetails(teacherId, teacherName) {
         console.log(`顯示教師 ${teacherName} 的詳細活動紀錄`);
         
@@ -1955,12 +1960,20 @@ $conn->close();
                                         formattedCreatedAt = `${year}/${month}/${day} ${hours}:${minutes}`;
                                     }
                                     
+                                    // [修正] 轉換活動時間代碼為中文
+                                    let activityTimeText = '未設定';
+                                    if (activity.activity_time == 1) activityTimeText = '上班日';
+                                    else if (activity.activity_time == 2) activityTimeText = '假日';
+
+                                    // [修正] 顯示活動類型名稱而非ID (如果API有傳回 activity_type_name)
+                                    let activityTypeName = activity.activity_type_name || activity.activity_type;
+                                    
                                     return `
                                         <tr style="transition: background 0.2s;" onmouseover="this.style.background='#f8f9fa'" onmouseout="this.style.background='white'">
                                             <td style="padding: 12px 15px; text-align: left; border-bottom: 1px solid #e9ecef;">${activity.activity_date}</td>
-                                            <td style="padding: 12px 15px; text-align: left; border-bottom: 1px solid #e9ecef;">${activity.school_name}</td>
-                                            <td style="padding: 12px 15px; text-align: left; border-bottom: 1px solid #e9ecef;">${activity.activity_type}</td>
-                                            <td style="padding: 12px 15px; text-align: left; border-bottom: 1px solid #e9ecef;">${activity.activity_time || '上班日'}</td>
+                                            <td style="padding: 12px 15px; text-align: left; border-bottom: 1px solid #e9ecef;">${activity.school_name || activity.school}</td>
+                                            <td style="padding: 12px 15px; text-align: left; border-bottom: 1px solid #e9ecef;">${activityTypeName}</td>
+                                            <td style="padding: 12px 15px; text-align: left; border-bottom: 1px solid #e9ecef;">${activityTimeText}</td>
                                             <td style="padding: 12px 15px; text-align: left; border-bottom: 1px solid #e9ecef;">${formattedCreatedAt}</td>
                                             <td style="padding: 12px 15px; text-align: left; border-bottom: 1px solid #e9ecef;">
                                                 <button class="btn-view" onclick='viewRecord(${JSON.stringify(activity)})'
@@ -1979,8 +1992,6 @@ $conn->close();
         `;
         
         document.getElementById('departmentTeacherListContainer').innerHTML = content;
-        
-        // 平滑滾動到詳細紀錄
         document.getElementById('departmentTeacherListContainer').scrollIntoView({ behavior: 'smooth', block: 'start' });
     }
     
@@ -2003,6 +2014,40 @@ $conn->close();
             .then(data => {
                 console.log('API 返回數據:', data);
                 
+                // 適配新的 API 返回格式 (object with data and total_students)
+                // 若是舊格式 (直接陣列)，也支援
+                let departmentData;
+                let totalStudents;
+                if (Array.isArray(data)) {
+                    // 舊格式：直接是陣列
+                    departmentData = data;
+                    totalStudents = data.reduce((sum, d) => sum + d.value, 0);
+                } else if (data.data && typeof data.total_students === 'number') {
+                    // 新格式：{data: [...], total_students: 123}
+                    departmentData = data.data;
+                    totalStudents = data.total_students;
+                } else if (data.error) {
+                    // 錯誤回應
+                    document.getElementById('enrollmentAnalyticsContent').innerHTML = `
+                        <div style="text-align: center; padding: 40px; color: #dc3545;">
+                            <i class="fas fa-exclamation-triangle fa-3x" style="margin-bottom: 16px;"></i>
+                            <h4>數據載入失敗</h4>
+                            <p>${data.error}</p>
+                        </div>
+                    `;
+                    return;
+                } else {
+                    // 無法識別的格式
+                    document.getElementById('enrollmentAnalyticsContent').innerHTML = `
+                        <div style="text-align: center; padding: 40px; color: #dc3545;">
+                            <i class="fas fa-exclamation-triangle fa-3x" style="margin-bottom: 16px;"></i>
+                            <h4>數據格式錯誤</h4>
+                            <p>無法識別 API 返回的數據格式</p>
+                        </div>
+                    `;
+                    return;
+                }
+                
                 if (data.error) {
                     document.getElementById('enrollmentAnalyticsContent').innerHTML = `
                         <div style="text-align: center; padding: 40px; color: #dc3545;">
@@ -2015,7 +2060,7 @@ $conn->close();
                 }
                 
                 // 檢查數據是否為空數組
-                if (!data || !Array.isArray(data) || data.length === 0) {
+                if (!departmentData || !Array.isArray(departmentData) || departmentData.length === 0) {
                     document.getElementById('enrollmentAnalyticsContent').innerHTML = `
                         <div style="text-align: center; padding: 40px; color: #6c757d;">
                             <i class="fas fa-inbox fa-3x" style="margin-bottom: 16px;"></i>
@@ -2045,7 +2090,7 @@ $conn->close();
                             <!-- 總報名人數 -->
                             <div style="background: white; padding: 15px; border-radius: 8px; margin-bottom: 20px; border-left: 4px solid #667eea;">
                                 <div style="font-weight: bold; color: #333; margin-bottom: 5px;">總報名人數</div>
-                                <div style="font-size: 1.5em; font-weight: bold; color: #667eea;">${data.reduce((sum, d) => sum + d.value, 0)}人</div>
+                                <div style="font-size: 1.5em; font-weight: bold; color: #667eea;">${totalStudents}人</div>
                             </div>
                             
                             <!-- 科系列表 -->
@@ -2060,11 +2105,11 @@ $conn->close();
                                         </tr>
                                     </thead>
                                     <tbody>
-                                        ${data.map((item, index) => {
+                                        ${departmentData.map((item, index) => {
                                             const colors = ['#667eea', '#28a745', '#ffc107', '#dc3545', '#17a2b8', '#6f42c1', '#fd7e14', '#20c997', '#e83e8c', '#6c757d'];
                                             const color = colors[index % colors.length];
-                                            const total = data.reduce((sum, d) => sum + d.value, 0);
-                                            const percentage = ((item.value / total) * 100).toFixed(1);
+                                            const totalChoices = departmentData.reduce((sum, d) => sum + d.value, 0);
+                                            const percentage = ((item.value / totalChoices) * 100).toFixed(1);
                                             return `
                                                 <tr style="border-bottom: 1px solid #dee2e6;">
                                                     <td style="padding: 15px; font-weight: 500; color: #333;">${item.name}</td>
@@ -2097,9 +2142,9 @@ $conn->close();
                     new Chart(ctx, {
                         type: 'pie',
                         data: {
-                            labels: data.map(item => item.name),
+                            labels: departmentData.map(item => item.name),
                             datasets: [{
-                                data: data.map(item => item.value),
+                                data: departmentData.map(item => item.value),
                                 backgroundColor: [
                                     '#667eea', '#28a745', '#ffc107', '#dc3545', '#17a2b8', '#6f42c1', '#fd7e14', '#20c997', '#e83e8c', '#6c757d'
                                 ],
@@ -3656,145 +3701,156 @@ $conn->close();
             });
     }
     
-    // 續招報名統計 - 志願選擇分析
-    function showContinuedAdmissionChoicesStats() {
-        console.log('showContinuedAdmissionChoicesStats 被調用');
+// 續招報名統計 - 志願選擇分析
+function showContinuedAdmissionChoicesStats() {
+    console.log('showContinuedAdmissionChoicesStats 被調用');
+    
+    // 我們同時呼叫兩個 API：
+    // 1. choices: 取得科系分布 (含所有志願，用於圖表)
+    // 2. overview: 取得總覽數據 (含正確的總報名人數)
+    Promise.all([
+        fetch(buildApiUrl('../../Topics-frontend/frontend/api/continued_admission_stats_api.php', 'choices')).then(res => res.json()),
+        fetch(buildApiUrl('../../Topics-frontend/frontend/api/continued_admission_stats_api.php', 'overview')).then(res => res.json())
+    ])
+    .then(([data, overviewData]) => {
+        // 錯誤處理
+        if (data.error) {
+            document.getElementById('continuedAdmissionAnalyticsContent').innerHTML = `
+                <div style="text-align: center; padding: 40px; color: #dc3545;">
+                    <i class="fas fa-exclamation-triangle fa-3x" style="margin-bottom: 16px;"></i>
+                    <h4>數據載入失敗</h4>
+                    <p>${data.error}</p>
+                </div>
+            `;
+            return;
+        }
         
-        fetch(buildApiUrl('../../Topics-frontend/frontend/api/continued_admission_stats_api.php', 'choices'))
-            .then(response => response.json())
-            .then(data => {
-                if (data.error) {
-                    document.getElementById('continuedAdmissionAnalyticsContent').innerHTML = `
-                        <div style="text-align: center; padding: 40px; color: #dc3545;">
-                            <i class="fas fa-exclamation-triangle fa-3x" style="margin-bottom: 16px;"></i>
-                            <h4>數據載入失敗</h4>
-                            <p>${data.error}</p>
-                        </div>
-                    `;
-                    return;
-                }
+        // 【修正重點】使用 overview API 回傳的真實學生人數，而不是將科系加總
+        const realTotalStudents = overviewData.total_applications || 0;
+        
+        // 用於計算百分比的分母 (看您希望百分比是 "佔總志願數" 還是 "佔總人數")
+        // 這裡維持 "佔總志願數" 以配合圓餅圖的邏輯 (總和 100%)
+        const totalChoicesCount = data.reduce((sum, d) => sum + d.value, 0);
+
+        const content = `
+            <div style="margin-bottom: 20px;">
+                <h4 style="color: #667eea; margin-bottom: 15px;">
+                    <i class="fas fa-list-ol"></i> 志願選擇分析
+                </h4>
                 
-                const content = `
-                    <div style="margin-bottom: 20px;">
-                        <h4 style="color: #667eea; margin-bottom: 15px;">
-                            <i class="fas fa-list-ol"></i> 志願選擇分析
-                        </h4>
-                        
-                        <div class="chart-card">
-                            <div class="chart-title">科系志願選擇分布</div>
-                            <div class="chart-container">
-                                <canvas id="continuedAdmissionChoicesChart"></canvas>
-                            </div>
-                        </div>
-                        
-                        <div style="background: #f8f9fa; padding: 20px; border-radius: 10px; margin-top: 20px;">
-                            <h5 style="color: #333; margin-bottom: 15px;">科系詳細統計</h5>
-                            
-                            <!-- 總報名人數 -->
-                            <div style="background: white; padding: 15px; border-radius: 8px; margin-bottom: 20px; border-left: 4px solid #667eea;">
-                                <div style="font-weight: bold; color: #333; margin-bottom: 5px;">總報名人數</div>
-                                <div style="font-size: 1.5em; font-weight: bold; color: #667eea;">${data.reduce((sum, d) => sum + d.value, 0)}人</div>
-                            </div>
-                            
-                            <!-- 科系列表 -->
-                            <div style="background: white; border-radius: 8px; overflow: hidden;">
-                                <table style="width: 100%; border-collapse: collapse;">
-                                    <thead>
-                                        <tr style="background: #f8f9fa;">
-                                            <th style="padding: 15px; text-align: left; border-bottom: 1px solid #dee2e6; font-weight: 600; color: #495057;">科系名稱</th>
-                                            <th style="padding: 15px; text-align: center; border-bottom: 1px solid #dee2e6; font-weight: 600; color: #495057;">報名人數</th>
-                                            <th style="padding: 15px; text-align: center; border-bottom: 1px solid #dee2e6; font-weight: 600; color: #495057;">百分比</th>
-                                            <th style="padding: 15px; text-align: center; border-bottom: 1px solid #dee2e6; font-weight: 600; color: #495057;">操作</th>
-                                        </tr>
-                                    </thead>
-                                    <tbody>
-                                        ${data.map((item, index) => {
-                                            const colors = ['#667eea', '#28a745', '#ffc107', '#dc3545', '#17a2b8', '#6f42c1', '#fd7e14', '#20c997', '#e83e8c', '#6c757d'];
-                                            const color = colors[index % colors.length];
-                                            const total = data.reduce((sum, d) => sum + d.value, 0);
-                                            const percentage = ((item.value / total) * 100).toFixed(1);
-                                            return `
-                                                <tr style="border-bottom: 1px solid #dee2e6;">
-                                                    <td style="padding: 15px; font-weight: 500; color: #333;">${item.name}</td>
-                                                    <td style="padding: 15px; text-align: center; font-weight: bold; color: #333;">${item.value}人</td>
-                                                    <td style="padding: 15px; text-align: center; color: #666;">${percentage}%</td>
-                                                    <td style="padding: 15px; text-align: center;">
-                                                        <button onclick="showContinuedAdmissionDepartmentStudents('${item.name}')"
-                                                                style="background: ${color}; color: white; border: none; padding: 8px 16px; border-radius: 20px; cursor: pointer; font-size: 14px; transition: all 0.3s ease;">
-                                                            查看詳情
-                                                        </button>
-                                                    </td>
-                                                </tr>
-                                            `;
-                                        }).join('')}
-                                    </tbody>
-                                </table>
-                            </div>
-                        </div>
+                <div class="chart-card">
+                    <div class="chart-title">科系志願選擇分布</div>
+                    <div class="chart-container">
+                        <canvas id="continuedAdmissionChoicesChart"></canvas>
                     </div>
-                `;
+                </div>
                 
-                document.getElementById('continuedAdmissionAnalyticsContent').innerHTML = content;
-                
-                // 創建圓餅圖
-                setTimeout(() => {
-                    const canvasElement = document.getElementById('continuedAdmissionChoicesChart');
-                    if (!canvasElement) return;
+                <div style="background: #f8f9fa; padding: 20px; border-radius: 10px; margin-top: 20px;">
+                    <h5 style="color: #333; margin-bottom: 15px;">科系詳細統計</h5>
                     
-                    const ctx = canvasElement.getContext('2d');
-                    new Chart(ctx, {
-                        type: 'pie',
-                        data: {
-                            labels: data.map(item => item.name),
-                            datasets: [{
-                                data: data.map(item => item.value),
-                                backgroundColor: [
-                                    '#667eea', '#28a745', '#ffc107', '#dc3545', '#17a2b8'
-                                ],
-                                borderWidth: 2,
-                                borderColor: '#fff'
-                            }]
+                    <div style="background: white; padding: 15px; border-radius: 8px; margin-bottom: 20px; border-left: 4px solid #667eea;">
+                        <div style="font-weight: bold; color: #333; margin-bottom: 5px;">總報名人數 (實際學生數)</div>
+                        <div style="font-size: 1.5em; font-weight: bold; color: #667eea;">${realTotalStudents}人</div>
+                    </div>
+                    
+                    <div style="background: white; border-radius: 8px; overflow: hidden;">
+                        <table style="width: 100%; border-collapse: collapse;">
+                            <thead>
+                                <tr style="background: #f8f9fa;">
+                                    <th style="padding: 15px; text-align: left; border-bottom: 1px solid #dee2e6; font-weight: 600; color: #495057;">科系名稱</th>
+                                    <th style="padding: 15px; text-align: center; border-bottom: 1px solid #dee2e6; font-weight: 600; color: #495057;">選擇人數</th>
+                                    <th style="padding: 15px; text-align: center; border-bottom: 1px solid #dee2e6; font-weight: 600; color: #495057;">志願佔比</th>
+                                    <th style="padding: 15px; text-align: center; border-bottom: 1px solid #dee2e6; font-weight: 600; color: #495057;">操作</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                ${data.map((item, index) => {
+                                    const colors = ['#667eea', '#28a745', '#ffc107', '#dc3545', '#17a2b8', '#6f42c1', '#fd7e14', '#20c997', '#e83e8c', '#6c757d'];
+                                    const color = colors[index % colors.length];
+                                    // 計算百分比 (這裡維持以總志願數為分母，若要改以人數為分母請改用 realTotalStudents)
+                                    const percentage = totalChoicesCount > 0 ? ((item.value / totalChoicesCount) * 100).toFixed(1) : 0;
+                                    return `
+                                        <tr style="border-bottom: 1px solid #dee2e6;">
+                                            <td style="padding: 15px; font-weight: 500; color: #333;">${item.name}</td>
+                                            <td style="padding: 15px; text-align: center; font-weight: bold; color: #333;">${item.value}人</td>
+                                            <td style="padding: 15px; text-align: center; color: #666;">${percentage}%</td>
+                                            <td style="padding: 15px; text-align: center;">
+                                                <button onclick="showContinuedAdmissionDepartmentStudents('${item.name}')"
+                                                        style="background: ${color}; color: white; border: none; padding: 8px 16px; border-radius: 20px; cursor: pointer; font-size: 14px; transition: all 0.3s ease;">
+                                                    查看詳情
+                                                </button>
+                                            </td>
+                                        </tr>
+                                    `;
+                                }).join('')}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        `;
+        
+        document.getElementById('continuedAdmissionAnalyticsContent').innerHTML = content;
+        
+        // 創建圓餅圖
+        setTimeout(() => {
+            const canvasElement = document.getElementById('continuedAdmissionChoicesChart');
+            if (!canvasElement) return;
+            
+            const ctx = canvasElement.getContext('2d');
+            new Chart(ctx, {
+                type: 'pie',
+                data: {
+                    labels: data.map(item => item.name),
+                    datasets: [{
+                        data: data.map(item => item.value),
+                        backgroundColor: [
+                            '#667eea', '#28a745', '#ffc107', '#dc3545', '#17a2b8'
+                        ],
+                        borderWidth: 2,
+                        borderColor: '#fff'
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: {
+                            position: 'bottom',
+                            labels: {
+                                padding: 20,
+                                usePointStyle: true,
+                                font: { size: 16 }
+                            }
                         },
-                        options: {
-                            responsive: true,
-                            maintainAspectRatio: false,
-                            plugins: {
-                                legend: {
-                                    position: 'bottom',
-                                    labels: {
-                                        padding: 20,
-                                        usePointStyle: true,
-                                        font: { size: 16 }
-                                    }
-                                },
-                                tooltip: {
-                                    enabled: true,
-                                    callbacks: {
-                                        label: function(context) {
-                                            const label = context.label || '';
-                                            const value = context.parsed;
-                                            const total = context.dataset.data.reduce((a, b) => a + b, 0);
-                                            const percentage = ((value / total) * 100).toFixed(1);
-                                            return `${label}: ${value}次 (${percentage}%)`;
-                                        }
-                                    }
+                        tooltip: {
+                            enabled: true,
+                            callbacks: {
+                                label: function(context) {
+                                    const label = context.label || '';
+                                    const value = context.parsed;
+                                    const total = context.dataset.data.reduce((a, b) => a + b, 0);
+                                    const percentage = ((value / total) * 100).toFixed(1);
+                                    return `${label}: ${value}次 (${percentage}%)`;
                                 }
                             }
                         }
-                    });
-                }, 100);
-            })
-            .catch(error => {
-                console.error('載入志願統計數據失敗:', error);
-                document.getElementById('continuedAdmissionAnalyticsContent').innerHTML = `
-                    <div style="text-align: center; padding: 40px; color: #dc3545;">
-                        <i class="fas fa-exclamation-triangle fa-3x" style="margin-bottom: 16px;"></i>
-                        <h4>數據載入失敗</h4>
-                        <p>無法連接到統計API</p>
-                    </div>
-                `;
+                    }
+                }
             });
-    }
+        }, 100);
+    })
+    .catch(error => {
+        console.error('載入志願統計數據失敗:', error);
+        document.getElementById('continuedAdmissionAnalyticsContent').innerHTML = `
+            <div style="text-align: center; padding: 40px; color: #dc3545;">
+                <i class="fas fa-exclamation-triangle fa-3x" style="margin-bottom: 16px;"></i>
+                <h4>數據載入失敗</h4>
+                <p>無法連接到統計API</p>
+            </div>
+        `;
+    });
+}
     
     // 續招報名統計 - 月度趨勢分析
     function showContinuedAdmissionMonthlyStats() {
@@ -4746,13 +4802,22 @@ $conn->close();
     // 查看記錄詳情
     function viewRecord(record) {
         const modalBody = document.getElementById('viewModalBody');
+        
+        // [修正] 轉換活動時間為中文
+        let activityTimeText = '未設定';
+        if (record.activity_time == 1) activityTimeText = '上班日';
+        else if (record.activity_time == 2) activityTimeText = '假日';
+
+        // [修正] 優先使用中文活動類型名稱
+        let activityTypeName = record.activity_type_name || record.activity_type || 'N/A';
+
         let content = `
             <p><strong>活動日期:</strong> ${record.activity_date || 'N/A'}</p>
             <p><strong>教師姓名:</strong> ${record.teacher_name || 'N/A'}</p>
             <p><strong>所屬系所:</strong> ${record.teacher_department || 'N/A'}</p>
             <p><strong>學校名稱:</strong> ${record.school_name || 'N/A'}</p>
-            <p><strong>活動類型:</strong> ${record.activity_type || 'N/A'}</p>
-            <p><strong>活動時間:</strong> ${record.activity_time || 'N/A'}</p>
+            <p><strong>活動類型:</strong> ${activityTypeName}</p>
+            <p><strong>活動時間:</strong> ${activityTimeText}</p>
             <p><strong>提交時間:</strong> ${new Date(record.created_at).toLocaleString()}</p>
             <hr>
             <p><strong>聯絡窗口:</strong> ${record.contact_person || '未填寫'}</p>

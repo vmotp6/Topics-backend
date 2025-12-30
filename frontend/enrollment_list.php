@@ -114,7 +114,7 @@ if (!in_array(strtolower($sortOrder), ['asc', 'desc'])) {
     $sortOrder = 'desc';
 }
 
-// 基礎 SELECT 語句：新增三個志願的名稱、學制名稱和【科系代碼】
+// 基礎 SELECT 語句：新增三個志願的名稱、學制名稱和【科系代碼】，以及【分配時間與志願序】
 $base_select = "
     SELECT 
         ei.*, 
@@ -416,16 +416,6 @@ try {
         .sort-icon.asc::after { content: "↑"; }
         .sort-icon.desc::after { content: "↓"; }
         .table tr:hover { background: #fafafa; }
-        
-        /* 主任/IM用戶隱藏不需要的意願欄位 */
-        .enrollment-table.hide-choice1 th.choice1-column,
-        .enrollment-table.hide-choice1 td.choice1-column,
-        .enrollment-table.hide-choice2 th.choice2-column,
-        .enrollment-table.hide-choice2 td.choice2-column,
-        .enrollment-table.hide-choice3 th.choice3-column,
-        .enrollment-table.hide-choice3 td.choice3-column {
-            display: none !important;
-        }
         
         /* 分頁樣式 */
         .pagination {
@@ -905,56 +895,55 @@ try {
                             </div>
                         <?php else: ?>
                             <?php
-                                // 根據用戶角色決定隱藏哪些欄位
-                                $table_classes = 'table enrollment-table';
-                                if ($is_director && !empty($user_department_code)) {
-                                    // 主任：檢查哪些意願欄位需要顯示
-                                    $has_choice1 = false;
-                                    $has_choice2 = false;
-                                    $has_choice3 = false;
-                                    foreach ($enrollments as $check_item) {
-                                        $check_code1 = $check_item['intention1_code'] ?? '';
-                                        $check_code2 = $check_item['intention2_code'] ?? '';
-                                        $check_code3 = $check_item['intention3_code'] ?? '';
-                                        if ($check_code1 === $user_department_code && !empty($check_item['intention1_name'])) $has_choice1 = true;
-                                        if ($check_code2 === $user_department_code && !empty($check_item['intention2_name'])) $has_choice2 = true;
-                                        if ($check_code3 === $user_department_code && !empty($check_item['intention3_name'])) $has_choice3 = true;
+                                // 在顯示表格前，先計算對於目前使用者(主任)來說，哪些志願序是有資料的
+                                $director_active_choices = [];
+                                if ($is_department_user && !empty($enrollments)) {
+                                    // 為了支援 IM/AF 這種寫死的情況，我們統一用 $target_dept_code
+                                    $target_dept_code = $user_department_code;
+                                    if ($is_imd_user) $target_dept_code = 'IM';
+                                    if ($is_fld_user) $target_dept_code = 'AF';
+
+                                    foreach ($enrollments as $row) {
+                                        if (($row['intention1_code'] ?? '') === $target_dept_code) $director_active_choices[1] = true;
+                                        if (($row['intention2_code'] ?? '') === $target_dept_code) $director_active_choices[2] = true;
+                                        if (($row['intention3_code'] ?? '') === $target_dept_code) $director_active_choices[3] = true;
                                     }
-                                    if (!$has_choice1) $table_classes .= ' hide-choice1';
-                                    if (!$has_choice2) $table_classes .= ' hide-choice2';
-                                    if (!$has_choice3) $table_classes .= ' hide-choice3';
-                                } elseif ($is_imd_user) {
-                                    // IM用戶：檢查哪些意願欄位需要顯示
-                                    $has_choice1 = false;
-                                    $has_choice2 = false;
-                                    $has_choice3 = false;
-                                    foreach ($enrollments as $check_item) {
-                                        $check_code1 = $check_item['intention1_code'] ?? '';
-                                        $check_code2 = $check_item['intention2_code'] ?? '';
-                                        $check_code3 = $check_item['intention3_code'] ?? '';
-                                        if ($check_code1 === 'IM' && !empty($check_item['intention1_name'])) $has_choice1 = true;
-                                        if ($check_code2 === 'IM' && !empty($check_item['intention2_name'])) $has_choice2 = true;
-                                        if ($check_code3 === 'IM' && !empty($check_item['intention3_name'])) $has_choice3 = true;
+                                }
+                                
+                                // 決定標題文字
+                                $director_col_title = '相關意願';
+                                if (!empty($director_active_choices)) {
+                                    $active_keys = array_keys($director_active_choices);
+                                    if (count($active_keys) === 1) {
+                                        $director_col_title = '意願 ' . $active_keys[0]; // 例如 "意願 2"
+                                    } else {
+                                        // 如果有多個不同志願序 (例如有的學生填1，有的填2)，顯示 "意願"
+                                        $director_col_title = '意願';
                                     }
-                                    if (!$has_choice1) $table_classes .= ' hide-choice1';
-                                    if (!$has_choice2) $table_classes .= ' hide-choice2';
-                                    if (!$has_choice3) $table_classes .= ' hide-choice3';
                                 }
                             ?>
-                            <table class="<?php echo $table_classes; ?>" id="enrollmentTable">
+                            <table class="table enrollment-table" id="enrollmentTable">
                                 <thead>
                                     <tr>
                                         <th onclick="sortTable('name')">姓名 <span class="sort-icon" id="sort-name"></span></th>
-                                        <th class="choice1-column">意願1</th>
-                                        <th class="choice2-column">意願2</th>
-                                        <th class="choice3-column">意願3</th>
+                                        
+                                        <?php if ($is_department_user): ?>
+                                            <th><?php echo htmlspecialchars($director_col_title); ?></th>
+                                        <?php else: ?>
+                                            <th class="choice1-column">意願1</th>
+                                            <th class="choice2-column">意願2</th>
+                                            <th class="choice3-column">意願3</th>
+                                        <?php endif; ?>
+                                        
                                         <th onclick="sortTable('junior_high')">就讀國中 <span class="sort-icon" id="sort-junior_high"></span></th>
                                         <th>年級</th>
+                                        
                                         <?php if ($is_admission_center): ?>
-                                        <th onclick="sortTable('assigned_department')">分配部門 <span class="sort-icon" id="sort-assigned_department"></span></th>
+                                            <th onclick="sortTable('assigned_department')">分配部門 <span class="sort-icon" id="sort-assigned_department"></span></th>
                                         <?php elseif ($is_department_user): ?>
-                                        <th>分配狀態</th>
+                                            <th>分配狀態</th>
                                         <?php endif; ?>
+                                        
                                         <th>操作</th>
                                     </tr>
                                 </thead>
@@ -990,77 +979,6 @@ try {
                                     $facebook = $item['facebook'] ?? '無';
                                     $remarks = $item['remarks'] ?? '無';
 
-                                    // IM 用戶的單一志願顯示邏輯
-                                    $imd_single_display = '無志願';
-                                    if ($is_imd_user) {
-                                        $imd_choices = [];
-                                        // 由於 IM 用戶的查詢已經過濾，這裡只需要檢查意願名稱
-                                        if ($intention1_code === 'IM') {
-                                            $imd_choices[] = "第一志願: {$intention1_name} ({$system1_name})";
-                                        }
-                                        if ($intention2_code === 'IM') {
-                                            $imd_choices[] = "第二志願: {$intention2_name} ({$system2_name})";
-                                        }
-                                        if ($intention3_code === 'IM') {
-                                            $imd_choices[] = "第三志願: {$intention3_name} ({$system3_name})";
-                                        }
-                                        // 確保至少有一個 IM 志願被顯示，否則顯示無志願 (這與 SQL 過濾邏輯匹配)
-                                        $imd_single_display = !empty($imd_choices) ? htmlspecialchars(implode(' | ', $imd_choices)) : '無志願';
-                                    }
-                                    
-                                    // 判斷每個志願是否應該顯示（根據用戶角色）
-                                    $show_choice1 = false;
-                                    $show_choice2 = false;
-                                    $show_choice3 = false;
-                                    
-                                    $choice1_text = '';
-                                    $choice2_text = '';
-                                    $choice3_text = '';
-                                    
-                                    if ($is_imd_user) {
-                                        // IM 用戶：只顯示 IM 科系的志願
-                                        if ($intention1_code === 'IM' && !empty($intention1_name)) {
-                                            $show_choice1 = true;
-                                            $choice1_text = $display_text1;
-                                        }
-                                        if ($intention2_code === 'IM' && !empty($intention2_name)) {
-                                            $show_choice2 = true;
-                                            $choice2_text = $display_text2;
-                                        }
-                                        if ($intention3_code === 'IM' && !empty($intention3_name)) {
-                                            $show_choice3 = true;
-                                            $choice3_text = $display_text3;
-                                        }
-                                    } elseif ($is_director && !empty($user_department_code)) {
-                                        // 主任：只顯示自己科系的志願
-                                        if ($intention1_code === $user_department_code && !empty($intention1_name)) {
-                                            $show_choice1 = true;
-                                            $choice1_text = $display_text1;
-                                        }
-                                        if ($intention2_code === $user_department_code && !empty($intention2_name)) {
-                                            $show_choice2 = true;
-                                            $choice2_text = $display_text2;
-                                        }
-                                        if ($intention3_code === $user_department_code && !empty($intention3_name)) {
-                                            $show_choice3 = true;
-                                            $choice3_text = $display_text3;
-                                        }
-                                    } else {
-                                        // 一般用戶：顯示所有志願
-                                        if (!empty($intention1_name) && $display_text1 !== '無意願') {
-                                            $show_choice1 = true;
-                                            $choice1_text = $display_text1;
-                                        }
-                                        if (!empty($intention2_name) && $display_text2 !== '無意願') {
-                                            $show_choice2 = true;
-                                            $choice2_text = $display_text2;
-                                        }
-                                        if (!empty($intention3_name) && $display_text3 !== '無意願') {
-                                            $show_choice3 = true;
-                                            $choice3_text = $display_text3;
-                                        }
-                                    }
-
                                     // 準備要傳遞給 JS 的志願代碼列表和志願順序映射
                                     $chosen_codes = array_filter([$intention1_code, $intention2_code, $intention3_code]);
                                     $chosen_codes_json = json_encode(array_unique($chosen_codes));
@@ -1081,30 +999,43 @@ try {
                                     ?>
                                     <tr class="table-row-clickable" onclick="toggleDetail(<?php echo $item['id']; ?>)">
                                         <td><?php echo htmlspecialchars($item['name']); ?></td>
-                                        <td class="choice1-column">
-                                            <?php if ($show_choice1): ?>
-                                                <?php echo $choice1_text; ?>
-                                            <?php endif; ?>
-                                        </td>
-                                        <td class="choice2-column">
-                                            <?php if ($show_choice2): ?>
-                                                <?php echo $choice2_text; ?>
-                                            <?php endif; ?>
-                                        </td>
-                                        <td class="choice3-column">
-                                            <?php if ($show_choice3): ?>
-                                                <?php echo $choice3_text; ?>
-                                            <?php endif; ?>
-                                        </td>
+                                        
+                                        <?php if ($is_department_user): ?>
+                                            <td>
+                                                <?php 
+                                                    // 找出符合目前使用者科系的意願，並顯示出來
+                                                    $target_dept_code = $user_department_code;
+                                                    if ($is_imd_user) $target_dept_code = 'IM';
+                                                    if ($is_fld_user) $target_dept_code = 'AF';
+                                                    
+                                                    if (($item['intention1_code'] ?? '') === $target_dept_code) echo $display_text1;
+                                                    elseif (($item['intention2_code'] ?? '') === $target_dept_code) echo $display_text2;
+                                                    elseif (($item['intention3_code'] ?? '') === $target_dept_code) echo $display_text3;
+                                                ?>
+                                            </td>
+                                        <?php else: ?>
+                                            <td class="choice1-column">
+                                                <?php echo $display_text1; ?>
+                                            </td>
+                                            <td class="choice2-column">
+                                                <?php echo $display_text2; ?>
+                                            </td>
+                                            <td class="choice3-column">
+                                                <?php echo $display_text3; ?>
+                                            </td>
+                                        <?php endif; ?>
+
                                         <td><?php echo getSchoolName($item['junior_high'] ?? '', $school_data); ?></td>
                                         <td><?php echo getIdentityText($item['current_grade'] ?? '', $identity_options); ?></td>
                                         <?php if ($is_admission_center): ?>
                                         <td>
                                             <?php if (!empty($item['assigned_department'])): ?>
-                                                <span style="color: #52c41a;">
-                                                    <i class="fas fa-check-circle"></i> 已分配 - 
-                                                    <?php echo getDepartmentName($item['assigned_department'], $department_data); ?>
-                                                </span>
+                                                <div style="line-height: 1.4;">
+                                                    <span style="color: #52c41a; font-weight: bold;">
+                                                        <i class="fas fa-check-circle"></i> 
+                                                        <?php echo getDepartmentName($item['assigned_department'], $department_data); ?>
+                                                    </span>
+                                                </div>
                                             <?php else: ?>
                                                 <span style="color: #8c8c8c;">
                                                     <i class="fas fa-clock"></i> 未分配
@@ -1112,65 +1043,80 @@ try {
                                             <?php endif; ?>
                                         </td>
                                         <td onclick="event.stopPropagation();">
-                                            <?php if (!empty($item['assigned_department'])): ?>
+                                            <?php 
+                                            // 準備資料給詳情視窗使用
+                                            $dept_name = !empty($item['assigned_department']) ? getDepartmentName($item['assigned_department'], $department_data) : '尚未分配';
+                                            $teacher_name = !empty($item['teacher_name']) ? $item['teacher_name'] : (!empty($item['teacher_username']) ? $item['teacher_username'] : '尚未指派');
+                                            
+                                            // 如果尚未分配科系，老師也顯示為未分配
+                                            if (empty($item['assigned_department'])) {
+                                                $teacher_name = '-';
+                                            }
+                                            ?>
                                             <button class="assign-btn" 
-                                                    style="background: #28a745;"
+                                                    style="background: #17a2b8;"
                                                     data-student-id="<?php echo $item['id']; ?>"
                                                     data-student-name="<?php echo htmlspecialchars($item['name'], ENT_QUOTES, 'UTF-8'); ?>"
-                                                    data-current-department="<?php echo htmlspecialchars($item['assigned_department'], ENT_QUOTES, 'UTF-8'); ?>"
-                                                    data-chosen-codes="<?php echo htmlspecialchars($chosen_codes_json, ENT_QUOTES, 'UTF-8'); ?>"
-                                                    data-choice-order-map="<?php echo htmlspecialchars($choice_order_map_json, ENT_QUOTES, 'UTF-8'); ?>"
-                                                    onclick="event.stopPropagation(); openAssignDepartmentModalFromButton(this)">
-                                                <i class="fas fa-check-circle"></i> 已分配
+                                                    data-dept-name="<?php echo htmlspecialchars($dept_name, ENT_QUOTES, 'UTF-8'); ?>"
+                                                    data-teacher-name="<?php echo htmlspecialchars($teacher_name, ENT_QUOTES, 'UTF-8'); ?>"
+                                                    onclick="event.stopPropagation(); openDetailsModal(this)">
+                                                <i class="fas fa-info-circle"></i> 查看詳情
                                             </button>
-                                            <?php else: ?>
-                                            <button class="assign-btn" 
-                                                    data-student-id="<?php echo $item['id']; ?>"
-                                                    data-student-name="<?php echo htmlspecialchars($item['name'], ENT_QUOTES, 'UTF-8'); ?>"
-                                                    data-current-department=""
-                                                    data-chosen-codes="<?php echo htmlspecialchars($chosen_codes_json, ENT_QUOTES, 'UTF-8'); ?>"
-                                                    data-choice-order-map="<?php echo htmlspecialchars($choice_order_map_json, ENT_QUOTES, 'UTF-8'); ?>"
-                                                    onclick="event.stopPropagation(); openAssignDepartmentModalFromButton(this)">
-                                                <i class="fas fa-building"></i> 分配
-                                            </button>
-                                            <?php endif; ?>
                                         </td>
                                         <?php elseif ($is_department_user): ?>
                                         <td>
                                             <span style="display: none;" class="chosen-codes-data"><?php echo $chosen_codes_json; ?></span>
-                                            <?php if (!empty($item['assigned_teacher_id'])): ?>
-                                                <span style="color: #52c41a;">
-                                                    <i class="fas fa-check-circle"></i> 已分配 - 
-                                                    <?php echo htmlspecialchars($item['teacher_name'] ?? $item['teacher_username'] ?? '未知老師'); ?>
-                                                </span>
+                                            
+                                            <?php 
+                                            $assigned_teacher_id = $item['assigned_teacher_id'];
+                                            // 判斷是否分配給自己 (如果是主任，分配給自己代表尚未分派給底下老師，屬於待辦事項)
+                                            $is_assigned_to_me = ($assigned_teacher_id == $user_id);
+                                            $is_assigned_to_others = (!empty($assigned_teacher_id) && !$is_assigned_to_me);
+                                            ?>
+
+                                            <?php if ($is_assigned_to_others): ?>
+                                                <div style="line-height: 1.4;">
+                                                    <span style="color: #52c41a; font-weight: bold;">
+                                                        <i class="fas fa-check-circle"></i> 已分配 - 
+                                                        <?php echo htmlspecialchars($item['teacher_name'] ?? $item['teacher_username'] ?? '未知老師'); ?>
+                                                    </span>
+                                                </div>
                                             <?php else: ?>
-                                                <span style="color: #8c8c8c;">
-                                                    <i class="fas fa-clock"></i> 未分配
-                                                </span>
+                                                <div style="line-height: 1.4;">
+                                                    <span style="color: #ff9800; font-weight: bold;">
+                                                        <i class="fas fa-exclamation-circle"></i> 待分配
+                                                    </span>
+                                                    <?php if ($is_assigned_to_me): ?>
+                                                        <div style="font-size: 12px; color: #e6a23c; margin-top: 4px;">
+                                                            (目前在您名下，請指派老師)
+                                                        </div>
+                                                    <?php endif; ?>
+                                                </div>
                                             <?php endif; ?>
                                         </td>
                                         <td onclick="event.stopPropagation();">
                                             <div style="display: flex; gap: 8px; flex-wrap: wrap;">
-                                                <?php if (!empty($item['assigned_teacher_id'])): ?>
+                                                <?php if ($is_assigned_to_others): ?>
                                                 <button class="assign-btn" 
-                                                        style="background: #28a745; cursor: default;"
+                                                        style="background: #28a745;"
                                                         data-student-id="<?php echo $item['id']; ?>"
                                                         data-student-name="<?php echo htmlspecialchars($item['name'], ENT_QUOTES, 'UTF-8'); ?>"
                                                         data-current-teacher-id="<?php echo $item['assigned_teacher_id']; ?>"
                                                         data-chosen-codes="<?php echo htmlspecialchars($chosen_codes_json, ENT_QUOTES, 'UTF-8'); ?>"
                                                         onclick="event.stopPropagation(); openAssignModalFromButton(this)">
-                                                    <i class="fas fa-check-circle"></i> 已分配
+                                                    <i class="fas fa-check-circle"></i> 已分配 (可修改)
                                                 </button>
                                                 <?php else: ?>
                                                 <button class="assign-btn" 
                                                         data-student-id="<?php echo $item['id']; ?>"
                                                         data-student-name="<?php echo htmlspecialchars($item['name'], ENT_QUOTES, 'UTF-8'); ?>"
-                                                        data-current-teacher-id=""
+                                                        data-current-teacher-id="<?php echo $item['assigned_teacher_id']; ?>"
                                                         data-chosen-codes="<?php echo htmlspecialchars($chosen_codes_json, ENT_QUOTES, 'UTF-8'); ?>"
                                                         onclick="event.stopPropagation(); openAssignModalFromButton(this)">
                                                     <i class="fas fa-user-plus"></i> 分配
                                                 </button>
                                                 <?php endif; ?>
+                                                
                                                 <?php if (!empty($item['assigned_teacher_id'])): ?>
                                                 <button class="assign-btn" style="background: #17a2b8;" onclick="event.stopPropagation(); openContactLogsModal(<?php echo $item['id']; ?>, '<?php echo htmlspecialchars($item['name']); ?>')">
                                                     <i class="fas fa-address-book"></i> 查看聯絡紀錄
@@ -1227,7 +1173,6 @@ try {
                                                         <h4 style="margin: 0 0 10px 0; font-size: 16px;">其他資訊</h4>
                                                         <table style="width: 100%; border-collapse: collapse; font-size: 14px;">
                                                             <?php if ($is_imd_user): ?>
-                                                            <!-- IM 用戶顯示所有 IM 志願 -->
                                                             <?php if ($intention1_code === 'IM' && !empty($intention1_name)): ?>
                                                             <tr>
                                                                 <td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5; width: 120px;">第一志願</td>
@@ -1247,7 +1192,6 @@ try {
                                                             </tr>
                                                             <?php endif; ?>
                                                             <?php elseif ($is_director && !empty($user_department_code)): ?>
-                                                            <!-- 主任只顯示自己科系的志願 -->
                                                             <?php if ($intention1_code === $user_department_code && !empty($intention1_name)): ?>
                                                             <tr>
                                                                 <td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5; width: 120px;">第一志願</td>
@@ -1267,7 +1211,6 @@ try {
                                                             </tr>
                                                             <?php endif; ?>
                                                             <?php else: ?>
-                                                            <!-- 一般用戶顯示所有志願 -->
                                                             <tr>
                                                                 <td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5; width: 120px;">第一志願</td>
                                                                 <td style="padding: 5px; border: 1px solid #ddd;"><?php echo $display_text1; ?></td>
@@ -1308,7 +1251,6 @@ try {
                             </table>
                         <?php endif; ?>
                     </div>
-                    <!-- 分頁控制 -->
                     <?php if (!empty($enrollments)): ?>
                     <div class="pagination">
                         <div class="pagination-info">
@@ -1382,14 +1324,33 @@ try {
     </div>
     <?php endif; ?>
 
-    <?php if ($is_department_user): ?>
+    <?php if ($is_department_user || $is_admission_center): ?>
     <div id="contactLogsModal" class="contact-log-modal" style="display: none;">
         <div class="modal-content">
             <div class="modal-header">
-                <h3>聯絡紀錄 - <span id="contactLogStudentName"></span></h3>
+                <h3>詳細資料 - <span id="contactLogStudentName"></span></h3>
                 <span class="close" onclick="closeContactLogsModal()">&times;</span>
             </div>
             <div class="modal-body">
+                <div id="assignmentInfo" style="background: #f5f7fa; padding: 15px; border-radius: 8px; margin-bottom: 20px; border-left: 4px solid #17a2b8; display: none;">
+                    <h4 style="margin: 0 0 10px 0; color: #333; font-size: 16px; border-bottom: 1px solid #e8e8e8; padding-bottom: 8px;">
+                        <i class="fas fa-sitemap"></i> 目前分配狀態
+                    </h4>
+                    <div style="display: flex; gap: 20px;">
+                        <div style="flex: 1;">
+                            <span style="color: #666; font-size: 13px;">分配科系</span><br>
+                            <strong id="detailDeptName" style="font-size: 15px; color: #1890ff;">-</strong>
+                        </div>
+                        <div style="flex: 1;">
+                            <span style="color: #666; font-size: 13px;">負責老師</span><br>
+                            <strong id="detailTeacherName" style="font-size: 15px; color: #1890ff;">-</strong>
+                        </div>
+                    </div>
+                </div>
+
+                <h4 style="margin: 0 0 12px 0; color: #333; font-size: 16px;">
+                    <i class="fas fa-history"></i> 聯絡紀錄
+                </h4>
                 <div id="contactLogsList" class="contact-log-loading">
                     <i class="fas fa-spinner fa-spin"></i> 載入中...
                 </div>
@@ -2036,11 +1997,43 @@ try {
     // 聯絡紀錄相關變數
     let currentContactLogStudentId = null;
 
-    // 開啟聯絡紀錄模態視窗
+    // 開啟聯絡紀錄模態視窗 (原本的函數)
     function openContactLogsModal(studentId, studentName) {
         currentContactLogStudentId = studentId;
         document.getElementById('contactLogStudentName').textContent = studentName;
+        
+        // 隱藏分配資訊區塊 (如果是老師介面點進來的，通常不需要看這個)
+        const assignmentInfo = document.getElementById('assignmentInfo');
+        if (assignmentInfo) {
+            assignmentInfo.style.display = 'none'; 
+        }
+
         document.getElementById('contactLogsModal').style.display = 'flex';
+        loadContactLogs(studentId);
+    }
+
+    // 新增：開啟詳細資料視窗 (招生中心用，包含分配資訊與聯絡紀錄)
+    function openDetailsModal(button) {
+        const studentId = button.getAttribute('data-student-id');
+        const studentName = button.getAttribute('data-student-name');
+        const deptName = button.getAttribute('data-dept-name');
+        const teacherName = button.getAttribute('data-teacher-name');
+
+        // 設定學生姓名
+        document.getElementById('contactLogStudentName').textContent = studentName;
+        document.getElementById('detailDeptName').textContent = deptName;
+        document.getElementById('detailTeacherName').textContent = teacherName;
+        
+        // 顯示分配資訊區塊 (強制顯示給招生中心看)
+        const assignmentInfo = document.getElementById('assignmentInfo');
+        if (assignmentInfo) {
+            assignmentInfo.style.display = 'block';
+        }
+
+        // 顯示 Modal
+        document.getElementById('contactLogsModal').style.display = 'flex';
+        
+        // 載入聯絡紀錄 (重用原本的函數)
         loadContactLogs(studentId);
     }
 
@@ -2079,7 +2072,6 @@ try {
                         </div>
                     `;
                 } else {
-                    // 修改這裡的 HTML 結構以配合新的 CSS
                     logsList.innerHTML = data.logs.map(log => {
                         const contactDate = log.contact_date || log.created_at?.split(' ')[0] || '未知';
                         const method = log.method || '未知';
@@ -2108,7 +2100,6 @@ try {
                     }).join('');
                 }
             } else {
-                // ... Error handling remains the same ...
                 logsList.innerHTML = `
                     <div class="contact-log-empty">
                         <i class="fas fa-exclamation-triangle fa-3x" style="margin-bottom: 16px; color: #ff9800;"></i>
@@ -2117,7 +2108,6 @@ try {
                 `;
             }
         } catch (error) {
-             // ... Error handling remains the same ...
              console.error('載入聯絡紀錄錯誤:', error);
              logsList.innerHTML = `
                 <div class="contact-log-empty">
@@ -2147,7 +2137,7 @@ try {
     }
 
     // 點擊聯絡紀錄模態視窗外部關閉
-    <?php if ($is_department_user): ?>
+    <?php if ($is_department_user || $is_admission_center): ?>
     document.getElementById('contactLogsModal').addEventListener('click', function(e) {
         if (e.target === this) {
             closeContactLogsModal();
