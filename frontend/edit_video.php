@@ -1,5 +1,5 @@
 <?php
-session_start();
+require_once __DIR__ . '/session_config.php';
 
 // 檢查是否已登入
 if (!isset($_SESSION['admin_logged_in']) || !$_SESSION['admin_logged_in']) {
@@ -358,9 +358,14 @@ $page_title = $is_edit && $video ? '編輯影片' : '新增影片';
                             </div>
                             <input type="file" id="thumbnail_file" name="thumbnail_file" class="file-input" accept="image/*">
                             <?php if (isset($video['thumbnail_url']) && !empty($video['thumbnail_url'])): ?>
+                                <?php
+                                    $thumbSrc = preg_match('/^https?:\/\//i', $video['thumbnail_url'])
+                                        ? $video['thumbnail_url']
+                                        : '/Topics-frontend/frontend/' . ltrim($video['thumbnail_url'], '/');
+                                ?>
                                 <div class="preview-container">
                                     <div style="margin-bottom:4px;font-size:12px;color:#666">目前縮圖：</div>
-                                    <img src="../../Topics-frontend/frontend/<?php echo htmlspecialchars($video['thumbnail_url']); ?>" alt="縮圖預覽" class="preview-image">
+                                    <img src="<?php echo htmlspecialchars($thumbSrc); ?>" alt="縮圖預覽" class="preview-image">
                                 </div>
                             <?php endif; ?>
                             <div id="thumbnailPreview" class="preview-container"></div>

@@ -1,5 +1,6 @@
 <?php
-session_start();
+// 使用共用的 Session 設定，確保與登入時同一個 session 名稱
+require_once __DIR__ . '/session_config.php';
 
 // 檢查登入狀態
 if (!isset($_SESSION['user_id']) || !isset($_SESSION['role'])) {
@@ -14,6 +15,23 @@ require_once '../../Topics-frontend/frontend/config.php';
 $user_id = $_SESSION['user_id'] ?? 0;
 $user_role = $_SESSION['role'] ?? '';
 $username = $_SESSION['username'] ?? '';
+
+// 將中文或舊代碼統一成標準代碼，避免權限判斷失敗
+$role_map = [
+    '管理員' => 'ADM',
+    'admin' => 'ADM',
+    'Admin' => 'ADM',
+    '行政人員' => 'STA',
+    '主任'   => 'DI',
+    '老師'   => 'TEA',
+    '招生中心組員' => 'STAM',
+    '資管科主任' => 'IM',
+    '科助'   => 'AS'
+];
+if (isset($role_map[$user_role])) {
+    $user_role = $role_map[$user_role];
+}
+
 
 // 權限判斷
 $is_admin = ($user_role === 'ADM');
@@ -264,6 +282,54 @@ $conn->close();
             border-color: #1890ff;
             box-shadow: 0 0 0 2px rgba(24,144,255,0.2);
         }
+        
+        /* 分頁樣式 */
+        .pagination {
+            padding: 16px 24px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-top: 1px solid var(--border-color);
+            background: #fafafa;
+        }
+        .pagination-info {
+            font-size: 14px;
+            color: var(--text-secondary-color);
+        }
+        .pagination-controls {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+        }
+        .pagination a, .pagination span {
+            padding: 6px 12px;
+            border: 1px solid #d9d9d9;
+            background: #fff;
+            color: #595959;
+            border-radius: 6px;
+            text-decoration: none;
+            font-size: 14px;
+            transition: all 0.3s;
+        }
+        .pagination a:hover {
+            border-color: #1890ff;
+            color: #1890ff;
+        }
+        .pagination span.active {
+            background: #1890ff;
+            color: white;
+            border-color: #1890ff;
+        }
+        .pagination span.disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            background: #f5f5f5;
+        }
+        .search-input:focus {
+            outline: none;
+            border-color: #1890ff;
+            box-shadow: 0 0 0 2px rgba(24,144,255,0.2);
+        }
 
         .empty-state { text-align: center; padding: 40px; color: var(--text-secondary-color); }
         .empty-state i { font-size: 48px; margin-bottom: 16px; color: #d9d9d9; }
@@ -365,23 +431,50 @@ $conn->close();
                         <?php endif; ?>
                     </div>
 
-                    <!-- 分頁 -->
-                    <?php if ($total_pages > 1): ?>
+                    <!-- 分頁控制 -->
                     <div class="pagination">
                         <div class="pagination-info">
                             顯示第 <?php echo ($page - 1) * $per_page + 1; ?>-<?php echo min($page * $per_page, $total_departments); ?> 筆，共 <?php echo $total_departments; ?> 筆
                         </div>
                         <div class="pagination-controls">
-                            <button onclick="goToPage(<?php echo max(1, $page - 1); ?>)" <?php echo $page <= 1 ? 'disabled' : ''; ?>>
-                                <i class="fas fa-chevron-left"></i> 上一頁
-                            </button>
-                            <span style="padding: 6px 12px;">第 <?php echo $page; ?> / <?php echo $total_pages; ?> 頁</span>
-                            <button onclick="goToPage(<?php echo min($total_pages, $page + 1); ?>)" <?php echo $page >= $total_pages ? 'disabled' : ''; ?>>
-                                下一頁 <i class="fas fa-chevron-right"></i>
-                            </button>
+                            <?php if ($page > 1): ?>
+                                <a href="?<?php echo http_build_query(array_merge($_GET, ['page' => 1])); ?>">首頁</a>
+                                <a href="?<?php echo http_build_query(array_merge($_GET, ['page' => $page - 1])); ?>">上一頁</a>
+                            <?php else: ?>
+                                <span class="disabled">首頁</span>
+                                <span class="disabled">上一頁</span>
+                            <?php endif; ?>
+
+                        <?php
+                        $startPage = max(1, $page - 2);
+                        $endPage = min($total_pages, $page + 2);
+                        
+                        if ($startPage > 1) {
+                            echo '<span>...</span>';
+                        }
+                        
+                        for ($i = $startPage; $i <= $endPage; $i++) {
+                            if ($i == $page) {
+                                echo '<span class="active">' . $i . '</span>';
+                            } else {
+                                echo '<a href="?' . http_build_query(array_merge($_GET, ['page' => $i])) . '">' . $i . '</a>';
+                            }
+                        }
+                        
+                        if ($endPage < $total_pages) {
+                            echo '<span>...</span>';
+                        }
+                        ?>
+
+                            <?php if ($page < $total_pages): ?>
+                                <a href="?<?php echo http_build_query(array_merge($_GET, ['page' => $page + 1])); ?>">下一頁</a>
+                                <a href="?<?php echo http_build_query(array_merge($_GET, ['page' => $total_pages])); ?>">末頁</a>
+                            <?php else: ?>
+                                <span class="disabled">下一頁</span>
+                                <span class="disabled">末頁</span>
+                            <?php endif; ?>
                         </div>
                     </div>
-                    <?php endif; ?>
                 </div>
             </div>
         </div>

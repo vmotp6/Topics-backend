@@ -1,5 +1,5 @@
 <?php
-session_start();
+require_once __DIR__ . '/session_config.php';
 
 // 檢查登入狀態
 if (!isset($_SESSION['user_id']) || !isset($_SESSION['role'])) {

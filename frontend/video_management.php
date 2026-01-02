@@ -1,5 +1,5 @@
 <?php
-session_start();
+require_once __DIR__ . '/session_config.php';
 
 // 檢查是否已登入
 if (!isset($_SESSION['admin_logged_in']) || !$_SESSION['admin_logged_in']) {
@@ -317,7 +317,7 @@ $conn->close();
         }
         
         /* 狀態標籤 */
-        .status-badge { padding: 4px 8px; border-radius: 4px; font-size: 12px; font-weight: 500; }
+        .status-badge { padding: 4px 8px; border-radius: 4px; font-size: 12px; font-weight: 500; white-space: nowrap; }
         .status-badge.published { background: #f6ffed; color: var(--success-color); border: 1px solid #b7eb8f; }
         .status-badge.draft { background: #fff7e6; color: #faad14; border: 1px solid #ffd591; }
 
@@ -338,11 +338,19 @@ $conn->close();
         .pagination {
             padding: 16px 24px;
             display: flex;
-            justify-content: center;
+            justify-content: space-between;
             align-items: center;
             border-top: 1px solid var(--border-color);
             background: #fafafa;
+        }
+        .pagination-info {
+            font-size: 14px;
+            color: var(--text-secondary-color);
+        }
+        .pagination-controls {
+            display: flex;
             gap: 8px;
+            align-items: center;
         }
         .pagination a, .pagination span {
             padding: 6px 12px;
@@ -475,7 +483,12 @@ $conn->close();
                                         <tr>
                                             <td>
                                                 <?php if (!empty($video['thumbnail_url'])): ?>
-                                                    <img src="../../Topics-frontend/frontend/<?php echo htmlspecialchars($video['thumbnail_url']); ?>" alt="縮圖" class="thumbnail-preview">
+                                                    <?php
+                                                        $thumbSrc = preg_match('/^https?:\/\//i', $video['thumbnail_url'])
+                                                            ? $video['thumbnail_url']
+                                                            : '/Topics-frontend/frontend/' . ltrim($video['thumbnail_url'], '/');
+                                                    ?>
+                                                    <img src="<?php echo htmlspecialchars($thumbSrc); ?>" alt="縮圖" class="thumbnail-preview">
                                                 <?php else: ?>
                                                     <div class="thumbnail-preview" style="display: flex; align-items: center; justify-content: center; background: #eee; color: #999;">
                                                         <i class="fas fa-image"></i>
@@ -515,15 +528,18 @@ $conn->close();
                             </table>
                         </div>
 
-                        <?php if ($totalPages > 1): ?>
-                            <div class="pagination">
-                                <?php if ($page > 1): ?>
-                                    <a href="?<?php echo http_build_query(array_merge($_GET, ['page' => 1])); ?>">首頁</a>
-                                    <a href="?<?php echo http_build_query(array_merge($_GET, ['page' => $page - 1])); ?>">上一頁</a>
-                                <?php else: ?>
-                                    <span class="disabled">首頁</span>
-                                    <span class="disabled">上一頁</span>
-                                <?php endif; ?>
+                        <div class="pagination">
+                            <div class="pagination-info">
+                                顯示第 <?php echo ($page - 1) * $perPage + 1; ?>-<?php echo min($page * $perPage, $total); ?> 筆，共 <?php echo $total; ?> 筆
+                            </div>
+                            <div class="pagination-controls">
+                                    <?php if ($page > 1): ?>
+                                        <a href="?<?php echo http_build_query(array_merge($_GET, ['page' => 1])); ?>">首頁</a>
+                                        <a href="?<?php echo http_build_query(array_merge($_GET, ['page' => $page - 1])); ?>">上一頁</a>
+                                    <?php else: ?>
+                                        <span class="disabled">首頁</span>
+                                        <span class="disabled">上一頁</span>
+                                    <?php endif; ?>
 
                                 <?php
                                 $startPage = max(1, $page - 2);
@@ -546,15 +562,15 @@ $conn->close();
                                 }
                                 ?>
 
-                                <?php if ($page < $totalPages): ?>
-                                    <a href="?<?php echo http_build_query(array_merge($_GET, ['page' => $page + 1])); ?>">下一頁</a>
-                                    <a href="?<?php echo http_build_query(array_merge($_GET, ['page' => $totalPages])); ?>">末頁</a>
-                                <?php else: ?>
-                                    <span class="disabled">下一頁</span>
-                                    <span class="disabled">末頁</span>
-                                <?php endif; ?>
-                            </div>
-                        <?php endif; ?>
+                                    <?php if ($page < $totalPages): ?>
+                                        <a href="?<?php echo http_build_query(array_merge($_GET, ['page' => $page + 1])); ?>">下一頁</a>
+                                        <a href="?<?php echo http_build_query(array_merge($_GET, ['page' => $totalPages])); ?>">末頁</a>
+                                    <?php else: ?>
+                                        <span class="disabled">下一頁</span>
+                                        <span class="disabled">末頁</span>
+                                    <?php endif; ?>
+                                </div>
+                        </div>
                     <?php endif; ?>
                 </div>
             </div>

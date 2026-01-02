@@ -10,6 +10,19 @@ require_once '../../Topics-frontend/frontend/config.php';
 $user_id = $_SESSION['user_id'] ?? 0;
 $user_role = $_SESSION['role'] ?? '';
 
+// 統一角色代碼，避免使用中文或舊值時權限誤判
+$role_map = [
+    '管理員' => 'ADM',
+    'admin' => 'ADM',
+    'Admin' => 'ADM',
+    '行政人員' => 'STA',
+    '主任'   => 'DI'
+];
+if (isset($role_map[$user_role])) {
+    $user_role = $role_map[$user_role];
+}
+
+
 // 權限判斷
 $is_admin = ($user_role === 'ADM');
 $is_staff = ($user_role === 'STA');

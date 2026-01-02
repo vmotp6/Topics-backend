@@ -1,6 +1,5 @@
 <?php
 require_once __DIR__ . '/session_config.php';
-
 checkBackendLogin();
 
 // 引入資料庫設定

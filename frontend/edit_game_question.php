@@ -1,6 +1,29 @@
 <?php
-session_start();
-if (!isset($_SESSION['admin_logged_in'])) { header("Location: login.php"); exit; }
+require_once __DIR__ . '/session_config.php';
+
+checkBackendLogin();
+
+// 獲取使用者角色並統一代碼
+$user_role = $_SESSION['role'] ?? '';
+$role_map = [
+    '管理員' => 'ADM',
+    'admin' => 'ADM',
+    '行政人員' => 'STA',
+    '學校行政人員' => 'STA'
+];
+if (isset($role_map[$user_role])) {
+    $user_role = $role_map[$user_role];
+}
+
+// 檢查權限：只有管理員和行政人員可以訪問
+$is_admin = ($user_role === 'ADM');
+$is_staff = ($user_role === 'STA');
+
+if (!($is_admin || $is_staff)) {
+    header("Location: index.php");
+    exit;
+}
+
 require_once '../../Topics-frontend/frontend/config.php';
 $conn = getDatabaseConnection();
 
