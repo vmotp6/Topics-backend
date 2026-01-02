@@ -75,11 +75,12 @@ if ($teacher_id > 0) {
     // 查詢特定教師的活動記錄
     $activity_records = [];
     $teacher_name = '';
-    $records_sql = "SELECT ar.*, u.name AS teacher_name, t.department AS teacher_department,
+    $records_sql = "SELECT ar.*, COALESCE(u.name, u2.name) AS teacher_name, t.department AS teacher_department,
                            at.name AS activity_type_name, sd.name AS school_name
                     FROM activity_records ar
                     LEFT JOIN teacher t ON ar.teacher_id = t.user_id
                     LEFT JOIN user u ON t.user_id = u.id
+                    LEFT JOIN user u2 ON ar.teacher_id = u2.id
                     LEFT JOIN activity_types at ON ar.activity_type = at.ID
                     LEFT JOIN school_data sd ON ar.school = sd.school_code
                     WHERE ar.teacher_id = ? $department_filter
@@ -111,11 +112,12 @@ if ($teacher_id > 0) {
 
     // 為了統計圖表，獲取所有活動記錄
     $all_activity_records = [];
-    $all_records_sql = "SELECT ar.*, u.name AS teacher_name, COALESCE(d.name, t.department) AS teacher_department, at.name AS activity_type_name, COALESCE(sd.name, ar.school) AS school_name
+    $all_records_sql = "SELECT ar.*, COALESCE(u.name, u2.name) AS teacher_name, COALESCE(d.name, t.department) AS teacher_department, at.name AS activity_type_name, COALESCE(sd.name, ar.school) AS school_name
                         FROM activity_records ar
                         LEFT JOIN teacher t ON ar.teacher_id = t.user_id
                         LEFT JOIN departments d ON t.department = d.code
                         LEFT JOIN user u ON t.user_id = u.id
+                        LEFT JOIN user u2 ON ar.teacher_id = u2.id
                         LEFT JOIN activity_types at ON ar.activity_type = at.ID
                         LEFT JOIN school_data sd ON ar.school = sd.school_code
                         WHERE 1=1 $department_filter
