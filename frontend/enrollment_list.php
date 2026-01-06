@@ -1,4 +1,5 @@
 <?php
+// [修改] 檔案：Topics-backend/frontend/enrollment_list.php
 require_once __DIR__ . '/session_config.php';
 
 checkBackendLogin();
@@ -34,13 +35,14 @@ if (!function_exists('getDatabaseConnection')) {
 
 // 初始化變數
 $enrollments = [];
-$teachers = []; // 將用於儲存主任名單
-$departments = []; // 將用於儲存可分配的部門列表（招生中心使用）
+$teachers = [];
+$departments = [];
 $identity_options = [];
 $school_data = [];
 $error_message = '';
 $new_enrollments_count = 0; 
 $user_id = $_SESSION['user_id'] ?? 0;
+$history_years = []; 
 
 // 獲取使用者角色和用戶名
 $username = isset($_SESSION['username']) ? $_SESSION['username'] : '';
@@ -56,7 +58,6 @@ $is_director = ($user_role === 'DI');
 if ($user_role === 'TEA' || $user_role === 'DI') { 
     try {
         $conn_temp = getDatabaseConnection();
-        // 優先從 director 表獲取部門代碼（主任）
         if ($is_director) {
             $table_check = $conn_temp->query("SHOW TABLES LIKE 'director'");
             if ($table_check && $table_check->num_rows > 0) {
@@ -65,7 +66,6 @@ if ($user_role === 'TEA' || $user_role === 'DI') {
                 $stmt_dept = $conn_temp->prepare("SELECT department FROM teacher WHERE user_id = ?");
             }
         } else {
-            // 從 teacher 表格獲取部門代碼
             $stmt_dept = $conn_temp->prepare("SELECT department FROM teacher WHERE user_id = ?");
         }
         $stmt_dept->bind_param("i", $user_id);
@@ -73,7 +73,6 @@ if ($user_role === 'TEA' || $user_role === 'DI') {
         $result_dept = $stmt_dept->get_result();
         if ($row = $result_dept->fetch_assoc()) {
             $user_department_code = $row['department'];
-            // 只要有部門代碼，就視為部門推廣人員
             if (!empty($user_department_code)) { 
                  $is_department_user = true; 
             }
@@ -85,12 +84,19 @@ if ($user_role === 'TEA' || $user_role === 'DI') {
     }
 }
 
-// 部門專屬判斷 (使用標準部門代碼 IM/AF)
 $is_imd_user = ($user_department_code === 'IM'); 
 $is_fld_user = ($user_department_code === 'AF'); 
-
-// 判斷是否為招生中心/行政人員（負責分配部門）
 $is_admission_center = $is_admin_or_staff && !$is_department_user;
+
+// ==========================================
+// [新增] 處理分頁與歷史資料邏輯
+// ==========================================
+$view_mode = $_GET['view'] ?? 'active'; 
+$selected_year = isset($_GET['year']) ? (int)$_GET['year'] : 0;
+
+$current_month = (int)date('m');
+$current_year = (int)date('Y');
+$grad_threshold_year = ($current_month >= 8) ? $current_year : $current_year - 1;
 
 // 設置頁面標題
 if ($is_imd_user) {
@@ -101,11 +107,14 @@ if ($is_imd_user) {
     $page_title = '就讀意願名單';
 }
 
+if ($view_mode === 'history') {
+    $page_title .= ' (歷史資料)';
+}
+
 // 排序參數
 $sortBy = $_GET['sort_by'] ?? 'created_at';
 $sortOrder = $_GET['sort_order'] ?? 'desc';
 
-// 驗證排序參數，防止 SQL 注入
 $allowed_columns = ['id', 'name', 'junior_high', 'assigned_department', 'created_at'];
 if (!in_array($sortBy, $allowed_columns)) {
     $sortBy = 'created_at';
@@ -114,7 +123,7 @@ if (!in_array(strtolower($sortOrder), ['asc', 'desc'])) {
     $sortOrder = 'desc';
 }
 
-// 基礎 SELECT 語句：新增三個志願的名稱、學制名稱和【科系代碼】，以及【分配時間與志願序】
+// 基礎 SELECT
 $base_select = "
     SELECT 
         ei.*, 
@@ -128,20 +137,16 @@ $base_select = "
         es3.name AS system3_name
 ";
 
-// 基礎 JOIN 語句：分別為三個志願連線 enrollment_choices, departments, education_systems
 $base_from_join = "
     FROM enrollment_intention ei
     LEFT JOIN user u ON ei.assigned_teacher_id = u.id
     LEFT JOIN teacher t ON u.id = t.user_id
-    /* Join for Choice 1 */
     LEFT JOIN enrollment_choices ec1 ON ei.id = ec1.enrollment_id AND ec1.choice_order = 1
     LEFT JOIN departments d1 ON ec1.department_code = d1.code
     LEFT JOIN education_systems es1 ON ec1.system_code = es1.code
-    /* Join for Choice 2 */
     LEFT JOIN enrollment_choices ec2 ON ei.id = ec2.enrollment_id AND ec2.choice_order = 2
     LEFT JOIN departments d2 ON ec2.department_code = d2.code
     LEFT JOIN education_systems es2 ON ec2.system_code = es2.code
-    /* Join for Choice 3 */
     LEFT JOIN enrollment_choices ec3 ON ei.id = ec3.enrollment_id AND ec3.choice_order = 3
     LEFT JOIN departments d3 ON ec3.department_code = d3.code
     LEFT JOIN education_systems es3 ON ec3.system_code = es3.code
@@ -149,11 +154,40 @@ $base_from_join = "
 
 $order_by = " ORDER BY ei.$sortBy $sortOrder";
 
+// [修正 A] 將函數定義移到這裡 (try 之前)
+function getDynamicGradeText($grad_year, $static_grade_code, $options) {
+    if (empty($grad_year)) {
+        if (empty($static_grade_code)) return '未提供';
+        $original_text = (is_array($options) && isset($options[$static_grade_code])) ? htmlspecialchars($options[$static_grade_code]) : $static_grade_code;
+        return $original_text . ' <span style="font-size:12px; color:#999;">(舊資料)</span>';
+    }
+
+    $current_month = (int)date('m');
+    $current_year = (int)date('Y');
+    $this_year_grad = ($current_month >= 8) ? $current_year + 1 : $current_year;
+    $diff = $grad_year - $this_year_grad;
+    
+    if ($diff == 0) return '<span style="font-weight:bold; color:#1890ff;">國三 (應屆)</span>';
+    if ($diff == 1) return '國二';
+    if ($diff == 2) return '國一';
+    if ($diff < 0) return '<span style="color:#ff4d4f; font-weight:bold;">已畢業</span>';
+    return '國小或其他';
+}
+
+function getSchoolName($code, $schools) {
+    if (isset($schools[$code]) && $schools[$code] !== '') return htmlspecialchars($schools[$code]);
+    return '未提供';
+}
+
+function getDepartmentName($code, $departments) {
+    if (isset($departments[$code]) && $departments[$code] !== '') return htmlspecialchars($departments[$code]);
+    return $code;
+}
+
 try {
-    // 建立資料庫連接
     $conn = getDatabaseConnection();
 
-    // 載入身分別/年級與學校對應表，避免在列表中顯示原始代碼
+    // 載入身分別與學校
     $identity_result = $conn->query("SELECT code, name FROM identity_options");
     if ($identity_result) {
         while ($row = $identity_result->fetch_assoc()) {
@@ -168,7 +202,6 @@ try {
         }
     }
 
-    // 載入科系對應表，用於將科系代碼轉換為科系名稱
     $department_data = [];
     $dept_result = $conn->query("SELECT code, name FROM departments");
     if ($dept_result) {
@@ -176,65 +209,47 @@ try {
             $department_data[$row['code']] = $row['name'];
         }
     }
-
-    // 輔助函數：轉換代碼為文字（避免直接顯示代碼）
-    function getGenderText($code) {
-        if ($code === 1 || $code === '1' || $code === '男') return '男';
-        if ($code === 2 || $code === '2' || $code === '女') return '女';
-        return '未提供';
-    }
-
-    function getIdentityText($code, $options) {
-        if (isset($options[$code]) && $options[$code] !== '') {
-            return htmlspecialchars($options[$code]);
+    
+    $years_sql = "SELECT DISTINCT graduation_year FROM enrollment_intention WHERE graduation_year <= ? AND graduation_year IS NOT NULL ORDER BY graduation_year DESC";
+    $stmt_years = $conn->prepare($years_sql);
+    if ($stmt_years) {
+        $stmt_years->bind_param("i", $grad_threshold_year);
+        $stmt_years->execute();
+        $res_years = $stmt_years->get_result();
+        while($y_row = $res_years->fetch_assoc()) {
+            $history_years[] = $y_row['graduation_year'];
         }
-        if ($code === 1 || $code === '1') return '學生';
-        if ($code === 2 || $code === '2') return '家長';
-        return '未提供';
+        $stmt_years->close();
     }
 
-    function getSchoolName($code, $schools) {
-        if (isset($schools[$code]) && $schools[$code] !== '') {
-            return htmlspecialchars($schools[$code]);
-        }
-        return '未提供';
-    }
-
-    function getDepartmentName($code, $departments) {
-        if (isset($departments[$code]) && $departments[$code] !== '') {
-            return htmlspecialchars($departments[$code]);
-        }
-        return $code; // 如果找不到名稱，返回代碼
-    }
-
-    // 根據用戶權限決定 WHERE 條件
-    $where_clause = '';
-
+    // 權限 WHERE 條件
+    $perm_where = " WHERE 1=1 ";
     if ($is_director && !empty($user_department_code)) {
-        // 主任只能看到被分配給他的科系的記錄（assigned_department 等於他的科系）
-        // 不可以看到沒有被分配的記錄
-        $where_clause = " WHERE ei.assigned_department = ? ";
+        $perm_where .= " AND ei.assigned_department = ? ";
     } elseif ($is_imd_user) {
-        // IM用戶（老師）看到所有選擇 IM 的記錄，或者被分配到 IM 部門的記錄
-        $where_clause = "
-            WHERE (ec1.department_code = 'IM' OR ec2.department_code = 'IM' OR ec3.department_code = 'IM') 
-            OR ei.assigned_department = 'IM' 
-        ";
+        $perm_where .= " AND ((ec1.department_code = 'IM' OR ec2.department_code = 'IM' OR ec3.department_code = 'IM') OR ei.assigned_department = 'IM') ";
     } elseif ($is_fld_user) {
-        // AF用戶（老師）看到所有選擇 AF 的記錄，或者被分配到 AF 部門的記錄
-        $where_clause = "
-            WHERE (ec1.department_code = 'AF' OR ec2.department_code = 'AF' OR ec3.department_code = 'AF') 
-            OR ei.assigned_department = 'AF'
-        ";
+        $perm_where .= " AND ((ec1.department_code = 'AF' OR ec2.department_code = 'AF' OR ec3.department_code = 'AF') OR ei.assigned_department = 'AF') ";
+    }
+
+    // 狀態 WHERE 條件
+    $status_where = "";
+    if ($view_mode === 'history') {
+        if ($selected_year > 0) {
+            $status_where = " AND ei.graduation_year = " . intval($selected_year);
+        } else {
+            $status_where = " AND (ei.graduation_year <= $grad_threshold_year)";
+        }
+    } else {
+        $status_where = " AND (ei.graduation_year > $grad_threshold_year OR ei.graduation_year IS NULL)";
     }
     
-    // 組合最終查詢語句
-    $sql = $base_select . $base_from_join . $where_clause . $order_by;
+    // 組合最終 SQL
+    $sql = $base_select . $base_from_join . $perm_where . $status_where . $order_by;
     
     $stmt = $conn->prepare($sql);
     
     if ($stmt) {
-        // 如果是主任，需要綁定參數
         if ($is_director && !empty($user_department_code)) {
             $stmt->bind_param("s", $user_department_code);
         }
@@ -251,12 +266,9 @@ try {
          throw new Exception('準備查詢語句失敗: ' . $conn->error);
     }
 
-
-    // 檢查是否有新的就讀意願（最近1小時內）
     $new_enrollments = [];
-    $one_hour_ago_timestamp = strtotime('-1 hour');
-    
-    if (!empty($enrollments)) {
+    if ($view_mode === 'active' && !empty($enrollments)) {
+        $one_hour_ago_timestamp = strtotime('-1 hour');
         foreach ($enrollments as $enrollment) {
             if (isset($enrollment['created_at']) && !empty($enrollment['created_at'])) {
                 $created_timestamp = strtotime($enrollment['created_at']);
@@ -268,14 +280,11 @@ try {
         }
     }
 
-    // 獲取老師列表 (用於分配)
     if ($is_department_user) {
-        // 如果是主任，獲取自己科系的所有老師（包括主任和一般老師）
         if ($is_director && !empty($user_department_code)) {
             $table_check = $conn->query("SHOW TABLES LIKE 'director'");
             $director_join = $table_check && $table_check->num_rows > 0 ? "LEFT JOIN director dir ON u.id = dir.user_id" : "";
             
-            // 獲取該科系的所有老師（包括主任和一般老師），但不包括自己
             $teacher_stmt = $conn->prepare(
                 "SELECT DISTINCT u.id, u.username, u.name, 
                     COALESCE(dir.department, t.department) AS department_code, 
@@ -301,19 +310,17 @@ try {
                 }
             }
         } else {
-            // 如果是老師，獲取所有主任（用於分配給主任）
             $table_check = $conn->query("SHOW TABLES LIKE 'director'");
             $director_join = $table_check && $table_check->num_rows > 0 ? "LEFT JOIN director dir ON u.id = dir.user_id" : "";
             $department_select = $table_check && $table_check->num_rows > 0 ? "dir.department" : "t.department";
 
-            // 獲取所有主任，並連線到 departments 表獲取科系名稱
             $director_stmt = $conn->prepare(
                 "SELECT u.id, u.username, u.name, {$department_select} AS department_code, dep.name AS department_name, u.role\n"
                 . "FROM user u\n"
                 . "LEFT JOIN teacher t ON u.id = t.user_id\n"
                 . $director_join . "\n"
                 . "LEFT JOIN departments dep ON {$department_select} = dep.code\n"
-                . "WHERE u.role = 'DI' OR u.username = 'IMD' /* 確保 IMD 帳號（若存在於 user 表）也被抓到 */\n" 
+                . "WHERE u.role = 'DI' OR u.username = 'IMD'\n" 
                 . "ORDER BY u.name ASC"
             );
 
@@ -326,8 +333,6 @@ try {
         }
     }
 
-    // 如果使用者為招生中心，載入所有部門清單及對應的主任（用於前端動態過濾）
-    // 實際顯示時會根據學生的 enrollment_choices 來過濾
     if ($is_admission_center) {
         $table_check = $conn->query("SHOW TABLES LIKE 'director'");
         $director_join = $table_check && $table_check->num_rows > 0 ? "LEFT JOIN director dir ON dir.department = d.code" : "";
@@ -379,11 +384,52 @@ try {
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; background: var(--background-color); color: var(--text-color); overflow-x: hidden; }
         .dashboard { display: flex; min-height: 100vh; }
-        .main-content {
-            /* 防止內部過寬的元素撐開主內容區，影響 header */
-            overflow-x: hidden;
-        }
+        .main-content { overflow-x: hidden; }
         .content { padding: 24px; width: 100%; }
+
+        /* Tabs Style */
+        .tabs-container {
+            display: flex;
+            margin-bottom: 16px;
+            border-bottom: 1px solid #d9d9d9;
+            gap: 4px;
+        }
+        .tab-btn {
+            padding: 10px 20px;
+            cursor: pointer;
+            border: 1px solid transparent;
+            border-bottom: none;
+            border-radius: 6px 6px 0 0;
+            background: #fafafa;
+            color: #595959;
+            font-size: 15px;
+            text-decoration: none;
+            transition: all 0.3s;
+        }
+        .tab-btn:hover {
+            color: var(--primary-color);
+            background: #fff;
+        }
+        .tab-btn.active {
+            background: #fff;
+            color: var(--primary-color);
+            border-color: #d9d9d9;
+            border-bottom-color: #fff; /* Blend with content */
+            font-weight: 600;
+            margin-bottom: -1px; /* Overlap border */
+        }
+        .history-filter {
+            margin-left: auto;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .history-select {
+            padding: 6px 12px;
+            border: 1px solid #d9d9d9;
+            border-radius: 4px;
+            font-size: 14px;
+        }
 
         .page-controls { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; gap: 16px; }
         .breadcrumb { margin-bottom: 0; font-size: 16px; color: var(--text-secondary-color); }
@@ -392,463 +438,61 @@ try {
         
         .table-wrapper {
             background: var(--card-background-color);
-            border-radius: 8px;
+            border-radius: 0 8px 8px 8px; /* Top left square for tabs */
             box-shadow: 0 1px 2px rgba(0,0,0,0.03);
             border: 1px solid var(--border-color);
             margin-bottom: 24px;
+            padding-top: 20px;
         }
-
-        .table-container {
-            overflow-x: auto;
-        }
+        /* Other styles similar to before */
+        .table-container { overflow-x: auto; }
         .table { width: 100%; border-collapse: collapse; }
         .table th, .table td { padding: 16px 24px; text-align: left; border-bottom: 1px solid var(--border-color); font-size: 16px; white-space: nowrap; }
-        .table th:first-child, .table td:first-child {
-            padding-left: 60px;
-        }
+        .table th:first-child, .table td:first-child { padding-left: 60px; }
         .table th { background: #fafafa; font-weight: 600; color: #262626; cursor: pointer; user-select: none; position: relative; }
-        .table td {
-            color: #595959;
-        }
+        .table td { color: #595959; }
         .table th:hover { background: #f0f0f0; }
         .sort-icon { margin-left: 8px; font-size: 12px; color: #8c8c8c; }
         .sort-icon.active { color: #1890ff; }
         .sort-icon.asc::after { content: "↑"; }
         .sort-icon.desc::after { content: "↓"; }
         .table tr:hover { background: #fafafa; }
-        
-        /* 分頁樣式 */
-        .pagination {
-            padding: 16px 24px;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            border-top: 1px solid var(--border-color);
-            background: #fafafa;
-        }
-
-        .pagination-info {
-            display: flex;
-            align-items: center;
-            gap: 16px;
-            color: var(--text-secondary-color);
-            font-size: 14px;
-        }
-
-        .pagination-controls {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-        }
-
-        .pagination select {
-            padding: 6px 12px;
-            border: 1px solid #d9d9d9;
-            border-radius: 6px;
-            font-size: 14px;
-            background: #fff;
-            cursor: pointer;
-        }
-
-        .pagination select:focus {
-            outline: none;
-            border-color: #1890ff;
-            box-shadow: 0 0 0 2px rgba(24,144,255,0.2);
-        }
-
-        .pagination button {
-            padding: 6px 12px;
-            border: 1px solid #d9d9d9;
-            background: #fff;
-            color: #595959;
-            border-radius: 6px;
-            cursor: pointer;
-            font-size: 14px;
-            transition: all 0.3s;
-        }
-
-        .pagination button:hover:not(:disabled) {
-            border-color: #1890ff;
-            color: #1890ff;
-        }
-
-        .pagination button:disabled {
-            opacity: 0.5;
-            cursor: not-allowed;
-        }
-
-        .pagination button.active {
-            background: #1890ff;
-            color: white;
-            border-color: #1890ff;
-        }
-        
-        .detail-row {
-            background: #f9f9f9;
-        }
-        
-        .info-row {
-            display: flex;
-            gap: 8px;
-            flex-wrap: wrap;
-            margin-bottom: 4px;
-        }
-        .info-label {
-            font-weight: 600;
-            color: var(--text-secondary-color);
-            min-width: 80px;
-        }
-        .info-value {
-            color: var(--text-color);
-        }
-        
-        .table-row-clickable {
-            cursor: pointer;
-        }
-
-        .search-input {
-            padding: 8px 12px;
-            border: 1px solid #d9d9d9;
-            border-radius: 6px;
-            font-size: 14px;
-            width: 250px;
-            transition: all 0.3s;
-        }
-        .search-input:focus {
-            outline: none;
-            border-color: #1890ff;
-            box-shadow: 0 0 0 2px rgba(24,144,255,0.2);
-        }
-
+        .pagination { padding: 16px 24px; display: flex; justify-content: space-between; align-items: center; border-top: 1px solid var(--border-color); background: #fafafa; }
+        .pagination-info { display: flex; align-items: center; gap: 16px; color: var(--text-secondary-color); font-size: 14px; }
+        .pagination-controls { display: flex; align-items: center; gap: 8px; }
+        .pagination select { padding: 6px 12px; border: 1px solid #d9d9d9; border-radius: 6px; font-size: 14px; background: #fff; cursor: pointer; }
+        .pagination button { padding: 6px 12px; border: 1px solid #d9d9d9; background: #fff; color: #595959; border-radius: 6px; cursor: pointer; font-size: 14px; transition: all 0.3s; }
+        .pagination button:hover:not(:disabled) { border-color: #1890ff; color: #1890ff; }
+        .pagination button:disabled { opacity: 0.5; cursor: not-allowed; }
+        .pagination button.active { background: #1890ff; color: white; border-color: #1890ff; }
+        .detail-row { background: #f9f9f9; }
+        .table-row-clickable { cursor: pointer; }
+        .search-input { padding: 8px 12px; border: 1px solid #d9d9d9; border-radius: 6px; font-size: 14px; width: 250px; transition: all 0.3s; }
+        .search-input:focus { outline: none; border-color: #1890ff; box-shadow: 0 0 0 2px rgba(24,144,255,0.2); }
         .empty-state { text-align: center; padding: 40px; color: var(--text-secondary-color); }
-
-        .assign-btn {
-            background: var(--primary-color);
-            color: white;
-            border: none;
-            padding: 6px 12px;
-            border-radius: 4px;
-            cursor: pointer;
-            font-size: 12px;
-            transition: all 0.3s;
-        }
-        .assign-btn:hover {
-            background: #40a9ff;
-            transform: translateY(-1px);
-        }
-        .assign-btn i {
-            margin-right: 4px;
-        }
-
-        /* 彈出視窗樣式 */
-        .modal {
-            position: fixed;
-            z-index: 1000;
-            left: 0;
-            top: 0;
-            width: 100%;
-            height: 100%;
-            background-color: rgba(0,0,0,0.5);
-            display: flex;
-            align-items: center;
-            justify-content: center;
-        }
-        .modal-content {
-            background-color: white;
-            border-radius: 8px;
-            box-shadow: 0 4px 20px rgba(0,0,0,0.15);
-            width: 90%;
-            max-width: 500px;
-            max-height: 80vh;
-            overflow-y: auto;
-        }
-        .modal-header {
-            padding: 20px;
-            border-bottom: 1px solid var(--border-color);
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-        }
-        .modal-header h3 {
-            margin: 0;
-            color: var(--text-color);
-        }
-        .close {
-            font-size: 24px;
-            font-weight: bold;
-            cursor: pointer;
-            color: var(--text-secondary-color);
-        }
-        .close:hover {
-            color: var(--text-color);
-        }
-        .modal-body {
-            padding: 20px;
-        }
-        .modal-body p {
-            margin-bottom: 16px;
-            font-size: 16px;
-        }
-        .teacher-list h4 {
-            margin-bottom: 12px;
-            color: var(--text-color);
-        }
-        .teacher-options {
-            max-height: 300px;
-            overflow-y: auto;
-        }
-        .teacher-option {
-            display: block;
-            padding: 12px;
-            border: 1px solid var(--border-color);
-            border-radius: 6px;
-            margin-bottom: 8px;
-            cursor: pointer;
-            transition: all 0.3s;
-        }
-        .teacher-option:hover {
-            background-color: #f5f5f5;
-            border-color: var(--primary-color);
-        }
-        .teacher-option input[type="radio"] {
-            margin-right: 12px;
-        }
-        .teacher-info {
-            display: inline-block;
-            vertical-align: top;
-        }
-        .teacher-info strong {
-            display: block;
-            color: var(--text-color);
-            margin-bottom: 4px;
-        }
-        .teacher-dept {
-            color: var(--text-secondary-color);
-            font-size: 14px;
-        }
-        .modal-footer {
-            padding: 20px;
-            border-top: 1px solid var(--border-color);
-            display: flex;
-            justify-content: flex-end;
-            gap: 12px;
-        }
-        .btn-cancel, .btn-confirm {
-            padding: 8px 16px;
-            border: none;
-            border-radius: 4px;
-            cursor: pointer;
-            font-size: 14px;
-            transition: all 0.3s;
-        }
-        .btn-cancel {
-            background-color: #f5f5f5;
-            color: var(--text-color);
-        }
-        .btn-cancel:hover {
-            background-color: #e8e8e8;
-        }
-        .btn-confirm {
-            background-color: var(--primary-color);
-            color: white;
-        }
-        .btn-confirm:hover {
-            background-color: #40a9ff;
-        }
-        
-        /* 聯絡紀錄模態視窗樣式 */
-        .contact-log-modal {
-            position: fixed;
-            z-index: 1000;
-            left: 0;
-            top: 0;
-            width: 100%;
-            height: 100%;
-            background-color: rgba(0,0,0,0.5);
-            display: flex;
-            align-items: center;
-            justify-content: center;
-        }
-        .contact-log-modal .modal-content {
-            background-color: white;
-            border-radius: 12px; 
-            box-shadow: 0 10px 25px rgba(0,0,0,0.2);
-            width: 90%;
-            max-width: 600px; 
-            max-height: 80vh;
-            display: flex;
-            flex-direction: column; 
-        }
-        .contact-log-modal .modal-body {
-            overflow-y: auto;
-            padding: 20px;
-            flex: 1;
-        }
-        .contact-log-item {
-            background: #fff;
-            border: 1px solid #e8e8e8;
-            border-radius: 8px;
-            padding: 16px;
-            margin-bottom: 16px;
-            box-shadow: 0 2px 8px rgba(0,0,0,0.02);
-            transition: all 0.3s;
-        }
-        .contact-log-item:hover {
-            border-color: var(--primary-color);
-            box-shadow: 0 2px 12px rgba(24, 144, 255, 0.1);
-        }
-        .contact-log-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: flex-start;
-            margin-bottom: 12px;
-            padding-bottom: 12px;
-            border-bottom: 1px dashed #f0f0f0;
-        }
-        .contact-log-info {
-            display: flex;
-            flex-direction: column;
-            gap: 4px;
-        }
-        .contact-log-date {
-            font-weight: 700;
-            color: #333;
-            font-size: 16px;
-            line-height: 1.4;
-        }
-        .contact-log-create-time {
-            font-size: 13px;
-            color: #999;
-            display: flex;
-            align-items: center;
-            gap: 4px;
-        }
-        .contact-log-method {
-            background: #e6f7ff;
-            color: #1890ff;
-            border: 1px solid #91d5ff;
-            padding: 2px 10px;
-            border-radius: 4px;
-            font-size: 13px;
-            font-weight: 500;
-            white-space: nowrap;
-            flex-shrink: 0;
-            margin-left: 12px;
-        }
-        .contact-log-teacher {
-            color: var(--text-secondary-color);
-            font-size: 14px;
-            margin-top: 8px;
-        }
-        .contact-log-result {
-            color: #595959;
-            line-height: 1.6;
-            font-size: 15px;
-            margin-top: 8px;
-            white-space: pre-wrap;
-            background-color: #fafafa;
-            padding: 10px;
-            border-radius: 6px;
-        }
-        .contact-log-notes {
-            background: #fff3cd;
-            border-left: 3px solid #ffc107;
-            padding: 12px;
-            margin-top: 12px;
-            border-radius: 4px;
-            color: #856404;
-            font-size: 14px;
-            white-space: pre-wrap;
-        }
-        .contact-log-empty {
-            text-align: center;
-            padding: 40px;
-            color: var(--text-secondary-color);
-        }
-        .contact-log-loading {
-            text-align: center;
-            padding: 40px;
-            color: var(--text-secondary-color);
-        }
-        
-        /* 新就讀意願提醒樣式 */
-        .new-enrollment-alert {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            padding: 16px 20px;
-            border-radius: 8px;
-            margin-bottom: 24px;
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            box-shadow: 0 4px 12px rgba(102, 126, 234, 0.3);
-            animation: slideDown 0.3s ease-out;
-        }
-        
-        @keyframes slideDown {
-            from {
-                opacity: 0;
-                transform: translateY(-10px);
-            }
-            to {
-                opacity: 1;
-                transform: translateY(0);
-            }
-        }
-        
-        .new-enrollment-alert-content {
-            display: flex;
-            align-items: center;
-            gap: 12px;
-            flex: 1;
-        }
-        
-        .new-enrollment-alert-icon {
-            font-size: 24px;
-            animation: pulse 2s infinite;
-        }
-        
-        @keyframes pulse {
-            0%, 100% {
-                transform: scale(1);
-            }
-            50% {
-                transform: scale(1.1);
-            }
-        }
-        
-        .new-enrollment-alert-text {
-            font-size: 16px;
-            font-weight: 500;
-        }
-        
-        .new-enrollment-alert-count {
-            background: rgba(255, 255, 255, 0.3);
-            padding: 4px 12px;
-            border-radius: 12px;
-            font-weight: 600;
-            margin-left: 8px;
-        }
-        
-        .new-enrollment-alert-close {
-            background: rgba(255, 255, 255, 0.2);
-            border: none;
-            color: white;
-            width: 32px;
-            height: 32px;
-            border-radius: 50%;
-            cursor: pointer;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-size: 18px;
-            transition: all 0.3s;
-        }
-        
-        .new-enrollment-alert-close:hover {
-            background: rgba(255, 255, 255, 0.3);
-            transform: rotate(90deg);
-        }
+        .assign-btn { background: var(--primary-color); color: white; border: none; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 12px; transition: all 0.3s; }
+        .assign-btn:hover { background: #40a9ff; transform: translateY(-1px); }
+        .assign-btn i { margin-right: 4px; }
+        /* Modals... (Same as before) */
+        .modal { position: fixed; z-index: 1000; left: 0; top: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.5); display: flex; align-items: center; justify-content: center; }
+        .modal-content { background-color: white; border-radius: 8px; box-shadow: 0 4px 20px rgba(0,0,0,0.15); width: 90%; max-width: 500px; max-height: 80vh; overflow-y: auto; }
+        .modal-header { padding: 20px; border-bottom: 1px solid var(--border-color); display: flex; justify-content: space-between; align-items: center; }
+        .close { font-size: 24px; font-weight: bold; cursor: pointer; color: var(--text-secondary-color); }
+        .modal-body { padding: 20px; }
+        .teacher-option { display: block; padding: 12px; border: 1px solid var(--border-color); border-radius: 6px; margin-bottom: 8px; cursor: pointer; transition: all 0.3s; }
+        .teacher-option:hover { background-color: #f5f5f5; border-color: var(--primary-color); }
+        .modal-footer { padding: 20px; border-top: 1px solid var(--border-color); display: flex; justify-content: flex-end; gap: 12px; }
+        .btn-cancel { padding: 8px 16px; border: none; border-radius: 4px; cursor: pointer; background-color: #f5f5f5; color: var(--text-color); }
+        .btn-confirm { padding: 8px 16px; border: none; border-radius: 4px; cursor: pointer; background-color: var(--primary-color); color: white; }
+        /* Alert */
+        .new-enrollment-alert { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 16px 20px; border-radius: 8px; margin-bottom: 24px; display: flex; align-items: center; justify-content: space-between; box-shadow: 0 4px 12px rgba(102, 126, 234, 0.3); animation: slideDown 0.3s ease-out; }
+        @keyframes slideDown { from { opacity: 0; transform: translateY(-10px); } to { opacity: 1; transform: translateY(0); } }
+        /* Contact Log styles */
+        .contact-log-modal .modal-content { max-width: 600px; }
+        .contact-log-item { background: #fff; border: 1px solid #e8e8e8; border-radius: 8px; padding: 16px; margin-bottom: 16px; }
+        .contact-log-header { display: flex; justify-content: space-between; border-bottom: 1px dashed #f0f0f0; padding-bottom: 12px; margin-bottom: 12px;}
+        .form-control { padding: 8px 12px; border: 1px solid #d9d9d9; border-radius: 4px; font-size: 14px; }
+        .form-control:focus { outline: none; border-color: #1890ff; box-shadow: 0 0 0 2px rgba(24,144,255,0.2); }
     </style>
 </head>
 <body>
@@ -872,33 +516,58 @@ try {
                 </div>
                 <?php endif; ?>
 
-                <?php if ($new_enrollments_count > 0): ?>
+                <?php if ($new_enrollments_count > 0 && $view_mode === 'active'): ?>
                 <div class="new-enrollment-alert" id="newEnrollmentAlert">
-                    <div class="new-enrollment-alert-content">
-                        <i class="fas fa-bell new-enrollment-alert-icon"></i>
-                        <span class="new-enrollment-alert-text">
-                            有 <span class="new-enrollment-alert-count"><?php echo $new_enrollments_count; ?></span> 筆新的就讀意願表單已提交！
-                        </span>
+                    <div class="new-enrollment-alert-content" style="display:flex; align-items:center; gap:12px;">
+                        <i class="fas fa-bell"></i>
+                        <span>有 <strong><?php echo $new_enrollments_count; ?></strong> 筆新的就讀意願！</span>
                     </div>
-                    <button class="new-enrollment-alert-close" onclick="closeNewEnrollmentAlert()" title="關閉提醒">
-                        <i class="fas fa-times"></i>
-                    </button>
+                    <button onclick="closeNewEnrollmentAlert()" style="background:none; border:none; color:white; cursor:pointer;"><i class="fas fa-times"></i></button>
                 </div>
                 <?php endif; ?>
+
+                <div class="tabs-container">
+                    <a href="enrollment_list.php?view=active" class="tab-btn <?php echo $view_mode === 'active' ? 'active' : ''; ?>">
+                        <i class="fas fa-user-graduate"></i> 目前學年 (Active)
+                    </a>
+                    <a href="enrollment_list.php?view=history" class="tab-btn <?php echo $view_mode === 'history' ? 'active' : ''; ?>">
+                        <i class="fas fa-history"></i> 歷史資料 (Graduated)
+                    </a>
+
+                    <?php if ($view_mode === 'history'): ?>
+                    <div class="history-filter">
+                        <form action="enrollment_list.php" method="GET" style="margin:0;">
+                            <input type="hidden" name="view" value="history">
+                            <select name="year" class="history-select" onchange="this.form.submit()">
+                                <option value="0">顯示全部歷史資料</option>
+                                <?php foreach ($history_years as $year): ?>
+                                    <option value="<?php echo $year; ?>" <?php echo $selected_year == $year ? 'selected' : ''; ?>>
+                                        <?php echo $year; ?> 年畢業
+                                    </option>
+                                <?php endforeach; ?>
+                            </select>
+                        </form>
+                    </div>
+                    <?php endif; ?>
+                </div>
 
                 <div class="table-wrapper">
                     <div class="table-container">
                         <?php if (empty($enrollments)): ?>
                             <div class="empty-state">
                                 <i class="fas fa-inbox fa-3x" style="margin-bottom: 16px;"></i>
-                                <p>目前尚無任何就讀意願登錄資料。</p>
+                                <p>
+                                    <?php if ($view_mode === 'history'): ?>
+                                        查無歷史資料<?php echo $selected_year > 0 ? " (畢業年份: $selected_year)" : ""; ?>。
+                                    <?php else: ?>
+                                        目前尚無就讀意願資料。
+                                    <?php endif; ?>
+                                </p>
                             </div>
                         <?php else: ?>
                             <?php
-                                // 在顯示表格前，先計算對於目前使用者(主任)來說，哪些志願序是有資料的
                                 $director_active_choices = [];
                                 if ($is_department_user && !empty($enrollments)) {
-                                    // 為了支援 IM/AF 這種寫死的情況，我們統一用 $target_dept_code
                                     $target_dept_code = $user_department_code;
                                     if ($is_imd_user) $target_dept_code = 'IM';
                                     if ($is_fld_user) $target_dept_code = 'AF';
@@ -909,15 +578,12 @@ try {
                                         if (($row['intention3_code'] ?? '') === $target_dept_code) $director_active_choices[3] = true;
                                     }
                                 }
-                                
-                                // 決定標題文字
                                 $director_col_title = '相關意願';
                                 if (!empty($director_active_choices)) {
                                     $active_keys = array_keys($director_active_choices);
                                     if (count($active_keys) === 1) {
-                                        $director_col_title = '意願 ' . $active_keys[0]; // 例如 "意願 2"
+                                        $director_col_title = '意願 ' . $active_keys[0];
                                     } else {
-                                        // 如果有多個不同志願序 (例如有的學生填1，有的填2)，顯示 "意願"
                                         $director_col_title = '意願';
                                     }
                                 }
@@ -936,10 +602,10 @@ try {
                                         <?php endif; ?>
                                         
                                         <th onclick="sortTable('junior_high')">就讀國中 <span class="sort-icon" id="sort-junior_high"></span></th>
-                                        <th>年級</th>
+                                        <th>目前年級</th>
                                         
                                         <?php if ($is_admission_center): ?>
-                                            <th onclick="sortTable('assigned_department')">分配部門 <span class="sort-icon" id="sort-assigned_department"></span></th>
+                                            <th onclick="sortTable('assigned_department')">分配部門 / 負責老師 <span class="sort-icon" id="sort-assigned_department"></span></th>
                                         <?php elseif ($is_department_user): ?>
                                             <th>分配狀態</th>
                                         <?php endif; ?>
@@ -949,7 +615,6 @@ try {
                                 </thead>
                                 <tbody>
                                     <?php foreach ($enrollments as $item): 
-                                    // 獲取意願和學制名稱
                                     $intention1_name = $item['intention1_name'] ?? '';
                                     $system1_name = $item['system1_name'] ?? '';
                                     $intention2_name = $item['intention2_name'] ?? '';
@@ -957,12 +622,10 @@ try {
                                     $intention3_name = $item['intention3_name'] ?? '';
                                     $system3_name = $item['system3_name'] ?? '';
                                     
-                                    // 獲取科系代碼，用於 JS 篩選主任
                                     $intention1_code = $item['intention1_code'] ?? '';
                                     $intention2_code = $item['intention2_code'] ?? '';
                                     $intention3_code = $item['intention3_code'] ?? '';
 
-                                    // 格式化顯示文字的 Helper 函數
                                     $format_intention = function($name, $system) {
                                         if (empty($name)) return '無意願';
                                         $system_display = !empty($system) ? " ({$system})" : '';
@@ -973,29 +636,8 @@ try {
                                     $display_text2 = $format_intention($intention2_name, $system2_name);
                                     $display_text3 = $format_intention($intention3_name, $system3_name);
 
-                                    // 確保其他欄位也使用安全操作符
-                                    $phone2 = $item['phone2'] ?? '無';
-                                    $line_id = $item['line_id'] ?? '無';
-                                    $facebook = $item['facebook'] ?? '無';
-                                    $remarks = $item['remarks'] ?? '無';
-
-                                    // 準備要傳遞給 JS 的志願代碼列表和志願順序映射
                                     $chosen_codes = array_filter([$intention1_code, $intention2_code, $intention3_code]);
                                     $chosen_codes_json = json_encode(array_unique($chosen_codes));
-                                    
-                                    // 創建科系代碼到志願順序的映射（用於顯示第幾志願）
-                                    $choice_order_map = [];
-                                    if (!empty($intention1_code)) {
-                                        $choice_order_map[$intention1_code] = 1;
-                                    }
-                                    if (!empty($intention2_code)) {
-                                        $choice_order_map[$intention2_code] = 2;
-                                    }
-                                    if (!empty($intention3_code)) {
-                                        $choice_order_map[$intention3_code] = 3;
-                                    }
-                                    $choice_order_map_json = json_encode($choice_order_map);
-                                    
                                     ?>
                                     <tr class="table-row-clickable" onclick="toggleDetail(<?php echo $item['id']; ?>)">
                                         <td><?php echo htmlspecialchars($item['name']); ?></td>
@@ -1003,7 +645,6 @@ try {
                                         <?php if ($is_department_user): ?>
                                             <td>
                                                 <?php 
-                                                    // 找出符合目前使用者科系的意願，並顯示出來
                                                     $target_dept_code = $user_department_code;
                                                     if ($is_imd_user) $target_dept_code = 'IM';
                                                     if ($is_fld_user) $target_dept_code = 'AF';
@@ -1014,27 +655,34 @@ try {
                                                 ?>
                                             </td>
                                         <?php else: ?>
-                                            <td class="choice1-column">
-                                                <?php echo $display_text1; ?>
-                                            </td>
-                                            <td class="choice2-column">
-                                                <?php echo $display_text2; ?>
-                                            </td>
-                                            <td class="choice3-column">
-                                                <?php echo $display_text3; ?>
-                                            </td>
+                                            <td class="choice1-column"><?php echo $display_text1; ?></td>
+                                            <td class="choice2-column"><?php echo $display_text2; ?></td>
+                                            <td class="choice3-column"><?php echo $display_text3; ?></td>
                                         <?php endif; ?>
 
                                         <td><?php echo getSchoolName($item['junior_high'] ?? '', $school_data); ?></td>
-                                        <td><?php echo getIdentityText($item['current_grade'] ?? '', $identity_options); ?></td>
+                                        
+                                        <td><?php echo getDynamicGradeText($item['graduation_year'] ?? '', $item['current_grade'] ?? '', $identity_options); ?></td>
+
                                         <?php if ($is_admission_center): ?>
                                         <td>
                                             <?php if (!empty($item['assigned_department'])): ?>
                                                 <div style="line-height: 1.4;">
-                                                    <span style="color: #52c41a; font-weight: bold;">
+                                                    <span style="color: #52c41a; font-weight: bold; display: block; margin-bottom: 4px;">
                                                         <i class="fas fa-check-circle"></i> 
                                                         <?php echo getDepartmentName($item['assigned_department'], $department_data); ?>
                                                     </span>
+                                                    
+                                                    <?php if (!empty($item['assigned_teacher_id'])): ?>
+                                                        <span style="font-size: 13px; color: #1890ff; background: #e6f7ff; padding: 2px 6px; border-radius: 4px; border: 1px solid #91d5ff;">
+                                                            <i class="fas fa-chalkboard-teacher"></i> 
+                                                            <?php echo htmlspecialchars($item['teacher_name'] ?? $item['teacher_username'] ?? '未知老師'); ?>
+                                                        </span>
+                                                    <?php else: ?>
+                                                        <span style="font-size: 12px; color: #999;">
+                                                            (主任尚未指派)
+                                                        </span>
+                                                    <?php endif; ?>
                                                 </div>
                                             <?php else: ?>
                                                 <span style="color: #8c8c8c;">
@@ -1044,14 +692,9 @@ try {
                                         </td>
                                         <td onclick="event.stopPropagation();">
                                             <?php 
-                                            // 準備資料給詳情視窗使用
                                             $dept_name = !empty($item['assigned_department']) ? getDepartmentName($item['assigned_department'], $department_data) : '尚未分配';
                                             $teacher_name = !empty($item['teacher_name']) ? $item['teacher_name'] : (!empty($item['teacher_username']) ? $item['teacher_username'] : '尚未指派');
-                                            
-                                            // 如果尚未分配科系，老師也顯示為未分配
-                                            if (empty($item['assigned_department'])) {
-                                                $teacher_name = '-';
-                                            }
+                                            if (empty($item['assigned_department'])) { $teacher_name = '-'; }
                                             ?>
                                             <button class="assign-btn" 
                                                     style="background: #17a2b8;"
@@ -1060,20 +703,17 @@ try {
                                                     data-dept-name="<?php echo htmlspecialchars($dept_name, ENT_QUOTES, 'UTF-8'); ?>"
                                                     data-teacher-name="<?php echo htmlspecialchars($teacher_name, ENT_QUOTES, 'UTF-8'); ?>"
                                                     onclick="event.stopPropagation(); openDetailsModal(this)">
-                                                <i class="fas fa-info-circle"></i> 查看詳情
+                                                <i class="fas fa-file-alt"></i> 詳情與紀錄
                                             </button>
                                         </td>
                                         <?php elseif ($is_department_user): ?>
                                         <td>
                                             <span style="display: none;" class="chosen-codes-data"><?php echo $chosen_codes_json; ?></span>
-                                            
                                             <?php 
                                             $assigned_teacher_id = $item['assigned_teacher_id'];
-                                            // 判斷是否分配給自己 (如果是主任，分配給自己代表尚未分派給底下老師，屬於待辦事項)
                                             $is_assigned_to_me = ($assigned_teacher_id == $user_id);
                                             $is_assigned_to_others = (!empty($assigned_teacher_id) && !$is_assigned_to_me);
                                             ?>
-
                                             <?php if ($is_assigned_to_others): ?>
                                                 <div style="line-height: 1.4;">
                                                     <span style="color: #52c41a; font-weight: bold;">
@@ -1086,50 +726,49 @@ try {
                                                     <span style="color: #ff9800; font-weight: bold;">
                                                         <i class="fas fa-exclamation-circle"></i> 待分配
                                                     </span>
-                                                    <?php if ($is_assigned_to_me): ?>
-                                                        <div style="font-size: 12px; color: #e6a23c; margin-top: 4px;">
-                                                            (目前在您名下，請指派老師)
-                                                        </div>
-                                                    <?php endif; ?>
                                                 </div>
                                             <?php endif; ?>
                                         </td>
                                         <td onclick="event.stopPropagation();">
-                                            <div style="display: flex; gap: 8px; flex-wrap: wrap;">
-                                                <?php if ($is_assigned_to_others): ?>
-                                                <button class="assign-btn" 
-                                                        style="background: #28a745;"
-                                                        data-student-id="<?php echo $item['id']; ?>"
-                                                        data-student-name="<?php echo htmlspecialchars($item['name'], ENT_QUOTES, 'UTF-8'); ?>"
-                                                        data-current-teacher-id="<?php echo $item['assigned_teacher_id']; ?>"
-                                                        data-chosen-codes="<?php echo htmlspecialchars($chosen_codes_json, ENT_QUOTES, 'UTF-8'); ?>"
-                                                        onclick="event.stopPropagation(); openAssignModalFromButton(this)">
-                                                    <i class="fas fa-check-circle"></i> 已分配 (可修改)
-                                                </button>
-                                                <?php else: ?>
-                                                <button class="assign-btn" 
-                                                        data-student-id="<?php echo $item['id']; ?>"
-                                                        data-student-name="<?php echo htmlspecialchars($item['name'], ENT_QUOTES, 'UTF-8'); ?>"
-                                                        data-current-teacher-id="<?php echo $item['assigned_teacher_id']; ?>"
-                                                        data-chosen-codes="<?php echo htmlspecialchars($chosen_codes_json, ENT_QUOTES, 'UTF-8'); ?>"
-                                                        onclick="event.stopPropagation(); openAssignModalFromButton(this)">
-                                                    <i class="fas fa-user-plus"></i> 分配
-                                                </button>
-                                                <?php endif; ?>
-                                                
-                                                <?php if (!empty($item['assigned_teacher_id'])): ?>
+                                            <?php if ($view_mode === 'history'): ?>
                                                 <button class="assign-btn" style="background: #17a2b8;" onclick="event.stopPropagation(); openContactLogsModal(<?php echo $item['id']; ?>, '<?php echo htmlspecialchars($item['name']); ?>')">
-                                                    <i class="fas fa-address-book"></i> 查看聯絡紀錄
+                                                    <i class="fas fa-address-book"></i> 紀錄
                                                 </button>
-                                                <?php endif; ?>
-                                            </div>
+                                            <?php else: ?>
+                                                <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+                                                    <?php if ($is_assigned_to_others): ?>
+                                                    <button class="assign-btn" 
+                                                            style="background: #28a745;"
+                                                            data-student-id="<?php echo $item['id']; ?>"
+                                                            data-student-name="<?php echo htmlspecialchars($item['name'], ENT_QUOTES, 'UTF-8'); ?>"
+                                                            data-current-teacher-id="<?php echo $item['assigned_teacher_id']; ?>"
+                                                            data-chosen-codes="<?php echo htmlspecialchars($chosen_codes_json, ENT_QUOTES, 'UTF-8'); ?>"
+                                                            onclick="event.stopPropagation(); openAssignModalFromButton(this)">
+                                                        <i class="fas fa-check-circle"></i> 已分配
+                                                    </button>
+                                                    <?php else: ?>
+                                                    <button class="assign-btn" 
+                                                            data-student-id="<?php echo $item['id']; ?>"
+                                                            data-student-name="<?php echo htmlspecialchars($item['name'], ENT_QUOTES, 'UTF-8'); ?>"
+                                                            data-current-teacher-id="<?php echo $item['assigned_teacher_id']; ?>"
+                                                            data-chosen-codes="<?php echo htmlspecialchars($chosen_codes_json, ENT_QUOTES, 'UTF-8'); ?>"
+                                                            onclick="event.stopPropagation(); openAssignModalFromButton(this)">
+                                                        <i class="fas fa-user-plus"></i> 分配
+                                                    </button>
+                                                    <?php endif; ?>
+                                                    
+                                                    <button class="assign-btn" style="background: #17a2b8;" onclick="event.stopPropagation(); openContactLogsModal(<?php echo $item['id']; ?>, '<?php echo htmlspecialchars($item['name']); ?>')">
+                                                        <i class="fas fa-address-book"></i> 紀錄
+                                                    </button>
+                                                </div>
+                                            <?php endif; ?>
                                         </td>
                                         <?php else: ?>
                                         <td></td>
                                         <?php endif; ?>
                                     </tr>
                                     <tr id="detail-<?php echo $item['id']; ?>" class="detail-row" style="display: none;">
-                                        <td colspan="<?php echo $is_admission_center || $is_department_user ? '8' : '7'; ?>" style="padding: 20px; background: #f9f9f9; border: 2px solid #b3d9ff; border-radius: 4px;">
+                                        <td colspan="<?php echo $is_admission_center ? '8' : ($is_department_user ? '6' : '7'); ?>" style="padding: 20px; background: #f9f9f9; border: 2px solid #b3d9ff; border-radius: 4px;">
                                             <table style="width: 100%; border-collapse: collapse;">
                                                 <tr>
                                                     <td style="width: 50%; vertical-align: top; padding-right: 20px;">
@@ -1140,101 +779,34 @@ try {
                                                                 <td style="padding: 5px; border: 1px solid #ddd;"><?php echo htmlspecialchars($item['name']); ?></td>
                                                             </tr>
                                                             <tr>
-                                                                <td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">身分別</td>
-                                                                <td style="padding: 5px; border: 1px solid #ddd;"><?php echo getIdentityText($item['identity'] ?? '', $identity_options); ?></td>
-                                                            </tr>
-                                                            <tr>
-                                                                <td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">性別</td>
-                                                                <td style="padding: 5px; border: 1px solid #ddd;"><?php echo getGenderText($item['gender'] ?? ''); ?></td>
-                                                            </tr>
-                                                            <tr>
-                                                                <td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">聯絡電話一</td>
-                                                                <td style="padding: 5px; border: 1px solid #ddd;"><?php echo htmlspecialchars($item['phone1']); ?></td>
-                                                            </tr>
-                                                            <tr>
-                                                                <td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">聯絡電話二</td>
-                                                                <td style="padding: 5px; border: 1px solid #ddd;"><?php echo htmlspecialchars($phone2); ?></td>
-                                                            </tr>
-                                                            <tr>
-                                                                <td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">Email</td>
-                                                                <td style="padding: 5px; border: 1px solid #ddd;"><?php echo htmlspecialchars($item['email']); ?></td>
+                                                                <td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">目前年級</td>
+                                                                <td style="padding: 5px; border: 1px solid #ddd;">
+                                                                    <?php echo getDynamicGradeText($item['graduation_year'] ?? '', $item['current_grade'] ?? '', $identity_options); ?>
+                                                                    <?php if (!empty($item['graduation_year'])): ?>
+                                                                        <span style="font-size:12px; color:#888;">(預計 <?php echo $item['graduation_year']; ?> 年畢業)</span>
+                                                                    <?php endif; ?>
+                                                                </td>
                                                             </tr>
                                                             <tr>
                                                                 <td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">就讀學校</td>
                                                                 <td style="padding: 5px; border: 1px solid #ddd;"><?php echo getSchoolName($item['junior_high'] ?? '', $school_data); ?></td>
                                                             </tr>
                                                             <tr>
-                                                                <td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">年級</td>
-                                                                <td style="padding: 5px; border: 1px solid #ddd;"><?php echo getIdentityText($item['current_grade'] ?? '', $identity_options); ?></td>
+                                                                <td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">聯絡電話</td>
+                                                                <td style="padding: 5px; border: 1px solid #ddd;"><?php echo htmlspecialchars($item['phone1']); ?></td>
                                                             </tr>
                                                         </table>
                                                     </td>
                                                     <td style="width: 50%; vertical-align: top; padding-left: 20px;">
                                                         <h4 style="margin: 0 0 10px 0; font-size: 16px;">其他資訊</h4>
                                                         <table style="width: 100%; border-collapse: collapse; font-size: 14px;">
-                                                            <?php if ($is_imd_user): ?>
-                                                            <?php if ($intention1_code === 'IM' && !empty($intention1_name)): ?>
                                                             <tr>
-                                                                <td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5; width: 120px;">第一志願</td>
-                                                                <td style="padding: 5px; border: 1px solid #ddd;"><?php echo $display_text1; ?></td>
-                                                            </tr>
-                                                            <?php endif; ?>
-                                                            <?php if ($intention2_code === 'IM' && !empty($intention2_name)): ?>
-                                                            <tr>
-                                                                <td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">第二志願</td>
-                                                                <td style="padding: 5px; border: 1px solid #ddd;"><?php echo $display_text2; ?></td>
-                                                            </tr>
-                                                            <?php endif; ?>
-                                                            <?php if ($intention3_code === 'IM' && !empty($intention3_name)): ?>
-                                                            <tr>
-                                                                <td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">第三志願</td>
-                                                                <td style="padding: 5px; border: 1px solid #ddd;"><?php echo $display_text3; ?></td>
-                                                            </tr>
-                                                            <?php endif; ?>
-                                                            <?php elseif ($is_director && !empty($user_department_code)): ?>
-                                                            <?php if ($intention1_code === $user_department_code && !empty($intention1_name)): ?>
-                                                            <tr>
-                                                                <td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5; width: 120px;">第一志願</td>
-                                                                <td style="padding: 5px; border: 1px solid #ddd;"><?php echo $display_text1; ?></td>
-                                                            </tr>
-                                                            <?php endif; ?>
-                                                            <?php if ($intention2_code === $user_department_code && !empty($intention2_name)): ?>
-                                                            <tr>
-                                                                <td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">第二志願</td>
-                                                                <td style="padding: 5px; border: 1px solid #ddd;"><?php echo $display_text2; ?></td>
-                                                            </tr>
-                                                            <?php endif; ?>
-                                                            <?php if ($intention3_code === $user_department_code && !empty($intention3_name)): ?>
-                                                            <tr>
-                                                                <td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">第三志願</td>
-                                                                <td style="padding: 5px; border: 1px solid #ddd;"><?php echo $display_text3; ?></td>
-                                                            </tr>
-                                                            <?php endif; ?>
-                                                            <?php else: ?>
-                                                            <tr>
-                                                                <td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5; width: 120px;">第一志願</td>
-                                                                <td style="padding: 5px; border: 1px solid #ddd;"><?php echo $display_text1; ?></td>
-                                                            </tr>
-                                                            <tr>
-                                                                <td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">第二志願</td>
-                                                                <td style="padding: 5px; border: 1px solid #ddd;"><?php echo $display_text2; ?></td>
-                                                            </tr>
-                                                            <tr>
-                                                                <td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">第三志願</td>
-                                                                <td style="padding: 5px; border: 1px solid #ddd;"><?php echo $display_text3; ?></td>
-                                                            </tr>
-                                                            <?php endif; ?>
-                                                            <tr>
-                                                                <td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">LINE ID</td>
-                                                                <td style="padding: 5px; border: 1px solid #ddd;"><?php echo htmlspecialchars($line_id); ?></td>
-                                                            </tr>
-                                                            <tr>
-                                                                <td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">Facebook</td>
-                                                                <td style="padding: 5px; border: 1px solid #ddd;"><?php echo htmlspecialchars($facebook); ?></td>
+                                                                <td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5; width: 120px;">Email</td>
+                                                                <td style="padding: 5px; border: 1px solid #ddd;"><?php echo htmlspecialchars($item['email']); ?></td>
                                                             </tr>
                                                             <tr>
                                                                 <td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">備註</td>
-                                                                <td style="padding: 5px; border: 1px solid #ddd;"><?php echo htmlspecialchars($remarks); ?></td>
+                                                                <td style="padding: 5px; border: 1px solid #ddd;"><?php echo htmlspecialchars($item['remarks'] ?? '無'); ?></td>
                                                             </tr>
                                                             <tr>
                                                                 <td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">填寫日期</td>
@@ -1275,27 +847,13 @@ try {
             </div>
         </div>
     </div>
-
+    
     <?php if ($is_admission_center): ?>
     <div id="assignDepartmentModal" class="modal" style="display: none;">
         <div class="modal-content">
-            <div class="modal-header">
-                <h3>分配學生至部門</h3>
-                <span class="close" onclick="closeAssignDepartmentModal()">&times;</span>
-            </div>
-            <div class="modal-body">
-                <p>學生：<span id="departmentStudentName"></span></p>
-                <div class="teacher-list">
-                    <h4>選擇部門：</h4>
-                    <div class="teacher-options" id="departmentOptions">
-                        <div class="contact-log-loading"><i class="fas fa-spinner fa-spin"></i> 準備部門名單中...</div>
-                    </div>
-                </div>
-            </div>
-            <div class="modal-footer">
-                <button class="btn-cancel" onclick="closeAssignDepartmentModal()">取消</button>
-                <button class="btn-confirm" onclick="assignDepartment()">確認分配</button>
-            </div>
+            <div class="modal-header"><h3>分配學生至部門</h3><span class="close" onclick="closeAssignDepartmentModal()">&times;</span></div>
+            <div class="modal-body"><p>學生：<span id="departmentStudentName"></span></p><div class="teacher-list"><h4>選擇部門：</h4><div class="teacher-options" id="departmentOptions"><div class="contact-log-loading"><i class="fas fa-spinner fa-spin"></i> 準備部門名單中...</div></div></div></div>
+            <div class="modal-footer"><button class="btn-cancel" onclick="closeAssignDepartmentModal()">取消</button><button class="btn-confirm" onclick="assignDepartment()">確認分配</button></div>
         </div>
     </div>
     <?php endif; ?>
@@ -1303,857 +861,346 @@ try {
     <?php if ($is_department_user): ?>
     <div id="assignModal" class="modal" style="display: none;">
         <div class="modal-content">
-            <div class="modal-header">
-                <h3>分配學生</h3>
-                <span class="close" onclick="closeAssignModal()">&times;</span>
-            </div>
-            <div class="modal-body">
-                <p>學生：<span id="studentName"></span></p>
-                <div class="teacher-list">
-                    <h4>選擇老師：</h4>
-                    <div class="teacher-options" id="directorOptions">
-                        <div class="contact-log-loading"><i class="fas fa-spinner fa-spin"></i> 準備老師名單中...</div>
-                    </div>
-                </div>
-            </div>
-            <div class="modal-footer">
-                <button class="btn-cancel" onclick="closeAssignModal()">取消</button>
-                <button class="btn-confirm" onclick="assignStudent()">確認分配</button>
-            </div>
+            <div class="modal-header"><h3>分配學生</h3><span class="close" onclick="closeAssignModal()">&times;</span></div>
+            <div class="modal-body"><p>學生：<span id="studentName"></span></p><div class="teacher-list"><h4>選擇老師：</h4><div class="teacher-options" id="directorOptions"><div class="contact-log-loading"><i class="fas fa-spinner fa-spin"></i> 準備老師名單中...</div></div></div></div>
+            <div class="modal-footer"><button class="btn-cancel" onclick="closeAssignModal()">取消</button><button class="btn-confirm" onclick="assignStudent()">確認分配</button></div>
         </div>
     </div>
     <?php endif; ?>
 
     <?php if ($is_department_user || $is_admission_center): ?>
-    <div id="contactLogsModal" class="contact-log-modal" style="display: none;">
+    <div id="contactLogsModal" class="modal contact-log-modal" style="display: none;">
         <div class="modal-content">
-            <div class="modal-header">
-                <h3>詳細資料 - <span id="contactLogStudentName"></span></h3>
-                <span class="close" onclick="closeContactLogsModal()">&times;</span>
-            </div>
+            <div class="modal-header"><h3>詳細資料 - <span id="contactLogStudentName"></span></h3><span class="close" onclick="closeContactLogsModal()">&times;</span></div>
             <div class="modal-body">
                 <div id="assignmentInfo" style="background: #f5f7fa; padding: 15px; border-radius: 8px; margin-bottom: 20px; border-left: 4px solid #17a2b8; display: none;">
-                    <h4 style="margin: 0 0 10px 0; color: #333; font-size: 16px; border-bottom: 1px solid #e8e8e8; padding-bottom: 8px;">
-                        <i class="fas fa-sitemap"></i> 目前分配狀態
-                    </h4>
+                    <h4 style="margin: 0 0 10px 0; color: #333; font-size: 16px; border-bottom: 1px solid #e8e8e8; padding-bottom: 8px;"><i class="fas fa-sitemap"></i> 目前分配狀態</h4>
                     <div style="display: flex; gap: 20px;">
-                        <div style="flex: 1;">
-                            <span style="color: #666; font-size: 13px;">分配科系</span><br>
-                            <strong id="detailDeptName" style="font-size: 15px; color: #1890ff;">-</strong>
-                        </div>
-                        <div style="flex: 1;">
-                            <span style="color: #666; font-size: 13px;">負責老師</span><br>
-                            <strong id="detailTeacherName" style="font-size: 15px; color: #1890ff;">-</strong>
-                        </div>
+                        <div style="flex: 1;"><span style="color: #666; font-size: 13px;">分配科系</span><br><strong id="detailDeptName" style="font-size: 15px; color: #1890ff;">-</strong></div>
+                        <div style="flex: 1;"><span style="color: #666; font-size: 13px;">負責老師</span><br><strong id="detailTeacherName" style="font-size: 15px; color: #1890ff;">-</strong></div>
                     </div>
                 </div>
 
-                <h4 style="margin: 0 0 12px 0; color: #333; font-size: 16px;">
-                    <i class="fas fa-history"></i> 聯絡紀錄
-                </h4>
-                <div id="contactLogsList" class="contact-log-loading">
-                    <i class="fas fa-spinner fa-spin"></i> 載入中...
+                <?php if ($is_department_user): ?>
+                <div class="add-log-form" style="background: #f0f2f5; padding: 15px; border-radius: 8px; margin-bottom: 15px;">
+                    <h4 style="margin-top: 0; margin-bottom: 10px; font-size: 16px; color: #1890ff;"><i class="fas fa-plus-circle"></i> 新增聯絡紀錄</h4>
+                    <input type="hidden" id="logStudentId">
+                    <div style="display: flex; gap: 10px; margin-bottom: 10px;">
+                        <div style="flex: 1;">
+                            <label style="font-size: 12px; color: #666;">聯絡日期</label>
+                            <input type="date" id="logDate" class="form-control" style="width: 100%;" value="<?php echo date('Y-m-d'); ?>">
+                        </div>
+                        <div style="flex: 1;">
+                            <label style="font-size: 12px; color: #666;">聯絡方式</label>
+                            <select id="logMethod" class="form-control" style="width: 100%;">
+                                <option value="電話">電話</option>
+                                <option value="Line">Line</option>
+                                <option value="現場">現場</option>
+                                <option value="Email">Email</option>
+                                <option value="其他">其他</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div style="margin-bottom: 10px;">
+                        <textarea id="logNotes" class="form-control" rows="3" placeholder="請輸入聯絡內容..." style="width: 100%; resize: vertical;"></textarea>
+                    </div>
+                    <div style="text-align: right;">
+                        <button onclick="submitContactLog()" style="background: #1890ff; color: white; border: none; padding: 6px 16px; border-radius: 4px; cursor: pointer; transition: 0.3s;">
+                            <i class="fas fa-save"></i> 儲存紀錄
+                        </button>
+                    </div>
                 </div>
+                <?php endif; ?>
+
+                <h4 style="margin: 0 0 12px 0; color: #333; font-size: 16px;"><i class="fas fa-history"></i> 聯絡紀錄</h4>
+                <div id="contactLogsList" class="contact-log-loading"><i class="fas fa-spinner fa-spin"></i> 載入中...</div>
             </div>
-            <div class="modal-footer">
-                <button class="btn-cancel" onclick="closeContactLogsModal()">關閉</button>
-            </div>
+            <div class="modal-footer"><button class="btn-cancel" onclick="closeContactLogsModal()">關閉</button></div>
         </div>
     </div>
     <?php endif; ?>
 
     <script>
-    // 將 PHP 的主任名單轉換為 JS 陣列
     let allDirectors = [];
     <?php if ($is_department_user && !empty($teachers)): ?>
     allDirectors = <?php echo json_encode($teachers, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_UNESCAPED_UNICODE); ?>;
     <?php endif; ?>
 
-    // 將 PHP 的部門清單轉換為 JS 陣列（招生中心使用）
     let allDepartments = [];
     <?php if ($is_admission_center && !empty($departments)): ?>
     allDepartments = <?php echo json_encode($departments, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_UNESCAPED_UNICODE); ?>;
     <?php endif; ?>
 
     document.addEventListener('DOMContentLoaded', function() {
-        let sortStates = {}; // { colIndex: 'asc' | 'desc' }
+        window.sortTable = function(field) {
+            let newSortOrder = 'asc';
+            const urlParams = new URLSearchParams(window.location.search);
+            const currentSortBy = urlParams.get('sort_by') || 'created_at';
+            const currentSortOrder = urlParams.get('sort_order') || 'desc';
+            if (currentSortBy === field) { newSortOrder = currentSortOrder === 'asc' ? 'desc' : 'asc'; }
+            
+            if (urlParams.has('view')) urlParams.set('view', '<?php echo $view_mode; ?>');
+            if (urlParams.has('year')) urlParams.set('year', '<?php echo $selected_year; ?>');
+            
+            urlParams.set('sort_by', field);
+            urlParams.set('sort_order', newSortOrder);
+            window.location.search = urlParams.toString();
+        };
 
+        window.toggleDetail = function(id) {
+            const detailRow = document.getElementById('detail-' + id);
+            if (detailRow) {
+                detailRow.style.display = (detailRow.style.display === 'none' || detailRow.style.display === '') ? 'table-row' : 'none';
+            }
+        };
+
+        initPagination();
+        
         const searchInput = document.getElementById('searchInput');
-        const table = document.getElementById('enrollmentTable');
-        const rows = table ? table.getElementsByTagName('tbody')[0].getElementsByTagName('tr') : [];
-
         if (searchInput) {
             searchInput.addEventListener('keyup', function() {
                 const filter = searchInput.value.toLowerCase();
                 const table = document.getElementById('enrollmentTable');
-                
                 if (!table) return;
-                
                 const tbody = table.getElementsByTagName('tbody')[0];
-                if (!tbody) return;
-                
-                // 重新獲取所有行
                 const allTableRows = Array.from(tbody.getElementsByTagName('tr'));
-                allRows = allTableRows.filter(row => {
-                    if (row.classList.contains('detail-row')) {
-                        return false;
-                    }
-                    const cells = row.getElementsByTagName('td');
-                    if (cells.length === 0) {
-                        return false;
-                    }
-                    return row.classList.contains('table-row-clickable') || cells.length >= 5;
-                });
-                
+                allRows = allTableRows.filter(row => !row.classList.contains('detail-row') && (row.classList.contains('table-row-clickable') || row.getElementsByTagName('td').length >= 5));
                 filteredRows = allRows.filter(row => {
                     const cells = row.getElementsByTagName('td');
                     for (let j = 0; j < cells.length; j++) {
-                        const cellText = cells[j].textContent || cells[j].innerText;
-                        if (cellText.toLowerCase().indexOf(filter) > -1) {
-                            return true;
-                        }
+                        if ((cells[j].textContent || cells[j].innerText).toLowerCase().indexOf(filter) > -1) return true;
                     }
                     return false;
                 });
-                
                 currentPage = 1;
                 updatePagination();
             });
         }
-
-        // 排序表格
-        function sortTable(field) {
-            let newSortOrder = 'asc';
-            
-            // 如果點擊的是當前排序欄位，則切換排序方向
-            const urlParams = new URLSearchParams(window.location.search);
-            const currentSortBy = urlParams.get('sort_by') || 'created_at';
-            const currentSortOrder = urlParams.get('sort_order') || 'desc';
-            
-            if (currentSortBy === field) {
-                newSortOrder = currentSortOrder === 'asc' ? 'desc' : 'asc';
-            }
-            
-            window.location.href = `enrollment_list.php?sort_by=${field}&sort_order=${newSortOrder}`;
-        }
-        
-        // 更新排序圖標
-        function updateSortIcons() {
-            // 清除所有圖標
-            const icons = document.querySelectorAll('.sort-icon');
-            icons.forEach(icon => {
-                icon.className = 'sort-icon';
-            });
-            
-            // 獲取當前 URL 的排序參數
-            const urlParams = new URLSearchParams(window.location.search);
-            const currentSortBy = urlParams.get('sort_by') || 'created_at';
-            const currentSortOrder = urlParams.get('sort_order') || 'desc';
-            
-            // 設置當前排序欄位的圖標
-            const currentIcon = document.getElementById(`sort-${currentSortBy}`);
-            if (currentIcon) {
-                currentIcon.className = `sort-icon active ${currentSortOrder}`;
-            }
-        }
-        
-        // 展開/收合詳細資訊
-        function toggleDetail(id) {
-            const detailRow = document.getElementById('detail-' + id);
-            if (detailRow) {
-                if (detailRow.style.display === 'none' || detailRow.style.display === '') {
-                    detailRow.style.display = 'table-row';
-                } else {
-                    detailRow.style.display = 'none';
-                }
-            }
-        }
-        
-        // 將函數暴露到全局作用域
-        window.sortTable = sortTable;
-        window.toggleDetail = toggleDetail;
-        
-        // 更新排序圖標
-        updateSortIcons();
-        
-        // 初始化分頁
-        initPagination();
     });
 
-    // 分頁相關變數
     let currentPage = 1;
     let itemsPerPage = 10;
     let allRows = [];
     let filteredRows = [];
 
-    // 分頁功能
     function initPagination() {
         const table = document.getElementById('enrollmentTable');
         if (table) {
             const tbody = table.getElementsByTagName('tbody')[0];
-            if (tbody) {
-                // 只獲取真正的數據行，排除 detail-row
-                const allTableRows = Array.from(tbody.getElementsByTagName('tr'));
-                allRows = allTableRows.filter(row => {
-                    if (row.classList.contains('detail-row')) {
-                        return false;
-                    }
-                    const cells = row.getElementsByTagName('td');
-                    if (cells.length === 0) {
-                        return false;
-                    }
-                    // 確保是主數據行（有 table-row-clickable 類或至少有足夠的 td）
-                    return row.classList.contains('table-row-clickable') || cells.length >= 5;
-                });
-                filteredRows = [...allRows];
-            }
+            const allTableRows = Array.from(tbody.getElementsByTagName('tr'));
+            allRows = allTableRows.filter(row => !row.classList.contains('detail-row') && (row.classList.contains('table-row-clickable') || row.getElementsByTagName('td').length >= 5));
+            filteredRows = [...allRows];
         }
-        
-        const select = document.getElementById('itemsPerPage');
-        if (select) {
-            if (select.value === 'all') {
-                itemsPerPage = filteredRows.length;
-            } else {
-                itemsPerPage = parseInt(select.value) || 10;
-            }
-        }
-        currentPage = 1;
         updatePagination();
     }
 
     function changeItemsPerPage() {
         const select = document.getElementById('itemsPerPage');
-        filteredRows = allRows.filter(row => {
-            if (row.classList.contains('detail-row')) {
-                return false;
-            }
-            const cells = row.getElementsByTagName('td');
-            if (cells.length === 0) {
-                return false;
-            }
-            return true;
-        });
-        
-        if (select) {
-            itemsPerPage = select.value === 'all' ? filteredRows.length : parseInt(select.value);
-        }
+        if (select) { itemsPerPage = select.value === 'all' ? filteredRows.length : parseInt(select.value); }
         currentPage = 1;
         updatePagination();
     }
 
     function changePage(direction) {
         const totalItems = filteredRows.length;
-        const itemsPerPageNum = typeof itemsPerPage === 'number' ? itemsPerPage : parseInt(itemsPerPage) || 10;
-        const totalPages = totalItems > itemsPerPageNum ? Math.ceil(totalItems / itemsPerPageNum) : 1;
-        
+        const totalPages = Math.ceil(totalItems / itemsPerPage);
         currentPage += direction;
-        
         if (currentPage < 1) currentPage = 1;
         if (currentPage > totalPages) currentPage = totalPages;
-        
-        updatePagination();
-    }
-
-    function goToPage(page) {
-        currentPage = page;
         updatePagination();
     }
 
     function updatePagination() {
-        // 重新從表格獲取所有行（確保數據是最新的）
-        const table = document.getElementById('enrollmentTable');
-        if (table) {
-            const tbody = table.getElementsByTagName('tbody')[0];
-            if (tbody) {
-                const allTableRows = Array.from(tbody.getElementsByTagName('tr'));
-                allRows = allTableRows.filter(row => {
-                    if (row.classList.contains('detail-row')) {
-                        return false;
-                    }
-                    const cells = row.getElementsByTagName('td');
-                    if (cells.length === 0) {
-                        return false;
-                    }
-                    return row.classList.contains('table-row-clickable') || cells.length >= 5;
-                });
-            }
-        }
-        
-        // 如果 filteredRows 是空的，使用 allRows
-        if (filteredRows.length === 0) {
-            filteredRows = [...allRows];
-        }
-        
         const totalItems = filteredRows.length;
-        
         const select = document.getElementById('itemsPerPage');
-        let itemsPerPageNum = 10;
-        if (select) {
-            if (select.value === 'all') {
-                itemsPerPageNum = totalItems;
-            } else {
-                itemsPerPageNum = parseInt(select.value) || 10;
-            }
-        } else {
-            itemsPerPageNum = typeof itemsPerPage === 'number' ? itemsPerPage : parseInt(itemsPerPage) || 10;
-        }
+        let iPerPage = (select && select.value !== 'all') ? parseInt(select.value) : (select && select.value === 'all' ? totalItems : 10);
         
-        const totalPages = totalItems > itemsPerPageNum ? Math.ceil(totalItems / itemsPerPageNum) : 1;
+        const totalPages = Math.ceil(totalItems / iPerPage) || 1;
+        if (currentPage > totalPages) currentPage = totalPages;
         
-        if (currentPage > totalPages && totalPages > 0) {
-            currentPage = totalPages;
-        }
-        if (currentPage < 1) {
-            currentPage = 1;
-        }
-        
-        let start, end;
-        if (totalItems === 0) {
-            start = 0;
-            end = 0;
-        } else {
-            if (totalPages <= 1 || itemsPerPageNum >= totalItems) {
-                start = 1;
-                end = totalItems;
-            } else {
-                start = (currentPage - 1) * itemsPerPageNum + 1;
-                end = Math.min(currentPage * itemsPerPageNum, totalItems);
-            }
-            end = Math.min(end, totalItems);
-        }
+        let start = totalItems === 0 ? 0 : (currentPage - 1) * iPerPage + 1;
+        let end = Math.min(currentPage * iPerPage, totalItems);
         
         const currentRangeEl = document.getElementById('currentRange');
-        if (currentRangeEl) {
-            currentRangeEl.textContent = `${start}-${end}`;
-        }
+        if (currentRangeEl) currentRangeEl.textContent = `${start}-${end}`;
         
         const prevBtn = document.getElementById('prevPage');
         const nextBtn = document.getElementById('nextPage');
-        if (prevBtn) prevBtn.disabled = currentPage === 1;
-        if (nextBtn) nextBtn.disabled = currentPage >= totalPages || totalPages <= 1;
-        
+        if (prevBtn) prevBtn.disabled = currentPage <= 1;
+        if (nextBtn) nextBtn.disabled = currentPage >= totalPages;
+
         const pageNumbers = document.getElementById('pageNumbers');
         if (pageNumbers) {
             pageNumbers.innerHTML = '';
-            
-            if (totalPages >= 1) {
-                const pagesToShow = totalPages === 1 ? [1] : Array.from({length: totalPages}, (_, i) => i + 1);
-                
-                for (let i of pagesToShow) {
-                    const button = document.createElement('button');
-                    button.textContent = i;
-                    button.className = i === currentPage ? 'active' : '';
-                    button.onclick = () => {
-                        currentPage = i;
-                        updatePagination();
-                    };
-                    pageNumbers.appendChild(button);
-                }
+            for (let i = 1; i <= totalPages; i++) {
+                if (totalPages > 10 && Math.abs(currentPage - i) > 2 && i !== 1 && i !== totalPages) continue;
+                 const btn = document.createElement('button');
+                 btn.textContent = i;
+                 btn.className = i === currentPage ? 'active' : '';
+                 btn.onclick = () => { currentPage = i; updatePagination(); };
+                 pageNumbers.appendChild(btn);
             }
         }
-        
-        // 顯示/隱藏行
-        allRows.forEach((row, index) => {
-            const detailRow = row.nextElementSibling;
-            if (filteredRows.includes(row)) {
-                const rowIndex = filteredRows.indexOf(row);
-                const shouldShow = (totalPages <= 1 || itemsPerPageNum >= totalItems) 
-                    ? true 
-                    : (rowIndex >= (currentPage - 1) * itemsPerPageNum && rowIndex < currentPage * itemsPerPageNum);
-                row.style.display = shouldShow ? '' : 'none';
-                if (detailRow && detailRow.classList.contains('detail-row')) {
-                    detailRow.style.display = 'none';
-                }
-            } else {
-                row.style.display = 'none';
-                if (detailRow && detailRow.classList.contains('detail-row')) {
-                    detailRow.style.display = 'none';
-                }
-            }
+
+        allRows.forEach(row => {
+            row.style.display = 'none';
+            const detailRow = document.getElementById('detail-' + row.getAttribute('onclick').match(/\d+/)[0]);
+            if (detailRow) detailRow.style.display = 'none';
         });
+
+        const rowsToShow = filteredRows.slice((currentPage - 1) * iPerPage, currentPage * iPerPage);
+        rowsToShow.forEach(row => row.style.display = '');
     }
 
-    // 分配學生相關變數
-    let currentStudentId = null;
-
-    /**
-     * 從按鈕元素開啟分配老師彈出視窗（使用 data 屬性避免引號衝突）
-     * @param {HTMLElement} button 按鈕元素
-     */
     function openAssignModalFromButton(button) {
         const studentId = parseInt(button.getAttribute('data-student-id'));
         const studentName = button.getAttribute('data-student-name');
-        const currentTeacherIdStr = button.getAttribute('data-current-teacher-id');
-        const currentTeacherId = currentTeacherIdStr ? parseInt(currentTeacherIdStr) : null;
+        const currentTeacherId = button.getAttribute('data-current-teacher-id');
         const chosenCodesJson = button.getAttribute('data-chosen-codes') || '[]';
-        
         openAssignModal(studentId, studentName, currentTeacherId, chosenCodesJson);
     }
 
-    /**
-     * 開啟分配老師彈出視窗
-     * @param {number} studentId 學生ID
-     * @param {string} studentName 學生姓名
-     * @param {number|null} currentTeacherId 當前分配的老師ID
-     * @param {string} chosenCodesJson 學生志願的科系代碼 JSON 陣列
-     */
     function openAssignModal(studentId, studentName, currentTeacherId, chosenCodesJson) {
         currentStudentId = studentId;
         document.getElementById('studentName').textContent = studentName;
         document.getElementById('assignModal').style.display = 'flex';
-        
-        // 步驟 1: 解析志願代碼
         let chosenCodes = [];
-        try {
-            chosenCodes = JSON.parse(chosenCodesJson);
-        } catch (e) {
-            console.error("解析 chosenCodesJson 失敗:", e);
-            chosenCodes = [];
-        }
-        
-        // 步驟 2: 呼叫篩選函數
+        try { chosenCodes = JSON.parse(chosenCodesJson); } catch (e) {}
         filterAndDisplayDirectors(currentTeacherId, chosenCodes);
     }
     
-    /**
-     * 篩選並動態顯示老師名單（主任可以看到自己科系的所有老師，老師可以看到所有主任）
-     * @param {number|null} currentTeacherId 當前分配的老師ID
-     * @param {string[]} chosenCodes 學生選擇的科系代碼陣列 (e.g., ['IM', 'AF'])
-     */
     function filterAndDisplayDirectors(currentTeacherId, chosenCodes) {
         const optionsContainer = document.getElementById('directorOptions');
-        optionsContainer.innerHTML = ''; // 清空選項
-
-        // 判斷是否有填寫志願 (chosenCodes 是一個包含有效科系代碼的陣列)
+        optionsContainer.innerHTML = '';
         const filterByChoice = chosenCodes.length > 0;
-        let filteredTeachers = allDirectors;
-        let html = '';
-
-        if (filterByChoice) {
-            // 情況 1: 志願有填寫 - 只顯示志願科系的老師
-            filteredTeachers = allDirectors.filter(teacher => 
-                // 確保老師有設定 department_code 且該代碼存在於學生的志願列表中
-                teacher.department_code && chosenCodes.includes(teacher.department_code)
-            );
-        } else {
-            // 情況 2: 志願是空的 - 顯示所有老師
-            filteredTeachers = allDirectors;
-        }
+        let filteredTeachers = filterByChoice ? allDirectors.filter(t => t.department_code && chosenCodes.includes(t.department_code)) : allDirectors;
 
         if (filteredTeachers.length === 0) {
-            if (filterByChoice) {
-                 html = '<p class="empty-state" style="padding: 10px;">找不到符合學生志願科系的老師。</p>';
-            } else {
-                 html = '<p class="empty-state" style="padding: 10px;">目前沒有任何老師資料可供分配。</p>';
-            }
+            optionsContainer.innerHTML = filterByChoice ? '<p class="empty-state" style="padding: 10px;">找不到符合學生志願科系的老師。</p>' : '<p class="empty-state" style="padding: 10px;">目前沒有任何老師資料可供分配。</p>';
         } else {
-            // 渲染篩選過後的老師名單（主任分配：大字顯示名字，不顯示角色，不顯示自己）
+            let html = '';
             filteredTeachers.forEach(teacher => {
                 const isChecked = (currentTeacherId && teacher.id == currentTeacherId);
                 const teacherName = teacher.name ?? teacher.username;
-
-                html += `
-                    <label class="teacher-option">
-                        <input type="radio" name="teacher" value="${teacher.id}" ${isChecked ? 'checked' : ''}>
-                        <div class="teacher-info">
-                            <strong>${teacherName}</strong>
-                        </div>
-                    </label>
-                `;
+                html += `<label class="teacher-option"><input type="radio" name="teacher" value="${teacher.id}" ${isChecked ? 'checked' : ''}><div class="teacher-info"><strong>${teacherName}</strong></div></label>`;
             });
+            optionsContainer.innerHTML = html;
         }
-        
-        optionsContainer.innerHTML = html;
     }
 
-
-    // 關閉分配學生彈出視窗
-    function closeAssignModal() {
-        document.getElementById('assignModal').style.display = 'none';
-        currentStudentId = null;
-    }
-
-    // 分配學生
+    let currentStudentId = null;
+    function closeAssignModal() { document.getElementById('assignModal').style.display = 'none'; currentStudentId = null; }
+    
     function assignStudent() {
         const selectedTeacher = document.querySelector('input[name="teacher"]:checked');
-        
-        if (!selectedTeacher) {
-            alert('請選擇一位老師');
-            return;
-        }
-
-        const teacherId = selectedTeacher.value;
-        
-        // 發送AJAX請求
+        if (!selectedTeacher) { alert('請選擇一位老師'); return; }
         const xhr = new XMLHttpRequest();
         xhr.open('POST', 'assign_student.php', true);
         xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
-        
         xhr.onreadystatechange = function() {
-            if (xhr.readyState === 4) {
-                if (xhr.status === 200) {
-                    try {
-                        const response = JSON.parse(xhr.responseText);
-                        if (response.success) {
-                            alert('學生分配成功！');
-                            closeAssignModal();
-                            // 可以選擇重新載入頁面或更新UI
-                            location.reload();
-                        } else {
-                            alert('分配失敗：' + (response.message || '未知錯誤'));
-                        }
-                    } catch (e) {
-                        alert('回應格式錯誤：' + xhr.responseText);
-                    }
-                } else {
-                    alert('請求失敗，狀態碼：' + xhr.status);
-                }
+            if (xhr.readyState === 4 && xhr.status === 200) {
+                try {
+                    const response = JSON.parse(xhr.responseText);
+                    if (response.success) { alert('學生分配成功！'); location.reload(); } else { alert('分配失敗：' + (response.message || '未知錯誤')); }
+                } catch (e) { alert('回應格式錯誤'); }
             }
         };
-        
-        xhr.send('student_id=' + encodeURIComponent(currentStudentId) + 
-                 '&teacher_id=' + encodeURIComponent(teacherId));
+        xhr.send('student_id=' + encodeURIComponent(currentStudentId) + '&teacher_id=' + encodeURIComponent(selectedTeacher.value));
     }
 
-    // 點擊彈出視窗外部關閉
-    <?php if ($is_department_user): ?>
-    document.getElementById('assignModal').addEventListener('click', function(e) {
-        if (e.target === this) {
-            closeAssignModal();
-        }
-    });
-    <?php endif; ?>
-
-    // 分配部門相關變數
     let currentDepartmentStudentId = null;
-
-    /**
-     * 從按鈕元素開啟分配部門彈出視窗（使用 data 屬性避免引號衝突）
-     * @param {HTMLElement} button 按鈕元素
-     */
-    function openAssignDepartmentModalFromButton(button) {
-        const studentId = parseInt(button.getAttribute('data-student-id'));
-        const studentName = button.getAttribute('data-student-name');
-        const currentDepartment = button.getAttribute('data-current-department') || '';
-        const chosenCodesJson = button.getAttribute('data-chosen-codes') || '[]';
-        const choiceOrderMapJson = button.getAttribute('data-choice-order-map') || '{}';
-        
-        openAssignDepartmentModal(studentId, studentName, currentDepartment, chosenCodesJson, choiceOrderMapJson);
-    }
-
-    /**
-     * 開啟分配部門彈出視窗
-     * @param {number} studentId 學生ID
-     * @param {string} studentName 學生姓名
-     * @param {string} currentDepartment 當前分配的部門代碼
-     * @param {string} chosenCodesJson 學生志願的科系代碼 JSON 陣列
-     * @param {string} choiceOrderMapJson 科系代碼到志願順序的映射 JSON 物件
-     */
-    function openAssignDepartmentModal(studentId, studentName, currentDepartment, chosenCodesJson, choiceOrderMapJson) {
-        currentDepartmentStudentId = studentId;
-        document.getElementById('departmentStudentName').textContent = studentName;
-        document.getElementById('assignDepartmentModal').style.display = 'flex';
-        
-        // 步驟 1: 解析志願代碼
-        let chosenCodes = [];
-        try {
-            chosenCodes = JSON.parse(chosenCodesJson);
-        } catch (e) {
-            console.error("解析 chosenCodesJson 失敗:", e);
-            chosenCodes = [];
-        }
-        
-        // 步驟 2: 解析志願順序映射
-        let choiceOrderMap = {};
-        try {
-            choiceOrderMap = JSON.parse(choiceOrderMapJson);
-        } catch (e) {
-            console.error("解析 choiceOrderMapJson 失敗:", e);
-            choiceOrderMap = {};
-        }
-        
-        // 步驟 3: 呼叫篩選函數
-        filterAndDisplayDepartments(currentDepartment, chosenCodes, choiceOrderMap);
-    }
-    
-    /**
-     * 篩選並動態顯示部門名單（只顯示學生志願裡有的科系）
-     * @param {string} currentDepartment 當前分配的部門代碼
-     * @param {string[]} chosenCodes 學生選擇的科系代碼陣列 (e.g., ['IM', 'AF'])
-     * @param {Object} choiceOrderMap 科系代碼到志願順序的映射 (e.g., {'IM': 1, 'AF': 2})
-     */
-    function filterAndDisplayDepartments(currentDepartment, chosenCodes, choiceOrderMap) {
-        const optionsContainer = document.getElementById('departmentOptions');
-        optionsContainer.innerHTML = ''; // 清空選項
-
-        // 判斷是否有填寫志願 (chosenCodes 是一個包含有效科系代碼的陣列)
-        const filterByChoice = chosenCodes.length > 0;
-        let filteredDepartments = [];
-        let html = '';
-
-        if (filterByChoice) {
-            // 情況 1: 志願有填寫 - 只顯示志願科系
-            filteredDepartments = allDepartments.filter(dept => 
-                // 確保部門代碼存在於學生的志願列表中
-                dept.code && chosenCodes.includes(dept.code)
-            );
-        } else {
-            // 情況 2: 志願是空的 - 不顯示任何部門（只有學生志願有填的科系才會出現）
-            filteredDepartments = [];
-        }
-
-        if (filteredDepartments.length === 0) {
-            if (filterByChoice) {
-                html = '<p class="empty-state" style="padding: 10px;">找不到符合學生志願的科系。請確認學生是否已填寫志願。</p>';
-            } else {
-                html = '<p class="empty-state" style="padding: 10px;">此學生尚未填寫志願，無法進行分配。請先確認學生是否已填寫志願。</p>';
-            }
-        } else {
-            // 按照志願順序排序（第1志願到第3志願）
-            filteredDepartments.sort((a, b) => {
-                const orderA = choiceOrderMap[a.code] || 999; // 如果沒有志願順序，排在最後
-                const orderB = choiceOrderMap[b.code] || 999;
-                return orderA - orderB; // 升序排列（1, 2, 3）
-            });
-            
-            // 渲染篩選過後的部門名單（行政人員：大字顯示科系，灰字顯示主任名字和志願順序）
-            filteredDepartments.forEach(dept => {
-                const isChecked = (currentDepartment && dept.code === currentDepartment);
-                const directorNames = dept.director_names || '無主任';
-                // 獲取該科系是第幾志願
-                const choiceOrder = choiceOrderMap[dept.code] || null;
-                const choiceOrderText = choiceOrder ? `（第${choiceOrder}志願）` : '';
-                html += `
-                    <label class="teacher-option">
-                        <input type="radio" name="department" value="${dept.code}" ${isChecked ? 'checked' : ''}>
-                        <div class="teacher-info">
-                            <strong>${dept.name}${choiceOrderText}</strong>
-                            <span class="teacher-dept">${directorNames}</span>
-                        </div>
-                    </label>
-                `;
-            });
-        }
-        
-        optionsContainer.innerHTML = html;
-    }
-
-    // 關閉分配部門彈出視窗
-    function closeAssignDepartmentModal() {
-        document.getElementById('assignDepartmentModal').style.display = 'none';
-        currentDepartmentStudentId = null;
-    }
-
-    // 分配部門
-    function assignDepartment() {
-        const selectedDepartment = document.querySelector('input[name="department"]:checked');
-        
-        if (!selectedDepartment) {
-            alert('請選擇一個部門');
-            return;
-        }
-
-        const department = selectedDepartment.value;
-        
-        // 發送AJAX請求
-        const xhr = new XMLHttpRequest();
-        xhr.open('POST', 'assign_department.php', true);
-        xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
-        
-        xhr.onreadystatechange = function() {
-            if (xhr.readyState === 4) {
-                if (xhr.status === 200) {
-                    try {
-                        const response = JSON.parse(xhr.responseText);
-                        if (response.success) {
-                            alert('學生分配成功！');
-                            closeAssignDepartmentModal();
-                            location.reload();
-                        } else {
-                            alert('分配失敗：' + (response.message || '未知錯誤'));
-                        }
-                    } catch (e) {
-                        alert('回應格式錯誤：' + xhr.responseText);
-                    }
-                } else {
-                    alert('請求失敗，狀態碼：' + xhr.status);
-                }
-            }
-        };
-        
-        xhr.send('student_id=' + encodeURIComponent(currentDepartmentStudentId) + 
-                 '&department=' + encodeURIComponent(department));
-    }
-
-    // 點擊分配部門彈出視窗外部關閉
-    <?php if ($is_admission_center): ?>
-    document.getElementById('assignDepartmentModal').addEventListener('click', function(e) {
-        if (e.target === this) {
-            closeAssignDepartmentModal();
-        }
-    });
-    <?php endif; ?>
-
-    // 聯絡紀錄相關變數
-    let currentContactLogStudentId = null;
-
-    // 開啟聯絡紀錄模態視窗 (原本的函數)
-    function openContactLogsModal(studentId, studentName) {
-        currentContactLogStudentId = studentId;
-        document.getElementById('contactLogStudentName').textContent = studentName;
-        
-        // 隱藏分配資訊區塊 (如果是老師介面點進來的，通常不需要看這個)
-        const assignmentInfo = document.getElementById('assignmentInfo');
-        if (assignmentInfo) {
-            assignmentInfo.style.display = 'none'; 
-        }
-
-        document.getElementById('contactLogsModal').style.display = 'flex';
-        loadContactLogs(studentId);
-    }
-
-    // 新增：開啟詳細資料視窗 (招生中心用，包含分配資訊與聯絡紀錄)
     function openDetailsModal(button) {
         const studentId = button.getAttribute('data-student-id');
         const studentName = button.getAttribute('data-student-name');
         const deptName = button.getAttribute('data-dept-name');
         const teacherName = button.getAttribute('data-teacher-name');
-
-        // 設定學生姓名
         document.getElementById('contactLogStudentName').textContent = studentName;
         document.getElementById('detailDeptName').textContent = deptName;
         document.getElementById('detailTeacherName').textContent = teacherName;
-        
-        // 顯示分配資訊區塊 (強制顯示給招生中心看)
         const assignmentInfo = document.getElementById('assignmentInfo');
-        if (assignmentInfo) {
-            assignmentInfo.style.display = 'block';
-        }
-
-        // 顯示 Modal
+        if (assignmentInfo) assignmentInfo.style.display = 'block';
         document.getElementById('contactLogsModal').style.display = 'flex';
-        
-        // 載入聯絡紀錄 (重用原本的函數)
         loadContactLogs(studentId);
     }
-
-    // 關閉聯絡紀錄模態視窗
-    function closeContactLogsModal() {
-        document.getElementById('contactLogsModal').style.display = 'none';
-        currentContactLogStudentId = null;
+    
+    function openContactLogsModal(studentId, studentName) {
+        document.getElementById('contactLogStudentName').textContent = studentName;
+        
+        // [新增] 設定表單隱藏欄位 ID
+        const logInput = document.getElementById('logStudentId');
+        if(logInput) logInput.value = studentId;
+        
+        // 清空輸入框
+        if(document.getElementById('logNotes')) document.getElementById('logNotes').value = '';
+        
+        const assignmentInfo = document.getElementById('assignmentInfo');
+        if (assignmentInfo) assignmentInfo.style.display = 'none';
+        document.getElementById('contactLogsModal').style.display = 'flex';
+        loadContactLogs(studentId);
     }
-
-    // 載入聯絡紀錄
+    
+    function closeContactLogsModal() { document.getElementById('contactLogsModal').style.display = 'none'; }
+    
+    // [新增] 提交聯絡紀錄
+    async function submitContactLog() {
+        const studentId = document.getElementById('logStudentId').value;
+        const date = document.getElementById('logDate').value;
+        const method = document.getElementById('logMethod').value;
+        const notes = document.getElementById('logNotes').value;
+        
+        if(!notes.trim()) {
+            alert('請輸入聯絡內容');
+            return;
+        }
+        
+        const formData = new FormData();
+        formData.append('enrollment_id', studentId);
+        formData.append('contact_date', date);
+        formData.append('method', method);
+        formData.append('notes', notes);
+        
+        try {
+            const response = await fetch('submit_contact_log.php', {
+                method: 'POST',
+                body: formData
+            });
+            const result = await response.json();
+            
+            if(result.success) {
+                // 清空並重新載入列表
+                document.getElementById('logNotes').value = '';
+                loadContactLogs(studentId);
+            } else {
+                alert(result.message || '儲存失敗');
+            }
+        } catch(e) {
+            console.error(e);
+            alert('系統錯誤，請稍後再試');
+        }
+    }
+    
     async function loadContactLogs(studentId) {
         const logsList = document.getElementById('contactLogsList');
         logsList.innerHTML = '<div class="contact-log-loading"><i class="fas fa-spinner fa-spin"></i> 載入中...</div>';
-
         try {
             const response = await fetch(`get_contact_logs.php?enrollment_id=${studentId}`);
-            
-            if (!response.ok) {
-                throw new Error(`伺服器錯誤 (${response.status})`);
-            }
-
-            const contentType = response.headers.get('content-type');
-            if (!contentType || !contentType.includes('application/json')) {
-                const text = await response.text();
-                throw new Error('伺服器回應格式錯誤');
-            }
-
             const data = await response.json();
-
             if (data.success && data.logs) {
                 if (data.logs.length === 0) {
-                    logsList.innerHTML = `
-                        <div class="contact-log-empty">
-                            <i class="fas fa-inbox fa-3x" style="margin-bottom: 16px; color: #e8e8e8;"></i>
-                            <p>目前尚無聯絡紀錄</p>
-                        </div>
-                    `;
+                    logsList.innerHTML = '<div class="contact-log-empty"><i class="fas fa-inbox fa-3x" style="margin-bottom: 16px; color: #e8e8e8;"></i><p>目前尚無聯絡紀錄</p></div>';
                 } else {
                     logsList.innerHTML = data.logs.map(log => {
-                        const contactDate = log.contact_date || log.created_at?.split(' ')[0] || '未知';
-                        const method = log.method || '未知';
-                        const notes = log.notes || log.result || '';
-                        const createdDate = log.created_at ? new Date(log.created_at).toLocaleString('zh-TW', { hour12: false }) : '';
-
-                        return `
-                            <div class="contact-log-item">
-                                <div class="contact-log-header">
-                                    <div class="contact-log-info">
-                                        <div class="contact-log-date">
-                                            <i class="far fa-calendar-alt" style="margin-right:6px; color:#1890ff;"></i>
-                                            ${formatDate(contactDate)}
-                                        </div>
-                                        ${createdDate ? `
-                                        <div class="contact-log-create-time">
-                                            <i class="far fa-clock" style="font-size:12px;"></i>
-                                            建立於：${createdDate}
-                                        </div>` : ''}
-                                    </div>
-                                    <span class="contact-log-method">${method}</span>
-                                </div>
-                                <div class="contact-log-result">${escapeHtml(notes)}</div>
-                            </div>
-                        `;
+                        const contactDate = log.contact_date || '未知';
+                        return `<div class="contact-log-item"><div class="contact-log-header"><strong>${contactDate}</strong><span>${log.method || ''}</span></div><div class="contact-log-result">${log.notes || ''}</div></div>`;
                     }).join('');
                 }
-            } else {
-                logsList.innerHTML = `
-                    <div class="contact-log-empty">
-                        <i class="fas fa-exclamation-triangle fa-3x" style="margin-bottom: 16px; color: #ff9800;"></i>
-                        <p>載入失敗：${data.message || '未知錯誤'}</p>
-                    </div>
-                `;
-            }
-        } catch (error) {
-             console.error('載入聯絡紀錄錯誤:', error);
-             logsList.innerHTML = `
-                <div class="contact-log-empty">
-                    <p>載入失敗，請稍後再試</p>
-                    <p style="font-size: 12px; color: #999;">${error.message}</p>
-                </div>
-            `;
-        }
+            } else { logsList.innerHTML = '載入失敗'; }
+        } catch (e) { logsList.innerHTML = '載入錯誤'; }
     }
 
-    // 格式化日期
-    function formatDate(dateString) {
-        if (!dateString) return '';
-        const date = new Date(dateString);
-        const year = date.getFullYear();
-        const month = String(date.getMonth() + 1).padStart(2, '0');
-        const day = String(date.getDate()).padStart(2, '0');
-        return `${year}年${month}月${day}日`;
-    }
-
-    // HTML 轉義函數
-    function escapeHtml(text) {
-        if (!text) return '';
-        const div = document.createElement('div');
-        div.textContent = text;
-        return div.innerHTML;
-    }
-
-    // 點擊聯絡紀錄模態視窗外部關閉
-    <?php if ($is_department_user || $is_admission_center): ?>
-    document.getElementById('contactLogsModal').addEventListener('click', function(e) {
-        if (e.target === this) {
-            closeContactLogsModal();
-        }
-    });
-    <?php endif; ?>
-
-    // 關閉新就讀意願提醒
     function closeNewEnrollmentAlert() {
         const alert = document.getElementById('newEnrollmentAlert');
-        if (alert) {
-            alert.style.animation = 'slideDown 0.3s ease-out reverse';
-            setTimeout(() => {
-                alert.style.display = 'none';
-            }, 300);
-        }
+        if (alert) { alert.style.display = 'none'; }
     }
     </script>
 </body>
