@@ -296,8 +296,17 @@ $conn->close();
             overflow-x: auto;
             flex: 1;
         }
-        .table { width: 100%; border-collapse: collapse; }
-        .table th, .table td { padding: 16px 24px; text-align: left; border-bottom: 1px solid var(--border-color); font-size: 14px; }
+        .table { 
+            width: 100%; 
+            border-collapse: collapse; 
+        }
+
+        .table th, .table td { 
+            padding: 16px 5px; 
+            text-align: left; 
+            border-bottom: 1px solid var(--border-color); 
+            font-size: 17px;
+         }
         .table th { 
             background: #fafafa; 
             font-weight: 600; 
@@ -308,8 +317,8 @@ $conn->close();
         
         /* 縮圖 */
         .thumbnail-preview {
-            width: 80px;
-            height: 45px;
+            width: 180px;
+            height: 100px;
             object-fit: cover;
             border-radius: 4px;
             background: #eee;

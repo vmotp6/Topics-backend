@@ -8,8 +8,8 @@ $isAlreadyLoggedIn = (isset($_SESSION['admin_logged_in']) && $_SESSION['admin_lo
 // 如果是從前台傳過來且已登入，檢查角色是否可以進入後台
 if (!$isAlreadyLoggedIn && isset($_SESSION['logged_in']) && $_SESSION['logged_in'] === true) {
     $user_role = $_SESSION['role'] ?? '';
-    // 檢查角色是否允許進入後台（管理員、行政人員、主任）
-    $allowed_roles = ['ADM', 'STA', 'DI', '管理員', '行政人員', '主任'];
+    // 檢查角色是否允許進入後台（管理員、行政人員、主任、IM）
+    $allowed_roles = ['ADM', 'STA', 'DI', 'IM', '管理員', '行政人員', '主任', '資管科主任'];
     if (in_array($user_role, $allowed_roles)) {
         $_SESSION['admin_logged_in'] = true;
         $isAlreadyLoggedIn = true;
