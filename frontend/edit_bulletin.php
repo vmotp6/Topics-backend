@@ -1,11 +1,21 @@
 <?php
-session_start();
+// 改用共用的 session 設定，確保前台登入可同步到後台
+require_once __DIR__ . '/session_config.php';
+
+// 登入檢查（同時接受前台同步的登入狀態）
 if (!isset($_SESSION['admin_logged_in']) || !$_SESSION['admin_logged_in']) {
     header("Location: login.php");
     exit;
 }
+
+// 標準化角色判斷，與登入邏輯一致
 $user_role = $_SESSION['role'] ?? '';
-if (!in_array($user_role, ['ADM', 'STA'])) {
+$user_role = strtoupper(trim($user_role));
+if ($user_role === '管理員') $user_role = 'ADM';
+if (in_array($user_role, ['行政人員', '學校行政人員'])) $user_role = 'STA';
+
+$allowed_roles = ['ADM', 'STA', 'DI', 'TEA', 'STAM', 'IM', 'AS'];
+if (!in_array($user_role, $allowed_roles)) {
     header("Location: index.php");
     exit;
 }
@@ -74,6 +84,27 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $status_code = isset($_POST['is_active']) ? 'published' : 'draft';
     $is_pinned = isset($_POST['is_pinned']) ? 1 : 0;
     $user_id = $_SESSION['user_id'] ?? 0;
+    // 若 user_id 為空，嘗試用帳號查詢 user 表補足，避免外鍵失敗
+    if (empty($user_id) && !empty($_SESSION['username'])) {
+        $lookup_stmt = $conn->prepare("SELECT id FROM user WHERE username = ? LIMIT 1");
+        $lookup_stmt->bind_param("s", $_SESSION['username']);
+        if ($lookup_stmt->execute()) {
+            $res = $lookup_stmt->get_result();
+            if ($row = $res->fetch_assoc()) {
+                $user_id = (int)$row['id'];
+                $_SESSION['user_id'] = $user_id; // 補寫回 session
+            }
+        }
+        $lookup_stmt->close();
+    }
+
+    // 如果仍找不到，使用第一個管理員帳號作為 fallback，避免外鍵中斷
+    if (empty($user_id)) {
+        $fallback_stmt = $conn->query("SELECT id FROM user WHERE role IN ('ADM','管理員') ORDER BY id ASC LIMIT 1");
+        if ($fallback_stmt && $fallback_stmt->num_rows > 0) {
+            $user_id = (int)$fallback_stmt->fetch_assoc()['id'];
+        }
+    }
     
     if (empty($title) || empty($content)) {
         $error = "標題和內容不能為空";

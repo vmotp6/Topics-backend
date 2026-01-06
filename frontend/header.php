@@ -14,6 +14,9 @@ $user_display_name = $_SESSION['name'] ?? $_SESSION['username'] ?? 'Admin';
             <?php echo htmlspecialchars($page_title); ?>
         </div>
         <div class="header-right">
+            <a href="/Topics-frontend/frontend/index.php" class="btn-to-frontend" title="前台首頁" style="text-decoration:none;">
+                <i class="fas fa-home"></i> 前台
+            </a>
             <div class="user-info" id="userInfoDropdown">
                 <div class="user-avatar">
                     <i class="fas fa-user"></i>
@@ -60,6 +63,24 @@ $user_display_name = $_SESSION['name'] ?? $_SESSION['username'] ?? 'Admin';
     display: flex;
     align-items: center;
     gap: 20px;
+}
+
+.btn-to-frontend {
+    padding: 6px 12px;
+    border: 1px solid #d9d9d9;
+    border-radius: 6px;
+    color: #595959;
+    background: #fff;
+    font-size: 14px;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    transition: all 0.2s ease;
+}
+
+.btn-to-frontend:hover {
+    border-color: #1890ff;
+    color: #1890ff;
 }
 
 .user-info {

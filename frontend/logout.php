@@ -37,7 +37,7 @@ header("Cache-Control: no-store, no-cache, must-revalidate, max-age=0");
 header("Cache-Control: post-check=0, pre-check=0", false);
 header("Pragma: no-cache");
 
-// 跳轉到登入頁面
-header("Location: login.php");
+// 跳轉到前台首頁
+header("Location: /Topics-frontend/frontend/index.php");
 exit;
 ?>

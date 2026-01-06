@@ -14,14 +14,16 @@ require_once '../../Topics-frontend/frontend/config.php';
 // 獲取使用者角色和資訊
 $user_id = $_SESSION['user_id'] ?? 0;
 $user_role = $_SESSION['role'] ?? '';
+// 先標準化大小寫與空白
+$user_role = strtoupper(trim($user_role));
 $username = $_SESSION['username'] ?? '';
 
 // 將中文或舊代碼統一成標準代碼，避免權限判斷失敗
 $role_map = [
     '管理員' => 'ADM',
-    'admin' => 'ADM',
-    'Admin' => 'ADM',
+    'ADMIN' => 'ADM',
     '行政人員' => 'STA',
+    '學校行政人員' => 'STA',
     '主任'   => 'DI',
     '老師'   => 'TEA',
     '招生中心組員' => 'STAM',

@@ -7,7 +7,14 @@ if (!isset($_SESSION['admin_logged_in']) || !$_SESSION['admin_logged_in']) {
 }
 
 $user_role = $_SESSION['role'] ?? '';
-if (!in_array($user_role, ['ADM', 'STA'])) {
+// 標準化角色字串，避免大小寫或前後空白造成判斷失敗
+$user_role = strtoupper(trim($user_role));
+// 兼容中文角色名稱
+if ($user_role === '管理員') $user_role = 'ADM';
+if (in_array($user_role, ['行政人員', '學校行政人員'])) $user_role = 'STA';
+
+$allowed_roles = ['ADM', 'STA', 'DI', 'TEA', 'STAM', 'IM', 'AS'];
+if (!in_array($user_role, $allowed_roles)) {
     header("Location: index.php");
     exit;
 }
