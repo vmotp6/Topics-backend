@@ -7,6 +7,16 @@ $user_role = $_SESSION['role'] ?? ''; // 預期為 ADM, STA, DI, TEA, STAM, IM, 
 $username = $_SESSION['username'] ?? ''; // 預期為用戶名
 $user_id = $_SESSION['user_id'] ?? null; // 用戶ID，用於權限檢查
 
+// 簡單的調試：如果想看角色信息，可以在URL加上 ?show_debug=1
+if (isset($_GET['show_debug']) && $_GET['show_debug'] == '1') {
+    echo '<div style="background: #fff3cd; border: 2px solid #ffc107; padding: 15px; margin: 15px; border-radius: 4px; font-family: monospace; font-size: 12px; z-index: 9999; position: relative;">';
+    echo '<strong style="font-size: 14px;">角色調試信息：</strong><br>';
+    echo 'SESSION[role]: ' . htmlspecialchars($_SESSION['role'] ?? 'NOT SET') . '<br>';
+    echo 'SESSION[username]: ' . htmlspecialchars($_SESSION['username'] ?? 'NOT SET') . '<br>';
+    echo 'SESSION[user_id]: ' . htmlspecialchars($_SESSION['user_id'] ?? 'NOT SET') . '<br>';
+    echo '</div>';
+}
+
 // 角色代碼映射：將中文名稱或舊代碼轉換為新代碼（向後兼容）
 $original_role = $user_role; // 保存原始角色值用於調試
 $role_map = [
@@ -71,6 +81,28 @@ $is_as = ($user_role === 'AS'); // 科助：根據分配的權限顯示
 // 檢查是否為資管科主任：role=DI 且部門代碼=IM
 $is_im = false;
 $user_department_code = null;
+
+// 如果 user_id 不存在但有 username，先從資料庫獲取 user_id
+if (!$user_id && $username) {
+    require_once '../../Topics-frontend/frontend/config.php';
+    $conn_get_id = getDatabaseConnection();
+    try {
+        $stmt_get_id = $conn_get_id->prepare("SELECT id FROM user WHERE username = ?");
+        $stmt_get_id->bind_param("s", $username);
+        $stmt_get_id->execute();
+        $result_get_id = $stmt_get_id->get_result();
+        if ($row_id = $result_get_id->fetch_assoc()) {
+            $user_id = $row_id['id'];
+            // 同時更新到 session 中，避免重複查詢
+            $_SESSION['user_id'] = $user_id;
+        }
+        $stmt_get_id->close();
+    } catch (Exception $e) {
+        error_log('Error fetching user_id in sidebar: ' . $e->getMessage());
+    }
+    $conn_get_id->close();
+}
+
 if ($is_director && $user_id) {
     // 查詢用戶的部門代碼
     require_once '../../Topics-frontend/frontend/config.php';
@@ -98,11 +130,15 @@ if ($is_director && $user_id) {
         error_log('Error fetching user department in sidebar: ' . $e->getMessage());
     }
     $conn_dept->close();
-} elseif ($user_role === 'IM') {
-    // 如果role已經是IM，直接設置為true
+} elseif ($user_role === 'IM' || $user_role === '資管科主任') {
+    // 如果role已經是IM或資管科主任，直接設置為true
     $is_im = true;
 }
 
+// 額外的安全檢查：如果映射後的 user_role 是 IM，確保 is_im 一定為 true
+if ($user_role === 'IM') {
+    $is_im = true;
+}
 // 調試：檢查角色識別（臨時啟用以排查問題）
 if (isset($_GET['debug_role']) && $_GET['debug_role'] == '1') {
     error_log("Sidebar Debug - Original role from session: " . ($_SESSION['role'] ?? 'NULL'));
@@ -133,14 +169,19 @@ if ($is_stam) {
     if ($user_id) {
         require_once '../../Topics-frontend/frontend/config.php';
         $conn = getDatabaseConnection();
-        $perm_stmt = $conn->prepare("SELECT permission_code FROM staff_member_permissions WHERE user_id = ?");
-        $perm_stmt->bind_param("i", $user_id);
-        $perm_stmt->execute();
-        $perm_result = $perm_stmt->get_result();
-        while ($row = $perm_result->fetch_assoc()) {
-            $stam_permissions[] = $row['permission_code'];
+        
+        // 檢查資料表是否存在
+        $table_check = $conn->query("SHOW TABLES LIKE 'staff_member_permissions'");
+        if ($table_check && $table_check->num_rows > 0) {
+            $perm_stmt = $conn->prepare("SELECT permission_code FROM staff_member_permissions WHERE user_id = ?");
+            $perm_stmt->bind_param("i", $user_id);
+            $perm_stmt->execute();
+            $perm_result = $perm_stmt->get_result();
+            while ($row = $perm_result->fetch_assoc()) {
+                $stam_permissions[] = $row['permission_code'];
+            }
+            $perm_stmt->close();
         }
-        $perm_stmt->close();
         $conn->close();
     }
 }
@@ -167,14 +208,19 @@ if ($is_as) {
     if ($user_id) {
         require_once '../../Topics-frontend/frontend/config.php';
         $conn = getDatabaseConnection();
-        $perm_stmt = $conn->prepare("SELECT permission_code FROM assistant_permissions WHERE user_id = ?");
-        $perm_stmt->bind_param("i", $user_id);
-        $perm_stmt->execute();
-        $perm_result = $perm_stmt->get_result();
-        while ($row = $perm_result->fetch_assoc()) {
-            $as_permissions[] = $row['permission_code'];
+        
+        // 檢查資料表是否存在
+        $table_check = $conn->query("SHOW TABLES LIKE 'assistant_permissions'");
+        if ($table_check && $table_check->num_rows > 0) {
+            $perm_stmt = $conn->prepare("SELECT permission_code FROM assistant_permissions WHERE user_id = ?");
+            $perm_stmt->bind_param("i", $user_id);
+            $perm_stmt->execute();
+            $perm_result = $perm_stmt->get_result();
+            while ($row = $perm_result->fetch_assoc()) {
+                $as_permissions[] = $row['permission_code'];
+            }
+            $perm_stmt->close();
         }
-        $perm_stmt->close();
         $conn->close();
     }
 }
@@ -345,7 +391,13 @@ function hasPermission($permission_code, $user_role, $permissions_array) {
                 echo '映射後角色: ' . htmlspecialchars($user_role) . '<br>';
                 echo 'is_im 值: ' . ($is_im ? 'true' : 'false') . '<br>';
                 echo '用戶名: ' . htmlspecialchars($username) . '<br>';
+                echo '用戶ID: ' . htmlspecialchars($user_id ?? 'NULL') . '<br>';
                 echo '</div>';
+            }
+            
+            // 確保 IM 角色菜單一定會顯示：如果 user_role 是 IM，強制設置 is_im = true
+            if ($user_role === 'IM' && !$is_im) {
+                $is_im = true;
             }
             
             // 如果is_im為false，但原始角色可能是IM相關的值，嘗試自動修正
@@ -369,6 +421,17 @@ function hasPermission($permission_code, $user_role, $permissions_array) {
                     <i class="fas fa-address-book"></i>
                     <span>學生聯絡管理</span>
                 </a>
+            <?php else: ?>
+                <!-- 調試：如果角色是IM但菜單沒顯示，這裡會看到調試信息 -->
+                <?php if ($user_role === 'IM' && isset($_GET['show_debug']) && $_GET['show_debug'] == '1'): ?>
+                    <div style="background: #ffdddd; border: 2px solid #ff0000; padding: 10px; margin: 10px; border-radius: 4px; font-size: 12px; color: #ff0000;">
+                        <strong>⚠️ 錯誤：角色是IM但is_im為false！</strong><br>
+                        user_role: <?php echo htmlspecialchars($user_role); ?><br>
+                        is_im: <?php echo $is_im ? 'true' : 'false'; ?><br>
+                        user_id: <?php echo htmlspecialchars($user_id ?? 'NULL'); ?><br>
+                        user_department_code: <?php echo htmlspecialchars($user_department_code ?? 'NULL'); ?><br>
+                    </div>
+                <?php endif; ?>
             <?php endif; ?>
             
             <!-- 國中招生申請名單 - 僅學校行政和管理員，STAM需要權限 -->

@@ -1,17 +1,20 @@
 <?php
 require_once __DIR__ . '/session_config.php';
-
 checkBackendLogin();
 
-
-// 引入資料庫設定
+// DB 設定
 require_once '../../Topics-frontend/frontend/config.php';
 
-// 獲取使用者資訊
-$username = isset($_SESSION['username']) ? $_SESSION['username'] : '';
-$user_id = isset($_SESSION['user_id']) ? (int)$_SESSION['user_id'] : 0;
-$user_role = isset($_SESSION['role']) ? $_SESSION['role'] : '';
-$is_imd = ($username === 'IMD'); // 保留用於向後兼容
+/* ======================
+   使用者資訊
+====================== */
+$username  = $_SESSION['username'] ?? '';
+$user_id   = (int)($_SESSION['user_id'] ?? 0);
+$user_role = $_SESSION['role'] ?? '';
+
+$is_admin_or_staff    = in_array($user_role, ['ADM', 'STA'], true);
+$is_director          = ($user_role === 'DI');
+$is_admission_center  = ($user_role === 'AC');   // ★ 補齊（解 Warning）
 
 // 審核結果：改為純自動顯示（不可手動更改）
 // 僅指定帳號（username=12）且角色為招生中心（STA）可「查看」審核結果
@@ -55,50 +58,63 @@ $allowed_center_roles = ['ADM', 'STA'];
 $is_admin_or_staff = in_array($user_role, $allowed_center_roles);
 $is_director = ($user_role === 'DI');
 $user_department_code = null;
-$is_department_user = false;
+$is_department_user   = false;
 
-// 如果是主任，獲取其科系代碼
-if ($is_director && $user_id > 0) {
+/* ======================
+   取得使用者科系
+====================== */
+if ($user_id > 0 && ($is_director || !$is_admin_or_staff)) {
     try {
-        $conn_temp = getDatabaseConnection();
-        $table_check = $conn_temp->query("SHOW TABLES LIKE 'director'");
-        if ($table_check && $table_check->num_rows > 0) {
-            $stmt_dept = $conn_temp->prepare("SELECT department FROM director WHERE user_id = ?");
+        $conn_tmp = getDatabaseConnection();
+
+        if ($is_director) {
+            $stmt = $conn_tmp->prepare(
+                "SELECT department FROM director WHERE user_id = ?"
+            );
         } else {
-            $stmt_dept = $conn_temp->prepare("SELECT department FROM teacher WHERE user_id = ?");
+            $stmt = $conn_tmp->prepare(
+                "SELECT department FROM teacher WHERE user_id = ?"
+            );
         }
-        $stmt_dept->bind_param("i", $user_id);
-        $stmt_dept->execute();
-        $result_dept = $stmt_dept->get_result();
-        if ($row = $result_dept->fetch_assoc()) {
-            $user_department_code = $row['department'];
-            if (!empty($user_department_code)) {
-                $is_department_user = true;
+
+        if ($stmt) {
+            $stmt->bind_param("i", $user_id);
+            $stmt->execute();
+            $res = $stmt->get_result();
+            if ($row = $res->fetch_assoc()) {
+                $user_department_code = $row['department'] ?? null;
+                $is_department_user   = !empty($user_department_code);
             }
+            $stmt->close();
         }
-        $stmt_dept->close();
-        $conn_temp->close();
+        $conn_tmp->close();
     } catch (Exception $e) {
-        error_log('Error fetching user department: ' . $e->getMessage());
+        error_log('Department fetch error: ' . $e->getMessage());
     }
 }
 
-// 判斷是否為招生中心/行政人員
-$is_admission_center = $is_admin_or_staff && !$is_department_user;
+/* ======================
+   DB 連線
+====================== */
+$conn = getDatabaseConnection();
 
-// 檢查是否有 recommender 和 recommended 表
-$has_recommender_table = false;
-$has_recommended_table = false;
+/* ======================
+   SQL 條件
+====================== */
+$where_sql = '';
+$params = [];
+$types = '';
 
-// 設置頁面標題
-$page_title = '被推薦人資訊';
-$current_page = 'admission_recommend_list';
-
-// 建立資料庫連接
-try {
-    $conn = getDatabaseConnection();
-} catch (Exception $e) {
-    die("資料庫連接失敗: " . $e->getMessage());
+if ($is_department_user && !$is_admin_or_staff && !$is_admission_center) {
+    $where_sql = "
+        WHERE (
+            ar.assigned_department IS NULL
+            OR ar.assigned_department = ''
+            OR ar.assigned_department = ?
+        )
+    ";
+    $params[] = $user_department_code;
+    $types .= 's';
 }
 
 // （已移除）審核結果手動更新入口
@@ -484,85 +500,131 @@ try {
         echo "<strong>錯誤:</strong> " . htmlspecialchars($e->getMessage());
         echo "</div>";
     }
+/* ======================
+   主查詢
+====================== */
+$sql = "
+SELECT
+    ar.id,
+
+    rec.name        AS recommender_name,
+    rec.id AS recommender_student_id,
+    rec.grade       AS recommender_grade,
+    rec.department  AS recommender_department,
+    rec.phone       AS recommender_phone,
+    rec.email       AS recommender_email,
+
+    red.name        AS student_name,
+    red.phone       AS student_phone,
+    red.email       AS student_email,
+    red.line_id     AS student_line_id,
+    red.school      AS student_school,
+
+    ar.recommendation_reason,
+    ar.student_interest,
+    ar.additional_info,
+    COALESCE(ar.status,'pending') AS status,
+    COALESCE(ar.enrollment_status,'未入學') AS enrollment_status,
+    ar.proof_evidence,
+    ar.assigned_department,
+    ar.assigned_teacher_id,
+    ar.created_at,
+    ar.updated_at
+
+FROM admission_recommendations ar
+LEFT JOIN recommender rec
+    ON ar.id = rec.recommendations_id
+LEFT JOIN recommended red
+    ON ar.id = red.recommendations_id
+{$where_sql}
+ORDER BY ar.created_at DESC
+";
+
+$stmt = $conn->prepare($sql);
+if (!$stmt) {
+    die("SQL prepare failed: " . $conn->error);
 }
 
-// 獲取老師列表（用於分配功能）
+if (!empty($params)) {
+    $stmt->bind_param($types, ...$params);
+}
+
+$stmt->execute();
+$result = $stmt->get_result();
+$recommendations = $result->fetch_all(MYSQLI_ASSOC);
+$stmt->close();
+
+/* ======================
+   老師清單（主任 / 招生中心）
+====================== */
 $teachers = [];
-$is_department_user = false; // 預設為 false，如果需要可以根據實際需求設定
-$is_admission_center = false; // 預設為 false，如果需要可以根據實際需求設定
-if ($is_department_user) {
-    try {
-        $table_check = $conn->query("SHOW TABLES LIKE 'user'");
-        if ($table_check && $table_check->num_rows > 0) {
-            $teacher_stmt = $conn->prepare("
-                SELECT u.id, u.username, t.name, t.department 
-                FROM user u 
-                LEFT JOIN teacher t ON u.id = t.user_id 
-                WHERE u.role = '老師' 
-                ORDER BY t.name ASC
-            ");
-            
-            if ($teacher_stmt && $teacher_stmt->execute()) {
-                $teacher_result = $teacher_stmt->get_result();
-                if ($teacher_result) {
-                    $teachers = $teacher_result->fetch_all(MYSQLI_ASSOC);
-                }
-            }
-        }
-    } catch (Exception $e) {
-        error_log("獲取老師列表失敗: " . $e->getMessage());
+if ($is_department_user || $is_admission_center) {
+    $tstmt = $conn->prepare("
+        SELECT u.id, u.username, t.name
+        FROM user u
+        LEFT JOIN teacher t ON u.id = t.user_id
+        ORDER BY t.name
+    ");
+    if ($tstmt) {
+        $tstmt->execute();
+        $tres = $tstmt->get_result();
+        $teachers = $tres->fetch_all(MYSQLI_ASSOC);
+        $tstmt->close();
     }
 }
 
-// 統計資料
+/* ======================
+   統計資料
+====================== */
 $stats = [
-    'total' => count($recommendations),
-    'pending' => count(array_filter($recommendations, function($r) { return ($r['status'] ?? 'pending') === 'pending'; })),
-    'contacted' => count(array_filter($recommendations, function($r) { return ($r['status'] ?? '') === 'contacted'; })),
-    'registered' => count(array_filter($recommendations, function($r) { return ($r['status'] ?? '') === 'registered'; })),
-    'rejected' => count(array_filter($recommendations, function($r) { return ($r['status'] ?? '') === 'rejected'; }))
+    'total'      => count($recommendations),
+    'pending'    => 0,
+    'contacted'  => 0,
+    'registered' => 0,
+    'rejected'   => 0
 ];
 
-function getStatusText($status) {
-    switch ($status) {
-        case 'contacted': return '已聯繫';
-        case 'registered': return '已報名';
-        case 'rejected': return '已拒絕';
-        default: return '待處理';
-    }
+foreach ($recommendations as $r) {
+    $key = $r['status'] ?? 'pending';
+    $stats[$key] = ($stats[$key] ?? 0) + 1;
 }
 
-function getStatusClass($status) {
-    switch ($status) {
-        case 'contacted': return 'status-contacted';
-        case 'registered': return 'status-registered';
-        case 'rejected': return 'status-rejected';
-        default: return 'status-pending';
-    }
+/* ======================
+   狀態輔助函式
+====================== */
+function getStatusText($s) {
+    return match ($s) {
+        'contacted'  => '已聯繫',
+        'registered' => '已報名',
+        'rejected'   => '已拒絕',
+        default      => '待處理',
+    };
 }
 
-function getEnrollmentStatusText($status) {
-    switch ($status) {
-        case '已入學': return '已入學';
-        case '放棄入學': return '放棄入學';
-        default: return '未入學';
-    }
+function getStatusClass($s) {
+    return 'status-' . ($s ?: 'pending');
 }
 
-function getEnrollmentStatusClass($status) {
-    switch ($status) {
-        case '已入學': return 'enrollment-enrolled';
-        case '放棄入學': return 'enrollment-cancelled';
-        default: return 'enrollment-not';
-    }
+function getEnrollmentStatusText($s) {
+    return $s ?: '未入學';
+}
+
+function getEnrollmentStatusClass($s) {
+    return match ($s) {
+        '已入學'   => 'enrollment-enrolled',
+        '放棄入學' => 'enrollment-cancelled',
+        default    => 'enrollment-not'
+    };
 }
 ?>
+
+
 <!DOCTYPE html>
 <html lang="zh-TW">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title><?php echo $page_title; ?> - Topics 後台管理系統</title>
+    <title>推薦名單管理 - Topics 後台管理系統</title>
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
     <style>
         :root {
