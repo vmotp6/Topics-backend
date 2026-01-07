@@ -357,6 +357,10 @@ function hasPermission($permission_code, $user_role, $permissions_array) {
                     <i class="fas fa-user-shield"></i>
                     <span>科助權限管理</span>
                 </a>
+                <a href="student_contact_management_im.php" class="menu-item <?php echo $current_page === 'student_contact_management_im' ? 'active' : ''; ?>">
+                    <i class="fas fa-address-book"></i>
+                    <span>學生聯絡管理</span>
+                </a>
             <?php endif; ?>
             
             <!-- 國中招生申請名單 - 僅學校行政和管理員，STAM需要權限 -->
