@@ -1,0 +1,739 @@
+<?php
+/**
+ * 檢查未聯絡學生並處理通知與自動分配
+ * 
+ * 功能：
+ * 1. 檢查分配後2天沒有聯絡的學生，發送通知
+ * 2. 檢查分配後3天沒有聯絡的學生，自動分配給下一個志願
+ * 
+ * 使用方式：
+ * - 手動執行：http://127.0.0.1/Topics-backend/frontend/check_uncontacted_students.php
+ * - 定時任務：設置 cron job 每天執行一次
+ */
+
+require_once __DIR__ . '/session_config.php';
+require_once __DIR__ . '/../../Topics-frontend/frontend/config.php';
+require_once __DIR__ . '/../../Topics-frontend/frontend/includes/enrollment_notification_functions.php';
+
+header('Content-Type: text/html; charset=utf-8');
+
+// 允許通過 URL 參數設置測試模式（縮短時間間隔）
+$test_mode = isset($_GET['test']) && $_GET['test'] === '1';
+$days_2_notification = $test_mode ? 0.1 : 2; // 測試模式：0.1天（約2.4小時），正常模式：2天
+$days_3_reassign = $test_mode ? 0.15 : 3; // 測試模式：0.15天（約3.6小時），正常模式：3天
+
+echo "<!DOCTYPE html>
+<html>
+<head>
+    <meta charset='UTF-8'>
+    <title>檢查未聯絡學生</title>
+    <style>
+        body { font-family: Arial, sans-serif; padding: 20px; background: #f5f5f5; }
+        .container { max-width: 1200px; margin: 0 auto; background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        h1 { color: #333; border-bottom: 2px solid #667eea; padding-bottom: 10px; }
+        .section { margin: 20px 0; padding: 15px; background: #f9f9f9; border-radius: 5px; }
+        .success { color: #28a745; font-weight: bold; }
+        .warning { color: #ffc107; font-weight: bold; }
+        .error { color: #dc3545; font-weight: bold; }
+        .info { color: #17a2b8; }
+        table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+        th, td { padding: 10px; text-align: left; border: 1px solid #ddd; }
+        th { background: #667eea; color: white; }
+        tr:nth-child(even) { background: #f9f9f9; }
+        .test-mode { background: #fff3cd; padding: 10px; border-radius: 5px; margin-bottom: 20px; border-left: 4px solid #ffc107; }
+    </style>
+</head>
+<body>
+<div class='container'>
+    <h1>🔍 檢查未聯絡學生系統</h1>";
+
+if ($test_mode) {
+    echo "<div class='test-mode'>
+        <strong>⚠️ 測試模式已啟用</strong><br>
+        通知間隔：{$days_2_notification} 天（約 " . round($days_2_notification * 24) . " 小時）<br>
+        重新分配間隔：{$days_3_reassign} 天（約 " . round($days_3_reassign * 24) . " 小時）<br>
+        <a href='?test=0'>切換到正常模式</a>
+    </div>";
+} else {
+    echo "<div class='info'>
+        正常模式：通知間隔 {$days_2_notification} 天，重新分配間隔 {$days_3_reassign} 天<br>
+        <a href='?test=1'>切換到測試模式（縮短時間間隔）</a>
+    </div>";
+}
+
+try {
+    $conn = getDatabaseConnection();
+    
+    // 獲取當前時間
+    $now = new DateTime();
+    
+    // ==========================================
+    // 1. 檢查分配後2天沒有聯絡的學生（發送通知）
+    // ==========================================
+    echo "<div class='section'>";
+    echo "<h2>📧 檢查2天未聯絡的學生（發送通知）</h2>";
+    
+    // 查詢已分配但沒有聯絡記錄的學生
+    // 使用 assigned_department 和 created_at 來判斷分配時間
+    // 如果 assigned_teacher_id 不為空，使用最近一次分配時間
+    $sql_2days = "
+        SELECT 
+            ei.id,
+            ei.name,
+            ei.phone1,
+            ei.email,
+            ei.assigned_department,
+            ei.assigned_teacher_id,
+            ei.created_at,
+            d.name AS department_name,
+            u.name AS assigned_teacher_name,
+            u.email AS assigned_teacher_email,
+            dir.user_id AS director_id,
+            dir_user.name AS director_name,
+            dir_user.email AS director_email,
+            TIMESTAMPDIFF(HOUR, ei.created_at, NOW()) AS hours_since_assigned
+        FROM enrollment_intention ei
+        LEFT JOIN departments d ON ei.assigned_department = d.code
+        LEFT JOIN user u ON ei.assigned_teacher_id = u.id
+        LEFT JOIN director dir ON ei.assigned_department = dir.department
+        LEFT JOIN user dir_user ON dir.user_id = dir_user.id
+        WHERE ei.assigned_department IS NOT NULL
+        AND ei.assigned_department != ''
+        AND NOT EXISTS (
+            SELECT 1 
+            FROM enrollment_contact_logs ecl 
+            WHERE ecl.enrollment_id = ei.id
+        )
+        AND TIMESTAMPDIFF(DAY, ei.created_at, NOW()) >= ?
+        AND TIMESTAMPDIFF(DAY, ei.created_at, NOW()) < ?
+        ORDER BY ei.created_at ASC
+    ";
+    
+    $stmt_2days = $conn->prepare($sql_2days);
+    $stmt_2days->bind_param("dd", $days_2_notification, $days_3_reassign);
+    $stmt_2days->execute();
+    $result_2days = $stmt_2days->get_result();
+    $students_2days = $result_2days->fetch_all(MYSQLI_ASSOC);
+    
+    if (empty($students_2days)) {
+        echo "<p class='info'>✓ 沒有找到需要發送通知的學生（2天未聯絡）</p>";
+    } else {
+        echo "<p class='warning'>找到 " . count($students_2days) . " 位需要發送通知的學生</p>";
+        echo "<table>";
+        echo "<tr><th>學生ID</th><th>姓名</th><th>科系</th><th>分配給</th><th>已過時間</th><th>操作</th></tr>";
+        
+        $notification_sent = 0;
+        $notification_failed = 0;
+        
+        foreach ($students_2days as $student) {
+            $hours = $student['hours_since_assigned'];
+            $days = round($hours / 24, 1);
+            
+            // 決定發送給誰：如果有 assigned_teacher_id，發給老師；否則發給主任
+            $recipient_id = $student['assigned_teacher_id'] ?? $student['director_id'];
+            $recipient_name = $student['assigned_teacher_name'] ?? $student['director_name'] ?? '未知';
+            $recipient_email = $student['assigned_teacher_email'] ?? $student['director_email'] ?? null;
+            $is_teacher = !empty($student['assigned_teacher_id']);
+            
+            echo "<tr>";
+            echo "<td>{$student['id']}</td>";
+            echo "<td>{$student['name']}</td>";
+            echo "<td>{$student['department_name']} ({$student['assigned_department']})</td>";
+            echo "<td>" . ($is_teacher ? "老師：{$recipient_name}" : "主任：{$recipient_name}") . "</td>";
+            echo "<td>{$days} 天（{$hours} 小時）</td>";
+            
+            if (empty($recipient_email)) {
+                echo "<td class='error'>✗ 無法發送：收件人沒有郵箱</td>";
+                $notification_failed++;
+            } else {
+                // 發送通知郵件
+                $student_data = [
+                    'name' => $student['name'],
+                    'phone1' => $student['phone1'] ?? '',
+                    'email' => $student['email'] ?? ''
+                ];
+                
+                $email_sent = false;
+                if ($is_teacher) {
+                    $email_sent = sendTeacherReminderNotification($conn, $student['assigned_teacher_id'], $student_data, $days);
+                } else {
+                    $email_sent = sendDirectorReminderNotification($conn, $student['assigned_department'], $student_data, $days);
+                }
+                
+                if ($email_sent) {
+                    echo "<td class='success'>✓ 通知已發送</td>";
+                    $notification_sent++;
+                } else {
+                    echo "<td class='error'>✗ 通知發送失敗</td>";
+                    $notification_failed++;
+                }
+            }
+            echo "</tr>";
+        }
+        
+        echo "</table>";
+        echo "<p><strong>統計：</strong>成功發送 {$notification_sent} 封，失敗 {$notification_failed} 封</p>";
+    }
+    
+    echo "</div>";
+    
+    // ==========================================
+    // 2. 檢查分配後3天沒有聯絡的學生（自動分配給下一個志願）
+    // ==========================================
+    echo "<div class='section'>";
+    echo "<h2>🔄 檢查3天未聯絡的學生（自動重新分配）</h2>";
+    
+    $sql_3days = "
+        SELECT 
+            ei.id,
+            ei.name,
+            ei.assigned_department,
+            ei.created_at,
+            d.name AS department_name,
+            TIMESTAMPDIFF(HOUR, ei.created_at, NOW()) AS hours_since_assigned
+        FROM enrollment_intention ei
+        LEFT JOIN departments d ON ei.assigned_department = d.code
+        WHERE ei.assigned_department IS NOT NULL
+        AND ei.assigned_department != ''
+        AND NOT EXISTS (
+            SELECT 1 
+            FROM enrollment_contact_logs ecl 
+            WHERE ecl.enrollment_id = ei.id
+        )
+        AND TIMESTAMPDIFF(DAY, ei.created_at, NOW()) >= ?
+        ORDER BY ei.created_at ASC
+    ";
+    
+    $stmt_3days = $conn->prepare($sql_3days);
+    $stmt_3days->bind_param("d", $days_3_reassign);
+    $stmt_3days->execute();
+    $result_3days = $stmt_3days->get_result();
+    $students_3days = $result_3days->fetch_all(MYSQLI_ASSOC);
+    
+    if (empty($students_3days)) {
+        echo "<p class='info'>✓ 沒有找到需要重新分配的學生（3天未聯絡）</p>";
+    } else {
+        echo "<p class='warning'>找到 " . count($students_3days) . " 位需要重新分配的學生</p>";
+        echo "<table>";
+        echo "<tr><th>學生ID</th><th>姓名</th><th>當前科系</th><th>已過時間</th><th>下一個志願</th><th>操作結果</th></tr>";
+        
+        $reassigned_count = 0;
+        $reassign_failed = 0;
+        
+        foreach ($students_3days as $student) {
+            $hours = $student['hours_since_assigned'];
+            $days = round($hours / 24, 1);
+            
+            echo "<tr>";
+            echo "<td>{$student['id']}</td>";
+            echo "<td>{$student['name']}</td>";
+            echo "<td>{$student['department_name']} ({$student['assigned_department']})</td>";
+            echo "<td>{$days} 天（{$hours} 小時）</td>";
+            
+            // 獲取下一個志願
+            $next_choice = getNextEnrollmentChoice($conn, $student['id'], $student['assigned_department']);
+            
+            if ($next_choice) {
+                echo "<td>{$next_choice['department_name']} ({$next_choice['department_code']})</td>";
+                
+                // 執行重新分配
+                $reassign_result = reassignToNextChoice($conn, $student['id'], $next_choice['department_code'], $student);
+                
+                if ($reassign_result['success']) {
+                    echo "<td class='success'>✓ 已重新分配給 {$next_choice['department_name']}</td>";
+                    $reassigned_count++;
+                } else {
+                    echo "<td class='error'>✗ 重新分配失敗：{$reassign_result['message']}</td>";
+                    $reassign_failed++;
+                }
+            } else {
+                echo "<td class='error'>沒有下一個志願</td>";
+                echo "<td class='error'>✗ 無法重新分配</td>";
+                $reassign_failed++;
+            }
+            
+            echo "</tr>";
+        }
+        
+        echo "</table>";
+        echo "<p><strong>統計：</strong>成功重新分配 {$reassigned_count} 位，失敗 {$reassign_failed} 位</p>";
+    }
+    
+    echo "</div>";
+    
+    // ==========================================
+    // 3. 顯示所有已分配但未聯絡的學生（參考資訊）
+    // ==========================================
+    echo "<div class='section'>";
+    echo "<h2>📊 所有已分配但未聯絡的學生（參考）</h2>";
+    
+    $sql_all = "
+        SELECT 
+            ei.id,
+            ei.name,
+            ei.assigned_department,
+            ei.created_at,
+            d.name AS department_name,
+            TIMESTAMPDIFF(HOUR, ei.created_at, NOW()) AS hours_since_assigned
+        FROM enrollment_intention ei
+        LEFT JOIN departments d ON ei.assigned_department = d.code
+        WHERE ei.assigned_department IS NOT NULL
+        AND ei.assigned_department != ''
+        AND NOT EXISTS (
+            SELECT 1 
+            FROM enrollment_contact_logs ecl 
+            WHERE ecl.enrollment_id = ei.id
+        )
+        ORDER BY ei.created_at ASC
+    ";
+    
+    $result_all = $conn->query($sql_all);
+    $students_all = $result_all->fetch_all(MYSQLI_ASSOC);
+    
+    if (empty($students_all)) {
+        echo "<p class='info'>✓ 沒有未聯絡的學生</p>";
+    } else {
+        echo "<p>共 " . count($students_all) . " 位未聯絡的學生</p>";
+        echo "<table>";
+        echo "<tr><th>學生ID</th><th>姓名</th><th>科系</th><th>分配時間</th><th>已過時間</th><th>狀態</th></tr>";
+        
+        foreach ($students_all as $student) {
+            $hours = $student['hours_since_assigned'];
+            $days = round($hours / 24, 1);
+            
+            $status = '';
+            $status_class = '';
+            if ($days >= $days_3_reassign) {
+                $status = '需要重新分配（≥3天）';
+                $status_class = 'error';
+            } elseif ($days >= $days_2_notification) {
+                $status = '需要發送通知（≥2天）';
+                $status_class = 'warning';
+            } else {
+                $status = '正常';
+                $status_class = 'info';
+            }
+            
+            echo "<tr>";
+            echo "<td>{$student['id']}</td>";
+            echo "<td>{$student['name']}</td>";
+            echo "<td>{$student['department_name']} ({$student['assigned_department']})</td>";
+            echo "<td>{$student['created_at']}</td>";
+            echo "<td>{$days} 天（{$hours} 小時）</td>";
+            echo "<td class='{$status_class}'>{$status}</td>";
+            echo "</tr>";
+        }
+        
+        echo "</table>";
+    }
+    
+    echo "</div>";
+    
+    echo "<div class='section'>";
+    echo "<h2>✅ 檢查完成</h2>";
+    echo "<p>執行時間：" . date('Y-m-d H:i:s') . "</p>";
+    echo "<p><a href='?test=" . ($test_mode ? '0' : '1') . "'>" . ($test_mode ? '切換到正常模式' : '切換到測試模式') . "</a></p>";
+    echo "</div>";
+    
+    $conn->close();
+    
+} catch (Exception $e) {
+    echo "<div class='error'>";
+    echo "<h2>❌ 發生錯誤</h2>";
+    echo "<p>錯誤訊息：" . htmlspecialchars($e->getMessage()) . "</p>";
+    echo "<p>錯誤堆疊：<pre>" . htmlspecialchars($e->getTraceAsString()) . "</pre></p>";
+    echo "</div>";
+}
+
+echo "</div></body></html>";
+
+/**
+ * 獲取下一個志願
+ */
+function getNextEnrollmentChoice($conn, $enrollment_id, $current_department_code) {
+    // 獲取所有志願，按順序排列
+    $stmt = $conn->prepare("
+        SELECT 
+            ec.choice_order,
+            ec.department_code,
+            d.name AS department_name
+        FROM enrollment_choices ec
+        LEFT JOIN departments d ON ec.department_code = d.code
+        WHERE ec.enrollment_id = ?
+        ORDER BY ec.choice_order ASC
+    ");
+    $stmt->bind_param("i", $enrollment_id);
+    $stmt->execute();
+    $result = $stmt->get_result();
+    $choices = $result->fetch_all(MYSQLI_ASSOC);
+    
+    if (empty($choices)) {
+        return null;
+    }
+    
+    // 找到當前科系在志願中的位置
+    $current_index = -1;
+    foreach ($choices as $index => $choice) {
+        if (strtoupper(trim($choice['department_code'])) === strtoupper(trim($current_department_code))) {
+            $current_index = $index;
+            break;
+        }
+    }
+    
+    // 如果找不到當前科系，返回第一個志願
+    if ($current_index === -1) {
+        return $choices[0];
+    }
+    
+    // 返回下一個志願
+    if ($current_index + 1 < count($choices)) {
+        return $choices[$current_index + 1];
+    }
+    
+    // 如果沒有下一個志願，返回 null
+    return null;
+}
+
+/**
+ * 重新分配給下一個志願
+ */
+function reassignToNextChoice($conn, $enrollment_id, $new_department_code, $student_data) {
+    try {
+        // 開始事務
+        $conn->begin_transaction();
+        
+        // 更新 assigned_department
+        $stmt = $conn->prepare("UPDATE enrollment_intention SET assigned_department = ?, assigned_teacher_id = NULL WHERE id = ?");
+        $stmt->bind_param("si", $new_department_code, $enrollment_id);
+        $stmt->execute();
+        
+        // 獲取新科系的主任資訊
+        $director_stmt = $conn->prepare("
+            SELECT u.id, u.name, u.email
+            FROM director dir
+            INNER JOIN user u ON dir.user_id = u.id
+            WHERE dir.department = ?
+            LIMIT 1
+        ");
+        $director_stmt->bind_param("s", $new_department_code);
+        $director_stmt->execute();
+        $director_result = $director_stmt->get_result();
+        $director = $director_result->fetch_assoc();
+        
+        // 發送通知給新科系的主任
+        if ($director && !empty($director['email'])) {
+            $student_data_array = [
+                'name' => $student_data['name'],
+                'phone1' => $student_data['phone1'] ?? '',
+                'email' => $student_data['email'] ?? ''
+            ];
+            // 注意：sendDirectorAssignmentNotification 需要 PDO，這裡使用 mysqli
+            // 所以我們直接發送郵件
+            sendDirectorReassignmentNotification($conn, $new_department_code, $student_data_array, $director);
+        }
+        
+        // 提交事務
+        $conn->commit();
+        
+        return ['success' => true, 'message' => '重新分配成功'];
+        
+    } catch (Exception $e) {
+        $conn->rollback();
+        error_log("重新分配失敗: " . $e->getMessage());
+        return ['success' => false, 'message' => $e->getMessage()];
+    }
+}
+
+/**
+ * 發送提醒通知給主任
+ */
+function sendDirectorReminderNotification($conn, $department_code, $student_data, $days) {
+    try {
+        // 查詢主任資訊
+        $director_stmt = $conn->prepare("
+            SELECT u.id, u.name, u.email, u.username, d.name AS department_name
+            FROM director dir
+            INNER JOIN user u ON dir.user_id = u.id
+            INNER JOIN departments d ON dir.department = d.code
+            WHERE dir.department = ?
+            LIMIT 1
+        ");
+        $director_stmt->bind_param("s", $department_code);
+        $director_stmt->execute();
+        $director_result = $director_stmt->get_result();
+        $director = $director_result->fetch_assoc();
+        
+        if (!$director || empty($director['email'])) {
+            return false;
+        }
+        
+        $director_name = $director['name'] ?? $director['username'] ?? '主任';
+        $director_email = $director['email'];
+        $department_name = $director['department_name'] ?? $department_code;
+        $student_name = $student_data['name'] ?? '學生';
+        
+        $subject = "【康寧大學】提醒：學生已分配 {$days} 天尚未聯絡";
+        
+        $body = "
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <meta charset='UTF-8'>
+            <style>
+                body { font-family: 'Microsoft JhengHei', Arial, sans-serif; line-height: 1.6; color: #333; }
+                .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+                .header { background: linear-gradient(90deg, #ffc107 0%, #ff9800 100%); color: white; padding: 30px; text-align: center; border-radius: 10px 10px 0 0; }
+                .content { background: #f8f9fa; padding: 30px; border-radius: 0 0 10px 10px; }
+                .alert-box { background: #fff3cd; border-left: 4px solid #ffc107; padding: 20px; margin: 20px 0; border-radius: 8px; }
+                .info-box { background: white; padding: 20px; margin: 20px 0; border-radius: 8px; border-left: 4px solid #667eea; }
+                .button { display: inline-block; background: #667eea; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px; margin-top: 20px; }
+            </style>
+        </head>
+        <body>
+            <div class='container'>
+                <div class='header'>
+                    <h1>⏰ 聯絡提醒通知</h1>
+                    <p>學生已分配 {$days} 天尚未聯絡</p>
+                </div>
+                <div class='content'>
+                    <p>親愛的 <strong>{$director_name}</strong> 主任，您好！</p>
+                    
+                    <div class='alert-box'>
+                        <h3 style='margin-top: 0; color: #856404;'>⚠️ 重要提醒</h3>
+                        <p style='font-size: 16px; font-weight: bold; color: #856404;'>
+                            學生 <strong>{$student_name}</strong> 已分配給您 <strong>{$days} 天</strong>，但尚未有任何聯絡記錄。
+                        </p>
+                        <p style='color: #856404;'>
+                            如果超過 3 天仍未聯絡，系統將自動將該學生分配給下一個志願科系。
+                        </p>
+                    </div>
+                    
+                    <div class='info-box'>
+                        <h3 style='margin-top: 0; color: #667eea;'>📝 學生基本資料</h3>
+                        <table style='width: 100%; border-collapse: collapse;'>
+                            <tr>
+                                <td style='padding: 8px 0; font-weight: bold; color: #555; width: 120px;'>學生姓名：</td>
+                                <td style='padding: 8px 0; color: #333;'>{$student_name}</td>
+                            </tr>
+                            <tr>
+                                <td style='padding: 8px 0; font-weight: bold; color: #555;'>分配科系：</td>
+                                <td style='padding: 8px 0; color: #333;'>{$department_name}</td>
+                            </tr>
+                            <tr>
+                                <td style='padding: 8px 0; font-weight: bold; color: #555;'>聯絡電話：</td>
+                                <td style='padding: 8px 0; color: #333;'>" . htmlspecialchars($student_data['phone1'] ?? '未提供') . "</td>
+                            </tr>
+                        </table>
+                    </div>
+                    
+                    <div style='text-align: center; margin-top: 30px;'>
+                        <a href='http://127.0.0.1/Topics-backend/frontend/enrollment_list.php' class='button'>
+                            前往後台查看 →
+                        </a>
+                    </div>
+                </div>
+            </div>
+        </body>
+        </html>
+        ";
+        
+        require_once __DIR__ . '/../../Topics-frontend/frontend/includes/email_functions.php';
+        return sendEmail($director_email, $subject, $body);
+        
+    } catch (Exception $e) {
+        error_log("發送主任提醒通知失敗: " . $e->getMessage());
+        return false;
+    }
+}
+
+/**
+ * 發送重新分配通知給主任
+ */
+function sendDirectorReassignmentNotification($conn, $department_code, $student_data, $director) {
+    try {
+        $director_name = $director['name'] ?? '主任';
+        $director_email = $director['email'];
+        $student_name = $student_data['name'] ?? '學生';
+        
+        // 獲取科系名稱
+        $dept_stmt = $conn->prepare("SELECT name FROM departments WHERE code = ?");
+        $dept_stmt->bind_param("s", $department_code);
+        $dept_stmt->execute();
+        $dept_result = $dept_stmt->get_result();
+        $dept_row = $dept_result->fetch_assoc();
+        $department_name = $dept_row['name'] ?? $department_code;
+        
+        $subject = "【康寧大學】學生重新分配通知 - 請盡快聯絡";
+        
+        $body = "
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <meta charset='UTF-8'>
+            <style>
+                body { font-family: 'Microsoft JhengHei', Arial, sans-serif; line-height: 1.6; color: #333; }
+                .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+                .header { background: linear-gradient(90deg, #7ac9c7 0%, #956dbd 100%); color: white; padding: 30px; text-align: center; border-radius: 10px 10px 0 0; }
+                .content { background: #f8f9fa; padding: 30px; border-radius: 0 0 10px 10px; }
+                .alert-box { background: #d1ecf1; border-left: 4px solid #17a2b8; padding: 20px; margin: 20px 0; border-radius: 8px; }
+                .info-box { background: white; padding: 20px; margin: 20px 0; border-radius: 8px; border-left: 4px solid #667eea; }
+                .button { display: inline-block; background: #667eea; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px; margin-top: 20px; }
+            </style>
+        </head>
+        <body>
+            <div class='container'>
+                <div class='header'>
+                    <h1>🔄 學生重新分配通知</h1>
+                    <p>學生已重新分配給您的科系</p>
+                </div>
+                <div class='content'>
+                    <p>親愛的 <strong>{$director_name}</strong> 主任，您好！</p>
+                    
+                    <div class='alert-box'>
+                        <h3 style='margin-top: 0; color: #0c5460;'>📌 重新分配通知</h3>
+                        <p style='font-size: 16px; font-weight: bold; color: #0c5460;'>
+                            由於前一個科系超過 3 天未聯絡，系統已自動將學生重新分配給您的科系。
+                        </p>
+                    </div>
+                    
+                    <div class='info-box'>
+                        <h3 style='margin-top: 0; color: #667eea;'>📝 學生基本資料</h3>
+                        <table style='width: 100%; border-collapse: collapse;'>
+                            <tr>
+                                <td style='padding: 8px 0; font-weight: bold; color: #555; width: 120px;'>學生姓名：</td>
+                                <td style='padding: 8px 0; color: #333;'>{$student_name}</td>
+                            </tr>
+                            <tr>
+                                <td style='padding: 8px 0; font-weight: bold; color: #555;'>分配科系：</td>
+                                <td style='padding: 8px 0; color: #333;'>{$department_name}</td>
+                            </tr>
+                            <tr>
+                                <td style='padding: 8px 0; font-weight: bold; color: #555;'>聯絡電話：</td>
+                                <td style='padding: 8px 0; color: #333;'>" . htmlspecialchars($student_data['phone1'] ?? '未提供') . "</td>
+                            </tr>
+                        </table>
+                    </div>
+                    
+                    <div style='text-align: center; margin-top: 30px;'>
+                        <a href='http://127.0.0.1/Topics-backend/frontend/enrollment_list.php' class='button'>
+                            前往後台查看 →
+                        </a>
+                    </div>
+                </div>
+            </div>
+        </body>
+        </html>
+        ";
+        
+        require_once __DIR__ . '/../../Topics-frontend/frontend/includes/email_functions.php';
+        return sendEmail($director_email, $subject, $body);
+        
+    } catch (Exception $e) {
+        error_log("發送重新分配通知失敗: " . $e->getMessage());
+        return false;
+    }
+}
+
+/**
+ * 發送提醒通知給老師
+ */
+function sendTeacherReminderNotification($conn, $teacher_id, $student_data, $days) {
+    try {
+        // 查詢老師資訊
+        $teacher_stmt = $conn->prepare("
+            SELECT u.id, u.name, u.email, u.username, d.name AS department_name
+            FROM user u
+            LEFT JOIN teacher t ON u.id = t.user_id
+            LEFT JOIN departments d ON t.department = d.code
+            WHERE u.id = ?
+            LIMIT 1
+        ");
+        $teacher_stmt->bind_param("i", $teacher_id);
+        $teacher_stmt->execute();
+        $teacher_result = $teacher_stmt->get_result();
+        $teacher = $teacher_result->fetch_assoc();
+        
+        if (!$teacher || empty($teacher['email'])) {
+            return false;
+        }
+        
+        $teacher_name = $teacher['name'] ?? $teacher['username'] ?? '老師';
+        $teacher_email = $teacher['email'];
+        $department_name = $teacher['department_name'] ?? '未知科系';
+        $student_name = $student_data['name'] ?? '學生';
+        
+        $subject = "【康寧大學】提醒：學生已分配 {$days} 天尚未聯絡";
+        
+        $body = "
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <meta charset='UTF-8'>
+            <style>
+                body { font-family: 'Microsoft JhengHei', Arial, sans-serif; line-height: 1.6; color: #333; }
+                .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+                .header { background: linear-gradient(90deg, #ffc107 0%, #ff9800 100%); color: white; padding: 30px; text-align: center; border-radius: 10px 10px 0 0; }
+                .content { background: #f8f9fa; padding: 30px; border-radius: 0 0 10px 10px; }
+                .alert-box { background: #fff3cd; border-left: 4px solid #ffc107; padding: 20px; margin: 20px 0; border-radius: 8px; }
+                .info-box { background: white; padding: 20px; margin: 20px 0; border-radius: 8px; border-left: 4px solid #667eea; }
+                .button { display: inline-block; background: #667eea; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px; margin-top: 20px; }
+            </style>
+        </head>
+        <body>
+            <div class='container'>
+                <div class='header'>
+                    <h1>⏰ 聯絡提醒通知</h1>
+                    <p>學生已分配 {$days} 天尚未聯絡</p>
+                </div>
+                <div class='content'>
+                    <p>親愛的 <strong>{$teacher_name}</strong> 老師，您好！</p>
+                    
+                    <div class='alert-box'>
+                        <h3 style='margin-top: 0; color: #856404;'>⚠️ 重要提醒</h3>
+                        <p style='font-size: 16px; font-weight: bold; color: #856404;'>
+                            學生 <strong>{$student_name}</strong> 已分配給您 <strong>{$days} 天</strong>，但尚未有任何聯絡記錄。
+                        </p>
+                        <p style='color: #856404;'>
+                            請盡快與學生或家長聯絡，記錄聯絡內容。
+                        </p>
+                    </div>
+                    
+                    <div class='info-box'>
+                        <h3 style='margin-top: 0; color: #667eea;'>📝 學生基本資料</h3>
+                        <table style='width: 100%; border-collapse: collapse;'>
+                            <tr>
+                                <td style='padding: 8px 0; font-weight: bold; color: #555; width: 120px;'>學生姓名：</td>
+                                <td style='padding: 8px 0; color: #333;'>{$student_name}</td>
+                            </tr>
+                            <tr>
+                                <td style='padding: 8px 0; font-weight: bold; color: #555;'>所屬科系：</td>
+                                <td style='padding: 8px 0; color: #333;'>{$department_name}</td>
+                            </tr>
+                            <tr>
+                                <td style='padding: 8px 0; font-weight: bold; color: #555;'>聯絡電話：</td>
+                                <td style='padding: 8px 0; color: #333;'>" . htmlspecialchars($student_data['phone1'] ?? '未提供') . "</td>
+                            </tr>
+                        </table>
+                    </div>
+                    
+                    <div style='text-align: center; margin-top: 30px;'>
+                        <a href='http://127.0.0.1/Topics-backend/frontend/enrollment_list.php' class='button'>
+                            前往後台查看 →
+                        </a>
+                    </div>
+                </div>
+            </div>
+        </body>
+        </html>
+        ";
+        
+        require_once __DIR__ . '/../../Topics-frontend/frontend/includes/email_functions.php';
+        return sendEmail($teacher_email, $subject, $body);
+        
+    } catch (Exception $e) {
+        error_log("發送老師提醒通知失敗: " . $e->getMessage());
+        return false;
+    }
+}
+?>
+

@@ -24,8 +24,9 @@ $student_id = isset($_POST['student_id']) ? intval($_POST['student_id']) : 0;
 $teacher_id = isset($_POST['teacher_id']) ? intval($_POST['teacher_id']) : 0;
 
 // 驗證參數
-if ($student_id <= 0 || $teacher_id <= 0) {
-    echo json_encode(['success' => false, 'message' => '無效的參數']);
+// teacher_id 可以為 0（表示主任自行聯絡，設置為主任自己的ID）
+if ($student_id <= 0) {
+    echo json_encode(['success' => false, 'message' => '無效的學生ID']);
     exit;
 }
 
@@ -43,8 +44,8 @@ try {
         $conn->query($alter_sql);
     }
     
-    // 檢查學生是否存在
-    $stmt = $conn->prepare("SELECT id, name FROM enrollment_intention WHERE id = ?");
+    // 檢查學生是否存在（獲取完整資料，包含郵件通知所需資訊）
+    $stmt = $conn->prepare("SELECT id, name, phone1, email FROM enrollment_intention WHERE id = ?");
     $stmt->bind_param("i", $student_id);
     $stmt->execute();
     $result = $stmt->get_result();
@@ -53,6 +54,56 @@ try {
     if (!$student) {
         echo json_encode(['success' => false, 'message' => '找不到指定的學生']);
         exit;
+    }
+    
+    // 檢查學生當前的分配狀態
+    $check_stmt = $conn->prepare("SELECT assigned_teacher_id, assigned_department FROM enrollment_intention WHERE id = ?");
+    $check_stmt->bind_param("i", $student_id);
+    $check_stmt->execute();
+    $check_result = $check_stmt->get_result();
+    $current_assignment = $check_result->fetch_assoc();
+    
+    if (!$current_assignment) {
+        echo json_encode(['success' => false, 'message' => '找不到指定的學生']);
+        exit;
+    }
+    
+    $current_assigned_teacher_id = $current_assignment['assigned_teacher_id'] ?? null;
+    $current_assigned_department = $current_assignment['assigned_department'] ?? null;
+    
+    // 如果已分配給其他老師（非主任自己），不能改回自行聯絡
+    $current_user_id = isset($_SESSION['user_id']) ? (int)$_SESSION['user_id'] : 0;
+    // 如果當前已分配給其他老師，且現在要改為自行聯絡（teacher_id = 0 或 = current_user_id），則不允許
+    if ($current_assigned_teacher_id !== null && $current_assigned_teacher_id != $current_user_id) {
+        // 如果 teacher_id 為 0（表示要改為自行聯絡），則不允許
+        if ($teacher_id == 0 || $teacher_id == $current_user_id) {
+            echo json_encode(['success' => false, 'message' => '該學生已分配給其他老師，不能改回自行聯絡']);
+            exit;
+        }
+    }
+    
+    // 如果 teacher_id 為 0，表示主任自行聯絡，設置為主任自己的ID
+    if ($teacher_id == 0) {
+        if ($current_user_id <= 0) {
+            // 如果 session 中沒有 user_id，嘗試從 username 查詢
+            $username = isset($_SESSION['username']) ? $_SESSION['username'] : '';
+            if (empty($username)) {
+                echo json_encode(['success' => false, 'message' => '無法識別使用者']);
+                exit;
+            }
+            $user_stmt = $conn->prepare("SELECT id FROM user WHERE username = ? AND role = 'DI'");
+            $user_stmt->bind_param("s", $username);
+            $user_stmt->execute();
+            $user_result = $user_stmt->get_result();
+            $user_row = $user_result->fetch_assoc();
+            if (!$user_row) {
+                echo json_encode(['success' => false, 'message' => '找不到主任資訊']);
+                exit;
+            }
+            $teacher_id = (int)$user_row['id'];
+        } else {
+            $teacher_id = $current_user_id;
+        }
     }
     
     // 取得指定老師資訊（優先從 director 表取得 department，否則從 teacher 表）
@@ -100,10 +151,21 @@ try {
     $chosen_codes = array_values(array_unique($chosen_codes)); // 去重
 
     // 如果學生有填志願（至少一個非空志願），則檢查被指派的老師是否為該志願科系的老師
-    if (!empty($chosen_codes)) {
+    // 但如果是主任自行聯絡（teacher_id 是主任自己），則不需要檢查
+    $is_director_self = ($teacher_id == $current_user_id && $session_role === 'DI');
+    if (!empty($chosen_codes) && !$is_director_self) {
         $teacher_dept = $teacher['department_code'] ?? null;
         if (empty($teacher_dept) || !in_array($teacher_dept, $chosen_codes)) {
             echo json_encode(['success' => false, 'message' => '指定的老師不屬於學生填寫的志願科系，無法分配']);
+            exit;
+        }
+    }
+    
+    // 如果是主任自行聯絡，確保是主任自己科系的學生
+    if ($is_director_self) {
+        $teacher_dept = $teacher['department_code'] ?? null;
+        if (empty($teacher_dept) || $current_assigned_department !== $teacher_dept) {
+            echo json_encode(['success' => false, 'message' => '僅能對自己科系的學生進行自行聯絡']);
             exit;
         }
     }
@@ -121,6 +183,29 @@ try {
     }
     
     if ($stmt->execute()) {
+        // 發送郵件通知給老師（如果不是主任自行聯絡）
+        $is_director_self_contact = ($teacher_id == $current_user_id && $session_role === 'DI');
+        if (!$is_director_self_contact) {
+            try {
+                $notification_path = __DIR__ . '/../../Topics-frontend/frontend/includes/enrollment_notification_functions.php';
+                if (file_exists($notification_path)) {
+                    require_once $notification_path;
+                    // 獲取學生完整資料
+                    $student_data = [
+                        'name' => $student['name'],
+                        'phone1' => $student['phone1'] ?? '',
+                        'email' => $student['email'] ?? ''
+                    ];
+                    sendTeacherAssignmentNotification($conn, $teacher_id, $student_data);
+                } else {
+                    error_log("找不到郵件通知函數文件: $notification_path");
+                }
+            } catch (Exception $e) {
+                error_log("發送老師通知郵件時發生錯誤: " . $e->getMessage());
+                // 不影響主流程，繼續執行
+            }
+        }
+        
         echo json_encode([
             'success' => true, 
             'message' => '學生分配成功',
