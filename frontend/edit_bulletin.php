@@ -30,11 +30,21 @@ $bulletin = [
     'title' => '',
     'content' => '',
     'status_code' => 'published',
-    'is_pinned' => 0
+    'is_pinned' => 0,
+    'image_url' => null,
+    'start_date' => null,
+    'end_date' => null,
+    'type_code' => 'general'
 ];
 $existing_urls = [];
 $existing_files = [];
 $page_title = '新增招生公告';
+
+// 取得所有公告類型
+$types_stmt = $conn->prepare("SELECT code, name FROM bulletin_types ORDER BY display_order ASC");
+$types_stmt->execute();
+$bulletin_types = $types_stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+$types_stmt->close();
 
 // 設定上傳目錄
 $upload_dir = '../../Topics-frontend/frontend/uploads/bulletin/';
@@ -81,9 +91,17 @@ if ($id > 0) {
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $title = trim($_POST['title']);
     $content = trim($_POST['content']);
-    $status_code = isset($_POST['is_active']) ? 'published' : 'draft';
+    $status_code = !empty($_POST['status_code']) ? trim($_POST['status_code']) : 'draft';
     $is_pinned = isset($_POST['is_pinned']) ? 1 : 0;
+    $type_code = !empty($_POST['type_code']) ? trim($_POST['type_code']) : 'general';
+    $image_url = $bulletin['image_url'] ?? null;
+    $start_date = !empty($_POST['start_date']) ? $_POST['start_date'] : null;
+    $end_date = !empty($_POST['end_date']) ? $_POST['end_date'] : null;
+    $today = date('Y-m-d');
     $user_id = $_SESSION['user_id'] ?? 0;
+    $frontend_base = __DIR__ . '/../../Topics-frontend/frontend/';
+    $allowed_image_ext = ['jpg', 'jpeg', 'png', 'gif', 'webp'];
+    $max_image_size = 5 * 1024 * 1024; // 5MB
     // 若 user_id 為空，嘗試用帳號查詢 user 表補足，避免外鍵失敗
     if (empty($user_id) && !empty($_SESSION['username'])) {
         $lookup_stmt = $conn->prepare("SELECT id FROM user WHERE username = ? LIMIT 1");
@@ -105,22 +123,73 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $user_id = (int)$fallback_stmt->fetch_assoc()['id'];
         }
     }
+
+    if (isset($_POST['remove_image']) && $image_url) {
+        $existing_path = $frontend_base . ltrim($image_url, '/');
+        if (file_exists($existing_path)) {
+            unlink($existing_path);
+        }
+        $image_url = null;
+    }
+
+    if (isset($_FILES['bulletin_image']) && $_FILES['bulletin_image']['error'] !== UPLOAD_ERR_NO_FILE) {
+        $img = $_FILES['bulletin_image'];
+        if ($img['error'] === UPLOAD_ERR_OK) {
+            $ext = strtolower(pathinfo($img['name'], PATHINFO_EXTENSION));
+            if (!in_array($ext, $allowed_image_ext)) {
+                $error = "公告圖片僅支援 JPG、PNG、GIF、WEBP 格式";
+            } elseif ($img['size'] > $max_image_size) {
+                $error = "公告圖片大小需小於 5MB";
+            } else {
+                $new_filename = 'cover_' . uniqid() . '.' . $ext;
+                $destination = $upload_dir . $new_filename;
+                if (move_uploaded_file($img['tmp_name'], $destination)) {
+                    if (!empty($image_url)) {
+                        $old_path = $frontend_base . ltrim($image_url, '/');
+                        if (file_exists($old_path)) {
+                            unlink($old_path);
+                        }
+                    }
+                    $image_url = 'uploads/bulletin/' . $new_filename;
+                } else {
+                    $error = "公告圖片上傳失敗，請再試一次";
+                }
+            }
+        } else {
+            $error = "公告圖片上傳失敗，請確認檔案後重試";
+        }
+    }
     
+    if ($start_date) {
+        $start_ts = strtotime($start_date);
+        $today_ts = strtotime($today);
+        if ($start_ts && $start_ts < $today_ts) {
+            $error = "公告起始日不可早於今天";
+        }
+    }
+    if (!isset($error) && $start_date && $end_date) {
+        $start_ts = strtotime($start_date);
+        $end_ts = strtotime($end_date);
+        if ($start_ts && $end_ts && $start_ts > $end_ts) {
+            $error = "公告起始日期不得晚於結束日期";
+        }
+    }
+
     if (empty($title) || empty($content)) {
         $error = "標題和內容不能為空";
-    } else {
+    } elseif (!isset($error)) {
         $conn->begin_transaction();
         try {
             if ($id > 0) {
                 // 更新
-                $stmt = $conn->prepare("UPDATE bulletin_board SET title = ?, content = ?, status_code = ?, is_pinned = ?, updated_at = NOW() WHERE id = ?");
-                $stmt->bind_param("sssii", $title, $content, $status_code, $is_pinned, $id);
+                $stmt = $conn->prepare("UPDATE bulletin_board SET title = ?, content = ?, type_code = ?, status_code = ?, is_pinned = ?, image_url = ?, start_date = ?, end_date = ?, updated_at = NOW() WHERE id = ?");
+                $stmt->bind_param("ssssisssi", $title, $content, $type_code, $status_code, $is_pinned, $image_url, $start_date, $end_date, $id);
                 $stmt->execute();
                 $current_bulletin_id = $id;
             } else {
                 // 新增
-                $stmt = $conn->prepare("INSERT INTO bulletin_board (user_id, title, content, status_code, is_pinned, created_at) VALUES (?, ?, ?, ?, ?, NOW())");
-                $stmt->bind_param("isssi", $user_id, $title, $content, $status_code, $is_pinned);
+                $stmt = $conn->prepare("INSERT INTO bulletin_board (user_id, title, content, type_code, status_code, is_pinned, image_url, start_date, end_date, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())");
+                $stmt->bind_param("issssisss", $user_id, $title, $content, $type_code, $status_code, $is_pinned, $image_url, $start_date, $end_date);
                 $stmt->execute();
                 $current_bulletin_id = $conn->insert_id;
             }
@@ -270,6 +339,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         .existing-item { padding: 8px; background: #fff; border: 1px solid #eee; margin-bottom: 5px; display: flex; justify-content: space-between; align-items: center; border-radius: 4px; }
         
         .required-asterisk { color: var(--danger-color); margin-right: 4px; }
+        .image-preview { margin-top: 10px; display: flex; align-items: center; gap: 12px; }
+        .image-preview img { max-height: 120px; border: 1px solid #eee; border-radius: 6px; }
     </style>
 </head>
 <body>
@@ -299,8 +370,43 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         </div>
 
                         <div class="form-group">
+                            <label class="form-label">公告類型</label>
+                            <select name="type_code" class="form-control">
+                                <?php foreach($bulletin_types as $type): ?>
+                                    <option value="<?= htmlspecialchars($type['code']) ?>" <?= ($bulletin['type_code'] === $type['code']) ? 'selected' : '' ?>>
+                                        <?= htmlspecialchars($type['name']) ?>
+                                    </option>
+                                <?php endforeach; ?>
+                            </select>
+                        </div>
+
+                        <div class="form-group">
                             <label class="form-label"><span class="required-asterisk">*</span>公告內容</label>
                             <textarea name="content" class="form-control" required><?= htmlspecialchars($bulletin['content']) ?></textarea>
+                        </div>
+
+                        <div class="form-group" style="display:flex; gap:16px; flex-wrap:wrap;">
+                            <div style="flex:1; min-width:180px;">
+                                <label class="form-label">公告起始日</label>
+                                <input type="date" name="start_date" class="form-control" min="<?= date('Y-m-d'); ?>" value="<?= $bulletin['start_date'] ? htmlspecialchars($bulletin['start_date']) : '' ?>">
+                            </div>
+                            <div style="flex:1; min-width:180px;">
+                                <label class="form-label">公告結束日</label>
+                                <input type="date" name="end_date" class="form-control" value="<?= $bulletin['end_date'] ? htmlspecialchars($bulletin['end_date']) : '' ?>">
+                            </div>
+                            <small style="color:#888; width:100%;">如未填寫則視為無期限；結束日需不早於起始日。</small>
+                        </div>
+
+                        <div class="form-group">
+                            <label class="form-label">公告圖片 (選填)</label>
+                            <?php if (!empty($bulletin['image_url'])): ?>
+                                <div class="image-preview">
+                                    <img src="<?= htmlspecialchars($bulletin['image_url']) ?>" alt="公告圖片預覽">
+                                    <label class="checkbox-wrapper"><input type="checkbox" name="remove_image" value="1"> 移除圖片</label>
+                                </div>
+                            <?php endif; ?>
+                            <input type="file" name="bulletin_image" accept="image/*" class="form-control" style="background: #fff;">
+                            <small style="color: #888; display:block; margin-top:5px;">格式：JPG、PNG、GIF、WEBP，建議小於 5MB</small>
                         </div>
 
                         <div class="form-group">
@@ -342,18 +448,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         </div>
 
                         <div class="form-group">
-                            <label class="form-label">設定選項</label>
-                            <div style="display: flex; gap: 20px;">
-                                <label class="checkbox-wrapper">
-                                    <input type="checkbox" name="is_active" <?= ($bulletin['status_code'] === 'published') ? 'checked' : '' ?>>
-                                    啟用顯示 (發布)
-                                </label>
-                                
-                                <label class="checkbox-wrapper">
-                                    <input type="checkbox" name="is_pinned" <?= $bulletin['is_pinned'] ? 'checked' : '' ?>>
-                                    置頂公告
-                                </label>
-                            </div>
+                            <label class="form-label">公告狀態</label>
+                            <select name="status_code" class="form-control">
+                                <option value="draft" <?= ($bulletin['status_code'] === 'draft') ? 'selected' : '' ?>>草稿</option>
+                                <option value="published" <?= ($bulletin['status_code'] === 'published') ? 'selected' : '' ?>>已發布</option>
+                                <option value="archived" <?= ($bulletin['status_code'] === 'archived') ? 'selected' : '' ?>>已歸檔</option>
+                            </select>
+                        </div>
+
+                        <div class="form-group">
+                            <label class="checkbox-wrapper">
+                                <input type="checkbox" name="is_pinned" <?= $bulletin['is_pinned'] ? 'checked' : '' ?>>
+                                置頂公告
+                            </label>
                         </div>
 
                         <div style="margin-top: 30px; border-top: 1px solid var(--border-color); padding-top: 20px; display: flex; justify-content: flex-end;">

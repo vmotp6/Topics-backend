@@ -25,6 +25,21 @@ $conn = getDatabaseConnection();
 // 處理刪除
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'delete') {
     $id = intval($_POST['id']);
+    $frontend_base = __DIR__ . '/../../Topics-frontend/frontend/';
+
+    $img_stmt = $conn->prepare("SELECT image_url FROM bulletin_board WHERE id = ?");
+    $img_stmt->bind_param("i", $id);
+    $img_stmt->execute();
+    $img_res = $img_stmt->get_result();
+    if ($img_row = $img_res->fetch_assoc()) {
+        if (!empty($img_row['image_url'])) {
+            $image_path = $frontend_base . ltrim($img_row['image_url'], '/');
+            if (file_exists($image_path)) {
+                unlink($image_path);
+            }
+        }
+    }
+    $img_stmt->close();
     
     // 刪除前先移除實體檔案
     $stmt = $conn->prepare("SELECT file_path FROM bulletin_files WHERE bulletin_id = ?");
