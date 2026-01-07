@@ -318,6 +318,14 @@ function hasPermission($permission_code, $user_role, $permissions_array) {
                     <span>學校聯絡人</span>
                 </a>
             <?php endif; ?>
+
+            <!-- 新生基本資料管理 - 僅招生中心(學校行政 STA)與管理員 -->
+            <?php if ($is_staff || $is_admin): ?>
+                <a href="new_student_basic_info_management.php" class="menu-item <?php echo $current_page === 'new_student_basic_info_management' ? 'active' : ''; ?>">
+                    <i class="fas fa-clipboard-list"></i>
+                    <span>新生基本資料管理</span>
+                </a>
+            <?php endif; ?>
             
             <!-- 權限管理 - 僅學校行政和管理員 -->
             <?php if ($is_staff || $is_admin): ?>
@@ -356,6 +364,10 @@ function hasPermission($permission_code, $user_role, $permissions_array) {
                 <a href="department_permission_management.php" class="menu-item <?php echo $current_page === 'department_permission_management' ? 'active' : ''; ?>">
                     <i class="fas fa-user-shield"></i>
                     <span>科助權限管理</span>
+                </a>
+                <a href="student_contact_management_im.php" class="menu-item <?php echo $current_page === 'student_contact_management_im' ? 'active' : ''; ?>">
+                    <i class="fas fa-address-book"></i>
+                    <span>學生聯絡管理</span>
                 </a>
             <?php endif; ?>
             
