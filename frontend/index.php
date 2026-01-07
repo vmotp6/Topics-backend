@@ -26,8 +26,8 @@ $is_director = in_array($user_role, ['DI', 'director', '主任']);
 $is_teacher = in_array($user_role, ['TEA', 'teacher', '老師']);
 
 // 檢查用戶角色是否被允許進入後台
-// 只允許管理員、行政人員、主任進入後台
-$allowed_backend_roles = ['ADM', 'STA', 'DI', '管理員', '行政人員', '主任'];
+// 只允許管理員、行政人員、主任、科助進入後台
+$allowed_backend_roles = ['ADM', 'STA', 'DI', 'AS', '管理員', '行政人員', '主任', '科助'];
 if (!in_array($user_role, $allowed_backend_roles)) {
     // 角色不允許進入後台，清除登入狀態
     $_SESSION['admin_logged_in'] = false;

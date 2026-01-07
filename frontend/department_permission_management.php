@@ -1,8 +1,12 @@
 <?php
 require_once __DIR__ . '/session_config.php';
 
-// 檢查是否已登入
-if (!isset($_SESSION['admin_logged_in']) || !$_SESSION['admin_logged_in']) {
+// 檢查是否已登入 - 支持前台和後台的登入狀態
+// 前台登入會設置 $_SESSION['logged_in']，後台登入會設置 $_SESSION['admin_logged_in']
+$isLoggedIn = (isset($_SESSION['admin_logged_in']) && $_SESSION['admin_logged_in'] === true) ||
+              (isset($_SESSION['logged_in']) && $_SESSION['logged_in'] === true);
+
+if (!$isLoggedIn) {
     header("Location: login.php");
     exit;
 }
@@ -12,6 +16,17 @@ if (!isset($_SESSION['admin_logged_in']) || !$_SESSION['admin_logged_in']) {
 $user_role = $_SESSION['role'] ?? '';
 $user_id = $_SESSION['user_id'] ?? null;
 $is_im_director = false;
+
+// 調試：如果 URL 有 ?debug=1，輸出權限檢查信息
+if (isset($_GET['debug']) && $_GET['debug'] == '1') {
+    echo '<div style="background: #fff3cd; border: 2px solid #ffc107; padding: 15px; margin: 15px; border-radius: 4px; font-family: monospace; font-size: 12px; z-index: 9999; position: relative;">';
+    echo '<strong style="font-size: 14px;">🔍 權限檢查調試：</strong><br>';
+    echo 'user_role: ' . htmlspecialchars($user_role) . '<br>';
+    echo 'user_id: ' . htmlspecialchars($user_id ?? 'NULL') . '<br>';
+    echo 'SESSION[logged_in]: ' . (isset($_SESSION['logged_in']) ? ($_SESSION['logged_in'] ? 'true' : 'false') : 'NOT SET') . '<br>';
+    echo 'SESSION[admin_logged_in]: ' . (isset($_SESSION['admin_logged_in']) ? ($_SESSION['admin_logged_in'] ? 'true' : 'false') : 'NOT SET') . '<br>';
+    echo '</div>';
+}
 
 // 檢查是否為資管科主任
 if ($user_role === 'IM' || $user_role === '資管科主任') {
@@ -43,6 +58,16 @@ if ($user_role === 'IM' || $user_role === '資管科主任') {
 }
 
 if (!$is_im_director) {
+    // 權限檢查失敗：輸出調試信息並重定向
+    if (isset($_GET['debug']) && $_GET['debug'] == '1') {
+        echo '<div style="background: #ffdddd; border: 2px solid #ff0000; padding: 15px; margin: 15px; border-radius: 4px; font-family: monospace; font-size: 12px; color: #ff0000; z-index: 9999; position: relative;">';
+        echo '<strong style="font-size: 14px;">❌ 權限不足！</strong><br>';
+        echo 'is_im_director: ' . ($is_im_director ? 'true' : 'false') . '<br>';
+        echo '角色需要是 IM 或 資管科主任，但實際為: ' . htmlspecialchars($user_role) . '<br>';
+        echo '5秒後重定向到首頁...';
+        echo '</div>';
+        sleep(5);
+    }
     header("Location: index.php");
     exit;
 }
