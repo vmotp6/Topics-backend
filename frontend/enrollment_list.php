@@ -258,41 +258,7 @@ try {
             $perm_where .= " AND UPPER(TRIM(ei.assigned_department)) = UPPER(?) ";
             $bind_params[] = trim($user_department_code);
             $bind_types .= "s";
-            // 調試資訊：記錄主任的科系代碼和查詢條件
-            error_log("主任查看名單: user_id=$user_id, user_department_code='$user_department_code', 查詢條件: UPPER(TRIM(assigned_department)) = UPPER('" . trim($user_department_code) . "')");
             
-            // 額外診斷：檢查資料庫中實際的 assigned_department 值
-            try {
-                $diagnostic_stmt = $conn->prepare("
-                    SELECT DISTINCT TRIM(assigned_department) as dept_code, COUNT(*) as count 
-                    FROM enrollment_intention 
-                    WHERE assigned_department IS NOT NULL 
-                    GROUP BY TRIM(assigned_department)
-                    ORDER BY count DESC
-                ");
-                $diagnostic_stmt->execute();
-                $diagnostic_result = $diagnostic_stmt->get_result();
-                $all_dept_codes = [];
-                while ($diag_row = $diagnostic_result->fetch_assoc()) {
-                    $all_dept_codes[] = $diag_row['dept_code'] . ' (' . $diag_row['count'] . '筆)';
-                }
-                error_log("資料庫中所有 assigned_department 值: " . implode(', ', $all_dept_codes));
-                
-                // 檢查是否有匹配的記錄（使用大小寫不敏感匹配）
-                $match_check_stmt = $conn->prepare("
-                    SELECT COUNT(*) as match_count 
-                    FROM enrollment_intention 
-                    WHERE UPPER(TRIM(assigned_department)) = UPPER(?)
-                ");
-                $match_check_stmt->bind_param("s", $user_department_code);
-                $match_check_stmt->execute();
-                $match_check_result = $match_check_stmt->get_result();
-                $match_row = $match_check_result->fetch_assoc();
-                $match_count = $match_row['match_count'] ?? 0;
-                error_log("匹配檢查: 有 $match_count 筆記錄的 assigned_department 匹配主任的科系代碼 '$user_department_code'");
-            } catch (Exception $e) {
-                error_log("診斷查詢失敗: " . $e->getMessage());
-            }
         } else {
             // 是主任但找不到部門代碼 -> 什麼都看不到 (安全起見)
             $perm_where .= " AND 1=0 "; 
@@ -320,25 +286,10 @@ try {
     } else {
         // Active 模式：顯示未畢業或畢業年份在未來/未設定的學生
         $status_where = " AND (ei.graduation_year > $grad_threshold_year OR ei.graduation_year IS NULL)";
-        if ($is_director) {
-            error_log("主任 Active 模式過濾: graduation_year > $grad_threshold_year OR graduation_year IS NULL");
-        }
     }
     
     // 組合最終 SQL
     $sql = $base_select . $base_from_join . $perm_where . $status_where . $order_by;
-    
-    // 調試：記錄完整 SQL（僅主任）
-    if ($is_director) {
-        $debug_sql = $sql;
-        if (!empty($bind_params)) {
-            foreach ($bind_params as $index => $param) {
-                // 使用 preg_replace 只替换第一个匹配项，避免 PHP 8.0+ 的引用问题
-                $debug_sql = preg_replace('/\?/', "'" . addslashes($param) . "'", $debug_sql, 1);
-            }
-        }
-        error_log("主任查詢 SQL: " . $debug_sql);
-    }
     
     $stmt = $conn->prepare($sql);
     
@@ -355,66 +306,6 @@ try {
         $result = $stmt->get_result();
         if ($result) {
             $enrollments = $result->fetch_all(MYSQLI_ASSOC);
-            // 調試資訊：記錄查詢結果數量
-            if ($is_director) {
-                error_log("主任查詢結果: 找到 " . count($enrollments) . " 筆記錄 (user_department_code=$user_department_code, view_mode=$view_mode, grad_threshold=$grad_threshold_year)");
-                
-                // 如果結果為空，進行額外診斷
-                if (count($enrollments) == 0) {
-                    // 檢查是否有分配給該科系的學生（不考慮 graduation_year）
-                    // 使用 UPPER(TRIM()) 確保大小寫不敏感匹配（與主查詢一致）
-                    $check_stmt = $conn->prepare("SELECT COUNT(*) as total FROM enrollment_intention WHERE UPPER(TRIM(assigned_department)) = UPPER(?)");
-                    $check_stmt->bind_param("s", $user_department_code);
-                    $check_stmt->execute();
-                    $check_result = $check_stmt->get_result();
-                    $check_row = $check_result->fetch_assoc();
-                    $total_assigned = $check_row['total'] ?? 0;
-                    
-                    if ($total_assigned > 0) {
-                        error_log("診斷: 有 $total_assigned 筆記錄分配給科系 '$user_department_code'，但被 graduation_year 過濾條件過濾掉了");
-                        
-                        // 檢查這些記錄的 graduation_year
-                        $grad_check_stmt = $conn->prepare("
-                            SELECT id, name, graduation_year, assigned_department, created_at
-                            FROM enrollment_intention 
-                            WHERE UPPER(TRIM(assigned_department)) = UPPER(?) 
-                            ORDER BY created_at DESC 
-                            LIMIT 10
-                        ");
-                        $grad_check_stmt->bind_param("s", $user_department_code);
-                        $grad_check_stmt->execute();
-                        $grad_check_result = $grad_check_stmt->get_result();
-                        while ($grad_row = $grad_check_result->fetch_assoc()) {
-                            $grad_year = $grad_row['graduation_year'] ?? 'NULL';
-                            $should_show = ($grad_year === 'NULL' || (int)$grad_year > $grad_threshold_year);
-                            $assigned_dept = $grad_row['assigned_department'] ?? 'NULL';
-                            error_log("  記錄 ID={$grad_row['id']}, name={$grad_row['name']}, assigned_department='$assigned_dept', graduation_year=$grad_year, 應該顯示=" . ($should_show ? 'YES' : 'NO') . ", created_at={$grad_row['created_at']}");
-                        }
-                        $grad_check_stmt->close();
-                    } else {
-                        error_log("診斷: 沒有任何記錄分配給科系 '$user_department_code' (使用 TRIM 匹配)");
-                        
-                        // 進一步診斷：檢查是否有任何 assigned_department 值（不匹配的）
-                        $all_dept_stmt = $conn->prepare("
-                            SELECT DISTINCT assigned_department, COUNT(*) as count 
-                            FROM enrollment_intention 
-                            WHERE assigned_department IS NOT NULL 
-                            GROUP BY assigned_department 
-                            ORDER BY count DESC 
-                            LIMIT 10
-                        ");
-                        $all_dept_stmt->execute();
-                        $all_dept_result = $all_dept_stmt->get_result();
-                        $all_depts = [];
-                        while ($dept_row = $all_dept_result->fetch_assoc()) {
-                            $all_depts[] = "'{$dept_row['assigned_department']}' ({$dept_row['count']}筆)";
-                        }
-                        error_log("診斷: 資料庫中所有 assigned_department 值: " . implode(', ', $all_depts));
-                        $all_dept_stmt->close();
-                    }
-                    $check_stmt->close();
-                }
-            }
         }
     } else {
          throw new Exception('準備查詢語句失敗: ' . $conn->error);
@@ -546,7 +437,6 @@ try {
         .content { padding: 24px; width: 100%; }
 
         /* Tabs Style */
-        /* TAB 樣式 */
         .tabs-container { margin-bottom: 24px; }
         .tabs-nav { display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid var(--border-color); background: var(--card-background-color); border-radius: 8px 8px 0 0; padding: 0 24px; min-height: 56px; }
         .tabs-nav-left { display: flex; }
@@ -620,14 +510,73 @@ try {
             color: #595959;
         }
         .table tr:hover { background: #fafafa; }
-        .pagination { padding: 16px 24px; display: flex; justify-content: space-between; align-items: center; border-top: 1px solid var(--border-color); background: #fafafa; }
-        .pagination-info { display: flex; align-items: center; gap: 16px; color: var(--text-secondary-color); font-size: 14px; }
-        .pagination-controls { display: flex; align-items: center; gap: 8px; }
-        .pagination select { padding: 6px 12px; border: 1px solid #d9d9d9; border-radius: 6px; font-size: 14px; background: #fff; cursor: pointer; }
-        .pagination button { padding: 6px 12px; border: 1px solid #d9d9d9; background: #fff; color: #595959; border-radius: 6px; cursor: pointer; font-size: 14px; transition: all 0.3s; }
-        .pagination button:hover:not(:disabled) { border-color: #1890ff; color: #1890ff; }
-        .pagination button:disabled { opacity: 0.5; cursor: not-allowed; }
-        .pagination button.active { background: #1890ff; color: white; border-color: #1890ff; }
+        
+        /* 分頁樣式 (與 settings.php 一致) */
+        .pagination {
+            padding: 16px 24px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-top: 1px solid var(--border-color);
+            background: #fafafa;
+        }
+
+        .pagination-info {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            color: var(--text-secondary-color);
+            font-size: 14px;
+        }
+
+        .pagination-controls {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .pagination select {
+            padding: 6px 12px;
+            border: 1px solid #d9d9d9;
+            border-radius: 6px;
+            font-size: 14px;
+            background: #fff;
+            cursor: pointer;
+        }
+
+        .pagination select:focus {
+            outline: none;
+            border-color: #1890ff;
+            box-shadow: 0 0 0 2px rgba(24,144,255,0.2);
+        }
+
+        .pagination button {
+            padding: 6px 12px;
+            border: 1px solid #d9d9d9;
+            background: #fff;
+            color: #595959;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 14px;
+            transition: all 0.3s;
+        }
+
+        .pagination button:hover:not(:disabled) {
+            border-color: #1890ff;
+            color: #1890ff;
+        }
+
+        .pagination button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .pagination button.active {
+            background: #1890ff;
+            color: white;
+            border-color: #1890ff;
+        }
+
         .detail-row { background: #f9f9f9; }
         .table-row-clickable { cursor: pointer; }
         .btn-view {
@@ -651,6 +600,7 @@ try {
             font-family: inherit;
         }
         .search-input { padding: 8px 12px; border: 1px solid #d9d9d9; border-radius: 6px; font-size: 14px; width: 250px; }
+        .search-input:focus { outline: none; border-color: #1890ff; box-shadow: 0 0 0 2px rgba(24,144,255,0.2); }
         .empty-state { text-align: center; padding: 40px; color: var(--text-secondary-color); }
         .assign-btn { background: var(--primary-color); color: white; border: none; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 12px; transition: all 0.3s; }
         .assign-btn:hover { background: #40a9ff; transform: translateY(-1px); }
@@ -702,7 +652,7 @@ try {
                                 </div>
                             </div>
                             <div class="tabs-nav-right">
-                                <input type="text" id="searchInput" class="search-input" placeholder="搜尋姓名或電話...">
+                                <input type="text" id="searchInput" class="search-input" placeholder="搜尋姓名或電話..." onkeyup="filterTable()">
                                 <?php if ($view_mode === 'history'): ?>
                                 <form action="enrollment_list.php" method="GET" style="margin:0; display: flex; align-items: center;">
                                     <input type="hidden" name="view" value="history">
@@ -907,7 +857,6 @@ try {
                                         <td onclick="event.stopPropagation();">
                                             <div style="display: flex; gap: 8px; flex-wrap: wrap;">
                                                 <?php if ($view_mode === 'history'): ?>
-                                                    <!-- 歷史資料模式：只顯示查看詳情 -->
                                                     <button type="button" 
                                                         class="btn-view" 
                                                         id="detail-btn-<?php echo $item['id']; ?>"
@@ -916,7 +865,6 @@ try {
                                                     </button>
                                                 <?php else: ?>
                                                     <?php if ($is_assigned_to_me): ?>
-                                                        <!-- 已分配給自己（自行聯絡）：顯示查看詳情和填寫聯絡紀錄 -->
                                                         <button type="button" 
                                                             class="btn-view" 
                                                             id="detail-btn-<?php echo $item['id']; ?>"
@@ -935,7 +883,6 @@ try {
                                                             <i class="fas fa-address-book"></i> 填寫聯絡紀錄
                                                         </button>
                                                     <?php elseif ($is_assigned_to_others): ?>
-                                                        <!-- 已分配給其他人：只顯示查看詳情 -->
                                                         <button type="button" 
                                                             class="btn-view" 
                                                             id="detail-btn-<?php echo $item['id']; ?>"
@@ -943,7 +890,6 @@ try {
                                                             <i class="fas fa-eye"></i> <span class="btn-text">查看詳情</span>
                                                         </button>
                                                     <?php else: ?>
-                                                        <!-- 未分配：顯示分配和查看詳情 -->
                                                         <button type="button" 
                                                             class="btn-view" 
                                                             style="border-color: #fa8c16; color: #fa8c16;"
@@ -968,7 +914,6 @@ try {
                                         </td>
                                         <?php endif; ?>
                                     </tr>
-                                    <!-- 详情展开行 -->
                                     <tr id="detail-<?php echo $item['id']; ?>" class="detail-row" style="display: none;">
                                         <td colspan="<?php echo $is_admission_center ? '8' : ($is_department_user ? '6' : '8'); ?>" style="padding: 20px; background: #f9f9f9; border: 2px solid #b3d9ff; border-radius: 4px;">
                                             <div id="detail-content-<?php echo $item['id']; ?>" style="text-align: center; padding: 20px;">
@@ -979,6 +924,26 @@ try {
                                     <?php endforeach; ?>
                                 </tbody>
                             </table>
+
+                            <div class="pagination">
+                                <div class="pagination-info">
+                                    <span>每頁顯示：</span>
+                                    <select id="itemsPerPage" onchange="changeItemsPerPage()">
+                                        <option value="10" selected>10</option>
+                                        <option value="20">20</option>
+                                        <option value="50">50</option>
+                                        <option value="100">100</option>
+                                        <option value="all">全部</option>
+                                    </select>
+                                    <span id="pageInfo">顯示第 <span id="currentRange">1-10</span> 筆，共 <?php echo count($enrollments); ?> 筆</span>
+                                </div>
+                                <div class="pagination-controls">
+                                    <button id="prevPage" onclick="changePage(-1)" disabled>上一頁</button>
+                                    <span id="pageNumbers"></span>
+                                    <button id="nextPage" onclick="changePage(1)">下一頁</button>
+                                </div>
+                            </div>
+
                         <?php endif; ?>
                     </div>
                 </div>
@@ -997,7 +962,6 @@ try {
                         <p style="color: #999;">目前無可分配的老師。</p>
                     <?php else: ?>
                         <?php if ($is_director): ?>
-                            <!-- 主任自行聯絡選項 -->
                             <label class="teacher-option" id="selfContactOption" style="border: 2px solid #1890ff; background: #e6f7ff;">
                                 <input type="radio" name="selected_teacher" value="0" id="selfContactRadio">
                                 <span style="color: #1890ff; font-weight: bold;">
@@ -1094,21 +1058,158 @@ try {
                 icon.classList.add('active');
                 icon.classList.add(sortOrder);
             }
-
-            // Search filter
-            const searchInput = document.getElementById('searchInput');
-            if (searchInput) {
-                searchInput.addEventListener('keyup', function() {
-                    const filter = this.value.toLowerCase();
-                    const rows = document.querySelectorAll('#enrollmentTable tbody tr');
-                    
-                    rows.forEach(row => {
-                        const text = row.textContent.toLowerCase();
-                        row.style.display = text.includes(filter) ? '' : 'none';
-                    });
-                });
-            }
+            
+            // 初始化分頁
+            initPagination();
         });
+
+        // 分頁相關變數
+        let currentPage = 1;
+        let itemsPerPage = 10;
+        let allRows = [];
+        let filteredRows = [];
+
+        // 初始化分頁
+        function initPagination() {
+            const table = document.getElementById('enrollmentTable');
+            if (!table) return;
+            
+            const tbody = table.getElementsByTagName('tbody')[0];
+            if (!tbody) return;
+            
+            // 只選取主列（有 table-row-clickable 類別的列）
+            allRows = Array.from(tbody.querySelectorAll('tr.table-row-clickable'));
+            filteredRows = allRows;
+            
+            updatePagination();
+        }
+
+        function changeItemsPerPage() {
+            const select = document.getElementById('itemsPerPage');
+            itemsPerPage = select.value === 'all' ? 
+                          filteredRows.length : 
+                          parseInt(select.value);
+            currentPage = 1;
+            updatePagination();
+        }
+
+        function changePage(direction) {
+            const totalPages = Math.ceil(filteredRows.length / itemsPerPage);
+            currentPage += direction;
+            
+            if (currentPage < 1) currentPage = 1;
+            if (currentPage > totalPages) currentPage = totalPages;
+            
+            updatePagination();
+        }
+
+        function goToPage(page) {
+            currentPage = page;
+            updatePagination();
+        }
+
+        function updatePagination() {
+            const totalItems = filteredRows.length;
+            const totalPages = itemsPerPage === 'all' ? 1 : Math.ceil(totalItems / itemsPerPage);
+            
+            // 首先隱藏所有主列和關聯的詳情列
+            allRows.forEach(row => {
+                row.style.display = 'none';
+                // 同時確保關聯的詳情列也被隱藏
+                const nextRow = row.nextElementSibling;
+                if (nextRow && nextRow.classList.contains('detail-row')) {
+                    nextRow.style.display = 'none';
+                    // 重置按鈕狀態
+                    const detailBtn = row.querySelector('.btn-view[id^="detail-btn-"]');
+                    if (detailBtn) {
+                        const btnText = detailBtn.querySelector('.btn-text');
+                        if (btnText) btnText.textContent = '查看詳情';
+                        const icon = detailBtn.querySelector('i');
+                        if (icon) icon.className = 'fas fa-eye';
+                    }
+                }
+            });
+            // 重置當前打開的詳情 ID
+            currentOpenDetailId = null;
+            
+            if (itemsPerPage === 'all' || itemsPerPage >= totalItems) {
+                // 顯示所有過濾後的行
+                filteredRows.forEach(row => row.style.display = '');
+                
+                // 更新分頁資訊
+                const rangeElem = document.getElementById('currentRange');
+                if (rangeElem) rangeElem.textContent = totalItems > 0 ? `1-${totalItems}` : '0-0';
+            } else {
+                // 計算當前頁的範圍
+                const start = (currentPage - 1) * itemsPerPage;
+                const end = Math.min(start + itemsPerPage, totalItems);
+                
+                // 顯示當前頁的行
+                for (let i = start; i < end; i++) {
+                    if (filteredRows[i]) {
+                        filteredRows[i].style.display = '';
+                    }
+                }
+                
+                // 更新分頁資訊
+                const rangeElem = document.getElementById('currentRange');
+                if (rangeElem) rangeElem.textContent = totalItems > 0 ? `${start + 1}-${end}` : '0-0';
+            }
+            
+            // 更新總數
+            const pageInfo = document.getElementById('pageInfo');
+            if (pageInfo) {
+                const rangeText = document.getElementById('currentRange') ? document.getElementById('currentRange').textContent : '0-0';
+                pageInfo.innerHTML = `顯示第 <span id="currentRange">${rangeText}</span> 筆，共 ${totalItems} 筆`;
+            }
+            
+            // 更新上一頁/下一頁按鈕
+            const prevBtn = document.getElementById('prevPage');
+            const nextBtn = document.getElementById('nextPage');
+            if (prevBtn) prevBtn.disabled = currentPage === 1;
+            if (nextBtn) nextBtn.disabled = currentPage >= totalPages || totalPages <= 1;
+            
+            // 更新頁碼按鈕
+            updatePageNumbers(totalPages);
+        }
+
+        function updatePageNumbers(totalPages) {
+            const pageNumbers = document.getElementById('pageNumbers');
+            if (!pageNumbers) return;
+            pageNumbers.innerHTML = '';
+            
+            if (totalPages >= 1) {
+                // 簡單的分頁邏輯：顯示所有頁碼（如果頁數太多可能需要優化顯示範圍，但這裡保持簡單與settings.php一致）
+                const pagesToShow = totalPages === 1 ? [1] : Array.from({length: totalPages}, (_, i) => i + 1);
+                
+                // 如果頁數過多，只顯示部分（可選優化）
+                // 這裡暫時顯示全部
+                
+                for (let i of pagesToShow) {
+                    const btn = document.createElement('button');
+                    btn.textContent = i;
+                    btn.onclick = () => goToPage(i);
+                    if (i === currentPage) btn.classList.add('active');
+                    pageNumbers.appendChild(btn);
+                }
+            }
+        }
+        
+        // 表格搜尋功能
+        function filterTable() {
+            const input = document.getElementById('searchInput');
+            if (!input) return;
+            const filter = input.value.toLowerCase();
+            
+            // 使用 allRows 進行過濾
+            filteredRows = allRows.filter(row => {
+                const text = row.textContent.toLowerCase();
+                return text.includes(filter);
+            });
+            
+            currentPage = 1;
+            updatePagination();
+        }
 
         function openAssignModalFromButton(btn) {
             const studentId = btn.dataset.studentId;
