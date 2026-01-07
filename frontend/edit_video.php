@@ -301,7 +301,6 @@ $page_title = $is_edit && $video ? '編輯影片' : '新增影片';
                     <input type="hidden" name="auto_thumbnail" id="auto_thumbnail">
 
                     <div class="section">
-                        <div class="section-title">基本信息</div>
                         <div class="form-group">
                             <label for="title">影片標題 <span class="required">*</span></label>
                             <input type="text" id="title" name="title" required value="<?php echo htmlspecialchars($video['title'] ?? ''); ?>" placeholder="輸入影片標題">

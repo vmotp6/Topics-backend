@@ -1,4 +1,9 @@
 <?php
+// 開啟錯誤報告以進行除錯
+ini_set('display_errors', 1);
+ini_set('display_startup_errors', 1);
+error_reporting(E_ALL);
+
 require_once __DIR__ . '/session_config.php';
 
 checkBackendLogin();
@@ -32,6 +37,57 @@ if (!function_exists('getDatabaseConnection')) {
     die('錯誤：資料庫連接函數未定義');
 }
 
+// 用於診斷的變數
+$debug_log = [];
+$debug_sql = "";
+$debug_params = [];
+
+// ==========================================
+// [關鍵修正] 獲取 User ID 與 自動修復機制
+// ==========================================
+$user_id = 0;
+$username = $_SESSION['username'] ?? '';
+$user_role = $_SESSION['role'] ?? '';
+
+// 1. 嘗試從 Session 獲取
+if (!empty($_SESSION['user_id'])) {
+    $user_id = $_SESSION['user_id'];
+    $debug_log[] = "從 Session['user_id'] 獲取 ID: " . $user_id;
+} elseif (!empty($_SESSION['id'])) {
+    $user_id = $_SESSION['id'];
+    $debug_log[] = "從 Session['id'] 獲取 ID: " . $user_id;
+}
+
+// 2. [保險機制] 如果 Session 沒抓到 ID，但有 Username，則從資料庫反查
+if (($user_id == 0 || empty($user_id)) && !empty($username)) {
+    try {
+        $conn_auth = getDatabaseConnection();
+        $debug_log[] = "嘗試使用 Username '$username' 反查 ID...";
+        
+        $stmt_auth = $conn_auth->prepare("SELECT id, role FROM user WHERE username = ?");
+        if ($stmt_auth) {
+            $stmt_auth->bind_param("s", $username);
+            $stmt_auth->execute();
+            $res_auth = $stmt_auth->get_result();
+            if ($row_auth = $res_auth->fetch_assoc()) {
+                $user_id = $row_auth['id'];
+                // 自動修復 Session
+                $_SESSION['user_id'] = $user_id;
+                $_SESSION['id'] = $user_id;
+                $debug_log[] = ">>> 反查成功！修復 User ID 為: " . $user_id;
+            } else {
+                $debug_log[] = "反查失敗：資料庫找不到此帳號";
+            }
+            $stmt_auth->close();
+        }
+        $conn_auth->close();
+    } catch (Exception $e) {
+        $debug_log[] = "反查時發生錯誤: " . $e->getMessage();
+    }
+}
+
+$debug_log[] = "最終確認 User ID: " . $user_id;
+
 // 初始化變數
 $enrollments = [];
 $teachers = [];
@@ -40,12 +96,7 @@ $identity_options = [];
 $school_data = [];
 $error_message = '';
 $new_enrollments_count = 0; 
-$user_id = $_SESSION['user_id'] ?? 0;
 $history_years = []; 
-
-// 獲取使用者角色和用戶名
-$username = isset($_SESSION['username']) ? $_SESSION['username'] : '';
-$user_role = isset($_SESSION['role']) ? $_SESSION['role'] : '';
 
 $allowed_center_roles = ['ADM', 'STA'];
 $is_admin_or_staff = in_array($user_role, $allowed_center_roles);
@@ -56,54 +107,77 @@ $is_department_user = false;
 $is_director = ($user_role === 'DI');
 
 // 僅當用戶是老師 (TEA) 或主任 (DI) 時，查詢其所屬部門
-if (($user_role === 'TEA' || $user_role === 'DI') && empty($user_department_code)) { 
+// 這裡加上 user_id > 0 的檢查，避免 ID 為 0 時浪費資源查詢
+if (($user_role === 'TEA' || $user_role === 'DI') && empty($user_department_code) && $user_id > 0) { 
     try {
         $conn_temp = getDatabaseConnection();
-        // 先嘗試從 director 表找 (如果是主任)
+        $found_department = false;
+
+        $debug_log[] = "開始查找科系代碼... (Role: $user_role)";
+
+        // 步驟 1: 如果是主任，優先嘗試從 director 表查找
         if ($is_director) {
             $table_check = $conn_temp->query("SHOW TABLES LIKE 'director'");
             if ($table_check && $table_check->num_rows > 0) {
                 $stmt_dept = $conn_temp->prepare("SELECT department FROM director WHERE user_id = ?");
-            } else {
-                // 如果沒有 director 表或不在其中，嘗試從 teacher 表找
-                $stmt_dept = $conn_temp->prepare("SELECT department FROM teacher WHERE user_id = ?");
-            }
-        } else {
-            // 一般老師
-            $stmt_dept = $conn_temp->prepare("SELECT department FROM teacher WHERE user_id = ?");
-        }
-        
-        if ($stmt_dept) {
-            $stmt_dept->bind_param("i", $user_id);
-            $stmt_dept->execute();
-            $result_dept = $stmt_dept->get_result();
-            if ($row = $result_dept->fetch_assoc()) {
-                $user_department_code = trim($row['department']); // 去除前後空格
-                if (!empty($user_department_code)) { 
-                     $is_department_user = true;
-                     // 調試：記錄主任的科系代碼
-                     if ($is_director) {
-                         error_log("主任科系代碼獲取成功: user_id=$user_id, department_code='$user_department_code'");
-                     }
-                } else {
-                    if ($is_director) {
-                        error_log("警告: 主任 (user_id=$user_id) 的科系代碼為空");
+                if ($stmt_dept) {
+                    $stmt_dept->bind_param("i", $user_id);
+                    $stmt_dept->execute();
+                    $result_dept = $stmt_dept->get_result();
+                    if ($row = $result_dept->fetch_assoc()) {
+                        $raw_dept = $row['department'];
+                        $user_department_code = trim($raw_dept);
+                        $debug_log[] = "查 director 表: 成功! 代碼='$user_department_code'";
+                        if (!empty($user_department_code)) {
+                            $found_department = true;
+                        }
+                    } else {
+                        $debug_log[] = "查 director 表: 未找到記錄";
                     }
-                }
-            } else {
-                if ($is_director) {
-                    error_log("警告: 主任 (user_id=$user_id) 在 director/teacher 表中找不到記錄");
+                    $stmt_dept->close();
                 }
             }
-            $stmt_dept->close();
         }
+
+        // 步驟 2: 如果尚未找到 (director 表沒查到，或是身分為一般老師)，則查 teacher 表
+        if (!$found_department) {
+            $stmt_dept = $conn_temp->prepare("SELECT department FROM teacher WHERE user_id = ?");
+            if ($stmt_dept) {
+                $stmt_dept->bind_param("i", $user_id);
+                $stmt_dept->execute();
+                $result_dept = $stmt_dept->get_result();
+                if ($row = $result_dept->fetch_assoc()) {
+                    $raw_dept = $row['department'];
+                    $user_department_code = trim($raw_dept);
+                    $debug_log[] = "查 teacher 表: 成功! 代碼='$user_department_code'";
+                    if (!empty($user_department_code)) {
+                        $is_department_user = true; 
+                    }
+                } else {
+                    $debug_log[] = "查 teacher 表: 未找到記錄";
+                }
+                $stmt_dept->close();
+            }
+        }
+
+        // 最終檢查並記錄
+        if (!empty($user_department_code)) {
+             $is_department_user = true;
+        } else {
+            if ($is_director) {
+                $debug_log[] = "警告: 無法找到科系代碼 (DB中無此 User ID 的部門資料)";
+                error_log("警告: 主任 (user_id=$user_id) 在 director 和 teacher 表中都找不到科系代碼");
+            }
+        }
+
         $conn_temp->close(); 
     } catch (Exception $e) {
+        $debug_log[] = "查詢部門時發生錯誤: " . $e->getMessage();
         error_log('Error fetching user department: ' . $e->getMessage());
     }
 }
 
-// 判斷是否為特定科系使用者 (用於顯示標題等，非核心權限判斷)
+// 判斷是否為特定科系使用者
 $is_imd_user = ($user_department_code === 'IM'); 
 $is_fld_user = ($user_department_code === 'AF'); 
 $is_admission_center = $is_admin_or_staff && !$is_department_user;
@@ -119,12 +193,8 @@ $current_year = (int)date('Y');
 $grad_threshold_year = ($current_month >= 8) ? $current_year : $current_year - 1;
 
 // 設置頁面標題
-if ($is_imd_user) {
-    $page_title = '資訊管理科就讀意願名單';
-} elseif ($is_fld_user) {
-    $page_title = '應用外語科就讀意願名單';
-} elseif ($is_department_user) {
-    $page_title = '系科就讀意願名單';
+if ($is_department_user) {
+    $page_title = '系科就讀意願名單 (' . htmlspecialchars($user_department_code ?? '未知') . ')';
 } else {
     $page_title = '就讀意願名單';
 }
@@ -132,6 +202,7 @@ if ($is_imd_user) {
 if ($view_mode === 'history') {
     $page_title .= ' (歷史資料)';
 }
+
 
 // 排序參數
 $sortBy = $_GET['sort_by'] ?? 'created_at';
@@ -251,21 +322,21 @@ try {
     $bind_types = "";
 
     if ($is_director) {
-        // [主任權限]：嚴格限制只能看到 assigned_department 是自己科系的
+        // [主任權限]：
         if (!empty($user_department_code)) {
-            // 確保科系代碼去除前後空格，使用大小寫不敏感比較
-            // 使用 UPPER() 或 LOWER() 來確保大小寫不敏感匹配
-            $perm_where .= " AND UPPER(TRIM(ei.assigned_department)) = UPPER(?) ";
+            // [修正] 不只看 assigned_department，也要看第一志願 (ec1.department_code)
+            $perm_where .= " AND (UPPER(TRIM(ei.assigned_department)) = UPPER(?) OR UPPER(TRIM(ec1.department_code)) = UPPER(?)) ";
             $bind_params[] = trim($user_department_code);
-            $bind_types .= "s";
-            
+            $bind_params[] = trim($user_department_code);
+            $bind_types .= "ss";
+            $debug_log[] = "應用主任過濾條件: 分配科系 OR 第一志願 = $user_department_code";
         } else {
-            // 是主任但找不到部門代碼 -> 什麼都看不到 (安全起見)
+            // 是主任但找不到部門代碼 -> 什麼都看不到
             $perm_where .= " AND 1=0 "; 
-            error_log("警告: 主任 (user_id=$user_id) 找不到部門代碼，無法查看任何名單");
+            $debug_log[] = "應用主任過濾條件: 1=0 (未找到部門代碼)";
         }
     } elseif ($is_department_user) {
-        // [一般老師權限]：可以看到有興趣的學生 (意願 1~3 或 已分配)
+        // [一般老師權限]
         $perm_where .= " AND ((ec1.department_code = ? OR ec2.department_code = ? OR ec3.department_code = ?) OR ei.assigned_department = ?) ";
         $bind_params[] = $user_department_code;
         $bind_params[] = $user_department_code;
@@ -273,8 +344,7 @@ try {
         $bind_params[] = $user_department_code;
         $bind_types .= "ssss";
     }
-    // 管理員 (ADM/STA) 不加額外條件，看全部
-
+    
     // 狀態 WHERE 條件
     $status_where = "";
     if ($view_mode === 'history') {
@@ -284,17 +354,20 @@ try {
             $status_where = " AND (ei.graduation_year <= $grad_threshold_year)";
         }
     } else {
-        // Active 模式：顯示未畢業或畢業年份在未來/未設定的學生
+        // Active 模式
         $status_where = " AND (ei.graduation_year > $grad_threshold_year OR ei.graduation_year IS NULL)";
     }
     
     // 組合最終 SQL
     $sql = $base_select . $base_from_join . $perm_where . $status_where . $order_by;
     
+    // 記錄 SQL 供診斷
+    $debug_sql = $sql;
+    $debug_params = $bind_params;
+
     $stmt = $conn->prepare($sql);
     
     if ($stmt) {
-        // [修改] 動態綁定參數
         if (!empty($bind_params)) {
             $stmt->bind_param($bind_types, ...$bind_params);
         }
@@ -306,6 +379,7 @@ try {
         $result = $stmt->get_result();
         if ($result) {
             $enrollments = $result->fetch_all(MYSQLI_ASSOC);
+            $debug_log[] = "查詢成功，找到 " . count($enrollments) . " 筆資料";
         }
     } else {
          throw new Exception('準備查詢語句失敗: ' . $conn->error);
@@ -325,7 +399,7 @@ try {
         }
     }
 
-    // 載入老師列表供分配使用
+    // 載入老師列表
     if ($is_department_user) {
         if ($is_director && !empty($user_department_code)) {
             // 主任：找自己系上的老師
@@ -356,29 +430,6 @@ try {
                     }
                 }
             }
-        } else {
-            // 一般老師：如果是主任列表 (這裡邏輯可能較少用到，除非老師能分配給主任?)
-            // 這裡保留原邏輯，但移除了 hardcode username
-            $table_check = $conn->query("SHOW TABLES LIKE 'director'");
-            $director_join = $table_check && $table_check->num_rows > 0 ? "LEFT JOIN director dir ON u.id = dir.user_id" : "";
-            $department_select = $table_check && $table_check->num_rows > 0 ? "dir.department" : "t.department";
-
-            $director_stmt = $conn->prepare(
-                "SELECT u.id, u.username, u.name, {$department_select} AS department_code, dep.name AS department_name, u.role\n"
-                . "FROM user u\n"
-                . "LEFT JOIN teacher t ON u.id = t.user_id\n"
-                . $director_join . "\n"
-                . "LEFT JOIN departments dep ON {$department_select} = dep.code\n"
-                . "WHERE u.role = 'DI'\n" 
-                . "ORDER BY u.name ASC"
-            );
-
-            if ($director_stmt && $director_stmt->execute()) {
-                $director_result = $director_stmt->get_result();
-                if ($director_result) {
-                    $teachers = $director_result->fetch_all(MYSQLI_ASSOC);
-                }
-            }
         }
     }
 
@@ -407,8 +458,8 @@ try {
     $conn->close();
     
 } catch (Exception $e) {
-    $error_message = '資料庫操作失敗，請稍後再試: ' . $e->getMessage();
-    error_log('enrollment_list.php 錯誤: ' . $e->getMessage());
+    $error_message = '資料庫操作失敗: ' . $e->getMessage();
+    $debug_log[] = "例外狀況: " . $e->getMessage();
     if (isset($conn)) {
         $conn->close();
     }
@@ -436,6 +487,21 @@ try {
         .main-content { overflow-x: hidden; }
         .content { padding: 24px; width: 100%; }
 
+        /* Debug Panel Style */
+        .debug-panel {
+            background: #fffbe6;
+            border: 1px solid #ffe58f;
+            padding: 15px;
+            margin-bottom: 20px;
+            border-radius: 4px;
+            font-family: monospace;
+            font-size: 14px;
+            color: #d46b08;
+            white-space: pre-wrap;
+            word-break: break-all;
+        }
+        .debug-panel h4 { margin-top: 0; margin-bottom: 10px; color: #fa8c16; }
+
         /* Tabs Style */
         .tabs-container { margin-bottom: 24px; }
         .tabs-nav { display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid var(--border-color); background: var(--card-background-color); border-radius: 8px 8px 0 0; padding: 0 24px; min-height: 56px; }
@@ -446,18 +512,8 @@ try {
         .tab-item.active { color: var(--primary-color); border-bottom-color: var(--primary-color); }
         .tab-content { display: none; }
         .tab-content.active { display: block; }
-        .history-filter {
-            margin-left: auto;
-            display: flex;
-            align-items: center;
-            gap: 10px;
-        }
-        .history-select {
-            padding: 6px 12px;
-            border: 1px solid #d9d9d9;
-            border-radius: 4px;
-            font-size: 14px;
-        }
+        .history-filter { margin-left: auto; display: flex; align-items: center; gap: 10px; }
+        .history-select { padding: 6px 12px; border: 1px solid #d9d9d9; border-radius: 4px; font-size: 14px; }
 
         .page-controls { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; gap: 16px; }
         .breadcrumb { margin-bottom: 0; font-size: 16px; color: var(--text-secondary-color); }
@@ -471,140 +527,41 @@ try {
         .card-body.table-container { padding: 0; }
         .table-container { overflow-x: auto; }
         .table { width: 100%; border-collapse: collapse; }
-        .table th, .table td { 
-            padding: 16px 24px; 
-            text-align: left; 
-            border-bottom: 1px solid var(--border-color); 
-            font-size: 16px; 
-            white-space: nowrap; 
-        }
-        .table th:first-child, .table td:first-child {
-            padding-left: 60px;
-        }
-        .table th { 
-            background: #fafafa; 
-            font-weight: 600; 
-            color: #262626; 
-            cursor: pointer; 
-            user-select: none; 
-            position: relative; 
-        }
-        .table th:hover { 
-            background: #f0f0f0; 
-        }
-        .sort-icon {
-            margin-left: 8px;
-            font-size: 12px;
-            color: #8c8c8c;
-        }
-        .sort-icon.active {
-            color: #1890ff;
-        }
-        .sort-icon.asc::after {
-            content: "↑";
-        }
-        .sort-icon.desc::after {
-            content: "↓";
-        }
-        .table td {
-            color: #595959;
-        }
+        .table th, .table td { padding: 16px 24px; text-align: left; border-bottom: 1px solid var(--border-color); font-size: 16px; white-space: nowrap; }
+        .table th:first-child, .table td:first-child { padding-left: 60px; }
+        .table th { background: #fafafa; font-weight: 600; color: #262626; cursor: pointer; user-select: none; position: relative; }
+        .table th:hover { background: #f0f0f0; }
+        .sort-icon { margin-left: 8px; font-size: 12px; color: #8c8c8c; }
+        .sort-icon.active { color: #1890ff; }
+        .sort-icon.asc::after { content: "↑"; }
+        .sort-icon.desc::after { content: "↓"; }
+        .table td { color: #595959; }
         .table tr:hover { background: #fafafa; }
         
-        /* 分頁樣式 (與 settings.php 一致) */
-        .pagination {
-            padding: 16px 24px;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            border-top: 1px solid var(--border-color);
-            background: #fafafa;
-        }
-
-        .pagination-info {
-            display: flex;
-            align-items: center;
-            gap: 16px;
-            color: var(--text-secondary-color);
-            font-size: 14px;
-        }
-
-        .pagination-controls {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-        }
-
-        .pagination select {
-            padding: 6px 12px;
-            border: 1px solid #d9d9d9;
-            border-radius: 6px;
-            font-size: 14px;
-            background: #fff;
-            cursor: pointer;
-        }
-
-        .pagination select:focus {
-            outline: none;
-            border-color: #1890ff;
-            box-shadow: 0 0 0 2px rgba(24,144,255,0.2);
-        }
-
-        .pagination button {
-            padding: 6px 12px;
-            border: 1px solid #d9d9d9;
-            background: #fff;
-            color: #595959;
-            border-radius: 6px;
-            cursor: pointer;
-            font-size: 14px;
-            transition: all 0.3s;
-        }
-
-        .pagination button:hover:not(:disabled) {
-            border-color: #1890ff;
-            color: #1890ff;
-        }
-
-        .pagination button:disabled {
-            opacity: 0.5;
-            cursor: not-allowed;
-        }
-
-        .pagination button.active {
-            background: #1890ff;
-            color: white;
-            border-color: #1890ff;
-        }
+        /* Pagination */
+        .pagination { padding: 16px 24px; display: flex; justify-content: space-between; align-items: center; border-top: 1px solid var(--border-color); background: #fafafa; }
+        .pagination-info { display: flex; align-items: center; gap: 16px; color: var(--text-secondary-color); font-size: 14px; }
+        .pagination-controls { display: flex; align-items: center; gap: 8px; }
+        .pagination select { padding: 6px 12px; border: 1px solid #d9d9d9; border-radius: 6px; font-size: 14px; background: #fff; cursor: pointer; }
+        .pagination select:focus { outline: none; border-color: #1890ff; box-shadow: 0 0 0 2px rgba(24,144,255,0.2); }
+        .pagination button { padding: 6px 12px; border: 1px solid #d9d9d9; background: #fff; color: #595959; border-radius: 6px; cursor: pointer; font-size: 14px; transition: all 0.3s; }
+        .pagination button:hover:not(:disabled) { border-color: #1890ff; color: #1890ff; }
+        .pagination button:disabled { opacity: 0.5; cursor: not-allowed; }
+        .pagination button.active { background: #1890ff; color: white; border-color: #1890ff; }
 
         .detail-row { background: #f9f9f9; }
         .table-row-clickable { cursor: pointer; }
-        .btn-view {
-            padding: 4px 12px;
-            border: 1px solid #1890ff;
-            border-radius: 4px;
-            cursor: pointer;
-            font-size: 14px;
-            text-decoration: none;
-            display: inline-block;
-            transition: all 0.3s;
-            background: #fff;
-            color: #1890ff;
-            margin-right: 8px;
-        }
-        .btn-view:hover {
-            background: #1890ff;
-            color: white;
-        }
-        button.btn-view {
-            font-family: inherit;
-        }
+        .btn-view { padding: 4px 12px; border: 1px solid #1890ff; border-radius: 4px; cursor: pointer; font-size: 14px; text-decoration: none; display: inline-block; transition: all 0.3s; background: #fff; color: #1890ff; margin-right: 8px; }
+        .btn-view:hover { background: #1890ff; color: white; }
+        button.btn-view { font-family: inherit; }
         .search-input { padding: 8px 12px; border: 1px solid #d9d9d9; border-radius: 6px; font-size: 14px; width: 250px; }
         .search-input:focus { outline: none; border-color: #1890ff; box-shadow: 0 0 0 2px rgba(24,144,255,0.2); }
         .empty-state { text-align: center; padding: 40px; color: var(--text-secondary-color); }
         .assign-btn { background: var(--primary-color); color: white; border: none; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 12px; transition: all 0.3s; }
         .assign-btn:hover { background: #40a9ff; transform: translateY(-1px); }
         .assign-btn i { margin-right: 4px; }
+        
+        /* Modal */
         .modal { position: fixed; z-index: 1000; left: 0; top: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.5); display: flex; align-items: center; justify-content: center; }
         .modal-content { background-color: white; border-radius: 8px; box-shadow: 0 4px 20px rgba(0,0,0,0.15); width: 90%; max-width: 500px; max-height: 80vh; overflow-y: auto; }
         .modal-header { padding: 20px; border-bottom: 1px solid var(--border-color); display: flex; justify-content: space-between; align-items: center; }
@@ -615,6 +572,7 @@ try {
         .modal-footer { padding: 20px; border-top: 1px solid var(--border-color); display: flex; justify-content: flex-end; gap: 12px; }
         .btn-cancel { padding: 8px 16px; border: none; border-radius: 4px; cursor: pointer; background-color: #f5f5f5; color: var(--text-color); }
         .btn-confirm { padding: 8px 16px; border: none; border-radius: 4px; cursor: pointer; background-color: var(--primary-color); color: white; }
+        
         .contact-log-modal .modal-content { max-width: 600px; }
         .contact-log-item { background: #fff; border: 1px solid #e8e8e8; border-radius: 8px; padding: 16px; margin-bottom: 16px; }
         .contact-log-header { display: flex; justify-content: space-between; border-bottom: 1px dashed #f0f0f0; padding-bottom: 12px; margin-bottom: 12px;}
@@ -679,6 +637,9 @@ try {
                                         查無歷史資料<?php echo $selected_year > 0 ? " (畢業年份: $selected_year)" : ""; ?>。
                                     <?php else: ?>
                                         目前尚無就讀意願資料。
+                                        <?php if(empty($user_department_code) && ($is_director || $is_department_user)): ?>
+                                            <br><span style="color:red;">(警告：系統無法識別您的科系，請參考上方診斷資訊)</span>
+                                        <?php endif; ?>
                                     <?php endif; ?>
                                 </p>
                             </div>
@@ -687,8 +648,6 @@ try {
                                 $director_active_choices = [];
                                 if ($is_department_user && !empty($enrollments)) {
                                     $target_dept_code = $user_department_code;
-                                    // 這裡不再需要處理 IMD/FLD 特殊邏輯，直接用 $user_department_code
-
                                     foreach ($enrollments as $row) {
                                         if (($row['intention1_code'] ?? '') === $target_dept_code) $director_active_choices[1] = true;
                                         if (($row['intention2_code'] ?? '') === $target_dept_code) $director_active_choices[2] = true;
@@ -973,10 +932,10 @@ try {
                         <?php foreach ($teachers as $teacher): ?>
                             <label class="teacher-option">
                                 <input type="radio" name="selected_teacher" value="<?php echo $teacher['id']; ?>">
-                                <?php echo htmlspecialchars($teacher['name']); ?>
-                                <?php if($teacher['role'] === 'DI') echo ' (主任)'; ?>
+                            <?php echo htmlspecialchars(!empty($teacher['name']) ? $teacher['name'] : $teacher['username']); ?>
+                        <?php if($teacher['role'] === 'DI') echo ' (主任)'; ?>
                             </label>
-                        <?php endforeach; ?>
+<?php endforeach; ?>
                     <?php endif; ?>
                 </div>
             </div>
@@ -1179,11 +1138,7 @@ try {
             pageNumbers.innerHTML = '';
             
             if (totalPages >= 1) {
-                // 簡單的分頁邏輯：顯示所有頁碼（如果頁數太多可能需要優化顯示範圍，但這裡保持簡單與settings.php一致）
                 const pagesToShow = totalPages === 1 ? [1] : Array.from({length: totalPages}, (_, i) => i + 1);
-                
-                // 如果頁數過多，只顯示部分（可選優化）
-                // 這裡暫時顯示全部
                 
                 for (let i of pagesToShow) {
                     const btn = document.createElement('button');
@@ -1548,34 +1503,58 @@ try {
             .then(data => {
                 if (data.success && data.logs && data.logs.length > 0) {
                     list.innerHTML = data.logs.map(log => {
-                        const assignedInfo = log.assigned_info || '尚未分配';
                         const method = log.method || log.contact_method || '其他';
                         const notes = log.notes || log.result || '';
-                        const contactDate = log.contact_date || log.created_at || '';
-                        const createdDate = log.created_at || '';
-                        const teacherName = escapeHtml(log.teacher_name || '未知');
-                        const escapedAssignedInfo = escapeHtml(assignedInfo);
-                        const escapedContactDate = escapeHtml(contactDate);
+                        const contactDate = log.contact_date || '';
+                        const createdAt = log.created_at || '';
+                        
+                        // 日期部分：从 contact_date 提取
+                        let datePart = '';
+                        if (contactDate) {
+                            // 处理格式：YYYY-MM-DD HH:MM:SS 或 YYYY-MM-DD
+                            const dateMatch = contactDate.match(/^(\d{4}-\d{2}-\d{2})/);
+                            if (dateMatch) {
+                                datePart = dateMatch[1];
+                            } else {
+                                datePart = contactDate;
+                            }
+                        }
+                        
+                        // 时间部分：从 created_at 提取
+                        let timePart = '';
+                        if (createdAt) {
+                            // 处理格式：YYYY-MM-DD HH:MM:SS
+                            const timeMatch = createdAt.match(/\s+(\d{2}:\d{2})(?::\d{2})?/);
+                            if (timeMatch) {
+                                timePart = timeMatch[1];
+                            }
+                        }
+                        
+                        const escapedDate = escapeHtml(datePart || '未提供');
+                        const escapedTime = escapeHtml(timePart || '未提供');
                         const escapedMethod = escapeHtml(method);
                         const escapedNotes = escapeHtml(notes);
-                        const createdDateHtml = createdDate && createdDate !== contactDate ? '<div style="color:#999; font-size:11px; margin-top: 4px;">建立: ' + escapeHtml(createdDate) + '</div>' : '';
+                        
                         return '<div class="contact-log-item">' +
-                            '<div class="contact-log-header">' +
-                                '<div>' +
-                                    '<strong>' + teacherName + '</strong>' +
-                                    '<div style="font-size: 12px; color: #1890ff; margin-top: 4px;">' +
-                                        '<i class="fas fa-user-check"></i> ' + escapedAssignedInfo +
+                            '<div class="contact-log-header" style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 12px;">' +
+                                '<div style="flex: 1;">' +
+                                    '<div style="display: flex; align-items: center; gap: 12px; flex-wrap: wrap;">' +
+                                        '<div style="color:#333; font-size:14px; font-weight:600;">' +
+                                            '<i class="fas fa-calendar-alt" style="color:#1890ff; margin-right: 4px;"></i>' + escapedDate +
+                                        '</div>' +
+                                        '<div style="color:#666; font-size:14px;">' +
+                                            '<i class="fas fa-clock" style="color:#52c41a; margin-right: 4px;"></i>' + escapedTime +
+                                        '</div>' +
+                                        '<div style="background: #e3f2fd; color: #1976d2; padding: 4px 12px; border-radius: 4px; font-size: 13px; font-weight:600;">' +
+                                            '<i class="fas fa-phone" style="margin-right: 4px;"></i>' + escapedMethod +
+                                        '</div>' +
                                     '</div>' +
-                                '</div>' +
-                                '<div style="text-align: right;">' +
-                                    '<div style="color:#888; font-size:12px; font-weight:600;">' + escapedContactDate + '</div>' +
-                                    '<div style="background: #e3f2fd; color: #1976d2; padding: 2px 10px; border-radius: 999px; font-size: 11px; font-weight:700; margin-top: 4px; display: inline-block;">' +
-                                        escapedMethod +
-                                    '</div>' +
-                                    createdDateHtml +
                                 '</div>' +
                             '</div>' +
-                            '<div style="white-space: pre-wrap; margin-top: 12px; padding-top: 12px; border-top: 1px dashed #e8e8e8; color:#333; line-height:1.6;">' + escapedNotes + '</div>' +
+                            '<div style="white-space: pre-wrap; padding-top: 12px; border-top: 1px solid #e8e8e8; color:#333; line-height:1.6; font-size:14px;">' +
+                                '<div style="color:#666; font-size:12px; margin-bottom: 6px; font-weight:600;">紀錄內容：</div>' +
+                                (escapedNotes ? escapedNotes : '<span style="color:#999;">無紀錄內容</span>') +
+                            '</div>' +
                         '</div>';
                     }).join('');
                 } else {
