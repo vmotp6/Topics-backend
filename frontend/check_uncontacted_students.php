@@ -188,9 +188,9 @@ try {
             ei.id,
             ei.name,
             ei.assigned_department,
-            ei.created_at,
+            ei.updated_at as assigned_at,
             d.name AS department_name,
-            TIMESTAMPDIFF(HOUR, ei.created_at, NOW()) AS hours_since_assigned
+            TIMESTAMPDIFF(HOUR, ei.updated_at, NOW()) AS hours_since_assigned
         FROM enrollment_intention ei
         LEFT JOIN departments d ON ei.assigned_department = d.code
         WHERE ei.assigned_department IS NOT NULL
@@ -200,8 +200,8 @@ try {
             FROM enrollment_contact_logs ecl 
             WHERE ecl.enrollment_id = ei.id
         )
-        AND TIMESTAMPDIFF(DAY, ei.created_at, NOW()) >= ?
-        ORDER BY ei.created_at ASC
+        AND TIMESTAMPDIFF(DAY, ei.updated_at, NOW()) >= ?
+        ORDER BY ei.updated_at ASC
     ";
     
     $stmt_3days = $conn->prepare($sql_3days);
