@@ -535,7 +535,7 @@ try {
 
         if ($bestScore === 3) {
             $it['auto_review_result'] = '通過';
-        } elseif ($bestScore >= 1) {
+        } elseif ($bestScore === 2) {
             $it['auto_review_result'] = '需人工確認';
         } else {
             $it['auto_review_result'] = '不通過';
@@ -567,20 +567,34 @@ try {
         }
 
         // 規則：出現「此被推薦人先前已有人填寫」者，審核結果一律為不通過
-        if (!empty($it['duplicate_note'])) {
+        // 但如果三個都正確（bestScore === 3），則保持為通過
+        if (!empty($it['duplicate_note']) && $bestScore !== 3) {
             $it['auto_review_result'] = '不通過';
         }
 
         // 將審核結果寫回 admission_recommendations.status（對應 application_statuses.code）
         // 規則：若使用者已手動填寫 status（AP/RE），則以手動為準，不覆蓋
+        // 但如果三個都正確（auto_review_result = '通過'），則強制更新為通過
         $auto_review = trim((string)($it['auto_review_result'] ?? ''));
         if ($auto_review === '人工確認') $auto_review = '需人工確認';
         $current_status_code = trim((string)($it['status'] ?? ''));
         
-        // 如果 status 已經是手動修改的結果（AP 或 RE），則不覆蓋
-        $is_manually_set = ($current_status_code === 'AP' || $current_status_code === 'RE');
+        // 如果三個都正確，強制更新為通過（不管之前是什麼狀態）
+        $is_three_correct = ($auto_review === '通過');
         
-        if ($auto_review !== '' && isset($review_status_map[$auto_review]) && !$is_manually_set) {
+        // 如果 status 已經是手動修改的結果（AP 或 RE），且不是三個都正確的情況，則不覆蓋
+        $should_update = false;
+        if ($auto_review !== '' && isset($review_status_map[$auto_review])) {
+            if ($is_three_correct) {
+                // 三個都正確，強制更新
+                $should_update = true;
+            } elseif ($current_status_code !== 'AP' && $current_status_code !== 'RE') {
+                // 不是手動設置的狀態，可以更新
+                $should_update = true;
+            }
+        }
+        
+        if ($should_update) {
             $desired_status_code = (string)$review_status_map[$auto_review]['code'];
             $rid = (int)($it['id'] ?? 0);
 
