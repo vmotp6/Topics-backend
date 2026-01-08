@@ -572,11 +572,16 @@ try {
         }
 
         // 將審核結果寫回 admission_recommendations.status（對應 application_statuses.code）
+        // 規則：若使用者已手動填寫 status（AP/RE），則以手動為準，不覆蓋
         $auto_review = trim((string)($it['auto_review_result'] ?? ''));
         if ($auto_review === '人工確認') $auto_review = '需人工確認';
-        if ($auto_review !== '' && isset($review_status_map[$auto_review])) {
+        $current_status_code = trim((string)($it['status'] ?? ''));
+        
+        // 如果 status 已經是手動修改的結果（AP 或 RE），則不覆蓋
+        $is_manually_set = ($current_status_code === 'AP' || $current_status_code === 'RE');
+        
+        if ($auto_review !== '' && isset($review_status_map[$auto_review]) && !$is_manually_set) {
             $desired_status_code = (string)$review_status_map[$auto_review]['code'];
-            $current_status_code = trim((string)($it['status'] ?? ''));
             $rid = (int)($it['id'] ?? 0);
 
             $it['auto_review_status_code'] = $desired_status_code; // 方便除錯/前端需要時可用
@@ -1390,9 +1395,22 @@ function getEnrollmentStatusClass($status) {
                                         <?php if ($can_view_review_result): ?>
                                             <td>
                                                 <?php
+                                                    // 優先使用 status 字段（如果已手動修改過）
+                                                    $current_status = isset($item['status']) ? trim((string)$item['status']) : '';
                                                     $auto_review = isset($item['auto_review_result']) ? trim((string)$item['auto_review_result']) : '';
                                                     if ($auto_review === '人工確認') $auto_review = '需人工確認';
-                                                    $display_review = ($auto_review === '') ? '未填寫' : $auto_review;
+                                                    
+                                                    // 根據 status 代碼確定顯示文本（優先）
+                                                    if ($current_status === 'AP') {
+                                                        $display_review = '通過';
+                                                    } elseif ($current_status === 'RE') {
+                                                        $display_review = '不通過';
+                                                    } elseif ($current_status === 'MC') {
+                                                        $display_review = '需人工確認';
+                                                    } else {
+                                                        // 如果 status 為空或不是已知代碼，使用 auto_review_result
+                                                        $display_review = ($auto_review === '') ? '未填寫' : $auto_review;
+                                                    }
 
                                                     $badge_class = 'review-badge';
                                                     if ($display_review === '通過') {
@@ -1466,6 +1484,21 @@ function getEnrollmentStatusClass($status) {
                                                    onclick="toggleDetail(<?php echo $item['id']; ?>)">
                                                     <i class="fas fa-eye"></i> <span class="btn-text">查看詳情</span>
                                                 </button>
+                                                <?php 
+                                                    // 檢查是否需要顯示修改結果按鈕（僅在審核結果為需人工確認時）
+                                                    $current_status = isset($item['status']) ? trim((string)$item['status']) : '';
+                                                    $auto_review = isset($item['auto_review_result']) ? trim((string)$item['auto_review_result']) : '';
+                                                    if ($auto_review === '人工確認') $auto_review = '需人工確認';
+                                                    $show_update_btn = ($can_view_review_result && ($current_status === 'MC' || $auto_review === '需人工確認'));
+                                                ?>
+                                                <?php if ($show_update_btn): ?>
+                                                <button type="button" 
+                                                   class="btn-view" 
+                                                   style="background: #1677ff; color: white; border-color: #1677ff;"
+                                                   onclick="openUpdateReviewResultModal(<?php echo $item['id']; ?>, '<?php echo htmlspecialchars($item['student_name']); ?>')">
+                                                    <i class="fas fa-edit"></i> 修改結果
+                                                </button>
+                                                <?php endif; ?>
                                                 <button class="btn-view" style="background: #1890ff; color: white; border-color: #1890ff;" onclick="openAssignRecommendationDepartmentModal(<?php echo $item['id']; ?>, '<?php echo htmlspecialchars($item['student_name']); ?>', '<?php echo htmlspecialchars($item['assigned_department'] ?? ''); ?>')">
                                                     <i class="fas fa-building"></i> <?php echo !empty($item['assigned_department']) ? '重新分配' : '分配'; ?>
                                                 </button>
@@ -1492,6 +1525,21 @@ function getEnrollmentStatusClass($status) {
                                                    onclick="toggleDetail(<?php echo $item['id']; ?>)">
                                                     <i class="fas fa-eye"></i> <span class="btn-text">查看詳情</span>
                                                 </button>
+                                                <?php 
+                                                    // 檢查是否需要顯示修改結果按鈕（僅在審核結果為需人工確認時）
+                                                    $current_status = isset($item['status']) ? trim((string)$item['status']) : '';
+                                                    $auto_review = isset($item['auto_review_result']) ? trim((string)$item['auto_review_result']) : '';
+                                                    if ($auto_review === '人工確認') $auto_review = '需人工確認';
+                                                    $show_update_btn = ($can_view_review_result && ($current_status === 'MC' || $auto_review === '需人工確認'));
+                                                ?>
+                                                <?php if ($show_update_btn): ?>
+                                                <button type="button" 
+                                                   class="btn-view" 
+                                                   style="background: #1677ff; color: white; border-color: #1677ff;"
+                                                   onclick="openUpdateReviewResultModal(<?php echo $item['id']; ?>, '<?php echo htmlspecialchars($item['student_name']); ?>')">
+                                                    <i class="fas fa-edit"></i> 修改結果
+                                                </button>
+                                                <?php endif; ?>
                                                 <button class="btn-view" style="background: #1890ff; color: white; border-color: #1890ff;" onclick="openAssignRecommendationModal(<?php echo $item['id']; ?>, '<?php echo htmlspecialchars($item['student_name']); ?>', <?php echo !empty($item['assigned_teacher_id']) ? $item['assigned_teacher_id'] : 'null'; ?>)">
                                                     <i class="fas fa-user-plus"></i> <?php echo !empty($item['assigned_teacher_id']) ? '重新分配' : '分配'; ?>
                                                 </button>
@@ -1499,12 +1547,29 @@ function getEnrollmentStatusClass($status) {
                                         </td>
                                         <?php else: ?>
                                         <td>
-                                            <button type="button" 
-                                               class="btn-view" 
-                                               id="detail-btn-<?php echo $item['id']; ?>"
-                                               onclick="toggleDetail(<?php echo $item['id']; ?>)">
-                                                <i class="fas fa-eye"></i> <span class="btn-text">查看詳情</span>
-                                            </button>
+                                            <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+                                                <button type="button" 
+                                                   class="btn-view" 
+                                                   id="detail-btn-<?php echo $item['id']; ?>"
+                                                   onclick="toggleDetail(<?php echo $item['id']; ?>)">
+                                                    <i class="fas fa-eye"></i> <span class="btn-text">查看詳情</span>
+                                                </button>
+                                                <?php 
+                                                    // 檢查是否需要顯示修改結果按鈕（僅在審核結果為需人工確認時）
+                                                    $current_status = isset($item['status']) ? trim((string)$item['status']) : '';
+                                                    $auto_review = isset($item['auto_review_result']) ? trim((string)$item['auto_review_result']) : '';
+                                                    if ($auto_review === '人工確認') $auto_review = '需人工確認';
+                                                    $show_update_btn = ($can_view_review_result && ($current_status === 'MC' || $auto_review === '需人工確認'));
+                                                ?>
+                                                <?php if ($show_update_btn): ?>
+                                                <button type="button" 
+                                                   class="btn-view" 
+                                                   style="background: #1677ff; color: white; border-color: #1677ff;"
+                                                   onclick="openUpdateReviewResultModal(<?php echo $item['id']; ?>, '<?php echo htmlspecialchars($item['student_name']); ?>')">
+                                                    <i class="fas fa-edit"></i> 修改結果
+                                                </button>
+                                                <?php endif; ?>
+                                            </div>
                                         </td>
                                         <?php endif; ?>
                                     </tr>
@@ -1723,6 +1788,44 @@ function getEnrollmentStatusClass($status) {
             <div class="modal-footer">
                 <button class="btn-cancel" onclick="closeAssignRecommendationModal()">取消</button>
                 <button class="btn-confirm" onclick="assignRecommendationStudent()">確認分配</button>
+            </div>
+        </div>
+    </div>
+    <?php endif; ?>
+
+    <!-- 修改審核結果彈出視窗 -->
+    <?php if ($can_view_review_result): ?>
+    <div id="updateReviewResultModal" class="modal" style="display: none;">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>修改審核結果</h3>
+                <span class="close" onclick="closeUpdateReviewResultModal()">&times;</span>
+            </div>
+            <div class="modal-body">
+                <p>被推薦人：<span id="updateReviewResultStudentName"></span></p>
+                <div class="teacher-list">
+                    <h4>選擇審核結果：</h4>
+                    <div class="teacher-options">
+                        <label class="teacher-option">
+                            <input type="radio" name="review_result" value="通過">
+                            <div class="teacher-info">
+                                <strong>通過</strong>
+                                <span class="teacher-dept">該被推薦人符合推薦條件</span>
+                            </div>
+                        </label>
+                        <label class="teacher-option">
+                            <input type="radio" name="review_result" value="不通過">
+                            <div class="teacher-info">
+                                <strong>不通過</strong>
+                                <span class="teacher-dept">該被推薦人不符合推薦條件</span>
+                            </div>
+                        </label>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn-cancel" onclick="closeUpdateReviewResultModal()">取消</button>
+                <button class="btn-confirm" onclick="updateReviewResult()">確認修改</button>
             </div>
         </div>
     </div>
@@ -2158,6 +2261,79 @@ function getEnrollmentStatusClass($status) {
         assignRecommendationDepartmentModal.addEventListener('click', function(e) {
             if (e.target === this) {
                 closeAssignRecommendationDepartmentModal();
+            }
+        });
+    }
+
+    // 修改審核結果相關變數
+    let currentUpdateReviewResultId = null;
+
+    // 開啟修改審核結果彈出視窗
+    function openUpdateReviewResultModal(recommendationId, studentName) {
+        currentUpdateReviewResultId = recommendationId;
+        document.getElementById('updateReviewResultStudentName').textContent = studentName;
+        document.getElementById('updateReviewResultModal').style.display = 'flex';
+        
+        // 清除之前的選擇
+        const radioButtons = document.querySelectorAll('input[name="review_result"]');
+        radioButtons.forEach(radio => {
+            radio.checked = false;
+        });
+    }
+
+    // 關閉修改審核結果彈出視窗
+    function closeUpdateReviewResultModal() {
+        document.getElementById('updateReviewResultModal').style.display = 'none';
+        currentUpdateReviewResultId = null;
+    }
+
+    // 更新審核結果
+    function updateReviewResult() {
+        const selectedResult = document.querySelector('input[name="review_result"]:checked');
+        
+        if (!selectedResult) {
+            alert('請選擇審核結果');
+            return;
+        }
+
+        const reviewResult = selectedResult.value;
+        
+        // 發送AJAX請求
+        const xhr = new XMLHttpRequest();
+        xhr.open('POST', 'update_review_result.php', true);
+        xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
+        
+        xhr.onreadystatechange = function() {
+            if (xhr.readyState === 4) {
+                if (xhr.status === 200) {
+                    try {
+                        const response = JSON.parse(xhr.responseText);
+                        if (response.success) {
+                            alert('審核結果更新成功！');
+                            closeUpdateReviewResultModal();
+                            location.reload();
+                        } else {
+                            alert('更新失敗：' + (response.message || '未知錯誤'));
+                        }
+                    } catch (e) {
+                        alert('回應格式錯誤：' + xhr.responseText);
+                    }
+                } else {
+                    alert('請求失敗，狀態碼：' + xhr.status);
+                }
+            }
+        };
+        
+        xhr.send('recommendation_id=' + encodeURIComponent(currentUpdateReviewResultId) + 
+                 '&review_result=' + encodeURIComponent(reviewResult));
+    }
+
+    // 點擊修改審核結果彈出視窗外部關閉
+    const updateReviewResultModal = document.getElementById('updateReviewResultModal');
+    if (updateReviewResultModal) {
+        updateReviewResultModal.addEventListener('click', function(e) {
+            if (e.target === this) {
+                closeUpdateReviewResultModal();
             }
         });
     }
