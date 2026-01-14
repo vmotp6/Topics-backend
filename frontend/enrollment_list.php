@@ -134,15 +134,15 @@ if ($view_mode === 'history') {
 }
 
 // 排序參數
-$sortBy = $_GET['sort_by'] ?? 'created_at';
-$sortOrder = $_GET['sort_order'] ?? 'desc';
+$sortBy = $_GET['sort_by'] ?? 'grade';
+$sortOrder = $_GET['sort_order'] ?? 'asc';
 
-$allowed_columns = ['id', 'name', 'junior_high', 'assigned_department', 'created_at'];
+$allowed_columns = ['id', 'name', 'junior_high', 'assigned_department', 'created_at', 'grade'];
 if (!in_array($sortBy, $allowed_columns)) {
-    $sortBy = 'created_at';
+    $sortBy = 'grade';
 }
 if (!in_array(strtolower($sortOrder), ['asc', 'desc'])) {
-    $sortOrder = 'desc';
+    $sortOrder = 'asc';
 }
 
 // 基礎 SELECT
@@ -175,6 +175,23 @@ $base_from_join = "
 ";
 
 $order_by = " ORDER BY ei.$sortBy $sortOrder";
+
+// 如果使用自定義的 grade 排序，改為把「國三(應屆)」排在最前面
+if ($sortBy === 'grade') {
+    $current_month = (int)date('m');
+    $current_year = (int)date('Y');
+    $this_year_grad = ($current_month >= 8) ? $current_year + 1 : $current_year;
+
+    // CASE 排序：國三(應屆) -> 0, 其他在學年依序 ->1, 未提供 ->2, 已畢業 ->3
+    $case_order = "CASE 
+        WHEN ei.graduation_year = $this_year_grad THEN 0 
+        WHEN ei.graduation_year IS NULL THEN 2 
+        WHEN ei.graduation_year < $this_year_grad THEN 3 
+        ELSE 1 END";
+
+    // 以 CASE 結果排序（asc 會把 0 放最前），再以建立時間作為次排序
+    $order_by = " ORDER BY $case_order $sortOrder, ei.created_at DESC";
+}
 
 function getDynamicGradeText($grad_year, $static_grade_code, $options) {
     if (empty($grad_year)) {
@@ -652,6 +669,20 @@ try {
                                 </div>
                             </div>
                             <div class="tabs-nav-right">
+                                <select id="gradeFilter" class="history-select" onchange="filterTable()" style="margin-right:8px;">
+                                    <option value="">全部年級</option>
+                                    <option value="國三">國三 (應屆)</option>
+                                    <option value="國二">國二</option>
+                                    <option value="國一">國一</option>
+                                </select>
+
+                                <input type="text" id="schoolFilter" class="history-select" list="schoolList" placeholder="輸入學校名稱或關鍵字..." oninput="filterTable()" style="margin-right:8px; padding:6px 12px; border:1px solid #d9d9d9; border-radius:6px; font-size:14px;">
+                                <datalist id="schoolList">
+                                    <?php foreach ($school_data as $sc_code => $sc_name): ?>
+                                        <option value="<?php echo htmlspecialchars($sc_name, ENT_QUOTES, 'UTF-8'); ?>"></option>
+                                    <?php endforeach; ?>
+                                </datalist>
+
                                 <input type="text" id="searchInput" class="search-input" placeholder="搜尋姓名或電話..." onkeyup="filterTable()">
                                 <?php if ($view_mode === 'history'): ?>
                                 <form action="enrollment_list.php" method="GET" style="margin:0; display: flex; align-items: center;">
@@ -719,7 +750,7 @@ try {
                                         <?php endif; ?>
                                         
                                         <th onclick="sortTable('junior_high')">就讀國中 <span class="sort-icon" id="sort-junior_high"></span></th>
-                                        <th>目前年級</th>
+                                        <th onclick="sortTable('grade')">目前年級 <span class="sort-icon" id="sort-grade"></span></th>
                                         
                                         <?php if ($is_admission_center): ?>
                                             <th onclick="sortTable('assigned_department')">分配部門 / 負責老師 <span class="sort-icon" id="sort-assigned_department"></span></th>
@@ -1195,18 +1226,26 @@ try {
             }
         }
         
-        // 表格搜尋功能
+        // 表格搜尋功能（支援關鍵字 + 年級 + 學校 篩選）
         function filterTable() {
             const input = document.getElementById('searchInput');
-            if (!input) return;
-            const filter = input.value.toLowerCase();
-            
-            // 使用 allRows 進行過濾
+            const gradeSelect = document.getElementById('gradeFilter');
+            const schoolSelect = document.getElementById('schoolFilter');
+            const filter = input ? input.value.toLowerCase() : '';
+            const gradeFilter = gradeSelect ? gradeSelect.value.toLowerCase() : '';
+            const schoolFilter = schoolSelect ? schoolSelect.value.toLowerCase() : '';
+
+            // 使用 allRows 進行過濾，三種條件需同時滿足
             filteredRows = allRows.filter(row => {
                 const text = row.textContent.toLowerCase();
-                return text.includes(filter);
+
+                const matchesText = filter === '' || text.includes(filter);
+                const matchesGrade = gradeFilter === '' || text.includes(gradeFilter);
+                const matchesSchool = schoolFilter === '' || text.includes(schoolFilter);
+
+                return matchesText && matchesGrade && matchesSchool;
             });
-            
+
             currentPage = 1;
             updatePagination();
         }

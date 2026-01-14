@@ -74,6 +74,14 @@ try {
 $sortBy = $_GET['sort_by'] ?? 'created_at';
 $sortOrder = $_GET['sort_order'] ?? 'desc';
 
+// 顯示模式：active 或 history（history 顯示已錄取）
+$view_mode = $_GET['view'] ?? 'active';
+
+// 如果是歷史檢視，更新標題提示
+if ($view_mode === 'history') {
+    $page_title .= ' (歷史資料)';
+}
+
 // 驗證排序參數，防止 SQL 注入
 $allowed_columns = ['id', 'apply_no', 'name', 'school', 'status', 'created_at'];
 if (!in_array($sortBy, $allowed_columns)) {
@@ -101,24 +109,32 @@ if ($column_check && $column_check->num_rows > 0) {
 // 獲取續招報名資料（根據用戶權限過濾）
 $assigned_dept_field = $has_assigned_department ? "ca.assigned_department" : "NULL as assigned_department";
 
+// 根據 view_mode 設定狀態過濾條件（history 顯示錄取，active 顯示非錄取）
+$status_condition = '';
+if ($view_mode === 'history') {
+    $status_condition = " AND (ca.status = 'approved' OR ca.status = 'AP') ";
+} else {
+    $status_condition = " AND (ca.status IS NULL OR (ca.status <> 'approved' AND ca.status <> 'AP')) ";
+}
+
 if ($is_director && !empty($user_department_code)) {
     // 主任只能看到已分配給他的科系的名單（assigned_department = 他的科系代碼）
     // 如果沒有 assigned_department 字段，則通過 continued_admission_choices 來過濾
     if ($has_assigned_department) {
         $stmt = $conn->prepare("SELECT ca.id, ca.apply_no, ca.name, ca.school, ca.status, ca.created_at, $assigned_dept_field, sd.name as school_name 
-                              FROM continued_admission ca
-                              LEFT JOIN school_data sd ON ca.school = sd.school_code
-                              WHERE ca.assigned_department = ?
-                              ORDER BY ca.$sortBy $sortOrder");
+                      FROM continued_admission ca
+                      LEFT JOIN school_data sd ON ca.school = sd.school_code
+                      WHERE ca.assigned_department = ? " . $status_condition . "
+                      ORDER BY ca.$sortBy $sortOrder");
         $stmt->bind_param("s", $user_department_code);
     } else {
         // 如果沒有 assigned_department 字段，通過 continued_admission_choices 來過濾
         $stmt = $conn->prepare("SELECT DISTINCT ca.id, ca.apply_no, ca.name, ca.school, ca.status, ca.created_at, $assigned_dept_field, sd.name as school_name 
-                              FROM continued_admission ca
-                              LEFT JOIN school_data sd ON ca.school = sd.school_code
-                              INNER JOIN continued_admission_choices cac ON ca.id = cac.application_id
-                              WHERE cac.department_code = ?
-                              ORDER BY ca.$sortBy $sortOrder");
+                      FROM continued_admission ca
+                      LEFT JOIN school_data sd ON ca.school = sd.school_code
+                      INNER JOIN continued_admission_choices cac ON ca.id = cac.application_id
+                      WHERE cac.department_code = ? " . $status_condition . "
+                      ORDER BY ca.$sortBy $sortOrder");
         $stmt->bind_param("s", $user_department_code);
     }
 } elseif ($is_imd_user) {
@@ -128,13 +144,14 @@ if ($is_director && !empty($user_department_code)) {
                           LEFT JOIN school_data sd ON ca.school = sd.school_code
                           INNER JOIN continued_admission_choices cac ON ca.id = cac.application_id
                           INNER JOIN departments d ON cac.department_code = d.code
-                          WHERE d.code = 'IM' OR d.name LIKE '%資訊管理%' OR d.name LIKE '%資管%'
+                          WHERE (d.code = 'IM' OR d.name LIKE '%資訊管理%' OR d.name LIKE '%資管%') " . $status_condition . "
                           ORDER BY ca.$sortBy $sortOrder");
 } else {
     // 招生中心/管理員可以看到所有續招報名
     $stmt = $conn->prepare("SELECT ca.id, ca.apply_no, ca.name, ca.school, ca.status, ca.created_at, $assigned_dept_field, sd.name as school_name 
                           FROM continued_admission ca
                           LEFT JOIN school_data sd ON ca.school = sd.school_code
+                          WHERE 1=1 " . $status_condition . "
                           ORDER BY ca.$sortBy $sortOrder");
 }
 $stmt->execute();
@@ -184,6 +201,47 @@ foreach ($applications as &$app) {
     $choices_stmt->close();
 }
 unset($app);
+
+// 如果請求匯出 CSV 或 Excel，輸出並結束（Excel 使用 .xls 與 vnd.ms-excel header，但內容為 CSV，方便相容）
+if (isset($_GET['export']) && in_array($_GET['export'], ['csv', 'excel'])) {
+    $isExcel = $_GET['export'] === 'excel';
+    $ext = $isExcel ? 'xls' : 'csv';
+    $filename = 'continued_admission_' . ($view_mode === 'history' ? 'history' : 'active') . '_' . date('Ymd_His') . '.' . $ext;
+
+    if ($isExcel) {
+        header('Content-Type: application/vnd.ms-excel; charset=utf-8');
+    } else {
+        header('Content-Type: text/csv; charset=utf-8');
+    }
+    header('Content-Disposition: attachment; filename="' . $filename . '"');
+    // BOM for Excel compatibility (UTF-8)
+    echo "\xEF\xBB\xBF";
+    $out = fopen('php://output', 'w');
+    // 表頭
+    fputcsv($out, ['報名編號', '姓名', '學校', '審核狀態', '分配科系', '建立時間', '意願']);
+
+    foreach ($applications as $a) {
+        $apply_no = $a['apply_no'] ?? $a['id'] ?? '';
+        $name = $a['name'] ?? '';
+        $school = $a['school_name'] ?? $a['school'] ?? '';
+        $status_text = getStatusText($a['status'] ?? '');
+        $assigned_dept_code = $a['assigned_department'] ?? '';
+        $assigned_dept_name = !empty($assigned_dept_code) ? getDepartmentName($assigned_dept_code, $department_data) : '';
+        $created_at = $a['created_at'] ?? '';
+        $choices = [];
+        if (!empty($a['choices'])) {
+            $dec = json_decode($a['choices'], true);
+            if (is_array($dec)) $choices = $dec;
+        }
+        $choices_str = is_array($choices) ? implode(' | ', $choices) : '';
+
+        fputcsv($out, [$apply_no, $name, $school, $status_text, $assigned_dept_name, $created_at, $choices_str]);
+    }
+
+    fclose($out);
+    $conn->close();
+    exit;
+}
 
 // 獲取科系名額資料
 $department_stats = [];
@@ -732,6 +790,34 @@ function getStatusClass($status) {
                     <!-- 續招報名名單 TAB 內容 -->
                     <div id="tab-list" class="tab-content <?php echo $list_active; ?>">
                         <div class="card-body table-container">
+                            <?php
+                            // 目前是 list TAB 下的檢視模式（active / history）
+                            $current_view = $view_mode === 'history' ? 'history' : 'active';
+                            $view_active = $current_view === 'active' ? 'active' : '';
+                            $view_history = $current_view === 'history' ? 'active' : '';
+                            $base_sort_qs = '&sort_by=' . urlencode($sortBy) . '&sort_order=' . urlencode($sortOrder);
+                            ?>
+                            <div style="display:flex; align-items:center; gap:12px; margin-bottom:12px; margin-left: 60px;margin-right: 60px;">
+                                <div style="display:flex; gap:16px;">
+                                    <a href="continued_admission_list.php?tab=list&view=active<?php echo $base_sort_qs; ?>" class="btn" style="padding:6px 10px; color:#877f7f; <?php echo $view_active ? 'background:#f0f7ff; border-color: #91d5ff; color:#1890ff;' : ''; ?>">目前名單</a>
+                                    <a href="continued_admission_list.php?tab=list&view=history<?php echo $base_sort_qs; ?>" class="btn" style="padding:6px 10px; color:#877f7f; <?php echo $view_history ? 'background:#f0f7ff; border-color: #91d5ff; color:#1890ff;' : ''; ?>">歷史資料（錄取）</a>
+                                </div>
+                                <?php
+                                    // 建立匯出連結，保留目前 GET 參數
+                                    $export_params = $_GET;
+                                    $export_params['tab'] = 'list';
+                                    if (!isset($export_params['view'])) $export_params['view'] = $view_mode;
+                                    $export_csv_params = $export_params; $export_csv_params['export'] = 'csv';
+                                    $export_excel_params = $export_params; $export_excel_params['export'] = 'excel';
+                                    $export_csv_url = 'continued_admission_list.php?' . http_build_query($export_csv_params);
+                                    $export_excel_url = 'continued_admission_list.php?' . http_build_query($export_excel_params);
+                                ?>
+                                <div style="margin-left:auto; display:flex; gap:15px; align-items:center;">
+                                    <a href="<?php echo htmlspecialchars($export_csv_url); ?>" class="btn" style="padding:6px 10px; background: #6291f9f5; color: white;">匯出 CSV</a>
+                                    <a href="<?php echo htmlspecialchars($export_excel_url); ?>" class="btn" style="padding:6px 10px; background: rgb(40, 167, 69); color: white;">匯出 Excel</a>
+                                    <div style="color:var(--text-secondary-color); font-size:14px;">顯示模式：<?php echo $current_view === 'history' ? '歷史（僅錄取）' : '目前在審／未錄取'; ?></div>
+                                </div>
+                            </div>
                             <?php if (empty($applications)): ?>
                                 <div class="empty-state">
                                     <i class="fas fa-inbox fa-3x" style="margin-bottom: 16px;"></i>
@@ -994,12 +1080,13 @@ function getStatusClass($status) {
         const currentSortBy = urlParams.get('sort_by') || 'created_at';
         const currentSortOrder = urlParams.get('sort_order') || 'desc';
         const currentTab = urlParams.get('tab') || 'list'; // 保留當前 TAB
+        const currentView = urlParams.get('view') || 'active'; // 保留當前 view（active/history）
         
         if (currentSortBy === field) {
             newSortOrder = currentSortOrder === 'asc' ? 'desc' : 'asc';
         }
         
-        window.location.href = `continued_admission_list.php?sort_by=${field}&sort_order=${newSortOrder}&tab=${currentTab}`;
+        window.location.href = `continued_admission_list.php?sort_by=${field}&sort_order=${newSortOrder}&tab=${currentTab}&view=${currentView}`;
     }
     
     // 更新排序圖標
