@@ -1,206 +1,739 @@
 <?php
 require_once __DIR__ . '/session_config.php';
+
 checkBackendLogin();
 
-// DB 設定
+
+// 引入資料庫設定
 require_once '../../Topics-frontend/frontend/config.php';
 
-/* ======================
-   使用者資訊
-====================== */
-$username  = $_SESSION['username'] ?? '';
-$user_id   = (int)($_SESSION['user_id'] ?? 0);
-$user_role = $_SESSION['role'] ?? '';
+// 獲取使用者資訊
+$username = isset($_SESSION['username']) ? $_SESSION['username'] : '';
+$user_id = isset($_SESSION['user_id']) ? (int)$_SESSION['user_id'] : 0;
+$user_role = isset($_SESSION['role']) ? $_SESSION['role'] : '';
+$is_imd = ($username === 'IMD'); // 保留用於向後兼容
 
-$is_admin_or_staff    = in_array($user_role, ['ADM', 'STA'], true);
-$is_director          = ($user_role === 'DI');
-$is_admission_center  = ($user_role === 'AC');   // ★ 補齊（解 Warning）
+// 審核結果：改為純自動顯示（不可手動更改）
+// 僅指定帳號（username=12）且角色為招生中心（STA）可「查看」審核結果
+$can_view_review_result = ($username === '12' && $user_role === 'STA');
 
-$user_department_code = null;
-$is_department_user   = false;
+// 手機比對：只取數字
+function digits_only($s) {
+    return preg_replace('/\D+/', '', (string)$s);
+}
 
-/* ======================
-   取得使用者科系
-====================== */
-if ($user_id > 0 && ($is_director || !$is_admin_or_staff)) {
-    try {
-        $conn_tmp = getDatabaseConnection();
+// 文字正規化：去空白（含全形空白）、統一大小寫
+function normalize_text($s) {
+    $t = trim((string)$s);
+    // 去除半形/全形空白
+    $t = str_replace([" ", "　", "\t", "\r", "\n"], "", $t);
+    // 英文轉小寫（中文不受影響）
+    $t = mb_strtolower($t, 'UTF-8');
+    return $t;
+}
 
-        if ($is_director) {
-            $stmt = $conn_tmp->prepare(
-                "SELECT department FROM director WHERE user_id = ?"
-            );
-        } else {
-            $stmt = $conn_tmp->prepare(
-                "SELECT department FROM teacher WHERE user_id = ?"
-            );
+// 手機正規化：只取數字，若長度 > 10 則取末 10 碼（處理 +886 等格式）
+function normalize_phone($s) {
+    $d = digits_only($s);
+    if (strlen($d) > 10) {
+        $d = substr($d, -10);
+    }
+    return $d;
+}
+
+// 學校比對：正規化後「完全相等」或「互相包含」視為相同（處理市立/縣立/括號等差異）
+function school_matches($a, $b) {
+    $na = normalize_text($a);
+    $nb = normalize_text($b);
+    if ($na === '' || $nb === '') return false;
+    if ($na === $nb) return true;
+    return (mb_strpos($na, $nb) !== false) || (mb_strpos($nb, $na) !== false);
+}
+
+// 確保 application_statuses 中存在指定的狀態 code（避免 status 外鍵寫入失敗）
+// $needed 格式：['通過' => ['code'=>'AP','name'=>'通過','order'=>90], ...]
+function ensure_application_status_codes($conn, $needed) {
+    if (!$conn || empty($needed) || !is_array($needed)) return;
+
+    // 檢查表是否存在
+    $t = $conn->query("SHOW TABLES LIKE 'application_statuses'");
+    if (!$t || $t->num_rows <= 0) return;
+
+    // 取得欄位資訊（不同資料庫版本可能欄位略有差異）
+    $cols = [];
+    $cr = $conn->query("SHOW COLUMNS FROM application_statuses");
+    if ($cr) {
+        while ($row = $cr->fetch_assoc()) {
+            $cols[] = $row['Field'];
         }
+    }
+    $has_code = in_array('code', $cols, true);
+    if (!$has_code) return;
+    $has_name = in_array('name', $cols, true);
+    $has_order = in_array('display_order', $cols, true);
 
-        if ($stmt) {
-            $stmt->bind_param("i", $user_id);
-            $stmt->execute();
-            $res = $stmt->get_result();
-            if ($row = $res->fetch_assoc()) {
-                $user_department_code = $row['department'] ?? null;
-                $is_department_user   = !empty($user_department_code);
+    $stmt_check = $conn->prepare("SELECT code FROM application_statuses WHERE code = ? LIMIT 1");
+    if (!$stmt_check) return;
+
+    $stmt_ins = null;
+    if ($has_name && $has_order) {
+        $stmt_ins = $conn->prepare("INSERT INTO application_statuses (code, name, display_order) VALUES (?, ?, ?)");
+    } elseif ($has_name) {
+        $stmt_ins = $conn->prepare("INSERT INTO application_statuses (code, name) VALUES (?, ?)");
+    } else {
+        $stmt_ins = $conn->prepare("INSERT INTO application_statuses (code) VALUES (?)");
+    }
+    if (!$stmt_ins) {
+        $stmt_check->close();
+        return;
+    }
+
+    foreach ($needed as $meta) {
+        $code = trim((string)($meta['code'] ?? ''));
+        if ($code === '') continue;
+
+        // 已存在就跳過
+        $stmt_check->bind_param('s', $code);
+        if ($stmt_check->execute()) {
+            $res = $stmt_check->get_result();
+            if ($res && $res->num_rows > 0) {
+                continue;
             }
-            $stmt->close();
         }
-        $conn_tmp->close();
+
+        // 不存在就新增（忽略重複鍵等錯誤）
+        try {
+            if ($has_name && $has_order) {
+                $name = (string)($meta['name'] ?? $code);
+                $order = (int)($meta['order'] ?? 0);
+                $stmt_ins->bind_param('ssi', $code, $name, $order);
+                @$stmt_ins->execute();
+            } elseif ($has_name) {
+                $name = (string)($meta['name'] ?? $code);
+                $stmt_ins->bind_param('ss', $code, $name);
+                @$stmt_ins->execute();
+            } else {
+                $stmt_ins->bind_param('s', $code);
+                @$stmt_ins->execute();
+            }
+        } catch (Exception $e) {
+            // ignore
+        }
+    }
+
+    $stmt_check->close();
+    $stmt_ins->close();
+}
+
+// 判斷用戶角色
+$allowed_center_roles = ['ADM', 'STA'];
+$is_admin_or_staff = in_array($user_role, $allowed_center_roles);
+$is_director = ($user_role === 'DI');
+$user_department_code = null;
+$is_department_user = false;
+
+// 如果是主任，獲取其科系代碼
+if ($is_director && $user_id > 0) {
+    try {
+        $conn_temp = getDatabaseConnection();
+        $table_check = $conn_temp->query("SHOW TABLES LIKE 'director'");
+        if ($table_check && $table_check->num_rows > 0) {
+            $stmt_dept = $conn_temp->prepare("SELECT department FROM director WHERE user_id = ?");
+        } else {
+            $stmt_dept = $conn_temp->prepare("SELECT department FROM teacher WHERE user_id = ?");
+        }
+        $stmt_dept->bind_param("i", $user_id);
+        $stmt_dept->execute();
+        $result_dept = $stmt_dept->get_result();
+        if ($row = $result_dept->fetch_assoc()) {
+            $user_department_code = $row['department'];
+            if (!empty($user_department_code)) {
+                $is_department_user = true;
+            }
+        }
+        $stmt_dept->close();
+        $conn_temp->close();
     } catch (Exception $e) {
-        error_log('Department fetch error: ' . $e->getMessage());
+        error_log('Error fetching user department: ' . $e->getMessage());
     }
 }
 
-/* ======================
-   DB 連線
-====================== */
-$conn = getDatabaseConnection();
+// 判斷是否為招生中心/行政人員
+$is_admission_center = $is_admin_or_staff && !$is_department_user;
 
-/* ======================
-   SQL 條件
-====================== */
-$where_sql = '';
-$params = [];
-$types = '';
+// 檢查是否有 recommender 和 recommended 表
+$has_recommender_table = false;
+$has_recommended_table = false;
 
-if ($is_department_user && !$is_admin_or_staff && !$is_admission_center) {
-    $where_sql = "
-        WHERE (
-            ar.assigned_department IS NULL
-            OR ar.assigned_department = ''
-            OR ar.assigned_department = ?
-        )
-    ";
-    $params[] = $user_department_code;
-    $types .= 's';
+// 設置頁面標題
+$page_title = '被推薦人資訊';
+$current_page = 'admission_recommend_list';
+
+// 建立資料庫連接
+try {
+    $conn = getDatabaseConnection();
+} catch (Exception $e) {
+    die("資料庫連接失敗: " . $e->getMessage());
 }
 
-/* ======================
-   主查詢
-====================== */
-$sql = "
-SELECT
-    ar.id,
+// （已移除）審核結果手動更新入口
 
-    rec.name        AS recommender_name,
-    rec.id AS recommender_student_id,
-    rec.grade       AS recommender_grade,
-    rec.department  AS recommender_department,
-    rec.phone       AS recommender_phone,
-    rec.email       AS recommender_email,
+// 獲取所有招生推薦資料
+try {
+    // 先檢查表是否存在
+    $table_check = $conn->query("SHOW TABLES LIKE 'admission_recommendations'");
+    if (!$table_check || $table_check->num_rows == 0) {
+        throw new Exception("資料表 'admission_recommendations' 不存在");
+    }
+    
+    // 檢查是否有 recommender 和 recommended 表
+    $table_check_recommender = $conn->query("SHOW TABLES LIKE 'recommender'");
+    $has_recommender_table = $table_check_recommender && $table_check_recommender->num_rows > 0;
+    
+    $table_check_recommended = $conn->query("SHOW TABLES LIKE 'recommended'");
+    $has_recommended_table = $table_check_recommended && $table_check_recommended->num_rows > 0;
+    
+    // 檢查字段是否存在（先檢查，因為 WHERE 條件需要用到）
+    $has_assigned_department = false;
+    $has_assigned_teacher_id = false;
+    $has_status = false;
+    $has_enrollment_status = false;
+    $has_review_result = false;
+    
+    $columns_to_check = ['assigned_department', 'assigned_teacher_id', 'status', 'enrollment_status', 'review_result'];
+    foreach ($columns_to_check as $column) {
+        $column_check = $conn->query("SHOW COLUMNS FROM admission_recommendations LIKE '$column'");
+        if ($column_check && $column_check->num_rows > 0) {
+            // 字段存在
+            if ($column === 'assigned_department') {
+                $has_assigned_department = true;
+            } elseif ($column === 'assigned_teacher_id') {
+                $has_assigned_teacher_id = true;
+            } elseif ($column === 'status') {
+                $has_status = true;
+            } elseif ($column === 'enrollment_status') {
+                $has_enrollment_status = true;
+            } elseif ($column === 'review_result') {
+                $has_review_result = true;
+            }
+        } else {
+            // 字段不存在，動態添加
+            try {
+                if ($column === 'assigned_department') {
+                    $conn->query("ALTER TABLE admission_recommendations ADD COLUMN assigned_department VARCHAR(50) DEFAULT NULL");
+                    $has_assigned_department = true;
+                } elseif ($column === 'assigned_teacher_id') {
+                    $conn->query("ALTER TABLE admission_recommendations ADD COLUMN assigned_teacher_id INT DEFAULT NULL");
+                    $has_assigned_teacher_id = true;
+                } elseif ($column === 'status') {
+                    $conn->query("ALTER TABLE admission_recommendations ADD COLUMN status VARCHAR(20) DEFAULT 'pending'");
+                    $has_status = true;
+                } elseif ($column === 'enrollment_status') {
+                    $conn->query("ALTER TABLE admission_recommendations ADD COLUMN enrollment_status VARCHAR(20) DEFAULT NULL");
+                    $has_enrollment_status = true;
+                } elseif ($column === 'review_result') {
+                    $conn->query("ALTER TABLE admission_recommendations ADD COLUMN review_result VARCHAR(20) DEFAULT NULL");
+                    $has_review_result = true;
+                }
+            } catch (Exception $e) {
+                error_log("添加字段 $column 失敗: " . $e->getMessage());
+            }
+        }
+    }
+    
+    // 根據用戶角色過濾資料
+    // 學校行政人員（ADM/STA）可以看到所有資料
+    // 科系主任（DI）只能看到自己科系的資料
+    $where_clause = "";
+    if ($is_director && !empty($user_department_code)) {
+        // 主任只能看到學生興趣是自己科系的記錄，或已被分配給自己科系的記錄
+        // student_interest 是科系代碼（如 'IM', 'AF'），需要與 departments 表關聯
+        if ($has_assigned_department) {
+            $where_clause = " WHERE (ar.student_interest = ? OR ar.assigned_department = ?)";
+        } else {
+            $where_clause = " WHERE ar.student_interest = ?";
+        }
+    }
+    
+    // 構建SQL查詢 - 根據資料庫實際結構
+    // 根據資料庫結構，admission_recommendations 表有 status 和 enrollment_status，但沒有 assigned_department 和 assigned_teacher_id
+    $assigned_fields = "NULL as assigned_department, NULL as assigned_teacher_id,";
+    $teacher_joins = "";
+    $teacher_name_field = "'' as teacher_name";
+    $teacher_username_field = "'' as teacher_username";
+    
+    $status_field = $has_status ? "COALESCE(ar.status, 'pending')" : "'pending'";
+    $enrollment_status_field = $has_enrollment_status ? "COALESCE(ar.enrollment_status, '未入學')" : "'未入學'";
+    $review_result_field = $has_review_result ? "COALESCE(ar.review_result, '')" : "''";
+    
+    if ($has_recommender_table && $has_recommended_table) {
+        // 使用新的表結構：recommender 和 recommended 表
+        // 使用 LEFT JOIN 確保即使沒有對應的推薦人或被推薦人記錄，也能顯示主表記錄
+        // 添加 JOIN 來獲取學校、年級、科系的名稱
+        $sql = "SELECT 
+            ar.id,
+            COALESCE(rec.name, '') as recommender_name,
+            COALESCE(rec.id, '') as recommender_student_id,
+            COALESCE(rec.grade, '') as recommender_grade_code,
+            COALESCE(rec_grade.name, '') as recommender_grade,
+            COALESCE(rec.department, '') as recommender_department_code,
+            COALESCE(rec_dept.name, '') as recommender_department,
+            COALESCE(rec.phone, '') as recommender_phone,
+            COALESCE(rec.email, '') as recommender_email,
+            COALESCE(red.name, '') as student_name,
+            COALESCE(red.school, '') as student_school_code,
+            COALESCE(school.name, '') as student_school,
+            COALESCE(red.grade, '') as student_grade_code,
+            COALESCE(red_grade.name, '') as student_grade,
+            COALESCE(red.phone, '') as student_phone,
+            COALESCE(red.email, '') as student_email,
+            COALESCE(red.line_id, '') as student_line_id,
+            ar.recommendation_reason,
+            COALESCE(ar.student_interest, '') as student_interest_code,
+            COALESCE(interest_dept.name, '') as student_interest,
+            ar.additional_info,
+            $status_field as status,
+            $enrollment_status_field as enrollment_status,
+            $review_result_field as review_result,
+            ar.proof_evidence,
+            $assigned_fields
+            $teacher_name_field,
+            $teacher_username_field,
+            ar.created_at,
+            ar.updated_at
+            FROM admission_recommendations ar
+            LEFT JOIN recommender rec ON ar.id = rec.recommendations_id
+            LEFT JOIN recommended red ON ar.id = red.recommendations_id
+            LEFT JOIN identity_options rec_grade ON rec.grade = rec_grade.code
+            LEFT JOIN departments rec_dept ON rec.department = rec_dept.code
+            LEFT JOIN identity_options red_grade ON red.grade = red_grade.code
+            LEFT JOIN school_data school ON red.school = school.school_code
+            LEFT JOIN departments interest_dept ON ar.student_interest = interest_dept.code";
+        
+        if (!empty($where_clause)) {
+            $sql .= " " . $where_clause;
+        }
+        $sql .= " ORDER BY ar.created_at DESC";
+    } else {
+        // 如果沒有 recommender 和 recommended 表，只查詢主表
+        // 仍然需要 JOIN departments 來獲取 student_interest 的名稱
+        $sql = "SELECT 
+            ar.id,
+            '' as recommender_name,
+            '' as recommender_student_id,
+            '' as recommender_grade,
+            '' as recommender_department,
+            '' as recommender_phone,
+            '' as recommender_email,
+            '' as student_name,
+            '' as student_school,
+            '' as student_grade,
+            '' as student_phone,
+            '' as student_email,
+            '' as student_line_id,
+            ar.recommendation_reason,
+            COALESCE(ar.student_interest, '') as student_interest_code,
+            COALESCE(interest_dept.name, '') as student_interest,
+            ar.additional_info,
+            $status_field as status,
+            $enrollment_status_field as enrollment_status,
+            $review_result_field as review_result,
+            ar.proof_evidence,
+            $assigned_fields
+            $teacher_name_field,
+            $teacher_username_field,
+            ar.created_at,
+            ar.updated_at
+            FROM admission_recommendations ar
+            LEFT JOIN departments interest_dept ON ar.student_interest = interest_dept.code";
+        
+        if (!empty($where_clause)) {
+            $sql .= " " . $where_clause;
+        }
+        $sql .= " ORDER BY ar.created_at DESC";
+    }
+    
+    // 調試：記錄 SQL 查詢和表檢查結果
+    error_log("招生推薦查詢 - has_recommender_table: " . ($has_recommender_table ? 'true' : 'false') . ", has_recommended_table: " . ($has_recommended_table ? 'true' : 'false'));
+    error_log("where_clause: " . $where_clause);
+    error_log("is_director: " . ($is_director ? 'true' : 'false') . ", user_department_code: " . ($user_department_code ?? 'null'));
+    error_log("is_admin_or_staff: " . ($is_admin_or_staff ? 'true' : 'false'));
+    error_log("SQL: " . $sql);
+    
+    $stmt = $conn->prepare($sql);
+    if (!$stmt) {
+        $error_msg = "SQL 準備失敗: " . $conn->error . " (SQL: " . $sql . ")";
+        error_log($error_msg);
+        throw new Exception($error_msg);
+    }
+    
+    // 如果是主任，綁定參數
+    if ($is_director && !empty($user_department_code) && !empty($where_clause)) {
+        if ($has_assigned_department) {
+            // 有 assigned_department 欄位，需要綁定兩個參數
+            $stmt->bind_param("ss", $user_department_code, $user_department_code);
+        } else {
+            // 沒有 assigned_department 欄位，只需要綁定一個參數
+            $stmt->bind_param("s", $user_department_code);
+        }
+        error_log("綁定參數: user_department_code = " . $user_department_code . ", has_assigned_department = " . ($has_assigned_department ? 'true' : 'false'));
+    }
+    
+    if (!$stmt->execute()) {
+        $error_msg = "SQL 執行失敗: " . $stmt->error . " (SQL: " . $sql . ")";
+        error_log($error_msg);
+        throw new Exception($error_msg);
+    }
+    
+    $result = $stmt->get_result();
+    $recommendations = $result->fetch_all(MYSQLI_ASSOC);
 
-    red.name        AS student_name,
-    red.phone       AS student_phone,
-    red.email       AS student_email,
-    red.line_id     AS student_line_id,
-    red.school      AS student_school,
+    // -------------------------------------------------------------
+    // 自動審核比對：recommended(name/school/phone) vs new_student_basic_info(student_name/previous_school/mobile)
+    // 規則：3個欄位都對上 => 通過；對上 1~2 個 => 需人工確認；0 個 => 不通過
+    // 若使用者已手動填寫 review_result（非空），則以手動為準，不覆蓋。
+    // -------------------------------------------------------------
+    $has_nsbi_table = false;
+    try {
+        $t = $conn->query("SHOW TABLES LIKE 'new_student_basic_info'");
+        $has_nsbi_table = ($t && $t->num_rows > 0);
+    } catch (Exception $e) {
+        $has_nsbi_table = false;
+    }
 
-    ar.recommendation_reason,
-    ar.student_interest,
-    ar.additional_info,
-    COALESCE(ar.status,'pending') AS status,
-    COALESCE(ar.enrollment_status,'未入學') AS enrollment_status,
-    ar.proof_evidence,
-    ar.assigned_department,
-    ar.assigned_teacher_id,
-    ar.created_at,
-    ar.updated_at
+    $stmt_nsbi_by_name = null;
+    $stmt_nsbi_by_phone = null;
+    if ($has_nsbi_table) {
+        $stmt_nsbi_by_name = $conn->prepare("SELECT student_name, previous_school, mobile FROM new_student_basic_info WHERE student_name = ? LIMIT 30");
+        $stmt_nsbi_by_phone = $conn->prepare("SELECT student_name, previous_school, mobile FROM new_student_basic_info WHERE mobile LIKE ? LIMIT 30");
+    }
 
-FROM admission_recommendations ar
-LEFT JOIN recommender rec
-    ON ar.id = rec.recommendations_id
-LEFT JOIN recommended red
-    ON ar.id = red.recommendations_id
-{$where_sql}
-ORDER BY ar.created_at DESC
-";
+    // -------------------------------------------------------------
+    // 審核結果寫回 admission_recommendations.status（status 有外鍵到 application_statuses）
+    // 這裡使用 application_statuses.code 的代碼風格（PE/AP/RE...）：
+    // 通過 => AP、不通過 => RE、需人工確認 => MC
+    // -------------------------------------------------------------
+    $review_status_map = [
+        '通過' => ['code' => 'AP', 'name' => '通過', 'order' => 90],
+        '不通過' => ['code' => 'RE', 'name' => '不通過', 'order' => 91],
+        '需人工確認' => ['code' => 'MC', 'name' => '需人工確認', 'order' => 92],
+    ];
+    ensure_application_status_codes($conn, $review_status_map);
+    $stmt_update_status = $conn->prepare("UPDATE admission_recommendations SET status = ? WHERE id = ?");
 
-$stmt = $conn->prepare($sql);
-if (!$stmt) {
-    die("SQL prepare failed: " . $conn->error);
+    // -------------------------------------------------------------
+    // 同名去重提示：若多人填寫相同「被推薦人姓名」，以 created_at 最早者為優先
+    // 其餘較晚建立者在審核結果顯示紅字提示
+    // -------------------------------------------------------------
+    $earliest_by_name = []; // key => ['ts' => int, 'id' => int]
+    foreach ($recommendations as $tmp) {
+        $nm = trim((string)($tmp['student_name'] ?? ''));
+        if ($nm === '') continue;
+        $key = normalize_text($nm);
+        if ($key === '') continue;
+        $ts = strtotime((string)($tmp['created_at'] ?? ''));
+        if ($ts === false) $ts = PHP_INT_MAX;
+        $idv = (int)($tmp['id'] ?? 0);
+
+        if (!isset($earliest_by_name[$key])) {
+            $earliest_by_name[$key] = ['ts' => $ts, 'id' => $idv];
+            continue;
+        }
+        $cur = $earliest_by_name[$key];
+        if ($ts < $cur['ts'] || ($ts === $cur['ts'] && $idv < $cur['id'])) {
+            $earliest_by_name[$key] = ['ts' => $ts, 'id' => $idv];
+        }
+    }
+
+    foreach ($recommendations as &$it) {
+        // 沒有 recommended / 沒有 nsbi 表，就不做比對（留空由前端顯示未填寫）
+        if (!$has_recommended_table || !$has_nsbi_table) {
+            $it['auto_review_result'] = '';
+            continue;
+        }
+
+        $name = trim((string)($it['student_name'] ?? ''));
+        // 學校：同時保留 code 與 name，優先用 code 比對（對應 new_student_basic_info.previous_school 常存學校代碼）
+        $school_code = trim((string)($it['student_school_code'] ?? ''));
+        $school_name = trim((string)($it['student_school'] ?? '')); // 透過 school_data 轉成名稱（若有）
+        $phoneDigits = normalize_phone($it['student_phone'] ?? '');
+
+        $bestScore = 0;
+        $candidates = [];
+        $bestMatch = [
+            'name' => false,
+            'school' => false,
+            'phone' => false,
+            'nsbi_student_name' => '',
+            'nsbi_previous_school' => '',
+            'nsbi_mobile' => ''
+        ];
+
+        // 1) 先用姓名找候選
+        if ($stmt_nsbi_by_name && $name !== '') {
+            $stmt_nsbi_by_name->bind_param('s', $name);
+            if ($stmt_nsbi_by_name->execute()) {
+                $r = $stmt_nsbi_by_name->get_result();
+                if ($r) {
+                    while ($row = $r->fetch_assoc()) {
+                        $candidates[] = $row;
+                    }
+                }
+            }
+        }
+
+        // 2) 再用手機找候選（用末 10 碼做 LIKE，避免 +886、破折號等格式差異）
+        if ($stmt_nsbi_by_phone && $phoneDigits !== '') {
+            $like = '%' . $phoneDigits . '%';
+            $stmt_nsbi_by_phone->bind_param('s', $like);
+            if ($stmt_nsbi_by_phone->execute()) {
+                $r2 = $stmt_nsbi_by_phone->get_result();
+                if ($r2) {
+                    while ($row = $r2->fetch_assoc()) {
+                        $candidates[] = $row;
+                    }
+                }
+            }
+        }
+
+        foreach ($candidates as $cand) {
+            $score = 0;
+
+            $cand_name = trim((string)($cand['student_name'] ?? ''));
+            $cand_school = trim((string)($cand['previous_school'] ?? '')); // 可能是學校代碼或學校名稱（依前台儲存方式）
+            $cand_phone = normalize_phone($cand['mobile'] ?? '');
+
+            $m_name = ($name !== '' && normalize_text($cand_name) === normalize_text($name));
+            // 學校比對：
+            // 1) 若雙方都有 code，直接比 code（最準）
+            // 2) 否則用名稱（包含/相等）比對（向後相容）
+            $m_school = false;
+            if ($school_code !== '' && $cand_school !== '' && $cand_school === $school_code) {
+                $m_school = true;
+            } elseif ($school_name !== '' && $cand_school !== '' && school_matches($cand_school, $school_name)) {
+                $m_school = true;
+            }
+            $m_phone = ($phoneDigits !== '' && $cand_phone !== '' && $cand_phone === $phoneDigits);
+
+            if ($m_name) $score++;
+            if ($m_school) $score++;
+            if ($m_phone) $score++;
+
+            if ($score > $bestScore) {
+                $bestScore = $score;
+                $bestMatch = [
+                    'name' => $m_name,
+                    'school' => $m_school,
+                    'phone' => $m_phone,
+                    'nsbi_student_name' => $cand_name,
+                    'nsbi_previous_school' => $cand_school,
+                    'nsbi_mobile' => $cand['mobile'] ?? ''
+                ];
+            }
+            if ($bestScore === 3) break;
+        }
+
+        if ($bestScore === 3) {
+            $it['auto_review_result'] = '通過';
+        } elseif ($bestScore === 2) {
+            $it['auto_review_result'] = '需人工確認';
+        } else {
+            $it['auto_review_result'] = '不通過';
+        }
+
+        // debug：告訴你是哪個欄位沒對上（用於畫面提示）
+        $it['auto_review_match_name'] = $bestMatch['name'] ? 1 : 0;
+        $it['auto_review_match_school'] = $bestMatch['school'] ? 1 : 0;
+        $it['auto_review_match_phone'] = $bestMatch['phone'] ? 1 : 0;
+        $it['auto_review_nsbi_student_name'] = $bestMatch['nsbi_student_name'];
+        $it['auto_review_nsbi_previous_school'] = $bestMatch['nsbi_previous_school'];
+        $it['auto_review_nsbi_mobile'] = $bestMatch['nsbi_mobile'];
+
+        // 同名較晚建立者：標記提示（只做顯示，不改變自動審核判定）
+        $nm2 = trim((string)($it['student_name'] ?? ''));
+        $key2 = $nm2 !== '' ? normalize_text($nm2) : '';
+        $it['duplicate_note'] = 0;
+        if ($key2 !== '' && isset($earliest_by_name[$key2])) {
+            $ear = $earliest_by_name[$key2];
+            $ts2 = strtotime((string)($it['created_at'] ?? ''));
+            if ($ts2 === false) $ts2 = PHP_INT_MAX;
+            $id2 = (int)($it['id'] ?? 0);
+            // 非最早者都標記
+            if ($id2 !== (int)$ear['id']) {
+                if ($ts2 > (int)$ear['ts'] || ($ts2 === (int)$ear['ts'] && $id2 > (int)$ear['id'])) {
+                    $it['duplicate_note'] = 1;
+                }
+            }
+        }
+
+        // 規則：出現「此被推薦人先前已有人填寫」者，審核結果一律為不通過
+        // 但如果三個都正確（bestScore === 3），則保持為通過
+        if (!empty($it['duplicate_note']) && $bestScore !== 3) {
+            $it['auto_review_result'] = '不通過';
+        }
+
+        // 將審核結果寫回 admission_recommendations.status（對應 application_statuses.code）
+        // 規則：若使用者已手動填寫 status（AP/RE），則以手動為準，不覆蓋
+        // 但如果三個都正確（auto_review_result = '通過'），則強制更新為通過
+        $auto_review = trim((string)($it['auto_review_result'] ?? ''));
+        if ($auto_review === '人工確認') $auto_review = '需人工確認';
+        $current_status_code = trim((string)($it['status'] ?? ''));
+        
+        // 如果三個都正確，強制更新為通過（不管之前是什麼狀態）
+        $is_three_correct = ($auto_review === '通過');
+        
+        // 如果 status 已經是手動修改的結果（AP 或 RE），且不是三個都正確的情況，則不覆蓋
+        $should_update = false;
+        if ($auto_review !== '' && isset($review_status_map[$auto_review])) {
+            if ($is_three_correct) {
+                // 三個都正確，強制更新
+                $should_update = true;
+            } elseif ($current_status_code !== 'AP' && $current_status_code !== 'RE') {
+                // 不是手動設置的狀態，可以更新
+                $should_update = true;
+            }
+        }
+        
+        if ($should_update) {
+            $desired_status_code = (string)$review_status_map[$auto_review]['code'];
+            $rid = (int)($it['id'] ?? 0);
+
+            $it['auto_review_status_code'] = $desired_status_code; // 方便除錯/前端需要時可用
+            if ($rid > 0 && $stmt_update_status && $desired_status_code !== '' && $current_status_code !== $desired_status_code) {
+                $stmt_update_status->bind_param('si', $desired_status_code, $rid);
+                // 若外鍵狀態不存在會更新失敗；上方已確保 application_statuses 有該 code
+                @$stmt_update_status->execute();
+                $it['status'] = $desired_status_code; // 同步本次畫面資料
+            }
+        }
+    }
+    unset($it);
+
+    if ($stmt_nsbi_by_name) $stmt_nsbi_by_name->close();
+    if ($stmt_nsbi_by_phone) $stmt_nsbi_by_phone->close();
+    if (isset($stmt_update_status) && $stmt_update_status) $stmt_update_status->close();
+    
+    // 調試信息：記錄查詢結果數量
+    error_log("招生推薦查詢結果: " . count($recommendations) . " 筆記錄");
+    
+    // 如果查詢結果為空，但資料庫中有記錄，嘗試簡單查詢
+    if (empty($recommendations)) {
+        $simple_check = $conn->query("SELECT COUNT(*) as total FROM admission_recommendations");
+        if ($simple_check) {
+            $count_row = $simple_check->fetch_assoc();
+            $total_count = $count_row['total'] ?? 0;
+            error_log("admission_recommendations 表總記錄數: " . $total_count);
+            if ($total_count > 0) {
+                error_log("警告：資料庫中有 " . $total_count . " 筆記錄，但查詢結果為空。可能是 JOIN 條件或 WHERE 條件有問題。");
+                // 嘗試執行最簡單的查詢來測試
+                $test_sql = "SELECT ar.id FROM admission_recommendations ar LIMIT 1";
+                $test_result = $conn->query($test_sql);
+                if ($test_result && $test_result->num_rows > 0) {
+                    error_log("簡單查詢成功，問題可能在複雜的 JOIN 或欄位選擇");
+                } else {
+                    error_log("簡單查詢也失敗，可能是資料庫連接問題");
+                }
+            }
+        }
+    }
+    
+    // 調試信息：檢查總數（僅在開發環境顯示）
+    if (isset($_GET['debug']) && $_GET['debug'] == '1') {
+        $count_sql = "SELECT COUNT(*) as total FROM admission_recommendations";
+        $count_result = $conn->query($count_sql);
+        if ($count_result) {
+            $count_row = $count_result->fetch_assoc();
+            error_log("招生推薦總數: " . $count_row['total'] . " (當前用戶: " . $username . ", 角色: " . $user_role . ", 科系: " . ($user_department_code ?? '無') . ")");
+        }
+    }
+} catch (Exception $e) {
+    error_log("獲取招生推薦資料失敗: " . $e->getMessage());
+    $recommendations = [];
+    // 在開發模式下顯示錯誤信息
+    if (isset($_GET['debug']) && $_GET['debug'] == '1') {
+        echo "<div style='background: #fff2f0; border: 1px solid #ffccc7; padding: 16px; margin: 16px; border-radius: 4px;'>";
+        echo "<strong>錯誤:</strong> " . htmlspecialchars($e->getMessage());
+        echo "</div>";
+    }
 }
 
-if (!empty($params)) {
-    $stmt->bind_param($types, ...$params);
-}
-
-$stmt->execute();
-$result = $stmt->get_result();
-$recommendations = $result->fetch_all(MYSQLI_ASSOC);
-$stmt->close();
-
-/* ======================
-   老師清單（主任 / 招生中心）
-====================== */
+// 獲取老師列表（用於分配功能）
 $teachers = [];
-if ($is_department_user || $is_admission_center) {
-    $tstmt = $conn->prepare("
-        SELECT u.id, u.username, t.name
-        FROM user u
-        LEFT JOIN teacher t ON u.id = t.user_id
-        ORDER BY t.name
-    ");
-    if ($tstmt) {
-        $tstmt->execute();
-        $tres = $tstmt->get_result();
-        $teachers = $tres->fetch_all(MYSQLI_ASSOC);
-        $tstmt->close();
+$is_department_user = false; // 預設為 false，如果需要可以根據實際需求設定
+$is_admission_center = false; // 預設為 false，如果需要可以根據實際需求設定
+if ($is_department_user) {
+    try {
+        $table_check = $conn->query("SHOW TABLES LIKE 'user'");
+        if ($table_check && $table_check->num_rows > 0) {
+            $teacher_stmt = $conn->prepare("
+                SELECT u.id, u.username, t.name, t.department 
+                FROM user u 
+                LEFT JOIN teacher t ON u.id = t.user_id 
+                WHERE u.role = '老師' 
+                ORDER BY t.name ASC
+            ");
+            
+            if ($teacher_stmt && $teacher_stmt->execute()) {
+                $teacher_result = $teacher_stmt->get_result();
+                if ($teacher_result) {
+                    $teachers = $teacher_result->fetch_all(MYSQLI_ASSOC);
+                }
+            }
+        }
+    } catch (Exception $e) {
+        error_log("獲取老師列表失敗: " . $e->getMessage());
     }
 }
 
-/* ======================
-   統計資料
-====================== */
+// 統計資料
 $stats = [
-    'total'      => count($recommendations),
-    'pending'    => 0,
-    'contacted'  => 0,
-    'registered' => 0,
-    'rejected'   => 0
+    'total' => count($recommendations),
+    'pending' => count(array_filter($recommendations, function($r) { return ($r['status'] ?? 'pending') === 'pending'; })),
+    'contacted' => count(array_filter($recommendations, function($r) { return ($r['status'] ?? '') === 'contacted'; })),
+    'registered' => count(array_filter($recommendations, function($r) { return ($r['status'] ?? '') === 'registered'; })),
+    'rejected' => count(array_filter($recommendations, function($r) { return ($r['status'] ?? '') === 'rejected'; }))
 ];
 
-foreach ($recommendations as $r) {
-    $key = $r['status'] ?? 'pending';
-    $stats[$key] = ($stats[$key] ?? 0) + 1;
+function getStatusText($status) {
+    switch ($status) {
+        case 'contacted': return '已聯繫';
+        case 'registered': return '已報名';
+        case 'rejected': return '已拒絕';
+        default: return '待處理';
+    }
 }
 
-/* ======================
-   狀態輔助函式
-====================== */
-function getStatusText($s) {
-    return match ($s) {
-        'contacted'  => '已聯繫',
-        'registered' => '已報名',
-        'rejected'   => '已拒絕',
-        default      => '待處理',
-    };
+function getStatusClass($status) {
+    switch ($status) {
+        case 'contacted': return 'status-contacted';
+        case 'registered': return 'status-registered';
+        case 'rejected': return 'status-rejected';
+        default: return 'status-pending';
+    }
 }
 
-function getStatusClass($s) {
-    return 'status-' . ($s ?: 'pending');
+function getEnrollmentStatusText($status) {
+    switch ($status) {
+        case '已入學': return '已入學';
+        case '放棄入學': return '放棄入學';
+        default: return '未入學';
+    }
 }
 
-function getEnrollmentStatusText($s) {
-    return $s ?: '未入學';
-}
-
-function getEnrollmentStatusClass($s) {
-    return match ($s) {
-        '已入學'   => 'enrollment-enrolled',
-        '放棄入學' => 'enrollment-cancelled',
-        default    => 'enrollment-not'
-    };
+function getEnrollmentStatusClass($status) {
+    switch ($status) {
+        case '已入學': return 'enrollment-enrolled';
+        case '放棄入學': return 'enrollment-cancelled';
+        default: return 'enrollment-not';
+    }
 }
 ?>
-
-
 <!DOCTYPE html>
 <html lang="zh-TW">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>推薦名單管理 - Topics 後台管理系統</title>
+    <title><?php echo $page_title; ?> - Topics 後台管理系統</title>
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
     <style>
         :root {
@@ -318,6 +851,37 @@ function getEnrollmentStatusClass($s) {
         .table tr:hover {
             background: #fafafa;
         }
+
+        .table-search {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+
+        .search-btn {
+            padding: 8px 12px;
+            border: 1px solid #1890ff;
+            background: #1890ff;
+            color: #fff;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 700;
+            transition: all 0.2s;
+        }
+        .search-btn:hover {
+            filter: brightness(0.95);
+        }
+        .search-btn.secondary {
+            border-color: #d9d9d9;
+            background: #fff;
+            color: #595959;
+        }
+        .search-btn.secondary:hover {
+            border-color: #1890ff;
+            color: #1890ff;
+        }
         
 
         .search-input {
@@ -329,6 +893,23 @@ function getEnrollmentStatusClass($s) {
             transition: all 0.3s;
         }
         .search-input:focus {
+            outline: none;
+            border-color: #1890ff;
+            box-shadow: 0 0 0 2px rgba(24,144,255,0.2);
+        }
+
+        .search-select {
+            padding: 8px 12px;
+            border: 1px solid #d9d9d9;
+            border-radius: 6px;
+            font-size: 14px;
+            background: #fff;
+            cursor: pointer;
+            transition: all 0.3s;
+            width: 170px;
+        }
+
+        .search-select:focus {
             outline: none;
             border-color: #1890ff;
             box-shadow: 0 0 0 2px rgba(24,144,255,0.2);
@@ -346,6 +927,24 @@ function getEnrollmentStatusClass($s) {
             font-weight: 500;
             border: 1px solid;
         }
+
+        /* 審核結果 badge */
+        .review-badge {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            padding: 6px 10px;
+            border-radius: 8px;
+            font-size: 13px;
+            font-weight: 800;
+            color: #fff;
+            line-height: 1;
+            white-space: nowrap;
+        }
+        .review-badge.pass { background: #52c41a; }
+        .review-badge.fail { background: #cf1322; }
+        .review-badge.manual { background: #1677ff; }
+        .review-badge.empty { background: #8c8c8c; }
         .status-pending {
             background: var(--status-pending-bg);
             color: var(--status-pending-text);
@@ -641,6 +1240,16 @@ function getEnrollmentStatusClass($s) {
                     </div>
                     <div class="table-search">
                         <input type="text" id="searchInput" class="search-input" placeholder="搜尋被推薦人姓名、學校或電話...">
+                            <?php if ($can_view_review_result): ?>
+                                <select id="reviewResultFilter" class="search-select" title="審核結果篩選">
+                                    <option value="">審核結果：全部</option>
+                                    <option value="通過">通過</option>
+                                    <option value="不通過">不通過</option>
+                                    <option value="需人工確認">需人工確認</option>
+                                </select>
+                            <?php endif; ?>
+                            <button type="button" id="btnQuery" class="search-btn">查詢</button>
+                            <button type="button" id="btnClear" class="search-btn secondary">清除</button>
                     </div>
                 </div>
 
@@ -749,6 +1358,9 @@ function getEnrollmentStatusClass($s) {
                                         <th>學校</th>
                                         <th>年級</th>
                                         <th>學生興趣</th>
+                                        <?php if ($can_view_review_result): ?>
+                                            <th>審核結果</th>
+                                        <?php endif; ?>
                                         <!-- <th>狀態</th> -->
                                         <!-- <th>入學狀態</th> -->
                                         <?php if ($is_admission_center): ?>
@@ -764,7 +1376,11 @@ function getEnrollmentStatusClass($s) {
                                 </thead>
                                 <tbody>
                                     <?php foreach ($recommendations as $item): ?>
-                                    <tr>
+                                    <?php
+                                        $row_review = isset($item['auto_review_result']) ? trim((string)$item['auto_review_result']) : '';
+                                        if ($row_review === '人工確認') $row_review = '需人工確認';
+                                    ?>
+                                    <tr data-review-result="<?php echo htmlspecialchars($row_review); ?>">
                                         <td><?php echo htmlspecialchars($item['id']); ?></td>
                                         <td>
                                             <div class="info-row">
@@ -790,6 +1406,67 @@ function getEnrollmentStatusClass($s) {
                                             }
                                             ?>
                                         </td>
+                                        <?php if ($can_view_review_result): ?>
+                                            <td>
+                                                <?php
+                                                    // 優先使用 status 字段（如果已手動修改過）
+                                                    $current_status = isset($item['status']) ? trim((string)$item['status']) : '';
+                                                    $auto_review = isset($item['auto_review_result']) ? trim((string)$item['auto_review_result']) : '';
+                                                    if ($auto_review === '人工確認') $auto_review = '需人工確認';
+                                                    
+                                                    // 根據 status 代碼確定顯示文本（優先）
+                                                    if ($current_status === 'AP') {
+                                                        $display_review = '通過';
+                                                    } elseif ($current_status === 'RE') {
+                                                        $display_review = '不通過';
+                                                    } elseif ($current_status === 'MC') {
+                                                        $display_review = '需人工確認';
+                                                    } else {
+                                                        // 如果 status 為空或不是已知代碼，使用 auto_review_result
+                                                        $display_review = ($auto_review === '') ? '未填寫' : $auto_review;
+                                                    }
+
+                                                    $badge_class = 'review-badge';
+                                                    if ($display_review === '通過') {
+                                                        $badge_class .= ' pass';
+                                                    } elseif ($display_review === '不通過') {
+                                                        $badge_class .= ' fail';
+                                                    } elseif ($display_review === '需人工確認') {
+                                                        $badge_class .= ' manual';
+                                                    } else {
+                                                        $badge_class .= ' empty';
+                                                    }
+
+                                                    $m1 = (int)($item['auto_review_match_name'] ?? 0);
+                                                    $m2 = (int)($item['auto_review_match_school'] ?? 0);
+                                                    $m3 = (int)($item['auto_review_match_phone'] ?? 0);
+                                                    $debug_short = '姓名' . ($m1 ? '✓' : '✗') . ' / 學校' . ($m2 ? '✓' : '✗') . ' / 手機' . ($m3 ? '✓' : '✗');
+
+                                                    $dbg_nsbi_name = (string)($item['auto_review_nsbi_student_name'] ?? '');
+                                                    $dbg_nsbi_school = (string)($item['auto_review_nsbi_previous_school'] ?? '');
+                                                    $dbg_nsbi_mobile = (string)($item['auto_review_nsbi_mobile'] ?? '');
+                                                    $dbg_title = "比對：" . $debug_short
+                                                        . "\nrecommended："
+                                                        . "\n- name=" . ($item['student_name'] ?? '')
+                                                        . "\n- school_code=" . ($item['student_school_code'] ?? '')
+                                                        . "\n- school_name=" . ($item['student_school'] ?? '')
+                                                        . "\n- phone=" . ($item['student_phone'] ?? '')
+                                                        . "\nnew_student_basic_info（候選）："
+                                                        . "\n- student_name=" . $dbg_nsbi_name
+                                                        . "\n- previous_school=" . $dbg_nsbi_school
+                                                        . "\n- mobile=" . $dbg_nsbi_mobile;
+                                                ?>
+                                                <span class="info-value" title="<?php echo htmlspecialchars($dbg_title); ?>">
+                                                    <span class="<?php echo htmlspecialchars($badge_class); ?>"><?php echo htmlspecialchars($display_review); ?></span>
+                                                    <span style="color:#8c8c8c; font-size:12px; margin-left:6px;">(<?php echo htmlspecialchars($debug_short); ?>)</span>
+                                                    <?php if (!empty($item['duplicate_note'])): ?>
+                                                        <div style="margin-top:6px; color:#cf1322; font-size:12px; font-weight:900;">
+                                                            此被推薦人先前已有人填寫
+                                                        </div>
+                                                    <?php endif; ?>
+                                                </span>
+                                            </td>
+                                        <?php endif; ?>
                                         <!-- <td>
                                             <span class="status-badge <?php echo getStatusClass($item['status'] ?? 'pending'); ?>">
                                                 <?php echo getStatusText($item['status'] ?? 'pending'); ?>
@@ -821,6 +1498,21 @@ function getEnrollmentStatusClass($s) {
                                                    onclick="toggleDetail(<?php echo $item['id']; ?>)">
                                                     <i class="fas fa-eye"></i> <span class="btn-text">查看詳情</span>
                                                 </button>
+                                                <?php 
+                                                    // 檢查是否需要顯示修改結果按鈕（僅在審核結果為需人工確認時）
+                                                    $current_status = isset($item['status']) ? trim((string)$item['status']) : '';
+                                                    $auto_review = isset($item['auto_review_result']) ? trim((string)$item['auto_review_result']) : '';
+                                                    if ($auto_review === '人工確認') $auto_review = '需人工確認';
+                                                    $show_update_btn = ($can_view_review_result && ($current_status === 'MC' || $auto_review === '需人工確認'));
+                                                ?>
+                                                <?php if ($show_update_btn): ?>
+                                                <button type="button" 
+                                                   class="btn-view" 
+                                                   style="background: #1677ff; color: white; border-color: #1677ff;"
+                                                   onclick="openUpdateReviewResultModal(<?php echo $item['id']; ?>, '<?php echo htmlspecialchars($item['student_name']); ?>')">
+                                                    <i class="fas fa-edit"></i> 修改結果
+                                                </button>
+                                                <?php endif; ?>
                                                 <button class="btn-view" style="background: #1890ff; color: white; border-color: #1890ff;" onclick="openAssignRecommendationDepartmentModal(<?php echo $item['id']; ?>, '<?php echo htmlspecialchars($item['student_name']); ?>', '<?php echo htmlspecialchars($item['assigned_department'] ?? ''); ?>')">
                                                     <i class="fas fa-building"></i> <?php echo !empty($item['assigned_department']) ? '重新分配' : '分配'; ?>
                                                 </button>
@@ -847,6 +1539,21 @@ function getEnrollmentStatusClass($s) {
                                                    onclick="toggleDetail(<?php echo $item['id']; ?>)">
                                                     <i class="fas fa-eye"></i> <span class="btn-text">查看詳情</span>
                                                 </button>
+                                                <?php 
+                                                    // 檢查是否需要顯示修改結果按鈕（僅在審核結果為需人工確認時）
+                                                    $current_status = isset($item['status']) ? trim((string)$item['status']) : '';
+                                                    $auto_review = isset($item['auto_review_result']) ? trim((string)$item['auto_review_result']) : '';
+                                                    if ($auto_review === '人工確認') $auto_review = '需人工確認';
+                                                    $show_update_btn = ($can_view_review_result && ($current_status === 'MC' || $auto_review === '需人工確認'));
+                                                ?>
+                                                <?php if ($show_update_btn): ?>
+                                                <button type="button" 
+                                                   class="btn-view" 
+                                                   style="background: #1677ff; color: white; border-color: #1677ff;"
+                                                   onclick="openUpdateReviewResultModal(<?php echo $item['id']; ?>, '<?php echo htmlspecialchars($item['student_name']); ?>')">
+                                                    <i class="fas fa-edit"></i> 修改結果
+                                                </button>
+                                                <?php endif; ?>
                                                 <button class="btn-view" style="background: #1890ff; color: white; border-color: #1890ff;" onclick="openAssignRecommendationModal(<?php echo $item['id']; ?>, '<?php echo htmlspecialchars($item['student_name']); ?>', <?php echo !empty($item['assigned_teacher_id']) ? $item['assigned_teacher_id'] : 'null'; ?>)">
                                                     <i class="fas fa-user-plus"></i> <?php echo !empty($item['assigned_teacher_id']) ? '重新分配' : '分配'; ?>
                                                 </button>
@@ -854,17 +1561,38 @@ function getEnrollmentStatusClass($s) {
                                         </td>
                                         <?php else: ?>
                                         <td>
-                                            <button type="button" 
-                                               class="btn-view" 
-                                               id="detail-btn-<?php echo $item['id']; ?>"
-                                               onclick="toggleDetail(<?php echo $item['id']; ?>)">
-                                                <i class="fas fa-eye"></i> <span class="btn-text">查看詳情</span>
-                                            </button>
+                                            <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+                                                <button type="button" 
+                                                   class="btn-view" 
+                                                   id="detail-btn-<?php echo $item['id']; ?>"
+                                                   onclick="toggleDetail(<?php echo $item['id']; ?>)">
+                                                    <i class="fas fa-eye"></i> <span class="btn-text">查看詳情</span>
+                                                </button>
+                                                <?php 
+                                                    // 檢查是否需要顯示修改結果按鈕（僅在審核結果為需人工確認時）
+                                                    $current_status = isset($item['status']) ? trim((string)$item['status']) : '';
+                                                    $auto_review = isset($item['auto_review_result']) ? trim((string)$item['auto_review_result']) : '';
+                                                    if ($auto_review === '人工確認') $auto_review = '需人工確認';
+                                                    $show_update_btn = ($can_view_review_result && ($current_status === 'MC' || $auto_review === '需人工確認'));
+                                                ?>
+                                                <?php if ($show_update_btn): ?>
+                                                <button type="button" 
+                                                   class="btn-view" 
+                                                   style="background: #1677ff; color: white; border-color: #1677ff;"
+                                                   onclick="openUpdateReviewResultModal(<?php echo $item['id']; ?>, '<?php echo htmlspecialchars($item['student_name']); ?>')">
+                                                    <i class="fas fa-edit"></i> 修改結果
+                                                </button>
+                                                <?php endif; ?>
+                                            </div>
                                         </td>
                                         <?php endif; ?>
                                     </tr>
                                     <tr id="detail-<?php echo $item['id']; ?>" class="detail-row" style="display: none;">
-                                        <td colspan="<?php echo $is_admission_center || $is_department_user ? '7' : '6'; ?>" style="padding: 20px; background: #f9f9f9; border: 2px solid #b3d9ff; border-radius: 4px;">
+                                        <?php
+                                            $detail_colspan = ($is_admission_center || $is_department_user) ? 8 : 7;
+                                            if (!$can_view_review_result) $detail_colspan -= 1;
+                                        ?>
+                                        <td colspan="<?php echo (int)$detail_colspan; ?>" style="padding: 20px; background: #f9f9f9; border: 2px solid #b3d9ff; border-radius: 4px;">
                                             <table style="width: 100%; border-collapse: collapse;">
                                                 <tr>
                                                     <td style="width: 50%; vertical-align: top; padding-right: 20px;">
@@ -1079,6 +1807,44 @@ function getEnrollmentStatusClass($s) {
     </div>
     <?php endif; ?>
 
+    <!-- 修改審核結果彈出視窗 -->
+    <?php if ($can_view_review_result): ?>
+    <div id="updateReviewResultModal" class="modal" style="display: none;">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>修改審核結果</h3>
+                <span class="close" onclick="closeUpdateReviewResultModal()">&times;</span>
+            </div>
+            <div class="modal-body">
+                <p>被推薦人：<span id="updateReviewResultStudentName"></span></p>
+                <div class="teacher-list">
+                    <h4>選擇審核結果：</h4>
+                    <div class="teacher-options">
+                        <label class="teacher-option">
+                            <input type="radio" name="review_result" value="通過">
+                            <div class="teacher-info">
+                                <strong>通過</strong>
+                                <span class="teacher-dept">該被推薦人符合推薦條件</span>
+                            </div>
+                        </label>
+                        <label class="teacher-option">
+                            <input type="radio" name="review_result" value="不通過">
+                            <div class="teacher-info">
+                                <strong>不通過</strong>
+                                <span class="teacher-dept">該被推薦人不符合推薦條件</span>
+                            </div>
+                        </label>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn-cancel" onclick="closeUpdateReviewResultModal()">取消</button>
+                <button class="btn-confirm" onclick="updateReviewResult()">確認修改</button>
+            </div>
+        </div>
+    </div>
+    <?php endif; ?>
+
     <script>
     // 分頁相關變數
     let currentPage = 1;
@@ -1089,6 +1855,9 @@ function getEnrollmentStatusClass($s) {
     // 搜索功能
     document.addEventListener('DOMContentLoaded', function() {
         const searchInput = document.getElementById('searchInput');
+        const reviewFilter = document.getElementById('reviewResultFilter');
+        const btnQuery = document.getElementById('btnQuery');
+        const btnClear = document.getElementById('btnClear');
         const table = document.getElementById('recommendationTable');
 
         if (searchInput && table) {
@@ -1139,32 +1908,53 @@ function getEnrollmentStatusClass($s) {
                 // 初始化分頁
                 updatePagination();
             }
-            
-            searchInput.addEventListener('keyup', function() {
-                const filter = searchInput.value.toLowerCase();
-                
+
+            function applyFilters() {
+                const filterText = (searchInput.value || '').toLowerCase();
+                const reviewVal = (reviewFilter && reviewFilter.value) ? reviewFilter.value : '';
+
                 if (!tbody) return;
-                
-                // 過濾行
+
                 filteredRows = allRows.filter(row => {
+                    // 1) 審核結果篩選（用 data-review-result）
+                    if (reviewVal) {
+                        const rr = row.dataset ? (row.dataset.reviewResult || '') : '';
+                        if (rr !== reviewVal) return false;
+                    }
+
+                    // 2) 關鍵字搜尋（全欄位文字）
+                    if (!filterText) return true;
+
                     const cells = row.getElementsByTagName('td');
-                    let shouldShow = false;
-                    
                     for (let j = 0; j < cells.length; j++) {
-                        const cellText = cells[j].textContent || cells[j].innerText;
-                        if (cellText.toLowerCase().indexOf(filter) > -1) {
-                            shouldShow = true;
-                            break;
+                        const cellText = cells[j].textContent || cells[j].innerText || '';
+                        if (cellText.toLowerCase().indexOf(filterText) > -1) {
+                            return true;
                         }
                     }
-                    
-                    return shouldShow;
+                    return false;
                 });
-                
-                // 重置到第一頁並更新分頁
+
                 currentPage = 1;
                 updatePagination();
-            });
+            }
+
+            // 改成「按查詢」才套用條件；輸入框按 Enter 也可查詢
+            if (btnQuery) btnQuery.addEventListener('click', applyFilters);
+            if (searchInput) {
+                searchInput.addEventListener('keyup', function(e) {
+                    if (e.key === 'Enter') applyFilters();
+                });
+            }
+
+            // 清除：重置條件並顯示全部
+            if (btnClear) {
+                btnClear.addEventListener('click', function() {
+                    if (searchInput) searchInput.value = '';
+                    if (reviewFilter) reviewFilter.value = '';
+                    applyFilters();
+                });
+            }
         }
     });
     
@@ -1477,12 +2267,87 @@ function getEnrollmentStatusClass($s) {
                  '&department=' + encodeURIComponent(department));
     }
 
+    // （已移除）審核結果手動更新 JS
+
     // 點擊分配部門彈出視窗外部關閉
     const assignRecommendationDepartmentModal = document.getElementById('assignRecommendationDepartmentModal');
     if (assignRecommendationDepartmentModal) {
         assignRecommendationDepartmentModal.addEventListener('click', function(e) {
             if (e.target === this) {
                 closeAssignRecommendationDepartmentModal();
+            }
+        });
+    }
+
+    // 修改審核結果相關變數
+    let currentUpdateReviewResultId = null;
+
+    // 開啟修改審核結果彈出視窗
+    function openUpdateReviewResultModal(recommendationId, studentName) {
+        currentUpdateReviewResultId = recommendationId;
+        document.getElementById('updateReviewResultStudentName').textContent = studentName;
+        document.getElementById('updateReviewResultModal').style.display = 'flex';
+        
+        // 清除之前的選擇
+        const radioButtons = document.querySelectorAll('input[name="review_result"]');
+        radioButtons.forEach(radio => {
+            radio.checked = false;
+        });
+    }
+
+    // 關閉修改審核結果彈出視窗
+    function closeUpdateReviewResultModal() {
+        document.getElementById('updateReviewResultModal').style.display = 'none';
+        currentUpdateReviewResultId = null;
+    }
+
+    // 更新審核結果
+    function updateReviewResult() {
+        const selectedResult = document.querySelector('input[name="review_result"]:checked');
+        
+        if (!selectedResult) {
+            alert('請選擇審核結果');
+            return;
+        }
+
+        const reviewResult = selectedResult.value;
+        
+        // 發送AJAX請求
+        const xhr = new XMLHttpRequest();
+        xhr.open('POST', 'update_review_result.php', true);
+        xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
+        
+        xhr.onreadystatechange = function() {
+            if (xhr.readyState === 4) {
+                if (xhr.status === 200) {
+                    try {
+                        const response = JSON.parse(xhr.responseText);
+                        if (response.success) {
+                            alert('審核結果更新成功！');
+                            closeUpdateReviewResultModal();
+                            location.reload();
+                        } else {
+                            alert('更新失敗：' + (response.message || '未知錯誤'));
+                        }
+                    } catch (e) {
+                        alert('回應格式錯誤：' + xhr.responseText);
+                    }
+                } else {
+                    alert('請求失敗，狀態碼：' + xhr.status);
+                }
+            }
+        };
+        
+        xhr.send('recommendation_id=' + encodeURIComponent(currentUpdateReviewResultId) + 
+                 '&review_result=' + encodeURIComponent(reviewResult));
+    }
+
+    // 點擊修改審核結果彈出視窗外部關閉
+    const updateReviewResultModal = document.getElementById('updateReviewResultModal');
+    if (updateReviewResultModal) {
+        updateReviewResultModal.addEventListener('click', function(e) {
+            if (e.target === this) {
+                closeUpdateReviewResultModal();
             }
         });
     }

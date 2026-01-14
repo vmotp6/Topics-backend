@@ -88,7 +88,6 @@ $types = "";
 if ($search !== '') {
     $where .= " AND (title LIKE ? OR description LIKE ?)";
     $like = '%' . $search . '%';
-    // 這裡我們直接存入變數，稍後再建立引用
     $params[] = $like;
     $params[] = $like;
     $types .= "ss";
@@ -110,10 +109,8 @@ if ($published_filter >= 0) {
 $countSql = "SELECT COUNT(*) as total FROM videos WHERE $where";
 $stmt = $conn->prepare($countSql);
 if (!empty($params)) {
-    // 修正：建立引用陣列傳遞給 bind_param
     $bindParams = [];
     $bindParams[] = &$types;
-    // 必須使用迴圈將參數作為引用加入
     for ($i = 0; $i < count($params); $i++) {
         $bindParams[] = &$params[$i];
     }
@@ -134,22 +131,15 @@ $listSql = "SELECT v.*, vc.name as category_name FROM videos v
 $stmt = $conn->prepare($listSql);
 
 if (!empty($params)) {
-    // 複製參數並加入分頁參數
     $allParams = $params;
     $allParams[] = $perPage;
     $allParams[] = $offset;
-    
     $allTypes = $types . "ii";
-    
-    // 建立引用陣列
     $bindParams = [];
     $bindParams[] = &$allTypes;
-    
-    // 將所有參數作為引用加入
     for ($i = 0; $i < count($allParams); $i++) {
         $bindParams[] = &$allParams[$i];
     }
-    
     call_user_func_array([$stmt, 'bind_param'], $bindParams);
 } else {
     $stmt->bind_param("ii", $perPage, $offset);
@@ -173,7 +163,6 @@ if ($result = $conn->query($catSql)) {
 }
 
 $totalPages = max(1, ceil($total / $perPage));
-
 $conn->close();
 ?>
 <!DOCTYPE html>
@@ -198,19 +187,15 @@ $conn->close();
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; background: var(--background-color); color: var(--text-color); overflow-x: hidden; }
         
-        /* 核心佈局樣式 */
         .dashboard { display: flex; min-height: 100vh; }
         .main-content { 
             flex: 1; 
             margin-left: 250px; 
-            background: #f0f2f5; 
             transition: all 0.3s ease; 
         }
-        /* 當 sidebar.php 切換 collapsed 時會用到這個 class */
-        .main-content.expanded { margin-left: 60px; }
         .content { padding: 24px; }
         
-        /* 頂部控制列與麵包屑 */
+        /* 頁面標題與控制列 */
         .page-controls { 
             display: flex; 
             justify-content: space-between; 
@@ -231,7 +216,90 @@ $conn->close();
             text-decoration: underline; 
         }
 
-        /* 篩選欄位樣式 */
+        /* 表格容器樣式 (與 settings.php 一致) */
+        .table-wrapper {
+            background: var(--card-background-color);
+            border-radius: 8px;
+            box-shadow: 0 1px 2px rgba(0,0,0,0.03);
+            border: 1px solid var(--border-color);
+            margin-bottom: 24px;
+        }
+
+        .table-container { overflow-x: auto; }
+        .table { width: 100%; border-collapse: collapse; }
+        .table th, .table td { padding: 16px 24px; text-align: left; border-bottom: 1px solid var(--border-color); font-size: 16px; vertical-align: middle;white-space: nowrap; }
+        
+        /* 為了美觀，縮圖欄位可以稍微調整，但保持整體風格 */
+        .table th:first-child, .table td:first-child {
+            padding-left: 24px; /* settings.php 是 60px，但圖片欄位可能需要少一點以免太空 */
+        }
+        
+        .table th { 
+            background: #fafafa; 
+            font-weight: 600; 
+            color: #262626; 
+            white-space: nowrap;
+        }
+        .table th:hover { background: #f0f0f0; }
+        .table td { color: #595959; }
+        .table tr:hover { background: #fafafa; }
+        
+        /* 分頁樣式 (與 settings.php 一致) */
+        .pagination {
+            padding: 16px 24px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-top: 1px solid var(--border-color);
+            background: #fafafa;
+        }
+
+        .pagination-info {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            color: var(--text-secondary-color);
+            font-size: 14px;
+        }
+
+        .pagination-controls {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        /* 讓 PHP 生成的連結看起來像 settings.php 的按鈕 */
+        .pagination-controls a, .pagination-controls span {
+            padding: 6px 12px;
+            border: 1px solid #d9d9d9;
+            background: #fff;
+            color: #595959;
+            border-radius: 6px;
+            text-decoration: none;
+            font-size: 14px;
+            transition: all 0.3s;
+            cursor: pointer;
+            display: inline-block;
+        }
+
+        .pagination-controls a:hover:not(.disabled) {
+            border-color: #1890ff;
+            color: #1890ff;
+        }
+
+        .pagination-controls span.disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            background: #f5f5f5;
+        }
+
+        .pagination-controls span.active {
+            background: #1890ff;
+            color: white;
+            border-color: #1890ff;
+        }
+
+        /* 篩選列樣式 (仿照 settings.php 的風格) */
         .filter-bar {
             background: var(--card-background-color);
             border-radius: 8px;
@@ -239,9 +307,10 @@ $conn->close();
             padding: 16px 24px;
             margin-bottom: 16px;
             display: flex;
-            align-items: flex-end; /* 讓按鈕與輸入框底部對齊 */
+            align-items: flex-end;
             gap: 16px;
             flex-wrap: wrap;
+            box-shadow: 0 1px 2px rgba(0,0,0,0.03);
         }
         
         .filter-group {
@@ -256,158 +325,86 @@ $conn->close();
             font-weight: 500;
         }
 
-        .filter-bar input[type="text"],
-        .filter-bar select {
+        .form-control-sm {
             padding: 8px 12px;
             border: 1px solid #d9d9d9;
             border-radius: 6px;
             font-size: 14px;
             background: #fff;
-            min-width: 150px;
             transition: all 0.3s;
+            min-width: 160px;
         }
 
-        .filter-bar input:focus,
-        .filter-bar select:focus {
+        .form-control-sm:focus {
             outline: none;
             border-color: #1890ff;
             box-shadow: 0 0 0 2px rgba(24,144,255,0.2);
         }
 
-        /* 按鈕樣式 */
-        .btn { padding: 8px 16px; border: 1px solid #d9d9d9; border-radius: 6px; cursor: pointer; font-size: 14px; transition: all 0.3s; background: #fff; text-decoration: none; display: inline-flex; align-items: center; justify-content: center; gap: 6px; }
+        /* 按鈕樣式 (統一使用 settings.php 的 btn) */
+        .btn { 
+            padding: 8px 16px; 
+            border: 1px solid #d9d9d9; 
+            border-radius: 6px; 
+            cursor: pointer; 
+            font-size: 14px; 
+            transition: all 0.3s; 
+            background: #fff; 
+            text-decoration: none; 
+            display: inline-flex; 
+            align-items: center; 
+            justify-content: center; 
+            gap: 6px; 
+        }
         .btn-primary { background: var(--primary-color); color: white; border-color: var(--primary-color); }
         .btn-primary:hover { background: #40a9ff; border-color: #40a9ff; }
-        .btn-reset { color: var(--text-secondary-color); border: 1px solid #d9d9d9; }
+        .btn-reset { color: var(--text-secondary-color); }
         .btn-reset:hover { border-color: var(--text-secondary-color); color: var(--text-color); }
 
-        /* 表格容器與樣式 */
-        .table-wrapper {
-            background: var(--card-background-color);
-            border-radius: 8px;
-            box-shadow: 0 1px 2px rgba(0,0,0,0.03);
-            border: 1px solid var(--border-color);
-            margin-bottom: 24px;
-            display: flex;
-            flex-direction: column;
-        }
-
-        .table-container { 
-            overflow-x: auto;
-            flex: 1;
-        }
-        .table { 
-            width: 100%; 
-            border-collapse: collapse; 
-        }
-
-        .table th, .table td { 
-            padding: 16px 5px; 
-            text-align: left; 
-            border-bottom: 1px solid var(--border-color); 
-            font-size: 17px;
-         }
-        .table th { 
-            background: #fafafa; 
-            font-weight: 600; 
-            color: #262626; 
-            white-space: nowrap;
-        }
-        .table tr:hover { background: #fafafa; }
-        
-        /* 縮圖 */
-        .thumbnail-preview {
-            width: 180px;
-            height: 100px;
-            object-fit: cover;
-            border-radius: 4px;
-            background: #eee;
-            border: 1px solid #f0f0f0;
-        }
-        
-        /* 狀態標籤 */
-        .status-badge { padding: 4px 8px; border-radius: 4px; font-size: 12px; font-weight: 500; white-space: nowrap; }
-        .status-badge.published { background: #f6ffed; color: var(--success-color); border: 1px solid #b7eb8f; }
-        .status-badge.draft { background: #fff7e6; color: #faad14; border: 1px solid #ffd591; }
-
-        /* 操作按鈕 */
+        /* 表格內操作按鈕 (與 settings.php 統一) */
         .action-buttons { display: flex; gap: 8px; }
         .btn-action {
             padding: 4px 12px; border-radius: 4px; font-size: 14px;
             text-decoration: none; display: inline-block; transition: all 0.3s;
             background: #fff;
             cursor: pointer;
+            border: 1px solid transparent;
         }
-        .btn-edit { color: var(--success-color); border: 1px solid var(--success-color); }
+        .btn-edit { color: var(--success-color); border-color: var(--success-color); }
         .btn-edit:hover { background: var(--success-color); color: white; }
-        .btn-delete { color: var(--danger-color); border: 1px solid var(--danger-color); }
+        .btn-delete { color: var(--danger-color); border-color: var(--danger-color); }
         .btn-delete:hover { background: var(--danger-color); color: white; }
+
+        /* 縮圖預覽 */
+        .thumbnail-preview {
+            width: 120px;
+            height: 68px;
+            object-fit: cover;
+            border-radius: 4px;
+            background: #eee;
+            border: 1px solid #f0f0f0;
+            display: block;
+        }
         
-        /* 分頁 */
-        .pagination {
-            padding: 16px 24px;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            border-top: 1px solid var(--border-color);
-            background: #fafafa;
-        }
-        .pagination-info {
-            font-size: 14px;
-            color: var(--text-secondary-color);
-        }
-        .pagination-controls {
-            display: flex;
-            gap: 8px;
-            align-items: center;
-        }
-        .pagination a, .pagination span {
-            padding: 6px 12px;
-            border: 1px solid #d9d9d9;
-            background: #fff;
-            color: #595959;
-            border-radius: 6px;
-            text-decoration: none;
-            font-size: 14px;
-            transition: all 0.3s;
-        }
-        .pagination a:hover {
-            border-color: #1890ff;
-            color: #1890ff;
-        }
-        .pagination span.active {
-            background: #1890ff;
-            color: white;
-            border-color: #1890ff;
-        }
-        .pagination span.disabled {
-            opacity: 0.5;
-            cursor: not-allowed;
-            background: #f5f5f5;
-        }
+        /* 狀態標籤 */
+        .status-badge { padding: 4px 8px; border-radius: 4px; font-size: 12px; font-weight: 500; }
+        .status-published { background: #f6ffed; color: var(--success-color); border: 1px solid #b7eb8f; }
+        .status-draft { background: #fff7e6; color: #faad14; border: 1px solid #ffd591; }
 
         /* 訊息提示 */
         .message { padding: 12px 16px; border-radius: 6px; margin-bottom: 16px; font-weight: 500; }
         .message.success { background: #f6ffed; border: 1px solid #b7eb8f; color: var(--success-color); }
         .message.error { background: #fff2f0; border: 1px solid #ffccc7; color: var(--danger-color); }
 
-        .empty-state {
-            text-align: center;
-            padding: 48px;
-            color: var(--text-secondary-color);
-        }
-        .empty-state i {
-            font-size: 48px;
-            margin-bottom: 16px;
-            color: #d9d9d9;
-        }
+        .empty-state { text-align: center; padding: 48px; color: var(--text-secondary-color); }
+        .empty-state i { font-size: 48px; margin-bottom: 16px; color: #d9d9d9; }
         
-        /* RWD */
         @media (max-width: 768px) {
             .main-content { margin-left: 0; }
             .page-controls { flex-direction: column; align-items: flex-start; }
             .filter-bar { flex-direction: column; align-items: stretch; }
             .filter-bar > div { width: 100%; }
+            .form-control-sm { width: 100%; }
         }
     </style>
 </head>
@@ -437,12 +434,12 @@ $conn->close();
 
                 <form method="GET" class="filter-bar">
                     <div class="filter-group">
-                        <label for="search">搜尋</label>
-                        <input type="text" id="search" name="search" placeholder="影片標題或描述" value="<?php echo htmlspecialchars($search); ?>">
+                        <label for="search">搜尋影片</label>
+                        <input type="text" id="search" name="search" class="form-control-sm" placeholder="輸入標題或描述..." value="<?php echo htmlspecialchars($search); ?>">
                     </div>
                     <div class="filter-group">
-                        <label for="category">分類</label>
-                        <select id="category" name="category">
+                        <label for="category">影片分類</label>
+                        <select id="category" name="category" class="form-control-sm">
                             <option value="0">全部分類</option>
                             <?php foreach ($categories as $cat): ?>
                                 <option value="<?php echo $cat['id']; ?>" <?php echo $category_filter == $cat['id'] ? 'selected' : ''; ?>>
@@ -452,8 +449,8 @@ $conn->close();
                         </select>
                     </div>
                     <div class="filter-group">
-                        <label for="published">狀態</label>
-                        <select id="published" name="published">
+                        <label for="published">發布狀態</label>
+                        <select id="published" name="published" class="form-control-sm">
                             <option value="-1">全部狀態</option>
                             <option value="1" <?php echo $published_filter === 1 ? 'selected' : ''; ?>>已發布</option>
                             <option value="0" <?php echo $published_filter === 0 ? 'selected' : ''; ?>>草稿</option>
@@ -477,14 +474,13 @@ $conn->close();
                             <table class="table">
                                 <thead>
                                     <tr>
-                                        <th style="width: 100px;">縮圖</th>
-                                        <th>標題</th>
-                                        <th style="width: 120px;">分類</th>
-                                        <th style="width: 80px;">時長</th>
-                                        <th style="width: 100px;">狀態</th>
-                                        <th style="width: 80px;">瀏覽</th>
-                                        <th style="width: 80px;">按讚</th>
-                                        <th style="width: 160px;">操作</th>
+                                        <th style="width: 150px;">縮圖</th>
+                                        <th>影片資訊</th>
+                                        <th style="width: 150px;">分類</th>
+                                        <th style="width: 100px;">時長</th>
+                                        <th>狀態</th>
+                                        <th style="width: 100px;">數據</th>
+                                        <th style="width: 180px;">操作</th>
                                     </tr>
                                 </thead>
                                 <tbody>
@@ -499,24 +495,28 @@ $conn->close();
                                                     ?>
                                                     <img src="<?php echo htmlspecialchars($thumbSrc); ?>" alt="縮圖" class="thumbnail-preview">
                                                 <?php else: ?>
-                                                    <div class="thumbnail-preview" style="display: flex; align-items: center; justify-content: center; background: #eee; color: #999;">
-                                                        <i class="fas fa-image"></i>
+                                                    <div class="thumbnail-preview" style="display: flex; align-items: center; justify-content: center; color: #999;">
+                                                        <i class="fas fa-image fa-2x"></i>
                                                     </div>
                                                 <?php endif; ?>
                                             </td>
                                             <td>
-                                                <div style="font-weight: 500; margin-bottom: 4px;"><?php echo htmlspecialchars($video['title']); ?></div>
-                                                <div style="font-size: 12px; color: #888;"><?php echo mb_strimwidth(htmlspecialchars($video['description'] ?? ''), 0, 50, '...'); ?></div>
+                                                <div style="font-weight: 500; font-size: 16px; margin-bottom: 6px; color: var(--text-color);"><?php echo htmlspecialchars($video['title']); ?></div>
+                                                <div style="font-size: 13px; color: var(--text-secondary-color); line-height: 1.4;"><?php echo mb_strimwidth(htmlspecialchars($video['description'] ?? ''), 0, 60, '...'); ?></div>
                                             </td>
                                             <td><?php echo htmlspecialchars($video['category_name'] ?? '-'); ?></td>
                                             <td><?php echo htmlspecialchars($video['duration'] ?? '-'); ?></td>
                                             <td>
-                                                <span class="status-badge <?php echo $video['published'] == 1 ? 'published' : 'draft'; ?>">
+                                                <span class="status-badge <?php echo $video['published'] == 1 ? 'status-published' : 'status-draft'; ?>">
                                                     <?php echo $video['published'] == 1 ? '已發布' : '草稿'; ?>
                                                 </span>
                                             </td>
-                                            <td><?php echo intval($video['view_count']); ?></td>
-                                            <td><?php echo intval($video['like_count']); ?></td>
+                                            <td>
+                                                <div style="font-size: 13px; color: var(--text-secondary-color);">
+                                                    <div><i class="fas fa-eye" style="width: 16px;"></i> <?php echo intval($video['view_count']); ?></div>
+                                                    <div style="margin-top: 4px;"><i class="fas fa-thumbs-up" style="width: 16px;"></i> <?php echo intval($video['like_count']); ?></div>
+                                                </div>
+                                            </td>
                                             <td>
                                                 <div class="action-buttons">
                                                     <a href="edit_video.php?id=<?php echo $video['id']; ?>" class="btn-action btn-edit">
@@ -539,23 +539,23 @@ $conn->close();
 
                         <div class="pagination">
                             <div class="pagination-info">
-                                顯示第 <?php echo ($page - 1) * $perPage + 1; ?>-<?php echo min($page * $perPage, $total); ?> 筆，共 <?php echo $total; ?> 筆
+                                <span>顯示第 <?php echo ($page - 1) * $perPage + 1; ?>-<?php echo min($page * $perPage, $total); ?> 筆，共 <?php echo $total; ?> 筆</span>
                             </div>
                             <div class="pagination-controls">
-                                    <?php if ($page > 1): ?>
-                                        <a href="?<?php echo http_build_query(array_merge($_GET, ['page' => 1])); ?>">首頁</a>
-                                        <a href="?<?php echo http_build_query(array_merge($_GET, ['page' => $page - 1])); ?>">上一頁</a>
-                                    <?php else: ?>
-                                        <span class="disabled">首頁</span>
-                                        <span class="disabled">上一頁</span>
-                                    <?php endif; ?>
+                                <?php if ($page > 1): ?>
+                                    <a href="?<?php echo http_build_query(array_merge($_GET, ['page' => 1])); ?>">首頁</a>
+                                    <a href="?<?php echo http_build_query(array_merge($_GET, ['page' => $page - 1])); ?>">上一頁</a>
+                                <?php else: ?>
+                                    <span class="disabled">首頁</span>
+                                    <span class="disabled">上一頁</span>
+                                <?php endif; ?>
 
                                 <?php
                                 $startPage = max(1, $page - 2);
                                 $endPage = min($totalPages, $page + 2);
                                 
                                 if ($startPage > 1) {
-                                    echo '<span>...</span>';
+                                    echo '<span class="disabled">...</span>';
                                 }
                                 
                                 for ($i = $startPage; $i <= $endPage; $i++) {
@@ -567,18 +567,18 @@ $conn->close();
                                 }
                                 
                                 if ($endPage < $totalPages) {
-                                    echo '<span>...</span>';
+                                    echo '<span class="disabled">...</span>';
                                 }
                                 ?>
 
-                                    <?php if ($page < $totalPages): ?>
-                                        <a href="?<?php echo http_build_query(array_merge($_GET, ['page' => $page + 1])); ?>">下一頁</a>
-                                        <a href="?<?php echo http_build_query(array_merge($_GET, ['page' => $totalPages])); ?>">末頁</a>
-                                    <?php else: ?>
-                                        <span class="disabled">下一頁</span>
-                                        <span class="disabled">末頁</span>
-                                    <?php endif; ?>
-                                </div>
+                                <?php if ($page < $totalPages): ?>
+                                    <a href="?<?php echo http_build_query(array_merge($_GET, ['page' => $page + 1])); ?>">下一頁</a>
+                                    <a href="?<?php echo http_build_query(array_merge($_GET, ['page' => $totalPages])); ?>">末頁</a>
+                                <?php else: ?>
+                                    <span class="disabled">下一頁</span>
+                                    <span class="disabled">末頁</span>
+                                <?php endif; ?>
+                            </div>
                         </div>
                     <?php endif; ?>
                 </div>
@@ -587,7 +587,6 @@ $conn->close();
     </div>
 
     <script>
-        // 刪除後自動隱藏訊息
         document.addEventListener('DOMContentLoaded', function() {
             setTimeout(function() {
                 const message = document.querySelector('.message');
