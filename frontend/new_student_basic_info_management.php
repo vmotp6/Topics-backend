@@ -84,6 +84,7 @@ function photoUrl($photo_path) {
 
 $page_title = '新生基本資料管理';
 $q = isset($_GET['q']) ? trim((string)$_GET['q']) : '';
+ $view = isset($_GET['view']) ? $_GET['view'] : 'active';
 $limit = isset($_GET['limit']) ? (int)$_GET['limit'] : 50;
 $offset = isset($_GET['offset']) ? (int)$_GET['offset'] : 0;
 if ($limit <= 0) $limit = 50;
@@ -95,59 +96,96 @@ $total = 0;
 $error_message = '';
 
 try {
-  $conn = getDatabaseConnection();
-  if (!$conn) throw new Exception('資料庫連接失敗');
-  ensureNewStudentBasicInfoTable($conn);
+    $conn = getDatabaseConnection();
+    if (!$conn) throw new Exception('資料庫連接失敗');
+    ensureNewStudentBasicInfoTable($conn);
 
-  $where = '';
-  $types = '';
-  $params = [];
-  if ($q !== '') {
-    $where = " WHERE student_no LIKE ? OR student_name LIKE ? OR class_name LIKE ? OR id_number LIKE ? OR mobile LIKE ? ";
-    $like = '%' . $q . '%';
-    $types = 'sssss';
-    $params = [$like, $like, $like, $like, $like];
-  }
+    // ========================================
+    // 1. 基本 WHERE 條件：歷史/目前學生
+    // ========================================
+    $where = ' WHERE 1=1 ';
+    if ($view === 'history') {
+        // 歷史資料：畢業日期 <= 今天
+        $where .= " AND (LENGTH(student_no) >= 3 AND CURDATE() >= DATE(CONCAT(CAST(SUBSTRING(student_no, 1, 3) AS UNSIGNED) + 1916, '-08-01'))) ";
+    } else {
+        // 目前學生：畢業日期 > 今天 或 學號格式不符
+        $where .= " AND (LENGTH(student_no) < 3 OR CURDATE() < DATE(CONCAT(CAST(SUBSTRING(student_no, 1, 3) AS UNSIGNED) + 1916, '-08-01'))) ";
+    }
 
-  // total
-  $countSql = "SELECT COUNT(*) AS cnt FROM new_student_basic_info" . $where;
-  $countStmt = $conn->prepare($countSql);
-  if (!$countStmt) throw new Exception('查詢準備失敗');
-  if (!empty($params)) $countStmt->bind_param($types, ...$params);
-  $countStmt->execute();
-  $res = $countStmt->get_result();
-  if ($r = $res->fetch_assoc()) $total = (int)$r['cnt'];
-  $countStmt->close();
+    // ========================================
+    // 2. 搜尋條件
+    // ========================================
+    $types = '';
+    $params = [];
+    if ($q !== '') {
+        $like = '%' . $q . '%';
+        $where .= " AND (
+            student_no LIKE ? OR
+            student_name LIKE ? OR
+            class_name LIKE ? OR
+            id_number LIKE ? OR
+            mobile LIKE ?
+        ) ";
+        $types .= 'sssss';
+        $params = [$like, $like, $like, $like, $like];
+    }
 
-  // list（列表頁只顯示：學號、姓名、班級）
-  $listSql = "SELECT
-      id, student_no, student_name, class_name,
-      DATE_FORMAT(created_at, '%Y-%m-%d %H:%i:%s') AS created_at
-    FROM new_student_basic_info" . $where . "
-    ORDER BY created_at DESC, id DESC
-    LIMIT ? OFFSET ?";
+    // ========================================
+    // 3. 計算總筆數
+    // ========================================
+    $countSql = "SELECT COUNT(*) AS cnt FROM new_student_basic_info" . $where;
+    $countStmt = $conn->prepare($countSql);
+    if (!$countStmt) throw new Exception('查詢準備失敗');
+    if (!empty($params)) $countStmt->bind_param($types, ...$params);
+    $countStmt->execute();
+    $res = $countStmt->get_result();
+    $total = 0;
+    if ($r = $res->fetch_assoc()) $total = (int)$r['cnt'];
+    $countStmt->close();
 
-  $stmt = $conn->prepare($listSql);
-  if (!$stmt) throw new Exception('查詢準備失敗');
+    // ========================================
+    // 4. 取得列表資料
+    // ========================================
+    $listSql = "SELECT
+        id, student_no, student_name, class_name,
+        DATE_FORMAT(created_at, '%Y-%m-%d %H:%i:%s') AS created_at
+      FROM new_student_basic_info" . $where . "
+      ORDER BY created_at DESC, id DESC
+      LIMIT ? OFFSET ?";
 
-  if (!empty($params)) {
-    $types2 = $types . 'ii';
-    $params2 = $params;
-    $params2[] = $limit;
-    $params2[] = $offset;
-    $stmt->bind_param($types2, ...$params2);
-  } else {
-    $stmt->bind_param('ii', $limit, $offset);
-  }
-  $stmt->execute();
-  $r2 = $stmt->get_result();
-  $rows = $r2 ? $r2->fetch_all(MYSQLI_ASSOC) : [];
-  $stmt->close();
+    $stmt = $conn->prepare($listSql);
+    if (!$stmt) throw new Exception('查詢準備失敗');
 
-  $conn->close();
+    if (!empty($params)) {
+        $types2 = $types . 'ii';
+        $params2 = $params;
+        $params2[] = $limit;
+        $params2[] = $offset;
+        $stmt->bind_param($types2, ...$params2);
+    } else {
+        $stmt->bind_param('ii', $limit, $offset);
+    }
+
+    $stmt->execute();
+    $r2 = $stmt->get_result();
+    $rows = $r2 ? $r2->fetch_all(MYSQLI_ASSOC) : [];
+    $stmt->close();
+
+    $conn->close();
 } catch (Exception $e) {
-  $error_message = $e->getMessage();
+    $error_message = $e->getMessage();
 }
+
+
+// ==========================================
+// 處理分頁與歷史資料邏輯
+// ==========================================
+$view_mode = $_GET['view'] ?? 'active'; 
+$selected_year = isset($_GET['year']) ? (int)$_GET['year'] : 0;
+
+$current_month = (int)date('m');
+$current_year = (int)date('Y');
+$grad_threshold_year = ($current_month >= 8) ? $current_year : $current_year - 1;
 ?>
 <!DOCTYPE html>
 <html lang="zh-TW">
@@ -226,6 +264,76 @@ try {
       font-weight: 600;
     }
 
+/* Pagination */
+        .pagination { 
+          padding: 16px 24px; 
+          display: flex; 
+          justify-content: space-between; 
+          align-items: center; 
+          border-top: 1px solid var(--border-color); 
+          background: #fafafa; 
+        }
+
+        .pagination-info { 
+          display: flex; 
+          align-items: center; 
+          gap: 16px; 
+          color: var(--text-secondary-color); 
+          font-size: 14px; 
+        
+        }
+        .pagination-controls { 
+          display: flex; 
+          align-items: center; 
+          gap: 8px; 
+        }
+        .pagination select { 
+          padding: 6px 12px;
+           border: 1px solid #d9d9d9; 
+           border-radius: 6px; 
+           font-size: 14px;
+           background: #fff; 
+           cursor: pointer; 
+          }
+
+        .pagination select:focus { 
+          outline: none; 
+          border-color: #1890ff; 
+          box-shadow: 0 0 0 2px rgba(24,144,255,0.2); 
+        }
+
+        .pagination button { 
+          padding: 6px 12px; 
+          border: 1px solid #d9d9d9; 
+          background: #fff; color: #595959; 
+          border-radius: 6px; cursor: pointer; 
+          font-size: 14px; 
+          transition: all 0.3s; 
+        }
+
+        .pagination button:hover:not(:disabled) {
+           border-color: #1890ff; 
+           color: #1890ff;
+          }
+
+        .pagination button:disabled { 
+          opacity: 0.5; 
+          cursor: not-allowed; 
+        }
+
+        .pagination button.active { 
+          background: #1890ff;
+          color: white; 
+          border-color: #1890ff; 
+          }
+
+    
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
     @media (max-width: 768px) {
       .main-content { margin-left: 0; }
     }
@@ -257,17 +365,25 @@ try {
         <?php endif; ?>
 
         <div class="panel">
+
+
           <form method="GET" class="filters">
+            <input type="hidden" name="view" value="<?php echo htmlspecialchars($view); ?>">
             <input name="q" value="<?php echo htmlspecialchars($q); ?>" placeholder="搜尋：學號/姓名/班級/身分證號/手機">
             <button type="submit"><i class="fas fa-search"></i> 查詢</button>
             <a class="reset" href="new_student_basic_info_management.php"><i class="fas fa-eraser"></i> 清除</a>
+            <a class="reset" href="new_student_basic_info_management.php?view=<?php echo htmlspecialchars($view); ?>"><i class="fas fa-eraser"></i> 清除</a>
           </form>
         </div>
 
         <div class="panel" style="padding:0; overflow:auto;">
-          <table>
+          <table  id="enrollmentTable">
+            <div style="margin-bottom: 15px; display: flex; gap: 10px; margin-top:15px; margin-left:10px;">
+              <a href="?view=active" style="padding: 6px 12px; border: 1px solid <?php echo $view !== 'history' ? '#91d5ff' : '#d9d9d9'; ?>; border-radius: 6px; text-decoration: none; background: <?php echo $view !== 'history' ? '#f0f7ff' : '#fff'; ?>; color: <?php echo $view !== 'history' ? '#1890ff' : '#595959'; ?>;">目前學生</a>
+              <a href="?view=history" style="padding: 6px 12px; border: 1px solid <?php echo $view === 'history' ? '#91d5ff' : '#d9d9d9'; ?>; border-radius: 6px; text-decoration: none; background: <?php echo $view === 'history' ? '#f0f7ff' : '#fff'; ?>; color: <?php echo $view === 'history' ? '#1890ff' : '#595959'; ?>;">歷史資料</a>
+            </div>
             <thead>
-              <tr>
+              <tr class="table-row-clickable">
                 <th style="min-width:110px;">學號</th>
                 <th style="min-width:110px;">姓名</th>
                 <th style="min-width:110px;">班級</th>
@@ -277,10 +393,10 @@ try {
             </thead>
             <tbody>
               <?php if (empty($rows)): ?>
-                <tr><td colspan="5" style="padding:18px; text-align:center; color:#666;">目前沒有資料</td></tr>
+                <tr ><td colspan="5" style="padding:18px; text-align:center; color:#666;">目前沒有資料</td></tr>
               <?php else: ?>
                 <?php foreach ($rows as $r): ?>
-                  <tr>
+                  <tr  class="table-row-clickable">
                     <td><?php echo htmlspecialchars($r['student_no'] ?? ''); ?></td>
                     <td><strong><?php echo htmlspecialchars($r['student_name'] ?? ''); ?></strong></td>
                     <td><?php echo htmlspecialchars($r['class_name'] ?? ''); ?></td>
@@ -295,35 +411,174 @@ try {
               <?php endif; ?>
             </tbody>
           </table>
+          
+                            <div class="pagination">
+                                <div class="pagination-info">
+                                    <span style="color:#8c8c8c;">每頁顯示：</span>
+                                    <select id="itemsPerPage" onchange="changeItemsPerPage()">
+                                        <option value="10" selected>10</option>
+                                        <option value="20">20</option>
+                                        <option value="50">50</option>
+                                        <option value="100">100</option>
+                                        <option value="all">全部</option>
+                                    </select>
+                                    <span id="pageInfo" style="color:#8c8c8c;">顯示第 <span id="currentRange">1-<?php echo min($limit, $total); ?></span> 筆，共 <?php echo (int)$total; ?> 筆</span>
+                                </div>
+                                <div class="pagination-controls">
+                                    <button id="prevPage" onclick="changePage(-1)" disabled>上一頁</button>
+                                    <span id="pageNumbers"></span>
+                                    <button id="nextPage" onclick="changePage(1)">下一頁</button>
+                                </div>
+                            </div>
         </div>
 
-        <div class="panel">
-          <?php
-            $baseParams = [];
-            if ($q !== '') $baseParams['q'] = $q;
-            $baseParams['limit'] = (string)$limit;
-            $prevOffset = max(0, $offset - $limit);
-            $nextOffset = $offset + $limit;
-          ?>
-          <div class="pager">
-            <div class="muted">顯示 <?php echo ($total === 0) ? 0 : ($offset + 1); ?> - <?php echo min($total, $offset + $limit); ?> / <?php echo (int)$total; ?></div>
-            <div style="display:flex; gap:10px; align-items:center;">
-              <?php if ($offset > 0): ?>
-                <?php $p = http_build_query(array_merge($baseParams, ['offset' => (string)$prevOffset])); ?>
-                <a href="new_student_basic_info_management.php?<?php echo htmlspecialchars($p); ?>"><i class="fas fa-chevron-left"></i> 上一頁</a>
-              <?php endif; ?>
-              <?php if ($nextOffset < $total): ?>
-                <?php $p2 = http_build_query(array_merge($baseParams, ['offset' => (string)$nextOffset])); ?>
-                <a href="new_student_basic_info_management.php?<?php echo htmlspecialchars($p2); ?>">下一頁 <i class="fas fa-chevron-right"></i></a>
-              <?php endif; ?>
-            </div>
-          </div>
-        </div>
 
       </div>
     </div>
   </div>
+  <script>        // Apply sort icons
+        document.addEventListener('DOMContentLoaded', function() {
+            const urlParams = new URLSearchParams(window.location.search);
+            const sortBy = urlParams.get('sort_by') || 'created_at';
+            const sortOrder = urlParams.get('sort_order') || 'desc';
+            
+            const icon = document.getElementById('sort-' + sortBy);
+            if (icon) {
+                icon.classList.add('active');
+                icon.classList.add(sortOrder);
+            }
+            
+            // 初始化分頁
+            initPagination();
+        });
+
+        // 分頁相關變數
+        let currentPage = 1;
+        let itemsPerPage = 10;
+        let allRows = [];
+        let filteredRows = [];
+
+        // 初始化分頁
+        function initPagination() {
+            const table = document.getElementById('enrollmentTable');
+            if (!table) return;
+            
+            const tbody = table.getElementsByTagName('tbody')[0];
+            if (!tbody) return;
+            
+            // 只選取主列（有 table-row-clickable 類別的列）
+            allRows = Array.from(tbody.querySelectorAll('tr.table-row-clickable'));
+            filteredRows = allRows;
+            
+            updatePagination();
+        }
+
+        function changeItemsPerPage() {
+            const select = document.getElementById('itemsPerPage');
+            itemsPerPage = select.value === 'all' ? 
+                          filteredRows.length : 
+                          parseInt(select.value);
+            currentPage = 1;
+            updatePagination();
+        }
+
+        function changePage(direction) {
+            const totalPages = Math.ceil(filteredRows.length / itemsPerPage);
+            currentPage += direction;
+            
+            if (currentPage < 1) currentPage = 1;
+            if (currentPage > totalPages) currentPage = totalPages;
+            
+            updatePagination();
+        }
+
+        function goToPage(page) {
+            currentPage = page;
+            updatePagination();
+        }
+
+        function updatePagination() {
+            const totalItems = filteredRows.length;
+            const totalPages = itemsPerPage === 'all' ? 1 : Math.ceil(totalItems / itemsPerPage);
+            
+            // 首先隱藏所有主列和關聯的詳情列
+            allRows.forEach(row => {
+                row.style.display = 'none';
+                // 同時確保關聯的詳情列也被隱藏
+                const nextRow = row.nextElementSibling;
+                if (nextRow && nextRow.classList.contains('detail-row')) {
+                    nextRow.style.display = 'none';
+                    // 重置按鈕狀態
+                    const detailBtn = row.querySelector('.btn-view[id^="detail-btn-"]');
+                    if (detailBtn) {
+                        const btnText = detailBtn.querySelector('.btn-text');
+                        if (btnText) btnText.textContent = '查看詳情';
+                        const icon = detailBtn.querySelector('i');
+                        if (icon) icon.className = 'fas fa-eye';
+                    }
+                }
+            });
+            // 重置當前打開的詳情 ID
+            currentOpenDetailId = null;
+            
+            if (itemsPerPage === 'all' || itemsPerPage >= totalItems) {
+                // 顯示所有過濾後的行
+                filteredRows.forEach(row => row.style.display = '');
+                
+                // 更新分頁資訊
+                const rangeElem = document.getElementById('currentRange');
+                if (rangeElem) rangeElem.textContent = totalItems > 0 ? `1-${totalItems}` : '0-0';
+            } else {
+                // 計算當前頁的範圍
+                const start = (currentPage - 1) * itemsPerPage;
+                const end = Math.min(start + itemsPerPage, totalItems);
+                
+                // 顯示當前頁的行
+                for (let i = start; i < end; i++) {
+                    if (filteredRows[i]) {
+                        filteredRows[i].style.display = '';
+                    }
+                }
+                
+                // 更新分頁資訊
+                const rangeElem = document.getElementById('currentRange');
+                if (rangeElem) rangeElem.textContent = totalItems > 0 ? `${start + 1}-${end}` : '0-0';
+            }
+            
+            // 更新總數
+            const pageInfo = document.getElementById('pageInfo');
+            if (pageInfo) {
+                const rangeText = document.getElementById('currentRange') ? document.getElementById('currentRange').textContent : '0-0';
+                pageInfo.innerHTML = `顯示第 <span id="currentRange">${rangeText}</span> 筆，共 ${totalItems} 筆`;
+            }
+            
+            // 更新上一頁/下一頁按鈕
+            const prevBtn = document.getElementById('prevPage');
+            const nextBtn = document.getElementById('nextPage');
+            if (prevBtn) prevBtn.disabled = currentPage === 1;
+            if (nextBtn) nextBtn.disabled = currentPage >= totalPages || totalPages <= 1;
+            
+            // 更新頁碼按鈕
+            updatePageNumbers(totalPages);
+        }
+
+        function updatePageNumbers(totalPages) {
+            const pageNumbers = document.getElementById('pageNumbers');
+            if (!pageNumbers) return;
+            pageNumbers.innerHTML = '';
+            
+            if (totalPages >= 1) {
+                const pagesToShow = totalPages === 1 ? [1] : Array.from({length: totalPages}, (_, i) => i + 1);
+                
+                for (let i of pagesToShow) {
+                    const btn = document.createElement('button');
+                    btn.textContent = i;
+                    btn.onclick = () => goToPage(i);
+                    if (i === currentPage) btn.classList.add('active');
+                    pageNumbers.appendChild(btn);
+                }
+            }
+        }
+    </script>
 </body>
 </html>
-
-

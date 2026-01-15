@@ -1500,13 +1500,22 @@ function getEnrollmentStatusClass($status) {
                                                    onclick="toggleDetail(<?php echo $item['id']; ?>)">
                                                     <i class="fas fa-eye"></i> <span class="btn-text">查看詳情</span>
                                                 </button>
-                                                <?php 
-                                                    // 檢查是否需要顯示修改結果按鈕（僅在審核結果為需人工確認時）
+                                                <?php
                                                     $current_status = isset($item['status']) ? trim((string)$item['status']) : '';
                                                     $auto_review = isset($item['auto_review_result']) ? trim((string)$item['auto_review_result']) : '';
-                                                    if ($auto_review === '人工確認') $auto_review = '需人工確認';
-                                                    $show_update_btn = ($can_view_review_result && ($current_status === 'MC' || $auto_review === '需人工確認'));
+
+                                                    // 統一人工確認名稱
+                                                    if ($auto_review === '人工確認') {
+                                                        $auto_review = '需人工確認';
+                                                    }
+
+                                                    // 只有「需人工確認」且尚未被人工改成通過/不通過，才顯示
+                                                    $show_update_btn =
+                                                        $can_view_review_result &&
+                                                        $auto_review === '需人工確認' &&
+                                                        !in_array($current_status, ['AP', 'RE'], true);
                                                 ?>
+
                                                 <?php if ($show_update_btn): ?>
                                                 <button type="button" 
                                                    class="btn-view" 
@@ -1547,6 +1556,7 @@ function getEnrollmentStatusClass($status) {
                                                     $auto_review = isset($item['auto_review_result']) ? trim((string)$item['auto_review_result']) : '';
                                                     if ($auto_review === '人工確認') $auto_review = '需人工確認';
                                                     $show_update_btn = ($can_view_review_result && ($current_status === 'MC' || $auto_review === '需人工確認'));
+                                                    $show_update_btn = ($can_view_review_result && ($current_status === 'MC' || $auto_review === '需人工確認') && $current_status !== 'AP' && $current_status !== 'RE');
                                                 ?>
                                                 <?php if ($show_update_btn): ?>
                                                 <button type="button" 
@@ -1576,6 +1586,7 @@ function getEnrollmentStatusClass($status) {
                                                     $auto_review = isset($item['auto_review_result']) ? trim((string)$item['auto_review_result']) : '';
                                                     if ($auto_review === '人工確認') $auto_review = '需人工確認';
                                                     $show_update_btn = ($can_view_review_result && ($current_status === 'MC' || $auto_review === '需人工確認'));
+                                                    $show_update_btn = ($can_view_review_result && ($current_status === 'MC' || $auto_review === '需人工確認') && $current_status !== 'AP' && $current_status !== 'RE');
                                                 ?>
                                                 <?php if ($show_update_btn): ?>
                                                 <button type="button" 
