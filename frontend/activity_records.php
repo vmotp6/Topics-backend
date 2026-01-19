@@ -12,8 +12,40 @@ $page_title = '教師活動紀錄管理';
 // 檢查用戶權限和部門
 $current_user = isset($_SESSION['username']) ? $_SESSION['username'] : '';
 $user_role = isset($_SESSION['role']) ? $_SESSION['role'] : '';
+$user_id = $_SESSION['user_id'] ?? null;
 $user_department = '';
 $department_filter = '';
+
+// 角色映射：將中文名稱或舊代碼轉換為新代碼（向後兼容）
+$role_map = [
+    '管理員' => 'ADM',
+    'admin' => 'ADM',
+    'Admin' => 'ADM',
+    '行政人員' => 'STA',
+    '學校行政人員' => 'STA',
+    'staff' => 'STA',
+    '主任' => 'DI',
+    'director' => 'DI',
+    '老師' => 'TEA',
+    'teacher' => 'TEA',
+    '招生中心組員' => 'STAM',
+    '資管科主任' => 'IM',
+    '資管主任' => 'IM',
+    'IM主任' => 'IM',
+    '科助' => 'AS',
+    'assistant' => 'AS',
+    'ADM' => 'ADM',
+    'STA' => 'STA',
+    'DI' => 'DI',
+    'TEA' => 'TEA',
+    'STAM' => 'STAM',
+    'IM' => 'IM',
+    'AS' => 'AS'
+];
+if (isset($role_map[$user_role])) {
+    $user_role = $role_map[$user_role];
+}
+
 // 判斷是否為管理員：角色為 ADM（管理員）或 STA（行政人員），或舊的中文角色名稱
 // 也檢查後台登入狀態和用戶名
 $is_admin = ($user_role === 'ADM' || $user_role === '管理員' || $user_role === 'admin' || 
@@ -22,11 +54,73 @@ $is_admin = ($user_role === 'ADM' || $user_role === '管理員' || $user_role ==
               ($user_role === 'ADM' || $user_role === '管理員' || $current_user === 'admin')));
 $is_school_admin = ($user_role === '學校行政人員' || $user_role === '行政人員' || $user_role === 'STA' || 
                     $current_user === 'IMD' || $is_admin);
+$is_director = ($user_role === 'DI');
 
-// 如果是 IMD 帳號，只能查看資管科的資料
-if ($current_user === 'IMD') {
+// 檢查是否為資管科主任：role=DI 且部門代碼=IM
+$is_im = false;
+$user_department_code = null;
+
+// 如果 user_id 不存在但有 username，先從資料庫獲取 user_id
+if (!$user_id && $current_user) {
+    require_once '../../Topics-frontend/frontend/config.php';
+    $conn_get_id = getDatabaseConnection();
+    try {
+        $stmt_get_id = $conn_get_id->prepare("SELECT id FROM user WHERE username = ?");
+        $stmt_get_id->bind_param("s", $current_user);
+        $stmt_get_id->execute();
+        $result_get_id = $stmt_get_id->get_result();
+        if ($row_id = $result_get_id->fetch_assoc()) {
+            $user_id = $row_id['id'];
+            $_SESSION['user_id'] = $user_id;
+        }
+        $stmt_get_id->close();
+    } catch (Exception $e) {
+        error_log('Error fetching user_id in activity_records: ' . $e->getMessage());
+    }
+    $conn_get_id->close();
+}
+
+if ($is_director && $user_id) {
+    // 查詢用戶的部門代碼
+    require_once '../../Topics-frontend/frontend/config.php';
+    $conn_dept = getDatabaseConnection();
+    try {
+        // 優先從 director 表獲取部門代碼
+        $table_check = $conn_dept->query("SHOW TABLES LIKE 'director'");
+        if ($table_check && $table_check->num_rows > 0) {
+            $stmt_dept = $conn_dept->prepare("SELECT department FROM director WHERE user_id = ?");
+        } else {
+            $stmt_dept = $conn_dept->prepare("SELECT department FROM teacher WHERE user_id = ?");
+        }
+        $stmt_dept->bind_param("i", $user_id);
+        $stmt_dept->execute();
+        $result_dept = $stmt_dept->get_result();
+        if ($row = $result_dept->fetch_assoc()) {
+            $user_department_code = $row['department'];
+            // 如果部門代碼是'IM'，則為資管科主任
+            if ($user_department_code === 'IM') {
+                $is_im = true;
+            }
+        }
+        $stmt_dept->close();
+    } catch (Exception $e) {
+        error_log('Error fetching user department in activity_records: ' . $e->getMessage());
+    }
+    $conn_dept->close();
+} elseif ($user_role === 'IM' || $user_role === '資管科主任') {
+    // 如果role已經是IM或資管科主任，直接設置為true
+    $is_im = true;
+}
+
+// 額外的安全檢查：如果映射後的 user_role 是 IM，確保 is_im 一定為 true
+if ($user_role === 'IM') {
+    $is_im = true;
+}
+
+// 如果是 IMD 帳號或 IM 角色，只能查看資管科的資料
+if ($current_user === 'IMD' || $is_im) {
     $user_department = '資訊管理科';
-    $department_filter = " AND (t.department = '資訊管理科' OR t.department LIKE '%資管%')";
+    $department_filter = " AND (t.department = '資訊管理科' OR t.department LIKE '%資管%' OR t.department = 'IM')";
 }
 
 // 建立資料庫連接
