@@ -25,6 +25,36 @@ $is_staff = in_array($user_role, ['STA', 'staff', '行政人員']);
 $is_director = in_array($user_role, ['DI', 'director', '主任']);
 $is_teacher = in_array($user_role, ['TEA', 'teacher', '老師']);
 
+// 角色映射：將中文名稱或舊代碼轉換為新代碼（向後兼容）
+$role_map = [
+    '管理員' => 'ADM',
+    'admin' => 'ADM',
+    'Admin' => 'ADM',
+    '行政人員' => 'STA',
+    '學校行政人員' => 'STA',
+    'staff' => 'STA',
+    '主任' => 'DI',
+    'director' => 'DI',
+    '老師' => 'TEA',
+    'teacher' => 'TEA',
+    '招生中心組員' => 'STAM',
+    '資管科主任' => 'IM',
+    '資管主任' => 'IM',
+    'IM主任' => 'IM',
+    '科助' => 'AS',
+    'assistant' => 'AS',
+    'ADM' => 'ADM',
+    'STA' => 'STA',
+    'DI' => 'DI',
+    'TEA' => 'TEA',
+    'STAM' => 'STAM',
+    'IM' => 'IM',
+    'AS' => 'AS'
+];
+if (isset($role_map[$user_role])) {
+    $user_role = $role_map[$user_role];
+}
+
 // 檢查用戶角色是否被允許進入後台
 // 只允許管理員、行政人員、主任、科助進入後台
 $allowed_backend_roles = ['ADM', 'STA', 'DI', 'AS', '管理員', '行政人員', '主任', '科助'];
@@ -33,6 +63,78 @@ if (!in_array($user_role, $allowed_backend_roles)) {
     $_SESSION['admin_logged_in'] = false;
     session_destroy();
     header("Location: login.php");
+    exit;
+}
+
+// AS 角色（科助）不能訪問首頁，只能訪問 IM 分配的權限功能
+$is_as = ($user_role === 'AS');
+if ($is_as) {
+    // 獲取 AS 用戶的第一個有權限的頁面
+    if (!$user_id && $username) {
+        $conn_get_id = getDatabaseConnection();
+        try {
+            $stmt_get_id = $conn_get_id->prepare("SELECT id FROM user WHERE username = ? AND role = 'AS'");
+            $stmt_get_id->bind_param("s", $username);
+            $stmt_get_id->execute();
+            $result_get_id = $stmt_get_id->get_result();
+            if ($row_id = $result_get_id->fetch_assoc()) {
+                $user_id = $row_id['id'];
+                $_SESSION['user_id'] = $user_id;
+            }
+            $stmt_get_id->close();
+        } catch (Exception $e) {
+            error_log('Error fetching user_id in index: ' . $e->getMessage());
+        }
+        $conn_get_id->close();
+    }
+    
+    // 獲取 AS 用戶的權限
+    $as_permissions = [];
+    if ($user_id) {
+        $conn_perm = getDatabaseConnection();
+        try {
+            $table_check = $conn_perm->query("SHOW TABLES LIKE 'assistant_permissions'");
+            if ($table_check && $table_check->num_rows > 0) {
+                $perm_stmt = $conn_perm->prepare("SELECT permission_code FROM assistant_permissions WHERE user_id = ?");
+                $perm_stmt->bind_param("i", $user_id);
+                $perm_stmt->execute();
+                $perm_result = $perm_stmt->get_result();
+                while ($row = $perm_result->fetch_assoc()) {
+                    $as_permissions[] = $row['permission_code'];
+                }
+                $perm_stmt->close();
+            }
+        } catch (Exception $e) {
+            error_log('Error fetching AS permissions in index: ' . $e->getMessage());
+        }
+        $conn_perm->close();
+    }
+    
+    // 根據權限重定向到第一個有權限的頁面
+    $permission_pages = [
+        'enrollment_list' => 'enrollment_list.php',
+        'continued_admission_list' => 'continued_admission_list.php',
+        'admission_recommend_list' => 'admission_recommend_list.php',
+        'activity_records' => 'activity_records.php',
+        'teacher_activity_records' => 'teacher_activity_records.php'
+    ];
+    
+    $redirect_page = null;
+    foreach ($permission_pages as $perm_code => $page) {
+        if (in_array($perm_code, $as_permissions)) {
+            $redirect_page = $page;
+            break;
+        }
+    }
+    
+    // 如果沒有權限，重定向到登出頁面
+    if (!$redirect_page) {
+        header("Location: logout.php");
+        exit;
+    }
+    
+    // 重定向到第一個有權限的頁面
+    header("Location: " . $redirect_page);
     exit;
 }
 
