@@ -287,6 +287,17 @@ function hasPermission($permission_code, $user_role, $permissions_array) {
                     <span>招生推薦</span>
                 </a>
             <?php endif; ?>
+
+            <!-- 獎金專區 - 僅招生中心特定帳號(12/STA)與管理員 -->
+            <?php
+            $can_bonus_center = ($is_admin || ($username === '12' && $user_role === 'STA'));
+            ?>
+            <?php if ($can_bonus_center): ?>
+                <a href="bonus_center.php" class="menu-item <?php echo in_array($current_page, ['bonus_center', 'bonus_send_list', 'bonus_send_export'], true) ? 'active' : ''; ?>">
+                    <i class="fas fa-gift"></i>
+                    <span>獎金專區</span>
+                </a>
+            <?php endif; ?>
             
             <!-- 統計分析 - 所有角色都可以看到，STAM和AS需要權限 -->
             <?php if ((!$is_stam && !$is_as) || ($is_stam && hasPermission('activity_records', $user_role, $stam_permissions)) || ($is_as && hasPermission('activity_records', $user_role, $as_permissions))): ?>
