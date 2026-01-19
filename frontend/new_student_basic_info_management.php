@@ -387,7 +387,7 @@ $grad_threshold_year = ($current_month >= 8) ? $current_year : $current_year - 1
                 <th style="min-width:110px;">學號</th>
                 <th style="min-width:110px;">姓名</th>
                 <th style="min-width:110px;">班級</th>
-                <th style="min-width:160px;">建立時間</th>
+                <th style="min-width:160px;" id="th-created-at">建立時間  <i class="fas fa-sort"></i></th>
                 <th style="min-width:120px;">操作</th>
               </tr>
             </thead>
@@ -397,7 +397,10 @@ $grad_threshold_year = ($current_month >= 8) ? $current_year : $current_year - 1
               <?php else: ?>
                 <?php foreach ($rows as $r): ?>
                   <tr  class="table-row-clickable">
-                    <td><?php echo htmlspecialchars($r['student_no'] ?? ''); ?></td>
+                    <td> <?php echo htmlspecialchars($r['student_no'] ?? ''); ?> <?php if($view === 'history'): ?>
+                        <span class="tag" style="background:#fff1f0; color:#cf1322;">歷史資料</span>
+                        <?php endif; ?>
+                    </td>
                     <td><strong><?php echo htmlspecialchars($r['student_name'] ?? ''); ?></strong></td>
                     <td><?php echo htmlspecialchars($r['class_name'] ?? ''); ?></td>
                     <td><?php echo htmlspecialchars($r['created_at'] ?? ''); ?></td>
@@ -436,7 +439,8 @@ $grad_threshold_year = ($current_month >= 8) ? $current_year : $current_year - 1
       </div>
     </div>
   </div>
-  <script>        // Apply sort icons
+  <script>  
+      // Apply sort icons
         document.addEventListener('DOMContentLoaded', function() {
             const urlParams = new URLSearchParams(window.location.search);
             const sortBy = urlParams.get('sort_by') || 'created_at';
@@ -457,6 +461,34 @@ $grad_threshold_year = ($current_month >= 8) ? $current_year : $current_year - 1
         let itemsPerPage = 10;
         let allRows = [];
         let filteredRows = [];
+        let sortOrder = 'desc'; // 初始排序
+
+      function sortTableByColumn(colIndex) {
+      const tbody = document.querySelector('#enrollmentTable tbody');
+
+      allRows.sort((a, b) => {
+        const valA = a.cells[colIndex].textContent.trim();
+        const valB = b.cells[colIndex].textContent.trim();
+
+        // 嘗試解析日期
+        const dateA = new Date(valA);
+        const dateB = new Date(valB);
+
+        if (!isNaN(dateA) && !isNaN(dateB)) {
+            return sortOrder === 'asc' ? dateA - dateB : dateB - dateA;
+        }
+
+          // fallback: 字串排序
+          return sortOrder === 'asc' ? valA.localeCompare(valB) : valB.localeCompare(valA);
+        });
+
+          allRows.forEach(row => tbody.appendChild(row));
+          sortOrder = sortOrder === 'asc' ? 'desc' : 'asc';
+          updatePagination();
+        }
+
+        document.getElementById('th-created-at').addEventListener('click', () => sortTableByColumn(3));
+
 
         // 初始化分頁
         function initPagination() {

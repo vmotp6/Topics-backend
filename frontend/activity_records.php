@@ -224,6 +224,26 @@ if ($teacher_id > 0) {
     } else {
         error_log('查詢活動記錄失敗: ' . $conn->error);
     }
+    
+    // 獲取出席記錄數據（用於出席統計圖表）- 按場次統計實到人數
+    $attendance_stats_sql = "
+        SELECT 
+            s.id as session_id,
+            s.session_name,
+            s.session_date,
+            COUNT(*) as attendance_count
+        FROM attendance_records ar
+        INNER JOIN admission_sessions s ON ar.session_id = s.id
+        WHERE ar.attendance_status = 1 
+        AND ar.check_in_time IS NOT NULL
+        GROUP BY s.id, s.session_name, s.session_date
+        ORDER BY attendance_count DESC
+    ";
+    $attendance_stats_result = $conn->query($attendance_stats_sql);
+    $attendance_stats_data = [];
+    if ($attendance_stats_result) {
+        $attendance_stats_data = $attendance_stats_result->fetch_all(MYSQLI_ASSOC);
+    }
 
     if ($result) {
         $teachers_with_records = $result->fetch_all(MYSQLI_ASSOC);
@@ -1029,11 +1049,14 @@ $conn->close();
                         </div>
                         
                         <!-- 五專入學說明會統計按鈕組 -->
-                        <div style="border-top: 1px solid #f0f0f0; padding-top: 20px; margin-top: 20px;">
+                        <div id="admissionStatsSection" style="border-top: 1px solid #f0f0f0; padding-top: 20px; margin-top: 20px;">
                             <h4 style="color: #667eea; margin-bottom: 15px; display: flex; align-items: center; gap: 10px;">
                                 <i class="fas fa-graduation-cap"></i> 五專入學說明會統計分析
                             </h4>
                             <div style="display: flex; gap: 12px; margin-bottom: 24px; flex-wrap: wrap;">
+                                <button class="btn-view" onclick="showAttendanceStats()" style="background: var(--success-color); color: white; border-color: var(--success-color);">
+                                    <i class="fas fa-check-circle"></i> 出席統計圖表
+                                </button>
                                 <button class="btn-view" onclick="showAdmissionGradeStats()">
                                     <i class="fas fa-users"></i> 年級分布分析
                                 </button>
@@ -1060,7 +1083,7 @@ $conn->close();
                             <div class="empty-state">
                                 <i class="fas fa-graduation-cap fa-3x" style="margin-bottom: 16px;"></i>
                                 <h4>選擇上方的統計類型來查看詳細分析</h4>
-                                <p>提供年級分布、學校分布、場次分布、課程選擇、月度趨勢、資訊接收等多維度統計</p>
+                                <p>提供出席統計、年級分布、學校分布、場次分布、課程選擇、資訊接收等多維度統計</p>
                             </div>
                         </div>
                         </div>
@@ -1090,6 +1113,7 @@ $conn->close();
     <script>
     // 將 PHP 數據傳遞給 JavaScript
     const activityRecords = <?php echo json_encode($all_activity_records ?? []); ?>;
+    const attendanceStatsData = <?php echo json_encode($attendance_stats_data ?? []); ?>;
     const isTeacherListView = <?php echo $teacher_id > 0 ? 'false' : 'true'; ?>;
     const userDepartment = '<?php echo $user_department; ?>';
     const currentUser = '<?php echo $current_user; ?>';
@@ -1637,6 +1661,117 @@ $conn->close();
             }, 100);
     }
     
+    function showAttendanceStats() {
+        console.log('showAttendanceStats 被調用');
+        
+        // 按場次統計實到人數（已經在後端按人數排序）
+        const sessionStats = attendanceStatsData.map(item => ({
+            sessionName: item.session_name,
+            sessionDate: item.session_date,
+            attendanceCount: parseInt(item.attendance_count) || 0
+        }));
+        
+        // 確保按人數從多到少排序
+        sessionStats.sort((a, b) => b.attendanceCount - a.attendanceCount);
+        
+        const content = `
+            <div style="margin-bottom: 20px;">
+                <h4 style="color: #667eea; margin-bottom: 15px;">
+                    <i class="fas fa-check-circle"></i> 出席統計圖表
+                </h4>
+                <p style="color: #666; margin-bottom: 20px;">顯示各場次的實到人數統計，讓您直觀了解哪些場次的實到人數比較多</p>
+                
+                <div class="chart-card">
+                    <div class="chart-title">各場次實到人數統計</div>
+                    <div class="chart-container" style="height: ${Math.max(400, sessionStats.length * 40)}px;">
+                        <canvas id="attendanceSessionChart"></canvas>
+                    </div>
+                </div>
+                
+                <div style="background: #f8f9fa; padding: 20px; border-radius: 10px; margin-top: 20px;">
+                    <h5 style="color: #333; margin-bottom: 15px;">場次詳細統計</h5>
+                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 15px;">
+                        ${sessionStats.map(stat => `
+                            <div style="background: white; padding: 15px; border-radius: 8px; border-left: 4px solid #52c41a;">
+                                <div style="font-weight: 600; color: #333; margin-bottom: 5px; font-size: 14px;">${stat.sessionName}</div>
+                                <div style="font-size: 12px; color: #999; margin-bottom: 8px;">${stat.sessionDate ? new Date(stat.sessionDate).toLocaleDateString('zh-TW') : ''}</div>
+                                <div style="font-size: 24px; color: #52c41a; font-weight: bold;">${stat.attendanceCount} 人</div>
+                            </div>
+                        `).join('')}
+                    </div>
+                </div>
+            </div>
+        `;
+        
+        const admissionContent = document.getElementById('admissionAnalyticsContent');
+        if (admissionContent) {
+            admissionContent.innerHTML = content;
+            
+            // 創建橫條圖
+            setTimeout(() => {
+                const canvasElement = document.getElementById('attendanceSessionChart');
+                if (!canvasElement) return;
+                
+                const ctx = canvasElement.getContext('2d');
+                new Chart(ctx, {
+                    type: 'bar',
+                    data: {
+                        labels: sessionStats.map(stat => stat.sessionName),
+                        datasets: [{
+                            label: '實到人數',
+                            data: sessionStats.map(stat => stat.attendanceCount),
+                            backgroundColor: 'rgba(82, 196, 26, 0.8)',
+                            borderColor: '#52c41a',
+                            borderWidth: 2
+                        }]
+                    },
+                    options: {
+                        indexAxis: 'y', // 橫條圖
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: {
+                            legend: {
+                                display: true,
+                                position: 'top'
+                            },
+                            tooltip: {
+                                callbacks: {
+                                    afterLabel: function(context) {
+                                        const index = context.dataIndex;
+                                        const stat = sessionStats[index];
+                                        return `場次日期: ${stat.sessionDate ? new Date(stat.sessionDate).toLocaleDateString('zh-TW') : '未設定'}`;
+                                    }
+                                }
+                            }
+                        },
+                        scales: {
+                            x: {
+                                beginAtZero: true,
+                                ticks: {
+                                    stepSize: 1
+                                },
+                                title: {
+                                    display: true,
+                                    text: '實到人數'
+                                }
+                            },
+                            y: {
+                                ticks: {
+                                    maxRotation: 0,
+                                    minRotation: 0
+                                },
+                                title: {
+                                    display: true,
+                                    text: '場次名稱'
+                                }
+                            }
+                        }
+                    }
+                });
+            }, 100);
+        }
+    }
+    
     function clearActivityCharts() {
         console.log('clearActivityCharts 被調用');
         
@@ -1647,7 +1782,9 @@ $conn->close();
                 instance.canvas.id.includes('monthStatsChart') ||
                 instance.canvas.id.includes('dayStatsChart') ||
                 instance.canvas.id.includes('schoolStatsChart') ||
-                instance.canvas.id.includes('departmentOverviewChart')) {
+                instance.canvas.id.includes('departmentOverviewChart') ||
+                instance.canvas.id.includes('attendanceDateChart') ||
+                instance.canvas.id.includes('attendanceSessionChart')) {
                 instance.destroy();
             }
         });
@@ -5106,6 +5243,28 @@ function showContinuedAdmissionChoicesStats() {
         }
     }
 
+    // 檢查是否從出席紀錄管理頁面進入，如果是則自動顯示圖表並滾動
+    document.addEventListener('DOMContentLoaded', function() {
+        const urlParams = new URLSearchParams(window.location.search);
+        const viewMode = urlParams.get('view');
+        
+        if (viewMode === 'attendance') {
+            // 自動顯示出席統計圖表
+            setTimeout(() => {
+                if (typeof showAttendanceStats === 'function') {
+                    showAttendanceStats();
+                }
+                // 滾動到五專入學說明會統計分析位置
+                setTimeout(() => {
+                    const admissionSection = document.getElementById('admissionStatsSection');
+                    if (admissionSection) {
+                        admissionSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                    }
+                }, 800);
+            }, 300);
+        }
+    });
+    
     document.addEventListener('DOMContentLoaded', function() {
         const searchInput = document.getElementById('searchInput');
         const table = document.getElementById('recordsTable');
