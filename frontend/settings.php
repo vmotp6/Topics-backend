@@ -25,38 +25,52 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
         switch ($_POST['action']) {
             // 場次管理
             case 'add_session':
-                $sql = "INSERT INTO admission_sessions (session_name, session_date, session_type, max_participants, is_active) VALUES (?, ?, ?, ?, 1)";
+                $sql = "INSERT INTO admission_sessions (session_name, session_date, session_end_date, session_type, session_link, session_location, max_participants, description, created_by, is_active) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)";
                 $stmt = $conn->prepare($sql);
                 // session_type: 1=線上, 2=實體
                 $session_type = ($_POST['session_type'] === '線上' || $_POST['session_type'] === '1') ? 1 : 2;
-                // 處理日期格式：從 datetime-local 轉換為 date
-                $session_date = date('Y-m-d', strtotime($_POST['session_date']));
-                // 處理 max_participants：如果為空則設為 null（使用變數引用以支持 null）
+                // 處理日期格式：從 datetime-local 轉換為 datetime
+                $session_date = date('Y-m-d H:i:s', strtotime($_POST['session_date']));
+                // 處理結束時間
+                $session_end_date = !empty($_POST['session_end_date']) ? date('Y-m-d H:i:s', strtotime($_POST['session_end_date'])) : null;
+                // 處理線上連結和實體地點
+                $session_link = ($session_type == 1 && !empty($_POST['session_link'])) ? trim($_POST['session_link']) : null;
+                $session_location = ($session_type == 2 && !empty($_POST['session_location'])) ? trim($_POST['session_location']) : null;
+                // 處理 max_participants：如果為空則設為 null
                 $max_participants = !empty($_POST['max_participants']) ? intval($_POST['max_participants']) : null;
-                // bind_param: session_name(s), session_date(s), session_type(i), max_participants(i/null)
-                // 使用變數引用來處理 null 值
+                // 處理說明
+                $description = !empty($_POST['description']) ? $_POST['description'] : null;
+                // 記錄創建者
+                $created_by = isset($_SESSION['user_id']) ? intval($_SESSION['user_id']) : null;
+                // bind_param: session_name(s), session_date(s), session_end_date(s), session_type(i), session_link(s), session_location(s), max_participants(i), description(s), created_by(i)
                 $session_name = $_POST['session_name'];
-                $stmt->bind_param("ssii", $session_name, $session_date, $session_type, $max_participants);
+                $stmt->bind_param("sssississi", $session_name, $session_date, $session_end_date, $session_type, $session_link, $session_location, $max_participants, $description, $created_by);
                 if ($stmt->execute()) {
                     $message = "場次新增成功！"; $messageType = "success";
+                } else {
+                    $message = "場次新增失敗：" . $stmt->error; $messageType = "error";
                 }
+                $stmt->close();
                 break;
 
             case 'update_session':
-                $sql = "UPDATE admission_sessions SET session_name = ?, session_date = ?, session_type = ?, max_participants = ?, is_active = ? WHERE id = ?";
+                $sql = "UPDATE admission_sessions SET session_name = ?, session_date = ?, session_end_date = ?, session_type = ?, max_participants = ?, description = ?, is_active = ? WHERE id = ?";
                 $stmt = $conn->prepare($sql);
                 // session_type: 1=線上, 2=實體
                 $session_type = ($_POST['session_type'] === '線上' || $_POST['session_type'] === '1') ? 1 : 2;
                 $is_active = intval($_POST['is_active']);
                 $session_id = intval($_POST['session_id']);
-                // 處理日期格式：從 datetime-local 轉換為 date
-                $session_date = date('Y-m-d', strtotime($_POST['session_date']));
-                // 處理 max_participants：如果為空則設為 null（使用變數引用以支持 null）
+                // 處理日期格式：從 datetime-local 轉換為 datetime
+                $session_date = date('Y-m-d H:i:s', strtotime($_POST['session_date']));
+                // 處理結束時間
+                $session_end_date = !empty($_POST['session_end_date']) ? date('Y-m-d H:i:s', strtotime($_POST['session_end_date'])) : null;
+                // 處理 max_participants：如果為空則設為 null
                 $max_participants = !empty($_POST['max_participants']) ? intval($_POST['max_participants']) : null;
-                // bind_param: session_name(s), session_date(s), session_type(i), max_participants(i/null), is_active(i), session_id(i)
-                // 使用變數引用來處理 null 值
+                // 處理說明
+                $description = !empty($_POST['description']) ? $_POST['description'] : null;
+                // bind_param: session_name(s), session_date(s), session_end_date(s), session_type(i), max_participants(i), description(s), is_active(i), session_id(i)
                 $session_name = $_POST['session_name'];
-                $stmt->bind_param("ssiiii", $session_name, $session_date, $session_type, $max_participants, $is_active, $session_id);
+                $stmt->bind_param("sssiisii", $session_name, $session_date, $session_end_date, $session_type, $max_participants, $description, $is_active, $session_id);
                 if ($stmt->execute()) {
                     $message = "場次更新成功！"; $messageType = "success";
                 }
@@ -94,13 +108,16 @@ if (!in_array(strtolower($sortOrder), ['asc', 'desc'])) {
     $sortOrder = 'desc';
 }
 
-// 獲取所有資料
+// 獲取所有資料（包含出席統計）
+// 場次設定頁面顯示所有場次，不區分歷史紀錄
 $sessions_sql = "
     SELECT s.*, 
-           COUNT(a.id) as registration_count,
-           (s.max_participants - COUNT(a.id)) as remaining_slots
+           COUNT(DISTINCT a.id) as registration_count,
+           (s.max_participants - COUNT(DISTINCT a.id)) as remaining_slots,
+           COUNT(DISTINCT CASE WHEN ar.attendance_status = 1 THEN ar.id END) as attendance_count
     FROM admission_sessions s
     LEFT JOIN admission_applications a ON s.id = a.session_id 
+    LEFT JOIN attendance_records ar ON s.id = ar.session_id AND a.id = ar.application_id
     GROUP BY s.id 
     ORDER BY s.$sortBy $sortOrder";
 $sessions = $conn->query($sessions_sql)->fetch_all(MYSQLI_ASSOC);
@@ -358,6 +375,7 @@ $conn->close();
                                     <th onclick="sortTable('session_type')">類型 <span class="sort-icon" id="sort-session_type"></span></th>
                                     <th onclick="sortTable('max_participants')">報名/上限 <span class="sort-icon" id="sort-max_participants"></span></th>
                                     <th>剩餘名額</th>
+                                    <th>出席人數</th>
                                     <th onclick="sortTable('is_active')">狀態 <span class="sort-icon" id="sort-is_active"></span></th>
                                     <th>操作</th>                                       
                                 </tr>
@@ -367,7 +385,17 @@ $conn->close();
                                 <tr>
                                     <td><?php echo htmlspecialchars($item['session_name']); ?></td>
                                     <td><?php echo date('Y/m/d H:i', strtotime($item['session_date'])); ?></td>
-                                    <td><?php echo ($item['session_type'] == 1) ? '線上' : '實體'; ?></td>
+                                    <td>
+                                        <?php 
+                                        $session_type_text = ($item['session_type'] == 1) ? '線上' : '實體';
+                                        echo $session_type_text;
+                                        if ($item['session_type'] == 1 && !empty($item['session_link'])) {
+                                            echo '<br><small style="color: var(--primary-color);"><a href="' . htmlspecialchars($item['session_link']) . '" target="_blank" style="color: var(--primary-color); text-decoration: none;">' . htmlspecialchars($item['session_link']) . '</a></small>';
+                                        } else if ($item['session_type'] == 2 && !empty($item['session_location'])) {
+                                            echo '<br><small style="color: var(--text-secondary-color);">' . htmlspecialchars($item['session_location']) . '</small>';
+                                        }
+                                        ?>
+                                    </td>
                                     <td><?php echo $item['registration_count']; ?> / <?php echo $item['max_participants'] ?: '無限'; ?></td>
                                     <td>
                                         <?php 
@@ -382,11 +410,25 @@ $conn->close();
                                         }
                                         ?>
                                     </td>
+                                    <td>
+                                        <?php 
+                                        $attendance_count = isset($item['attendance_count']) ? intval($item['attendance_count']) : 0;
+                                        $registration_count = isset($item['registration_count']) ? intval($item['registration_count']) : 0;
+                                        if ($registration_count > 0) {
+                                            $attendance_rate = round(($attendance_count / $registration_count) * 100, 1);
+                                            echo '<span style="color: var(--success-color); font-weight: 600;">' . $attendance_count . '</span> / ' . $registration_count;
+                                            echo ' <small style="color: var(--text-secondary-color);">(' . $attendance_rate . '%)</small>';
+                                        } else {
+                                            echo '<span style="color: var(--text-secondary-color);">0 / 0</span>';
+                                        }
+                                        ?>
+                                    </td>
                                     <td><span class="status-badge <?php echo $item['is_active'] ? 'status-active' : 'status-inactive'; ?>"><?php echo $item['is_active'] ? '啟用' : '停用'; ?></span></td>
                                     <td>
                                         <div class="action-buttons">
                                         <button class="btn-action btn-edit" onclick='editSession(<?php echo json_encode($item); ?>)'>編輯</button>
                                         <a href="view_registrations.php?session_id=<?php echo $item['id']; ?>" class="btn-action btn-view-list">查看名單</a>
+                                        <a href="attendance_management.php?session_id=<?php echo $item['id']; ?>" class="btn-action btn-view-list" style="color: var(--warning-color); border-color: var(--warning-color);">出席紀錄</a>
                                         <form method="POST" style="display:inline;" onsubmit="return confirm('確定要刪除此場次嗎？');">
                                             <input type="hidden" name="action" value="delete_session">
                                             <input type="hidden" name="session_id" value="<?php echo $item['id']; ?>">
@@ -444,10 +486,14 @@ $conn->close();
                         <label class="form-label"><span class="required-asterisk">*</span>場次日期</label>
                         <input type="datetime-local" name="session_date" id="add_session_date" class="form-control" required>
                     </div>
+                    <div class="form-group">
+                        <label class="form-label">場次結束時間 (選填，用於自動發送提醒郵件)</label>
+                        <input type="datetime-local" name="session_end_date" id="add_session_end_date" class="form-control">
+                    </div>
                     <div class="form-row">
                         <div class="form-group">
                             <label class="form-label"><span class="required-asterisk">*</span>場次類型</label>
-                            <select name="session_type" class="form-control" required>
+                            <select name="session_type" id="add_session_type" class="form-control" required onchange="toggleSessionTypeFields('add')">
                                 <option value="實體">實體</option>
                                 <option value="線上">線上</option>
                             </select>
@@ -456,6 +502,20 @@ $conn->close();
                             <label class="form-label">人數上限 (選填)</label>
                             <input type="number" name="max_participants" class="form-control" min="1">
                         </div>
+                    </div>
+                    <div class="form-group" id="add_session_link_group" style="display: none;">
+                        <label class="form-label"><span class="required-asterisk">*</span>線上場次連結</label>
+                        <input type="url" name="session_link" id="add_session_link" class="form-control" placeholder="https://meet.google.com/xxx 或 https://zoom.us/j/xxx">
+                        <small style="color: var(--text-secondary-color); margin-top: 4px; display: block;">請輸入線上會議的連結網址</small>
+                    </div>
+                    <div class="form-group" id="add_session_location_group">
+                        <label class="form-label"><span class="required-asterisk">*</span>實體場次地點</label>
+                        <input type="text" name="session_location" id="add_session_location" class="form-control" placeholder="例如：康寧大學A棟先雲廳">
+                        <small style="color: var(--text-secondary-color); margin-top: 4px; display: block;">請輸入實體場次的舉辦地點</small>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">場次說明 (選填)</label>
+                        <textarea name="description" class="form-control" rows="3" placeholder="請輸入場次說明，此說明將顯示在出席紀錄管理頁面"></textarea>
                     </div>
                 </div>
                 <div class="modal-footer">
@@ -485,10 +545,14 @@ $conn->close();
                         <label class="form-label"><span class="required-asterisk">*</span> 場次日期</label>
                         <input type="datetime-local" name="session_date" id="edit_session_date" class="form-control" required>
                     </div>
+                    <div class="form-group">
+                        <label class="form-label">場次結束時間 (選填，用於自動發送提醒郵件)</label>
+                        <input type="datetime-local" name="session_end_date" id="edit_session_end_date" class="form-control">
+                    </div>
                     <div class="form-row">
                         <div class="form-group">
                             <label class="form-label"><span class="required-asterisk">*</span> 場次類型</label>
-                            <select name="session_type" id="edit_session_type" class="form-control" required>
+                            <select name="session_type" id="edit_session_type" class="form-control" required onchange="toggleSessionTypeFields('edit')">
                                 <option value="實體">實體</option>
                                 <option value="線上">線上</option>
                             </select>
@@ -497,6 +561,20 @@ $conn->close();
                             <label class="form-label">人數上限 (選填)</label>
                             <input type="number" name="max_participants" id="edit_max_participants" class="form-control" min="1">
                         </div>
+                    </div>
+                    <div class="form-group" id="edit_session_link_group" style="display: none;">
+                        <label class="form-label"><span class="required-asterisk">*</span> 線上場次連結</label>
+                        <input type="url" name="session_link" id="edit_session_link" class="form-control" placeholder="https://meet.google.com/xxx 或 https://zoom.us/j/xxx">
+                        <small style="color: var(--text-secondary-color); margin-top: 4px; display: block;">請輸入線上會議的連結網址</small>
+                    </div>
+                    <div class="form-group" id="edit_session_location_group">
+                        <label class="form-label"><span class="required-asterisk">*</span> 實體場次地點</label>
+                        <input type="text" name="session_location" id="edit_session_location" class="form-control" placeholder="例如：台北市信義區信義路五段7號">
+                        <small style="color: var(--text-secondary-color); margin-top: 4px; display: block;">請輸入實體場次的舉辦地點</small>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">場次說明 (選填)</label>
+                        <textarea name="description" id="edit_description" class="form-control" rows="3" placeholder="請輸入場次說明，此說明將顯示在出席紀錄管理頁面"></textarea>
                     </div>
                     <div class="form-group">
                         <label class="form-label"><span class="required-asterisk">*</span> 狀態</label>
@@ -708,6 +786,56 @@ $conn->close();
                     dateInput.setAttribute('min', minDateTime);
                     dateInput.value = ''; // 清空之前的值
                 }
+                // 初始化場次類型欄位顯示
+                toggleSessionTypeFields('add');
+            }
+        }
+        
+        // 根據場次類型顯示/隱藏相應的輸入框
+        function toggleSessionTypeFields(mode) {
+            const prefix = mode === 'add' ? 'add' : 'edit';
+            const sessionType = document.getElementById(prefix + '_session_type').value;
+            const linkGroup = document.getElementById(prefix + '_session_link_group');
+            const locationGroup = document.getElementById(prefix + '_session_location_group');
+            const linkInput = document.getElementById(prefix + '_session_link');
+            const locationInput = document.getElementById(prefix + '_session_location');
+            
+            if (sessionType === '線上') {
+                linkGroup.style.display = 'block';
+                locationGroup.style.display = 'none';
+                linkInput.required = true;
+                locationInput.required = false;
+                locationInput.value = ''; // 清空地點
+            } else {
+                linkGroup.style.display = 'none';
+                locationGroup.style.display = 'block';
+                linkInput.required = false;
+                locationInput.required = true;
+                linkInput.value = ''; // 清空連結
+            }
+        }
+        
+        // 根據場次類型顯示/隱藏相應的輸入框
+        function toggleSessionTypeFields(mode) {
+            const prefix = mode === 'add' ? 'add' : 'edit';
+            const sessionType = document.getElementById(prefix + '_session_type').value;
+            const linkGroup = document.getElementById(prefix + '_session_link_group');
+            const locationGroup = document.getElementById(prefix + '_session_location_group');
+            const linkInput = document.getElementById(prefix + '_session_link');
+            const locationInput = document.getElementById(prefix + '_session_location');
+            
+            if (sessionType === '線上') {
+                linkGroup.style.display = 'block';
+                locationGroup.style.display = 'none';
+                linkInput.required = true;
+                locationInput.required = false;
+                locationInput.value = ''; // 清空地點
+            } else {
+                linkGroup.style.display = 'none';
+                locationGroup.style.display = 'block';
+                linkInput.required = false;
+                locationInput.required = true;
+                linkInput.value = ''; // 清空連結
             }
         }
 
@@ -734,10 +862,19 @@ $conn->close();
             const date = new Date(item.session_date.replace(' ', 'T'));
             const formattedDate = date.toISOString().slice(0, 16);
             document.getElementById('edit_session_date').value = formattedDate;
+            // 處理結束時間
+            if (item.session_end_date) {
+                const endDate = new Date(item.session_end_date.replace(' ', 'T'));
+                const formattedEndDate = endDate.toISOString().slice(0, 16);
+                document.getElementById('edit_session_end_date').value = formattedEndDate;
+            } else {
+                document.getElementById('edit_session_end_date').value = '';
+            }
             // session_type 在資料庫中是數字 (1=線上, 2=實體)，但表單需要顯示文字
             const sessionTypeMap = {1: '線上', 2: '實體'};
             document.getElementById('edit_session_type').value = sessionTypeMap[item.session_type] || item.session_type;
             document.getElementById('edit_max_participants').value = item.max_participants || '';
+            document.getElementById('edit_description').value = item.description || '';
             document.getElementById('edit_session_is_active').value = item.is_active;
             showModal('editSessionModal');
         }
