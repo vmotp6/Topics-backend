@@ -254,6 +254,27 @@ try {
             $where_clause = " WHERE ar.student_interest = ?";
         }
     }
+
+    // 顯示模式：預設顯示全部（'all'），若使用 view 參數則過濾為通過/需人工審核/不通過
+    $view_mode = $_GET['view'] ?? 'all';
+    $status_condition_sql = '';
+    
+    if ($view_mode === '') {
+        $view_mode = 'all';
+    }
+    if ($view_mode === 'fail') {
+        $status_condition_sql = "(ar.status = 'RE' OR ar.status = 'rejected')";
+    } elseif ($view_mode === 'manual') {
+        $status_condition_sql = "(ar.status = 'MC' OR ar.status = '需人工確認')";
+    } elseif ($view_mode === 'pass') {
+        $status_condition_sql = "(ar.status = 'AP' OR ar.status = 'approved')";
+    } else {
+        // 'all' -> 不加入狀態過濾
+        $status_condition_sql = '';
+    }
+
+    // 注意：不要在 SQL 階段過濾狀態，改為在 PHP 計算 auto_review_result 後再過濾
+    // 這能避免 database 中 status 欄位未同步或使用不同表示法時查詢結果為空的問題。
     
     // 構建SQL查詢 - 根據資料庫實際結構
     // 根據資料庫結構，admission_recommendations 表有 status 和 enrollment_status，但沒有 assigned_department 和 assigned_teacher_id
@@ -425,7 +446,8 @@ try {
     // 同名去重提示：若多人填寫相同「被推薦人姓名」，以 created_at 最早者為優先
     // 其餘較晚建立者在審核結果顯示紅字提示
     // -------------------------------------------------------------
-    $earliest_by_name = []; // key => ['ts' => int, 'id' => int]
+    // 建立同名推薦的優先者：若老師科系與學生志願科系相同，則優先；否則以建立時間/ID 最早者為優先
+    $earliest_by_name = []; // key => ['ts' => int, 'id' => int, 'dept_match' => bool]
     foreach ($recommendations as $tmp) {
         $nm = trim((string)($tmp['student_name'] ?? ''));
         if ($nm === '') continue;
@@ -435,13 +457,29 @@ try {
         if ($ts === false) $ts = PHP_INT_MAX;
         $idv = (int)($tmp['id'] ?? 0);
 
+        // 判斷科系是否匹配：推薦人科系 vs 學生志願科系（若都有代碼則直接比對）
+        $rec_dept = trim((string)($tmp['recommender_department_code'] ?? ''));
+        $stu_interest = trim((string)($tmp['student_interest_code'] ?? ''));
+        $dept_match = false;
+        if ($rec_dept !== '' && $stu_interest !== '' && $rec_dept === $stu_interest) {
+            $dept_match = true;
+        }
+
         if (!isset($earliest_by_name[$key])) {
-            $earliest_by_name[$key] = ['ts' => $ts, 'id' => $idv];
+            $earliest_by_name[$key] = ['ts' => $ts, 'id' => $idv, 'dept_match' => $dept_match];
             continue;
         }
         $cur = $earliest_by_name[$key];
-        if ($ts < $cur['ts'] || ($ts === $cur['ts'] && $idv < $cur['id'])) {
-            $earliest_by_name[$key] = ['ts' => $ts, 'id' => $idv];
+        // 若新筆有科系匹配而目前儲存的沒有，則以新筆為優先（科系優先於時間）
+        if ($dept_match && empty($cur['dept_match'])) {
+            $earliest_by_name[$key] = ['ts' => $ts, 'id' => $idv, 'dept_match' => $dept_match];
+            continue;
+        }
+        // 若兩者科系匹配狀態相同，則以時間/ID 最早者為優先
+        if ((bool)$dept_match === (bool)$cur['dept_match']) {
+            if ($ts < $cur['ts'] || ($ts === $cur['ts'] && $idv < $cur['id'])) {
+                $earliest_by_name[$key] = ['ts' => $ts, 'id' => $idv, 'dept_match' => $dept_match];
+            }
         }
     }
 
@@ -637,6 +675,29 @@ try {
         }
     }
     
+    // --- 根據 view_mode 在 PHP 層級過濾資料（pass/manual/fail/all） ---
+    // 優先使用資料庫 status（若為代碼 AP/RE/MC），否則使用自動比對結果 auto_review_result
+    $status_code_to_label = [ 'AP' => '通過', 'RE' => '不通過', 'MC' => '需人工確認' ];
+    if (isset($view_mode) && $view_mode !== 'all') {
+        $filtered = [];
+        foreach ($recommendations as $rec) {
+            $label = '';
+            $st = trim((string)($rec['status'] ?? ''));
+            if ($st !== '' && isset($status_code_to_label[$st])) {
+                $label = $status_code_to_label[$st];
+            } elseif (!empty($rec['auto_review_result'])) {
+                $label = $rec['auto_review_result'];
+            }
+            // 正規化可能的文字不同
+            if ($label === '人工確認') $label = '需人工確認';
+
+            if ($view_mode === 'pass' && $label === '通過') $filtered[] = $rec;
+            if ($view_mode === 'manual' && $label === '需人工確認') $filtered[] = $rec;
+            if ($view_mode === 'fail' && $label === '不通過') $filtered[] = $rec;
+        }
+        $recommendations = $filtered;
+    }
+
     // 調試信息：檢查總數（僅在開發環境顯示）
     if (isset($_GET['debug']) && $_GET['debug'] == '1') {
         $count_sql = "SELECT COUNT(*) as total FROM admission_recommendations";
@@ -1002,6 +1063,11 @@ function getEnrollmentStatusClass($status) {
             background: #1890ff;
             color: white;
         }
+        .btn-view.active {
+            background: #1890ff;
+            color: #fff;
+            box-shadow: 0 1px 0 rgba(0,0,0,0.04) inset;
+        }
         button.btn-view {
             font-family: inherit;
         }
@@ -1240,16 +1306,8 @@ function getEnrollmentStatusClass($status) {
                     </div>
                     <div class="table-search">
                         <input type="text" id="searchInput" class="search-input" placeholder="搜尋被推薦人姓名、學校或電話...">
-                            <?php if ($can_view_review_result): ?>
-                                <select id="reviewResultFilter" class="search-select" title="審核結果篩選">
-                                    <option value="">審核結果：全部</option>
-                                    <option value="通過">通過</option>
-                                    <option value="不通過">不通過</option>
-                                    <option value="需人工確認">需人工確認</option>
-                                </select>
-                            <?php endif; ?>
-                            <button type="button" id="btnQuery" class="search-btn">查詢</button>
-                            <button type="button" id="btnClear" class="search-btn secondary">清除</button>
+
+                       
                     </div>
                 </div>
 
@@ -1264,70 +1322,9 @@ function getEnrollmentStatusClass($status) {
                                 $table_exists = $table_check && $table_check->num_rows > 0;
                                 
                                 if ($table_exists) {
-                                    // 獲取總記錄數
-                                    $total_check = $conn->query("SELECT COUNT(*) as total FROM admission_recommendations");
-                                    $total_row = $total_check ? $total_check->fetch_assoc() : null;
-                                    $total_count = $total_row ? $total_row['total'] : 0;
-                                    
-                                    if ($total_count > 0) {
-                                        // 有數據但查詢結果為空，可能是過濾條件或SQL問題
-                                        // 移除 IMD 特定過濾，現在使用角色過濾
-                                        if ($is_director && !empty($user_department_code)) {
-                                            // 如果是主任，檢查有多少符合條件的記錄（興趣是自己科系或已分配給自己科系）
-                                            $filter_check = $conn->query("SELECT COUNT(*) as total FROM admission_recommendations WHERE (student_interest = '" . $conn->real_escape_string($user_department_code) . "' OR assigned_department = '" . $conn->real_escape_string($user_department_code) . "')");
-                                            $filter_row = $filter_check ? $filter_check->fetch_assoc() : null;
-                                            $filter_count = $filter_row ? $filter_row['total'] : 0;
-                                            
-                                            // 獲取所有學生興趣的值（用於調試）
-                                            $interest_check = $conn->query("SELECT DISTINCT student_interest FROM admission_recommendations WHERE student_interest IS NOT NULL AND student_interest != '' LIMIT 10");
-                                            $interest_values = [];
-                                            if ($interest_check) {
-                                                while ($row = $interest_check->fetch_assoc()) {
-                                                    $interest_values[] = $row['student_interest'];
-                                                }
-                                            }
-                                            
-                                            // 檢查已分配給IMD的記錄數
-                                            // 移除身份過濾相關的提示
-                                            if ($filter_count == 0) {
-                                                // 顯示提示：沒有數據
-                                                echo "<div style='background: #fff7e6; border: 1px solid #ffd591; padding: 16px; margin: 16px; border-radius: 4px;'>";
-                                                echo "<p><strong>提示：</strong>目前沒有推薦記錄。</p>";
-                                                if ($assigned_count > 0) {
-                                                    echo "<p>已分配給 IMD 的記錄數：<strong>{$assigned_count}</strong></p>";
-                                                }
-                                                if (!empty($interest_values)) {
-                                                    echo "<p><strong>資料庫中的學生興趣值範例：</strong></p>";
-                                                    echo "<ul style='margin: 8px 0; padding-left: 20px;'>";
-                                                    foreach ($interest_values as $val) {
-                                                        echo "<li>" . htmlspecialchars($val) . "</li>";
-                                                    }
-                                                    echo "</ul>";
-                                                }
-                                                echo "</div>";
-                                            }
-                                        } else {
-                                            // admin1應該看到所有記錄，但查詢結果為空，可能是SQL問題
-                                            echo "<div style='background: #fff2f0; border: 1px solid #ffccc7; padding: 16px; margin: 16px; border-radius: 4px;'>";
-                                            echo "<p><strong>警告：</strong>資料庫中共有 <strong>{$total_count}</strong> 筆推薦記錄，但查詢結果為空。</p>";
-                                            echo "<p>可能是SQL查詢有問題，請檢查錯誤日誌或聯繫系統管理員。</p>";
-                                            if (isset($_GET['debug']) && $_GET['debug'] == '1') {
-                                                echo "<p style='margin-top: 8px; font-size: 12px; color: #8c8c8c;'>SQL: " . htmlspecialchars($sql) . "</p>";
-                                            }
-                                            echo "</div>";
-                                        }
-                                    } else {
-                                        // 表存在但沒有數據
-                                        echo "<div style='background: #e6f7ff; border: 1px solid #91d5ff; padding: 16px; margin: 16px; border-radius: 4px;'>";
-                                        echo "<p><strong>資訊：</strong>資料表存在，但目前沒有任何推薦記錄。</p>";
-                                        echo "</div>";
-                                    }
+                                    // 不輸出空結果提示，保留頁面上方的篩選按鈕以供使用者操作
                                 } else {
-                                    // 表不存在
-                                    echo "<div style='background: #fff2f0; border: 1px solid #ffccc7; padding: 16px; margin: 16px; border-radius: 4px;'>";
-                                    echo "<p><strong>錯誤：</strong>資料表 'admission_recommendations' 不存在。</p>";
-                                    echo "<p>請聯繫系統管理員建立資料表。</p>";
-                                    echo "</div>";
+                                    // 資料表不存在時也不輸出提示（如需顯示錯誤，可在 debug 模式下啟用）
                                 }
                             } catch (Exception $e) {
                                 // 顯示錯誤信息
@@ -1338,18 +1335,23 @@ function getEnrollmentStatusClass($status) {
                         }
                         ?>
                         <?php if (empty($recommendations)): ?>
-                            <div class="empty-state">
-                                <i class="fas fa-inbox fa-3x" style="margin-bottom: 16px;"></i>
-                                <p>目前尚無任何被推薦人資料。</p>
-                                <?php if (isset($_GET['debug']) && $_GET['debug'] == '1'): ?>
-                                    <p style="margin-top: 16px; color: #8c8c8c; font-size: 12px;">
-                                        調試模式：當前用戶 = <?php echo htmlspecialchars($username); ?>, 
-                                        角色 = <?php echo htmlspecialchars($user_role); ?>, 
-                                        科系 = <?php echo htmlspecialchars($user_department_code ?? '無'); ?>
-                                    </p>
-                                <?php endif; ?>
+                            <div style="display:flex; align-items:center; gap:12px; margin-bottom:12px; margin-left: 55px; margin-top: 15px;">
+                                <a class="btn-view<?php echo ($view_mode === '') ? ' active' : ''; ?>" href="?view=all">顯示全部</a>
+                                <a class="btn-view<?php echo ($view_mode === 'pass') ? ' active' : ''; ?>" href="?view=pass">通過</a>
+                                <a class="btn-view<?php echo ($view_mode === 'manual') ? ' active' : ''; ?>" href="?view=manual">需人工審核</a>
+                                <a class="btn-view<?php echo ($view_mode === 'fail') ? ' active' : ''; ?>" href="?view=fail">不通過</a>
+                            </div>
+                            <div class="empty-state" style="margin-left:55px; margin-top:24px; text-align:center;">
+                                <i class="fas fa-inbox fa-3x" style="color:#8c8c8c; display:block; margin:0 auto 10px;"></i>
+                                <p style="color:#8c8c8c; font-size:14px;">目前尚無人工審核資料。</p>
                             </div>
                         <?php else: ?>
+                            <div style="display:flex; align-items:center; gap:12px; margin-bottom:12px; margin-left: 55px; margin-top: 15px;">
+                                <a class="btn-view<?php echo ($view_mode === '') ? ' active' : ''; ?>" href="?view=all">顯示全部</a>
+                                <a class="btn-view<?php echo ($view_mode === 'pass') ? ' active' : ''; ?>" href="?view=pass">通過</a>
+                                <a class="btn-view<?php echo ($view_mode === 'manual') ? ' active' : ''; ?>" href="?view=manual">需人工審核</a>
+                                <a class="btn-view<?php echo ($view_mode === 'fail') ? ' active' : ''; ?>" href="?view=fail">不通過</a>
+                            </div>
                             <table class="table" id="recommendationTable">
                                 <thead>
                                     <tr>
@@ -1498,13 +1500,22 @@ function getEnrollmentStatusClass($status) {
                                                    onclick="toggleDetail(<?php echo $item['id']; ?>)">
                                                     <i class="fas fa-eye"></i> <span class="btn-text">查看詳情</span>
                                                 </button>
-                                                <?php 
-                                                    // 檢查是否需要顯示修改結果按鈕（僅在審核結果為需人工確認時）
+                                                <?php
                                                     $current_status = isset($item['status']) ? trim((string)$item['status']) : '';
                                                     $auto_review = isset($item['auto_review_result']) ? trim((string)$item['auto_review_result']) : '';
-                                                    if ($auto_review === '人工確認') $auto_review = '需人工確認';
-                                                    $show_update_btn = ($can_view_review_result && ($current_status === 'MC' || $auto_review === '需人工確認'));
+
+                                                    // 統一人工確認名稱
+                                                    if ($auto_review === '人工確認') {
+                                                        $auto_review = '需人工確認';
+                                                    }
+
+                                                    // 只有「需人工確認」且尚未被人工改成通過/不通過，才顯示
+                                                    $show_update_btn =
+                                                        $can_view_review_result &&
+                                                        $auto_review === '需人工確認' &&
+                                                        !in_array($current_status, ['AP', 'RE'], true);
                                                 ?>
+
                                                 <?php if ($show_update_btn): ?>
                                                 <button type="button" 
                                                    class="btn-view" 
@@ -1545,6 +1556,7 @@ function getEnrollmentStatusClass($status) {
                                                     $auto_review = isset($item['auto_review_result']) ? trim((string)$item['auto_review_result']) : '';
                                                     if ($auto_review === '人工確認') $auto_review = '需人工確認';
                                                     $show_update_btn = ($can_view_review_result && ($current_status === 'MC' || $auto_review === '需人工確認'));
+                                                    $show_update_btn = ($can_view_review_result && ($current_status === 'MC' || $auto_review === '需人工確認') && $current_status !== 'AP' && $current_status !== 'RE');
                                                 ?>
                                                 <?php if ($show_update_btn): ?>
                                                 <button type="button" 
@@ -1574,6 +1586,7 @@ function getEnrollmentStatusClass($status) {
                                                     $auto_review = isset($item['auto_review_result']) ? trim((string)$item['auto_review_result']) : '';
                                                     if ($auto_review === '人工確認') $auto_review = '需人工確認';
                                                     $show_update_btn = ($can_view_review_result && ($current_status === 'MC' || $auto_review === '需人工確認'));
+                                                    $show_update_btn = ($can_view_review_result && ($current_status === 'MC' || $auto_review === '需人工確認') && $current_status !== 'AP' && $current_status !== 'RE');
                                                 ?>
                                                 <?php if ($show_update_btn): ?>
                                                 <button type="button" 
