@@ -14,7 +14,7 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
 // 權限：沿用審核結果可視權限（username=12 & role=STA）
 $username = isset($_SESSION['username']) ? $_SESSION['username'] : '';
 $user_role = isset($_SESSION['role']) ? $_SESSION['role'] : '';
-$can_view_review_resu0000000000000000000000000lt = ($username === '12' && $user_role === 'STA');
+$can_view_review_result = ($username === '12' && $user_role === 'STA');
 if (!$can_view_review_result) {
     http_response_code(403);
     echo json_encode(['success' => false, 'message' => '權限不足'], JSON_UNESCAPED_UNICODE);
@@ -82,21 +82,58 @@ try {
         if ($bonus_amount < 0) $bonus_amount = 1500;
     }
 
-    // 取得推薦人資料（優先 recommender 表）
+    // 取得推薦人資料（優先 recommender 表）與被推薦人姓名（用於獎金平分）
     $has_recommender_table = false;
     $t = $conn->query("SHOW TABLES LIKE 'recommender'");
     $has_recommender_table = ($t && $t->num_rows > 0);
+    $has_recommended_table = false;
+    $t2 = $conn->query("SHOW TABLES LIKE 'recommended'");
+    $has_recommended_table = ($t2 && $t2->num_rows > 0);
 
     $recommender_name = '';
     $recommender_student_id = '';
+    $student_name = '';
+    $created_at = '';
 
-    if ($has_recommender_table) {
-        $stmt = $conn->prepare("SELECT COALESCE(rec.name,'') AS recommender_name, COALESCE(rec.id,'') AS recommender_student_id, COALESCE(ar.status,'') AS status
+    // 同時帶出學生姓名（recommended.name 或 ar.student_name 向後相容）與 created_at（用於平分餘數排序）
+    if ($has_recommender_table && $has_recommended_table) {
+        $stmt = $conn->prepare("SELECT 
+                COALESCE(rec.name,'') AS recommender_name,
+                COALESCE(rec.id,'') AS recommender_student_id,
+                COALESCE(ar.status,'') AS status,
+                COALESCE(red.name,'') AS student_name,
+                COALESCE(ar.created_at,'') AS created_at
+            FROM admission_recommendations ar
+            LEFT JOIN recommender rec ON ar.id = rec.recommendations_id
+            LEFT JOIN recommended red ON ar.id = red.recommendations_id
+            WHERE ar.id = ? LIMIT 1");
+    } elseif ($has_recommender_table) {
+        $stmt = $conn->prepare("SELECT 
+                COALESCE(rec.name,'') AS recommender_name,
+                COALESCE(rec.id,'') AS recommender_student_id,
+                COALESCE(ar.status,'') AS status,
+                COALESCE(ar.student_name,'') AS student_name,
+                COALESCE(ar.created_at,'') AS created_at
             FROM admission_recommendations ar
             LEFT JOIN recommender rec ON ar.id = rec.recommendations_id
             WHERE ar.id = ? LIMIT 1");
+    } elseif ($has_recommended_table) {
+        $stmt = $conn->prepare("SELECT 
+                COALESCE(ar.recommender_name,'') AS recommender_name,
+                COALESCE(ar.recommender_student_id,'') AS recommender_student_id,
+                COALESCE(ar.status,'') AS status,
+                COALESCE(red.name,'') AS student_name,
+                COALESCE(ar.created_at,'') AS created_at
+            FROM admission_recommendations ar
+            LEFT JOIN recommended red ON ar.id = red.recommendations_id
+            WHERE ar.id = ? LIMIT 1");
     } else {
-        $stmt = $conn->prepare("SELECT COALESCE(ar.recommender_name,'') AS recommender_name, COALESCE(ar.recommender_student_id,'') AS recommender_student_id, COALESCE(ar.status,'') AS status
+        $stmt = $conn->prepare("SELECT 
+                COALESCE(ar.recommender_name,'') AS recommender_name,
+                COALESCE(ar.recommender_student_id,'') AS recommender_student_id,
+                COALESCE(ar.status,'') AS status,
+                COALESCE(ar.student_name,'') AS student_name,
+                COALESCE(ar.created_at,'') AS created_at
             FROM admission_recommendations ar
             WHERE ar.id = ? LIMIT 1");
     }
@@ -118,6 +155,8 @@ try {
     $recommender_name = trim((string)($row['recommender_name'] ?? ''));
     $recommender_student_id = trim((string)($row['recommender_student_id'] ?? ''));
     $status = trim((string)($row['status'] ?? ''));
+    $student_name = trim((string)($row['student_name'] ?? ''));
+    $created_at = (string)($row['created_at'] ?? '');
 
     // 只允許「通過」(AP) 發送（向後相容 approved）
     if (!in_array($status, ['AP', 'approved', 'APPROVED'], true)) {
@@ -125,7 +164,7 @@ try {
         exit;
     }
 
-    // 若已存在則視為成功（避免重複送出）
+    // 若已存在則拒絕重複發送
     $check = $conn->prepare("SELECT id, sent_at FROM bonus_send_logs WHERE recommendation_id = ? LIMIT 1");
     $check->bind_param('i', $recommendation_id);
     $check->execute();
@@ -134,8 +173,8 @@ try {
         $exist = $chkRes->fetch_assoc();
         $check->close();
         echo json_encode([
-            'success' => true,
-            'message' => '此筆已發送過獎金',
+            'success' => false,
+            'message' => '此筆已發送過獎金，不能重複發送',
             'recommender_name' => $recommender_name,
             'sent_at' => $exist['sent_at'] ?? ''
         ], JSON_UNESCAPED_UNICODE);
@@ -143,10 +182,68 @@ try {
     }
     $check->close();
 
+    // -----------------------------
+    // 同名且通過者獎金平分（餘數依 created_at/ID 由早到晚分配 +1）
+    // -----------------------------
+    $final_amount = $bonus_amount;
+    $split_count = 1;
+    if ($student_name !== '') {
+        $rows_ap = [];
+        if ($has_recommended_table) {
+            $q = $conn->prepare("SELECT ar.id, ar.created_at
+                FROM admission_recommendations ar
+                LEFT JOIN recommended red ON ar.id = red.recommendations_id
+                WHERE red.name = ? AND ar.status IN ('AP','approved','APPROVED')
+                ORDER BY ar.created_at ASC, ar.id ASC");
+            if ($q) {
+                $q->bind_param('s', $student_name);
+                $q->execute();
+                $res2 = $q->get_result();
+                if ($res2) {
+                    while ($r2 = $res2->fetch_assoc()) {
+                        $rows_ap[] = ['id' => (int)$r2['id'], 'created_at' => (string)$r2['created_at']];
+                    }
+                }
+                $q->close();
+            }
+        } else {
+            // 向後相容：若沒有 recommended 表，改用 admission_recommendations.student_name
+            $q = $conn->prepare("SELECT ar.id, ar.created_at
+                FROM admission_recommendations ar
+                WHERE ar.student_name = ? AND ar.status IN ('AP','approved','APPROVED')
+                ORDER BY ar.created_at ASC, ar.id ASC");
+            if ($q) {
+                $q->bind_param('s', $student_name);
+                $q->execute();
+                $res2 = $q->get_result();
+                if ($res2) {
+                    while ($r2 = $res2->fetch_assoc()) {
+                        $rows_ap[] = ['id' => (int)$r2['id'], 'created_at' => (string)$r2['created_at']];
+                    }
+                }
+                $q->close();
+            }
+        }
+
+        $split_count = max(1, count($rows_ap));
+        if ($split_count > 1) {
+            $base = intdiv($bonus_amount, $split_count);
+            $rem = $bonus_amount % $split_count;
+            $idx = -1;
+            for ($i = 0; $i < $split_count; $i++) {
+                if ((int)$rows_ap[$i]['id'] === (int)$recommendation_id) { $idx = $i; break; }
+            }
+            if ($idx < 0) $idx = 0;
+            $final_amount = $base + (($idx < $rem) ? 1 : 0);
+        } else {
+            $final_amount = $bonus_amount;
+        }
+    }
+
     $ins = $conn->prepare("INSERT INTO bonus_send_logs (recommendation_id, recommender_name, recommender_student_id, amount, sent_by, sent_at)
         VALUES (?, ?, ?, ?, ?, NOW())");
     $sent_by = (string)$username;
-    $ins->bind_param('issis', $recommendation_id, $recommender_name, $recommender_student_id, $bonus_amount, $sent_by);
+    $ins->bind_param('issis', $recommendation_id, $recommender_name, $recommender_student_id, $final_amount, $sent_by);
     if (!$ins->execute()) {
         throw new Exception('寫入失敗: ' . $ins->error);
     }
@@ -156,7 +253,9 @@ try {
         'success' => true,
         'message' => '獎金已標記為發送',
         'recommender_name' => $recommender_name,
-        'amount' => $bonus_amount
+        'amount' => $final_amount,
+        'split_count' => $split_count,
+        'student_name' => $student_name
     ], JSON_UNESCAPED_UNICODE);
 
     $conn->close();
