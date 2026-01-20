@@ -26,6 +26,12 @@ switch ($action) {
     case 'update_or_add_quota': // 將 update_quota 改為更通用的名稱
         updateQuota($conn);
         break;
+    case 'get_global_register_time':
+        getGlobalRegisterTime($conn);
+        break;
+    case 'update_global_register_time':
+        updateGlobalRegisterTime($conn);
+        break;
     default:
         http_response_code(400);
         echo json_encode(['success' => false, 'message' => '無效的操作']);
@@ -39,7 +45,13 @@ function getQuotas($conn) {
                 d.code as department_code,
                 d.name as department_name,
                 dq.id as quota_id,
-                COALESCE(dq.total_quota, 0) as total_quota
+                COALESCE(dq.total_quota, 0) as total_quota,
+                dq.cutoff_score,
+                dq.register_start,
+                dq.register_end,
+                dq.review_start,
+                dq.review_end,
+                dq.announce_time
             FROM departments d
             LEFT JOIN department_quotas dq ON d.code = dq.department_code AND dq.is_active = 1
             ORDER BY d.code
@@ -79,7 +91,13 @@ function getQuotas($conn) {
                 'code' => $dept_code,
                 'total_quota' => (int)$dept['total_quota'],
                 'current_enrolled' => $enrolled_count,
-                'remaining' => max(0, (int)$dept['total_quota'] - $enrolled_count)
+                'remaining' => max(0, (int)$dept['total_quota'] - $enrolled_count),
+                'cutoff_score' => isset($dept['cutoff_score']) ? (int)$dept['cutoff_score'] : null,
+                'register_start' => $dept['register_start'] ?? null,
+                'register_end' => $dept['register_end'] ?? null,
+                'review_start' => $dept['review_start'] ?? null,
+                'review_end' => $dept['review_end'] ?? null,
+                'announce_time' => $dept['announce_time'] ?? null,
             ];
         }
         
@@ -108,6 +126,15 @@ function updateQuota($conn) {
     
     $department_name = $input['name'];
     $total_quota = (int)$input['total_quota'];
+
+    // 允許錄取分數與各時間欄位為可選
+    $cutoff_score = isset($input['cutoff_score']) && $input['cutoff_score'] !== '' ? (int)$input['cutoff_score'] : null;
+
+    $register_start = isset($input['register_start']) && $input['register_start'] !== '' ? $input['register_start'] : null;
+    $register_end = isset($input['register_end']) && $input['register_end'] !== '' ? $input['register_end'] : null;
+    $review_start = isset($input['review_start']) && $input['review_start'] !== '' ? $input['review_start'] : null;
+    $review_end = isset($input['review_end']) && $input['review_end'] !== '' ? $input['review_end'] : null;
+    $announce_time = isset($input['announce_time']) && $input['announce_time'] !== '' ? $input['announce_time'] : null;
     
     if ($total_quota < 0) {
         http_response_code(400);
@@ -162,20 +189,121 @@ function updateQuota($conn) {
         
         if ($existing_quota) {
             // 更新現有記錄
-            $stmt = $conn->prepare("UPDATE department_quotas SET total_quota = ?, is_active = 1 WHERE id = ?");
-            $stmt->bind_param("ii", $total_quota, $existing_quota['id']);
+            $stmt = $conn->prepare("UPDATE department_quotas 
+                SET total_quota = ?, cutoff_score = ?, register_start = ?, register_end = ?, review_start = ?, review_end = ?, announce_time = ?, is_active = 1 
+                WHERE id = ?");
+            $stmt->bind_param(
+                "iisssssi",
+                $total_quota,
+                $cutoff_score,
+                $register_start,
+                $register_end,
+                $review_start,
+                $review_end,
+                $announce_time,
+                $existing_quota['id']
+            );
             $stmt->execute();
             echo json_encode(['success' => true, 'message' => '名額更新成功']);
         } else {
             // 插入新記錄
-            $stmt = $conn->prepare("INSERT INTO department_quotas (department_code, total_quota, is_active) VALUES (?, ?, 1)");
-            $stmt->bind_param("si", $department_code, $total_quota);
+            $stmt = $conn->prepare("INSERT INTO department_quotas (department_code, total_quota, cutoff_score, register_start, register_end, review_start, review_end, announce_time, is_active) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)");
+            $stmt->bind_param(
+                "siisssss",
+                $department_code,
+                $total_quota,
+                $cutoff_score,
+                $register_start,
+                $register_end,
+                $review_start,
+                $review_end,
+                $announce_time
+            );
             $stmt->execute();
             echo json_encode(['success' => true, 'message' => '名額設定成功']);
         }
     } catch (Exception $e) {
         http_response_code(500);
         echo json_encode(['success' => false, 'message' => '更新失敗: ' . $e->getMessage()]);
+    }
+}
+
+/**
+ * 取得所有啟用科系的統一時間（報名／審查書面／錄取公告）
+ * 報名與審查時間使用「最早開始、最晚結束」，公告時間使用「最晚時間」
+ */
+function getGlobalRegisterTime($conn) {
+    try {
+        $sql = "
+            SELECT 
+                MIN(register_start) AS min_register_start,
+                MAX(register_end) AS max_register_end,
+                MIN(review_start) AS min_review_start,
+                MAX(review_end) AS max_review_end,
+                MAX(announce_time) AS max_announce_time
+            FROM department_quotas
+            WHERE is_active = 1
+              AND register_start IS NOT NULL
+              AND register_end IS NOT NULL
+        ";
+        $result = $conn->query($sql);
+        $row = $result ? $result->fetch_assoc() : null;
+
+        $min_register_start = $row && !empty($row['min_register_start']) ? $row['min_register_start'] : null;
+        $max_register_end = $row && !empty($row['max_register_end']) ? $row['max_register_end'] : null;
+        $min_review_start = $row && !empty($row['min_review_start']) ? $row['min_review_start'] : null;
+        $max_review_end = $row && !empty($row['max_review_end']) ? $row['max_review_end'] : null;
+        $max_announce_time = $row && !empty($row['max_announce_time']) ? $row['max_announce_time'] : null;
+
+        echo json_encode([
+            'success' => true,
+            'data' => [
+                'register_start' => $min_register_start,
+                'register_end' => $max_register_end,
+                'review_start' => $min_review_start,
+                'review_end' => $max_review_end,
+                'announce_time' => $max_announce_time,
+            ]
+        ]);
+    } catch (Exception $e) {
+        http_response_code(500);
+        echo json_encode(['success' => false, 'message' => '獲取統一報名時間失敗: ' . $e->getMessage()]);
+    }
+}
+
+/**
+ * 將時間套用到所有科系（統一設定）
+ */
+function updateGlobalRegisterTime($conn) {
+    if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+        http_response_code(405);
+        echo json_encode(['success' => false, 'message' => '方法不允許']);
+        return;
+    }
+
+    $input = json_decode(file_get_contents('php://input'), true);
+
+    $register_start = $input['register_start'] ?? null;
+    $register_end = $input['register_end'] ?? null;
+    $review_start = $input['review_start'] ?? null;
+    $review_end = $input['review_end'] ?? null;
+    $announce_time = $input['announce_time'] ?? null;
+
+    if (empty($register_start) || empty($register_end)) {
+        http_response_code(400);
+        echo json_encode(['success' => false, 'message' => '請填寫完整的報名起訖時間']);
+        return;
+    }
+
+    try {
+        $stmt = $conn->prepare("UPDATE department_quotas SET register_start = ?, register_end = ?, review_start = ?, review_end = ?, announce_time = ? WHERE is_active = 1");
+        $stmt->bind_param("sssss", $register_start, $register_end, $review_start, $review_end, $announce_time);
+        $stmt->execute();
+
+        echo json_encode(['success' => true, 'message' => '已套用統一報名時間到所有科系']);
+    } catch (Exception $e) {
+        http_response_code(500);
+        echo json_encode(['success' => false, 'message' => '更新統一報名時間失敗: ' . $e->getMessage()]);
     }
 }
 ?>

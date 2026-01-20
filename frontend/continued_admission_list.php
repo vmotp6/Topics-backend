@@ -74,8 +74,12 @@ try {
 $sortBy = $_GET['sort_by'] ?? 'created_at';
 $sortOrder = $_GET['sort_order'] ?? 'desc';
 
-// 顯示模式：active 或 history（history 顯示已錄取）
+// 顯示模式：active 或 history（history 顯示所有非今年的資料）
 $view_mode = $_GET['view'] ?? 'active';
+
+// 年份篩選：預設為報名編號 apply_no 的前四碼等於當年
+$current_year = (int)date('Y');
+$filter_year = isset($_GET['year']) ? (int)$_GET['year'] : $current_year;
 
 // 如果是歷史檢視，更新標題提示
 if ($view_mode === 'history') {
@@ -109,12 +113,14 @@ if ($column_check && $column_check->num_rows > 0) {
 // 獲取續招報名資料（根據用戶權限過濾）
 $assigned_dept_field = $has_assigned_department ? "ca.assigned_department" : "NULL as assigned_department";
 
-// 根據 view_mode 設定狀態過濾條件（history 顯示錄取，active 顯示非錄取）
+// 根據 view_mode 設定狀態與年份過濾條件
 $status_condition = '';
 if ($view_mode === 'history') {
-    $status_condition = " AND (ca.status = 'approved' OR ca.status = 'AP') ";
+    // 歷史資料：顯示所有非今年的資料（不管錄取狀態），apply_no 前四碼 <> 今年
+    $status_condition = " AND LEFT(ca.apply_no, 4) <> ? ";
 } else {
-    $status_condition = " AND (ca.status IS NULL OR (ca.status <> 'approved' AND ca.status <> 'AP')) ";
+    // 目前名單：只看非錄取，且 apply_no 前四碼 = 當年度
+    $status_condition = " AND (ca.status IS NULL OR (ca.status <> 'approved' AND ca.status <> 'AP')) AND LEFT(ca.apply_no, 4) = ? ";
 }
 
 if ($is_director && !empty($user_department_code)) {
@@ -126,7 +132,9 @@ if ($is_director && !empty($user_department_code)) {
                       LEFT JOIN school_data sd ON ca.school = sd.school_code
                       WHERE ca.assigned_department = ? " . $status_condition . "
                       ORDER BY ca.$sortBy $sortOrder");
-        $stmt->bind_param("s", $user_department_code);
+        // 歷史資料用 current_year（非今年），目前名單用 filter_year（今年）
+        $year_param = $view_mode === 'history' ? $current_year : $filter_year;
+        $stmt->bind_param("si", $user_department_code, $year_param);
     } else {
         // 如果沒有 assigned_department 字段，通過 continued_admission_choices 來過濾
         $stmt = $conn->prepare("SELECT DISTINCT ca.id, ca.apply_no, ca.name, ca.school, ca.status, ca.created_at, $assigned_dept_field, sd.name as school_name 
@@ -135,7 +143,9 @@ if ($is_director && !empty($user_department_code)) {
                       INNER JOIN continued_admission_choices cac ON ca.id = cac.application_id
                       WHERE cac.department_code = ? " . $status_condition . "
                       ORDER BY ca.$sortBy $sortOrder");
-        $stmt->bind_param("s", $user_department_code);
+        // 歷史資料用 current_year（非今年），目前名單用 filter_year（今年）
+        $year_param = $view_mode === 'history' ? $current_year : $filter_year;
+        $stmt->bind_param("si", $user_department_code, $year_param);
     }
 } elseif ($is_imd_user) {
     // IMD用戶只能看到志願選擇包含"資訊管理科"的續招報名（保留向後兼容）
@@ -146,13 +156,19 @@ if ($is_director && !empty($user_department_code)) {
                           INNER JOIN departments d ON cac.department_code = d.code
                           WHERE (d.code = 'IM' OR d.name LIKE '%資訊管理%' OR d.name LIKE '%資管%') " . $status_condition . "
                           ORDER BY ca.$sortBy $sortOrder");
+    // 歷史資料用 current_year（非今年），目前名單用 filter_year（今年）
+    $year_param = $view_mode === 'history' ? $current_year : $filter_year;
+    $stmt->bind_param("i", $year_param);
 } else {
     // 招生中心/管理員可以看到所有續招報名
-    $stmt = $conn->prepare("SELECT ca.id, ca.apply_no, ca.name, ca.school, ca.status, ca.created_at, $assigned_dept_field, sd.name as school_name 
+    $stmt = $conn->prepare("SELECT ca.id, ca.apply_no, ca.name, ca.school, ca.status, ca.created_at, $assigned_dept_field, sd.name as school_name
                           FROM continued_admission ca
                           LEFT JOIN school_data sd ON ca.school = sd.school_code
-                          WHERE 1=1 " . $status_condition . "
+                      WHERE 1=1 " . $status_condition . "
                           ORDER BY ca.$sortBy $sortOrder");
+    // 歷史資料用 current_year（非今年），目前名單用 filter_year（今年）
+    $year_param = $view_mode === 'history' ? $current_year : $filter_year;
+    $stmt->bind_param("i", $year_param);
 }
 $stmt->execute();
 $applications = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
@@ -799,8 +815,21 @@ function getStatusClass($status) {
                             ?>
                             <div style="display:flex; align-items:center; gap:12px; margin-bottom:12px; margin-left: 60px;margin-right: 60px;">
                                 <div style="display:flex; gap:16px;">
-                                    <a href="continued_admission_list.php?tab=list&view=active<?php echo $base_sort_qs; ?>" class="btn" style="padding:6px 10px; color:#877f7f; <?php echo $view_active ? 'background:#f0f7ff; border-color: #91d5ff; color:#1890ff;' : ''; ?>">目前名單</a>
-                                    <a href="continued_admission_list.php?tab=list&view=history<?php echo $base_sort_qs; ?>" class="btn" style="padding:6px 10px; color:#877f7f; <?php echo $view_history ? 'background:#f0f7ff; border-color: #91d5ff; color:#1890ff;' : ''; ?>">歷史資料（錄取）</a>
+                                    <?php
+                                        // 年份下拉選單使用目前網址中的 year 參數
+                                        $year_param = isset($_GET['year']) ? (int)$_GET['year'] : $current_year;
+                                        // 以當前年份往回 5 年給選項
+                                        $years = [];
+                                        for ($y = $current_year; $y >= $current_year - 5; $y--) {
+                                            $years[] = $y;
+                                        }
+                                        // 產生帶年份參數的 URL
+                                        $build_url = function($view, $year) use ($sortBy, $sortOrder) {
+                                            return 'continued_admission_list.php?tab=list&view=' . urlencode($view) . '&year=' . intval($year) . '&sort_by=' . urlencode($sortBy) . '&sort_order=' . urlencode($sortOrder);
+                                        };
+                                    ?>
+                                    <a href="<?php echo htmlspecialchars($build_url('active', $year_param)); ?>" class="btn" style="padding:6px 10px; color:#877f7f; <?php echo $view_active ? 'background:#f0f7ff; border-color: #91d5ff; color:#1890ff;' : ''; ?>">目前名單</a>
+                                    <a href="<?php echo htmlspecialchars($build_url('history', $year_param)); ?>" class="btn" style="padding:6px 10px; color:#877f7f; <?php echo $view_history ? 'background:#f0f7ff; border-color: #91d5ff; color:#1890ff;' : ''; ?>">歷史資料</a>
                                 </div>
                                 <?php
                                     // 建立匯出連結，保留目前 GET 參數
@@ -815,7 +844,17 @@ function getStatusClass($status) {
                                 <div style="margin-left:auto; display:flex; gap:15px; align-items:center;">
                                     <a href="<?php echo htmlspecialchars($export_csv_url); ?>" class="btn" style="padding:6px 10px; background: #6291f9f5; color: white;">匯出 CSV</a>
                                     <a href="<?php echo htmlspecialchars($export_excel_url); ?>" class="btn" style="padding:6px 10px; background: rgb(40, 167, 69); color: white;">匯出 Excel</a>
-                                    <div style="color:var(--text-secondary-color); font-size:14px;">顯示模式：<?php echo $current_view === 'history' ? '歷史（僅錄取）' : '目前在審／未錄取'; ?></div>
+                                    <div style="color:var(--text-secondary-color); font-size:14px;">
+                                        顯示模式：<?php echo $current_view === 'history' ? '歷史（非今年）' : '目前在審／未錄取'; ?>
+                                        <?php if ($current_view === 'active'): ?>
+                                            ，年份：
+                                            <select id="yearFilter" onchange="onChangeYear(this.value)" style="padding:4px 6px; border-radius:4px; border:1px solid #d9d9d9; margin-left:4px;">
+                                                <?php foreach ($years as $y): ?>
+                                                    <option value="<?php echo $y; ?>" <?php echo $y === $year_param ? 'selected' : ''; ?>><?php echo $y; ?></option>
+                                                <?php endforeach; ?>
+                                            </select>
+                                        <?php endif; ?>
+                                    </div>
                                 </div>
                             </div>
                             <?php if (empty($applications)): ?>
@@ -871,9 +910,17 @@ function getStatusClass($status) {
                                         <tr>
                                             <th onclick="sortTable('apply_no')">報名編號 <span class="sort-icon" id="sort-apply_no"></span></th>
                                             <th onclick="sortTable('name')">姓名 <span class="sort-icon" id="sort-name"></span></th>
-                                            <th class="choice1-column">志願1</th>
-                                            <th class="choice2-column">志願2</th>
-                                            <th class="choice3-column">志願3</th>
+                                            <?php if ($is_director && !empty($user_department_code)): ?>
+                                                <!-- 主任：只顯示「志願」，不顯示數字 -->
+                                                <th class="choice1-column">志願</th>
+                                                <?php if ($has_choice2): ?><th class="choice2-column">志願</th><?php endif; ?>
+                                                <?php if ($has_choice3): ?><th class="choice3-column">志願</th><?php endif; ?>
+                                            <?php else: ?>
+                                                <!-- 招生中心/管理員：顯示「志願1」、「志願2」、「志願3」 -->
+                                                <th class="choice1-column">志願1</th>
+                                                <th class="choice2-column">志願2</th>
+                                                <th class="choice3-column">志願3</th>
+                                            <?php endif; ?>
                                             <th onclick="sortTable('status')">審核狀態 <span class="sort-icon" id="sort-status"></span></th>
                                             <th>操作</th>
                                         </tr>
@@ -991,21 +1038,7 @@ function getStatusClass($status) {
                                                 // 顯示審核按鈕（只有主任可以看到，且狀態為待審核）
                                                 if ($can_review_this && $is_pending): ?>
                                                     <a href="continued_admission_detail.php?id=<?php echo $item['id']; ?>&action=review" class="btn-review">審核</a>
-                                                <?php endif; 
-                                                
-                                                // 學校行政（STA）和管理員（ADM）可以分配部門（只有待審核狀態時）
-                                                if ($can_manage_list && $is_pending): 
-                                                    if (!empty($assigned_dept)): 
-                                                        // 已經分配給主任，顯示"已分配"按鈕（可點擊來重新分配）
-                                                        $dept_name = getDepartmentName($assigned_dept, $department_data);
-                                                ?>
-                                                    <button onclick="showAssignModal(<?php echo $item['id']; ?>, '<?php echo htmlspecialchars($item['name'], ENT_QUOTES); ?>', <?php echo htmlspecialchars(json_encode($item['choices_with_codes'] ?? []), ENT_QUOTES); ?>, '<?php echo htmlspecialchars($assigned_dept, ENT_QUOTES); ?>')" class="btn-view" style="margin-left: 8px; background: #28a745; color: white; border-color: #28a745;">
-                                                        <i class="fas fa-check-circle"></i> 已分配 - <?php echo htmlspecialchars($dept_name); ?>
-                                                    </button>
-                                                <?php else: ?>
-                                                    <button onclick="showAssignModal(<?php echo $item['id']; ?>, '<?php echo htmlspecialchars($item['name'], ENT_QUOTES); ?>', <?php echo htmlspecialchars(json_encode($item['choices_with_codes'] ?? []), ENT_QUOTES); ?>, '<?php echo htmlspecialchars($assigned_dept, ENT_QUOTES); ?>')" class="btn-view" style="margin-left: 8px;">分配部門</button>
-                                                <?php endif; 
-                                                endif; ?>
+                                                <?php endif; ?>
                                             </td>
                                         </tr>
                                     <?php endforeach; ?>
@@ -1043,32 +1076,6 @@ function getStatusClass($status) {
     <!-- 訊息提示框 -->
     <div id="toast" style="position: fixed; top: 20px; right: 20px; background-color: #333; color: white; padding: 15px 20px; border-radius: 8px; z-index: 9999; display: none; opacity: 0; transition: opacity 0.5s;"></div>
 
-    <!-- 分配部門模態框 -->
-    <?php if ($can_manage_list): ?>
-    <div id="assignModal" class="modal" style="display: none;">
-        <div class="modal-content">
-            <div class="modal-header">
-                <h3>分配部門</h3>
-                <span class="close" onclick="closeAssignModal()">&times;</span>
-            </div>
-            <div class="modal-body">
-                <p>學生：<span id="assignStudentName"></span></p>
-                <div class="teacher-list">
-                    <h4>選擇部門：</h4>
-                    <div class="teacher-options" id="assignDepartmentOptions">
-                        <div style="text-align: center; padding: 20px; color: var(--text-secondary-color);">
-                            <i class="fas fa-spinner fa-spin"></i> 準備部門名單中...
-                        </div>
-                    </div>
-                </div>
-            </div>
-            <div class="modal-footer">
-                <button class="btn-cancel" onclick="closeAssignModal()">取消</button>
-                <button class="btn-confirm" onclick="confirmAssign()">確認分配</button>
-            </div>
-        </div>
-    </div>
-    <?php endif; ?>
 
     <script>
     // 排序表格
@@ -1081,12 +1088,13 @@ function getStatusClass($status) {
         const currentSortOrder = urlParams.get('sort_order') || 'desc';
         const currentTab = urlParams.get('tab') || 'list'; // 保留當前 TAB
         const currentView = urlParams.get('view') || 'active'; // 保留當前 view（active/history）
+        const currentYear = urlParams.get('year') || '<?php echo $filter_year; ?>'; // 保留當前年份
         
         if (currentSortBy === field) {
             newSortOrder = currentSortOrder === 'asc' ? 'desc' : 'asc';
         }
         
-        window.location.href = `continued_admission_list.php?sort_by=${field}&sort_order=${newSortOrder}&tab=${currentTab}&view=${currentView}`;
+        window.location.href = `continued_admission_list.php?sort_by=${field}&sort_order=${newSortOrder}&tab=${currentTab}&view=${currentView}&year=${currentYear}`;
     }
     
     // 更新排序圖標
@@ -1324,111 +1332,15 @@ function getStatusClass($status) {
         updatePagination();
     }
 
-    <?php if ($can_manage_list): ?>
-    // 分配部門相關變數
-    let currentAssignApplicationId = null;
-    let currentAssignChoices = [];
-
-    // 顯示分配模態框
-    function showAssignModal(applicationId, studentName, choices, currentDepartment) {
-        currentAssignApplicationId = applicationId;
-        currentAssignChoices = choices || [];
-        currentDepartment = currentDepartment || '';
-        
-        document.getElementById('assignStudentName').textContent = studentName;
-        const optionsContainer = document.getElementById('assignDepartmentOptions');
-        optionsContainer.innerHTML = '';
-        
-        // 只顯示學生志願中有的科系
-        const departmentCodes = currentAssignChoices.map(c => c.code).filter((v, i, a) => a.indexOf(v) === i);
-        const departmentNames = <?php echo json_encode($department_data, JSON_UNESCAPED_UNICODE); ?>;
-        
-        if (departmentCodes.length === 0) {
-            optionsContainer.innerHTML = '<p style="padding: 10px; color: var(--text-secondary-color); text-align: center;">找不到符合學生志願的科系。請確認學生是否已填寫志願。</p>';
-        } else {
-            // 渲染部門選項（使用 radio button）
-            departmentCodes.forEach(code => {
-                const isChecked = (currentDepartment && code === currentDepartment);
-                const deptName = departmentNames[code] || code;
-                
-                const label = document.createElement('label');
-                label.className = 'teacher-option';
-                label.innerHTML = `
-                    <input type="radio" name="department" value="${code}" ${isChecked ? 'checked' : ''}>
-                    <div class="teacher-info">
-                        <strong>${deptName}</strong>
-                    </div>
-                `;
-                optionsContainer.appendChild(label);
-            });
-        }
-        
-        document.getElementById('assignModal').style.display = 'flex';
+    // 年份變更時重新載入頁面
+    function onChangeYear(year) {
+        const urlParams = new URLSearchParams(window.location.search);
+        const currentTab = urlParams.get('tab') || 'list';
+        const currentView = urlParams.get('view') || 'active';
+        const sortBy = urlParams.get('sort_by') || 'created_at';
+        const sortOrder = urlParams.get('sort_order') || 'desc';
+        window.location.href = `continued_admission_list.php?tab=${currentTab}&view=${currentView}&year=${year}&sort_by=${sortBy}&sort_order=${sortOrder}`;
     }
-
-    // 關閉分配模態框
-    function closeAssignModal() {
-        document.getElementById('assignModal').style.display = 'none';
-        currentAssignApplicationId = null;
-        currentAssignChoices = [];
-    }
-
-    // 確認分配
-    function confirmAssign() {
-        const selectedDepartment = document.querySelector('input[name="department"]:checked');
-        
-        if (!selectedDepartment) {
-            showToast('請選擇要分配的科系', false);
-            return;
-        }
-        
-        const departmentCode = selectedDepartment.value;
-        
-        if (!currentAssignApplicationId) {
-            showToast('系統錯誤：找不到報名記錄', false);
-            return;
-        }
-        
-        // 發送分配請求
-        const formData = new FormData();
-        formData.append('application_id', currentAssignApplicationId);
-        formData.append('department', departmentCode);
-        
-        fetch('assign_continued_admission_department.php', {
-            method: 'POST',
-            body: formData
-        })
-        .then(response => response.json())
-        .then(data => {
-            if (data.success) {
-                showToast(data.message || '分配成功', true);
-                setTimeout(() => {
-                    window.location.reload();
-                }, 1000);
-            } else {
-                showToast(data.message || '分配失敗', false);
-            }
-        })
-        .catch(error => {
-            console.error('Error:', error);
-            showToast('系統錯誤，請稍後再試', false);
-        });
-    }
-    
-    // 點擊彈出視窗外部關閉
-    <?php if ($can_manage_list): ?>
-    document.addEventListener('DOMContentLoaded', function() {
-        const assignModal = document.getElementById('assignModal');
-        if (assignModal) {
-            assignModal.addEventListener('click', function(e) {
-                if (e.target === this) {
-                    closeAssignModal();
-                }
-            });
-        }
-    });
-    <?php endif; ?>
-    <?php endif; ?>
 
     </script>
 </body>
