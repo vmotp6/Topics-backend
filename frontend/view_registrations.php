@@ -1,5 +1,5 @@
 <?php
-session_start();
+require_once __DIR__ . '/session_config.php';
 
 // 檢查是否已登入
 if (!isset($_SESSION['admin_logged_in']) || !$_SESSION['admin_logged_in']) {
@@ -22,10 +22,14 @@ $conn = getDatabaseConnection();
 
 // 獲取場次資訊
 $stmt = $conn->prepare("SELECT * FROM admission_sessions WHERE id = ?");
+if (!$stmt) {
+    die("準備語句失敗: " . $conn->error);
+}
 $stmt->bind_param("i", $session_id);
 $stmt->execute();
 $session_result = $stmt->get_result();
 $session = $session_result->fetch_assoc();
+$stmt->close();
 
 if (!$session) {
     // 如果找不到場次，跳轉回設定頁面
@@ -38,23 +42,29 @@ $stmt = $conn->prepare("
     SELECT aa.*, sd.name as school_name_display
     FROM admission_applications aa
     LEFT JOIN school_data sd ON aa.school = sd.school_code
-    WHERE aa.session_id = ? 
+    WHERE aa.session_id = ?
     ORDER BY aa.id DESC
 ");
+if (!$stmt) {
+    die("準備語句失敗: " . $conn->error);
+}
 $stmt->bind_param("i", $session_id);
 $stmt->execute();
 $registrations_result = $stmt->get_result();
 $registrations = $registrations_result->fetch_all(MYSQLI_ASSOC);
+$stmt->close();
 
 // 獲取所有科系資料，用於將科系代碼轉換為科系名稱
 $departments_map = [];
 $dept_stmt = $conn->prepare("SELECT code, name FROM departments");
-$dept_stmt->execute();
-$dept_result = $dept_stmt->get_result();
-while ($dept_row = $dept_result->fetch_assoc()) {
-    $departments_map[$dept_row['code']] = $dept_row['name'];
+if ($dept_stmt) {
+    $dept_stmt->execute();
+    $dept_result = $dept_stmt->get_result();
+    while ($dept_row = $dept_result->fetch_assoc()) {
+        $departments_map[$dept_row['code']] = $dept_row['name'];
+    }
+    $dept_stmt->close();
 }
-$dept_stmt->close();
 
 $conn->close();
 
@@ -80,27 +90,30 @@ $page_title = '查看報名名單 - ' . htmlspecialchars($session['session_name'
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; background: var(--background-color); color: var(--text-color); overflow-x: hidden; }
         .dashboard { display: flex; min-height: 100vh; }
-        .content { padding: 24px; }
+        .main-content { flex: 1; display: flex; flex-direction: column; }
+        .content { padding: 24px; flex: 1; }
         .breadcrumb { margin-bottom: 16px; font-size: 16px; color: var(--text-secondary-color); }
         .breadcrumb a { color: var(--primary-color); text-decoration: none; }
         .breadcrumb a:hover { text-decoration: underline; }
         
         .card { background: var(--card-background-color); border-radius: 8px; box-shadow: 0 1px 2px rgba(0,0,0,0.03); border: 1px solid var(--border-color); margin-bottom: 24px; }
         .card-header { padding: 16px 24px; border-bottom: 1px solid var(--border-color); display: flex; justify-content: space-between; align-items: center; background: #fafafa; }
-        .card-header h3 { font-size: 18px; font-weight: 600; color: var(--text-color); }
+        .card-header h3 { font-size: 18px; font-weight: 600; color: var(--text-color); margin: 0; }
         .card-body { padding: 24px; }
 
         .table-container { overflow-x: auto; }
         .table { width: 100%; border-collapse: collapse; }
         .table th, .table td { padding: 16px; text-align: left; border-bottom: 1px solid var(--border-color); font-size: 14px; }
-        .table th { background: #fafafa; font-weight: 600; }
+        .table th { background: #fafafa; font-weight: 600; position: sticky; top: 0; z-index: 10; }
         .table tr:hover { background: #fafafa; }
+        .table tbody tr:last-child td { border-bottom: none; }
 
         .btn { padding: 8px 16px; border: 1px solid #d9d9d9; border-radius: 6px; cursor: pointer; font-size: 14px; transition: all 0.3s; background: #fff; text-decoration: none; display: inline-flex; align-items: center; gap: 6px; }
         .btn-secondary { background: #fff; color: #595959; border-color: #d9d9d9; }
         .btn-secondary:hover { background: #f5f5f5; border-color: #40a9ff; color: #40a9ff; }
 
         .empty-state { text-align: center; padding: 40px; color: var(--text-secondary-color); }
+        .empty-state i { display: block; margin-bottom: 16px; opacity: 0.5; }
     </style>
 </head>
 <body>

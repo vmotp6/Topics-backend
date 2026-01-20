@@ -185,7 +185,10 @@ $is_admission_center = $is_admin_or_staff && !$is_department_user;
 // ==========================================
 // 處理分頁與歷史資料邏輯
 // ==========================================
-$view_mode = $_GET['view'] ?? 'active'; 
+$view_mode = $_GET['view'] ?? 'active';
+if (!in_array($view_mode, ['active', 'history', 'closed'], true)) {
+    $view_mode = 'active';
+}
 $selected_year = isset($_GET['year']) ? (int)$_GET['year'] : 0;
 
 $current_month = (int)date('m');
@@ -201,6 +204,8 @@ if ($is_department_user) {
 
 if ($view_mode === 'history') {
     $page_title .= ' (歷史資料)';
+} elseif ($view_mode === 'closed') {
+    $page_title .= ' (已結案)';
 }
 
 
@@ -296,6 +301,12 @@ function getDepartmentName($code, $departments) {
 try {
     $conn = getDatabaseConnection();
 
+    // 確保 enrollment_intention 有 case_closed 欄位（結案後顯示於歷史紀錄）
+    $ec = @$conn->query("SHOW COLUMNS FROM enrollment_intention LIKE 'case_closed'");
+    if (!$ec || $ec->num_rows === 0) {
+        @$conn->query("ALTER TABLE enrollment_intention ADD COLUMN case_closed TINYINT(1) NOT NULL DEFAULT 0 COMMENT '0=否,1=是(結案後顯示於歷史紀錄)'");
+    }
+
     // 載入身分別與學校
     $identity_result = $conn->query("SELECT code, name FROM identity_options");
     if ($identity_result) {
@@ -363,16 +374,19 @@ try {
     }
     
     // 狀態 WHERE 條件
+    // 目前學年：未結案 且 畢業年份為當學年以後
+    // 歷史資料：未結案 且 畢業年份已過
+    // 已結案：case_closed = 1
     $status_where = "";
     if ($view_mode === 'history') {
-        if ($selected_year > 0) {
-            $status_where = " AND ei.graduation_year = " . intval($selected_year);
-        } else {
-            $status_where = " AND (ei.graduation_year <= $grad_threshold_year)";
-        }
+        $grad_cond = $selected_year > 0
+            ? "ei.graduation_year = " . intval($selected_year)
+            : "ei.graduation_year <= $grad_threshold_year";
+        $status_where = " AND (IFNULL(ei.case_closed,0) = 0) AND ({$grad_cond})";
+    } elseif ($view_mode === 'closed') {
+        $status_where = " AND (IFNULL(ei.case_closed,0) = 1)";
     } else {
-        // Active 模式
-        $status_where = " AND (ei.graduation_year > $grad_threshold_year OR ei.graduation_year IS NULL)";
+        $status_where = " AND (ei.graduation_year > $grad_threshold_year OR ei.graduation_year IS NULL) AND (IFNULL(ei.case_closed,0) = 0)";
     }
     
     // 組合最終 SQL
@@ -625,6 +639,9 @@ try {
                                 <div class="tab-item <?php echo $view_mode === 'history' ? 'active' : ''; ?>" onclick="window.location.href='enrollment_list.php?view=history'">
                                     歷史資料
                                 </div>
+                                <div class="tab-item <?php echo $view_mode === 'closed' ? 'active' : ''; ?>" onclick="window.location.href='enrollment_list.php?view=closed'">
+                                    已結案
+                                </div>
                             </div>
                             <div class="tabs-nav-right">
                                 <select id="gradeFilter" class="history-select" onchange="filterTable()" style="margin-right:8px;">
@@ -846,7 +863,7 @@ try {
                                         </td>
                                         <td onclick="event.stopPropagation();">
                                             <div style="display: flex; gap: 8px; flex-wrap: wrap;">
-                                                <?php if ($view_mode === 'history'): ?>
+                                                <?php if ($view_mode === 'history' || $view_mode === 'closed'): ?>
                                                     <button type="button" 
                                                         class="btn-view" 
                                                         id="detail-btn-<?php echo $item['id']; ?>"
@@ -1001,6 +1018,13 @@ try {
                                 <option value="其他">其他</option>
                             </select>
                         </div>
+                        <div>
+                            <label style="display:block; font-size: 13px; color:#666; margin-bottom:6px; font-weight:600;">聯絡結果</label>
+                            <select id="newLogContactResult" class="form-control" style="width: 100%;">
+                                <option value="contacted">已聯絡</option>
+                                <option value="unreachable">聯絡不到</option>
+                            </select>
+                        </div>
                     </div>
                     <div>
                         <label style="display:block; font-size: 13px; color:#666; margin-bottom:6px; font-weight:600;">聯絡紀錄</label>
@@ -1011,6 +1035,11 @@ try {
                             <i class="fas fa-paper-plane"></i> 新增
                         </button>
                     </div>
+                </div>
+                <div id="closeCaseSection" style="margin-bottom: 16px; display: none;">
+                    <button type="button" class="assign-btn" id="closeCaseBtn" style="background: #ff4d4f; border-color: #ff4d4f;" onclick="submitCloseCase()">
+                        <i class="fas fa-archive"></i> 結案（最近 3 次皆聯絡不到，將移入歷史紀錄）
+                    </button>
                 </div>
                 <div id="contactLogsList">
                     </div>
@@ -1485,6 +1514,8 @@ try {
                     const today = new Date().toISOString().split('T')[0];
                     document.getElementById('newLogDate').value = today;
                     document.getElementById('newLogMethod').value = '電話';
+                    var cr = document.getElementById('newLogContactResult');
+                    if (cr) cr.value = 'contacted';
                     document.getElementById('newLogContent').value = '';
                 }
             } else {
@@ -1494,9 +1525,12 @@ try {
                 const today = new Date().toISOString().split('T')[0];
                 document.getElementById('newLogDate').value = today;
                 document.getElementById('newLogMethod').value = '電話';
+                var cr = document.getElementById('newLogContactResult');
+                if (cr) cr.value = 'contacted';
                 document.getElementById('newLogContent').value = '';
             }
-            
+            var closeSec = document.getElementById('closeCaseSection');
+            if (closeSec) closeSec.style.display = 'none';
             loadContactLogs(studentId);
         }
 
@@ -1540,39 +1574,38 @@ try {
                 return res.json();
             })
             .then(data => {
+                var closeSec = document.getElementById('closeCaseSection');
+                var addSec = document.getElementById('addLogSection');
+                if (data.case_closed) {
+                    if (closeSec) closeSec.style.display = 'none';
+                    if (addSec) addSec.style.display = 'none';
+                } else {
+                    if (closeSec) closeSec.style.display = data.show_close_button ? 'block' : 'none';
+                }
                 if (data.success && data.logs && data.logs.length > 0) {
                     list.innerHTML = data.logs.map(log => {
                         const method = log.method || log.contact_method || '其他';
                         const notes = log.notes || log.result || '';
                         const contactDate = log.contact_date || '';
                         const createdAt = log.created_at || '';
+                        const isUnreachable = (log.contact_result || '') === 'unreachable';
                         
-                        // 日期部分：从 contact_date 提取
                         let datePart = '';
                         if (contactDate) {
-                            // 处理格式：YYYY-MM-DD HH:MM:SS 或 YYYY-MM-DD
                             const dateMatch = contactDate.match(/^(\d{4}-\d{2}-\d{2})/);
-                            if (dateMatch) {
-                                datePart = dateMatch[1];
-                            } else {
-                                datePart = contactDate;
-                            }
+                            datePart = dateMatch ? dateMatch[1] : contactDate;
                         }
-                        
-                        // 时间部分：从 created_at 提取
                         let timePart = '';
                         if (createdAt) {
-                            // 处理格式：YYYY-MM-DD HH:MM:SS
                             const timeMatch = createdAt.match(/\s+(\d{2}:\d{2})(?::\d{2})?/);
-                            if (timeMatch) {
-                                timePart = timeMatch[1];
-                            }
+                            timePart = timeMatch ? timeMatch[1] : '';
                         }
                         
                         const escapedDate = escapeHtml(datePart || '未提供');
                         const escapedTime = escapeHtml(timePart || '未提供');
                         const escapedMethod = escapeHtml(method);
                         const escapedNotes = escapeHtml(notes);
+                        const unreachableBadge = isUnreachable ? '<span style="background:#ff4d4f;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px;margin-left:6px;">聯絡不到</span>' : '';
                         
                         return '<div class="contact-log-item">' +
                             '<div class="contact-log-header" style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 12px;">' +
@@ -1585,7 +1618,7 @@ try {
                                             '<i class="fas fa-clock" style="color:#52c41a; margin-right: 4px;"></i>' + escapedTime +
                                         '</div>' +
                                         '<div style="background: #e3f2fd; color: #1976d2; padding: 4px 12px; border-radius: 4px; font-size: 13px; font-weight:600;">' +
-                                            '<i class="fas fa-phone" style="margin-right: 4px;"></i>' + escapedMethod +
+                                            '<i class="fas fa-phone" style="margin-right: 4px;"></i>' + escapedMethod + unreachableBadge +
                                         '</div>' +
                                     '</div>' +
                                 '</div>' +
@@ -1631,6 +1664,8 @@ try {
             formData.append('notes', content);
             formData.append('method', contactMethod);
             formData.append('contact_date', contactDate);
+            var crEl = document.getElementById('newLogContactResult');
+            formData.append('contact_result', (crEl && crEl.value) ? crEl.value : 'contacted');
             
             // 使用新的 API 端點
             fetch('../../Topics-frontend/frontend/api/contact_logs_api.php', {
@@ -1666,6 +1701,8 @@ try {
                         dateField.value = today;
                     }
                     if (methodField) methodField.value = '電話';
+                    var crEl = document.getElementById('newLogContactResult');
+                    if (crEl) crEl.value = 'contacted';
                     // 重新載入聯絡記錄
                     if (currentStudentId) {
                         loadContactLogs(currentStudentId);
@@ -1680,6 +1717,27 @@ try {
             });
         }
 
+        function submitCloseCase() {
+            if (!currentStudentId) return;
+            if (!confirm('確定要將此學生結案嗎？結案後將顯示於歷史紀錄。')) return;
+            var fd = new FormData();
+            fd.append('enrollment_id', currentStudentId);
+            fetch('../../Topics-frontend/frontend/api/close_case_api.php', { method: 'POST', body: fd })
+                .then(function(r) { return r.json(); })
+                .then(function(data) {
+                    if (data.success) {
+                        alert(data.message || '已結案');
+                        closeContactLogsModal();
+                        location.reload();
+                    } else {
+                        alert(data.message || '結案失敗');
+                    }
+                })
+                .catch(function(e) {
+                    console.error(e);
+                    alert('結案失敗，請稍後再試');
+                });
+        }
 
         // Click outside closes modals
         window.onclick = function(event) {
