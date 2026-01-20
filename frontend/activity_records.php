@@ -244,6 +244,77 @@ if ($teacher_id > 0) {
     if ($attendance_stats_result) {
         $attendance_stats_data = $attendance_stats_result->fetch_all(MYSQLI_ASSOC);
     }
+    
+    // 獲取新生基本資料統計（學校來源和科系分布）
+    $new_student_school_stats = [];
+    $new_student_department_stats = [];
+    
+    try {
+        // 檢查表是否存在
+        $table_check = $conn->query("SHOW TABLES LIKE 'new_student_basic_info'");
+        if ($table_check && $table_check->num_rows > 0) {
+            // 查詢學校來源統計（按 previous_school 分組，包含科系信息）
+            $school_stats_sql = "
+                SELECT 
+                    COALESCE(sd.name, ns.previous_school, '未填寫') AS school_name,
+                    ns.previous_school AS school_code,
+                    COUNT(*) AS student_count
+                FROM new_student_basic_info ns
+                LEFT JOIN school_data sd ON ns.previous_school = sd.school_code
+                WHERE ns.previous_school IS NOT NULL AND ns.previous_school != ''
+                GROUP BY ns.previous_school, sd.name
+                ORDER BY student_count DESC, school_name ASC
+            ";
+            $school_stats_result = $conn->query($school_stats_sql);
+            if ($school_stats_result) {
+                $schools_data = $school_stats_result->fetch_all(MYSQLI_ASSOC);
+                
+                // 為每個學校查詢科系分布
+                foreach ($schools_data as &$school) {
+                    $school_code = $school['school_code'];
+                    $dept_sql = "
+                        SELECT 
+                            class_name AS department_name,
+                            COUNT(*) AS student_count
+                        FROM new_student_basic_info
+                        WHERE previous_school = ?
+                        AND class_name IS NOT NULL AND class_name != ''
+                        GROUP BY class_name
+                        ORDER BY student_count DESC, class_name ASC
+                    ";
+                    $dept_stmt = $conn->prepare($dept_sql);
+                    if ($dept_stmt) {
+                        $dept_stmt->bind_param('s', $school_code);
+                        $dept_stmt->execute();
+                        $dept_result = $dept_stmt->get_result();
+                        $school['departments'] = $dept_result->fetch_all(MYSQLI_ASSOC);
+                        $dept_stmt->close();
+                    } else {
+                        $school['departments'] = [];
+                    }
+                }
+                
+                $new_student_school_stats = $schools_data;
+            }
+            
+            // 查詢科系分布統計（按 class_name 分組）- 保留用於單獨顯示
+            $dept_stats_sql = "
+                SELECT 
+                    class_name AS department_name,
+                    COUNT(*) AS student_count
+                FROM new_student_basic_info
+                WHERE class_name IS NOT NULL AND class_name != ''
+                GROUP BY class_name
+                ORDER BY student_count DESC, class_name ASC
+            ";
+            $dept_stats_result = $conn->query($dept_stats_sql);
+            if ($dept_stats_result) {
+                $new_student_department_stats = $dept_stats_result->fetch_all(MYSQLI_ASSOC);
+            }
+        }
+    } catch (Exception $e) {
+        error_log('查詢新生基本資料統計失敗: ' . $e->getMessage());
+    }
 
     if ($result) {
         $teachers_with_records = $result->fetch_all(MYSQLI_ASSOC);
@@ -918,12 +989,38 @@ $conn->close();
                         <a href="index.php">首頁</a> / 教師活動紀錄管理
                     </div>
 
+
+
                     <!-- 統計分析區塊 -->
                     <div class="card">
                         <div class="card-body">
                         <h4 style="color: #667eea; margin-bottom: 15px; display: flex; align-items: center; gap: 10px;">
+                            <i class="fas fa-chart-bar"></i> 新生經營統計分析
+                        </h4>
+                        <!-- 新生經營活動鈕組 -->
+                            <div style="display: flex; gap: 12px; margin-bottom: 24px; flex-wrap: wrap;">
+                                <button class="btn-view" onclick="showNewStudentSchoolStats()">
+                                    <i class="fas fa-school"></i> 學校來源統計
+                                </button>
+                                <button class="btn-view" onclick="clearNewStudentCharts()" style="background: #dc3545; color: white; border-color: #dc3545;">
+                                    <i class="fas fa-arrow-up"></i> 收回圖表
+                                </button>
+                            </div>
+                        
+                        <!-- 新生經營活動內容區域 -->
+                        <div id="newstudentAnalyticsContent" style="min-height: 200px;">
+                            <div class="empty-state">
+                                <i class="fas fa-chart-line fa-3x" style="margin-bottom: 16px;"></i>
+                                <h4>選擇上方的統計類型來查看詳細分析</h4>
+                                <p>提供新生經營活動參與度、活動類型分布、時間趨勢等多維度統計</p>
+                            </div>
+                        </div>
+                    </div>
+
+                        <h4 style="color: #667eea; margin-bottom: 15px; display: flex; align-items: center; gap: 10px;">
                             <i class="fas fa-chart-bar"></i> 招生活動統計分析
                         </h4>
+
                         <!-- 招生活動統計按鈕組 -->
                             <div style="display: flex; gap: 12px; margin-bottom: 24px; flex-wrap: wrap;">
                                 <button class="btn-view" onclick="showTeacherStats()"><i class="fas fa-users"></i> 教師活動統計</button>
@@ -1770,6 +1867,123 @@ $conn->close();
                 });
             }, 100);
         }
+    }
+    
+    // 顯示新生學校來源統計
+    function showNewStudentSchoolStats() {
+        console.log('showNewStudentSchoolStats 被調用');
+        
+        const schoolStats = <?php echo json_encode($new_student_school_stats); ?>;
+        
+        if (!schoolStats || schoolStats.length === 0) {
+            document.getElementById('newstudentAnalyticsContent').innerHTML = `
+                <div style="text-align: center; padding: 40px; color: #6c757d;">
+                    <i class="fas fa-inbox fa-3x" style="margin-bottom: 16px;"></i>
+                    <h4>暫無數據</h4>
+                    <p>目前沒有學校來源統計數據</p>
+                </div>
+            `;
+            return;
+        }
+        
+        const totalStudents = schoolStats.reduce((sum, item) => sum + parseInt(item.student_count || 0), 0);
+        
+        const content = `
+            <div style="margin-bottom: 20px;">
+                <h4 style="color: #667eea; margin-bottom: 15px;">
+                    <i class="fas fa-school"></i> 國中學校來源統計
+                </h4>
+                
+                <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 20px; border-radius: 10px; margin-bottom: 20px;">
+                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px; text-align: center;">
+                        <div>
+                            <div style="font-size: 2.5em; font-weight: bold; margin-bottom: 5px;">${schoolStats.length}</div>
+                            <div style="font-size: 1em; opacity: 0.9;">參與國中數</div>
+                        </div>
+                        <div>
+                            <div style="font-size: 2.5em; font-weight: bold; margin-bottom: 5px;">${totalStudents}</div>
+                            <div style="font-size: 1em; opacity: 0.9;">總學生數</div>
+                        </div>
+                    </div>
+                </div>
+                
+                ${schoolStats.length === 0 ? `
+                    <div style="text-align: center; padding: 40px; color: #6c757d; background: white; border-radius: 10px;">
+                        <i class="fas fa-search fa-3x" style="margin-bottom: 16px; opacity: 0.3;"></i>
+                        <h4>沒有資料</h4>
+                        <p>目前沒有學校來源數據</p>
+                    </div>
+                ` : `
+                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(350px, 1fr)); gap: 20px;">
+                        ${schoolStats.map((school, index) => {
+                            const colors = ['#a8b5f0', '#7dd87d', '#ffd966', '#f5a5a5', '#7dd4e8', '#b8a5e8', '#ffb366', '#7dd4c8'];
+                            const color = colors[index % colors.length];
+                            
+                            return `
+                                <div style="background: white; box-shadow: 0 2px 10px rgba(0,0,0,0.1); border-radius: 10px; overflow: hidden;">
+                                    <div style="background: ${color}; color: white; padding: 15px 20px;">
+                                        <h5 style="margin: 0; font-size: 1.1em; font-weight: 600; display: flex; justify-content: space-between; align-items: center;">
+                                            <span><i class="fas fa-school"></i> ${school.school_name || '未填寫'}</span>
+                                            <span style="background: rgba(255,255,255,0.3); padding: 4px 12px; border-radius: 15px; font-size: 0.9em;">
+                                                ${school.student_count || 0}人
+                                            </span>
+                                        </h5>
+                                    </div>
+                                    <div style="padding: 20px;">
+                                        <div style="margin-bottom: 15px; font-size: 0.9em; color: #666;">
+                                            共選擇 <strong style="color: ${color};">${(school.departments || []).length}</strong> 個科系
+                                        </div>
+                                        
+                                        ${(school.departments || []).length > 0 ? `
+                                            <div style="max-height: 400px; overflow-y: auto;">
+                                                <table style="width: 100%; border-collapse: collapse;">
+                                                    <thead>
+                                                        <tr style="background: #f8f9fa; border-bottom: 2px solid #dee2e6;">
+                                                            <th style="padding: 10px; text-align: left; font-weight: 600; color: #495057; font-size: 0.9em;">科系名稱</th>
+                                                            <th style="padding: 10px; text-align: center; font-weight: 600; color: #495057; font-size: 0.9em;">總數</th>
+                                                        </tr>
+                                                    </thead>
+                                                    <tbody>
+                                                        ${(school.departments || []).map((dept, deptIndex) => {
+                                                            return `
+                                                                <tr style="border-bottom: 1px solid #e9ecef; ${deptIndex % 2 === 0 ? 'background: #f8f9fa;' : ''}">
+                                                                    <td style="padding: 12px 10px; font-weight: 500; color: #333;">${dept.department_name || '未填寫'}</td>
+                                                                    <td style="padding: 12px 10px; text-align: center; font-weight: bold; color: ${color};">${dept.student_count || 0}</td>
+                                                                </tr>
+                                                            `;
+                                                        }).join('')}
+                                                    </tbody>
+                                                </table>
+                                            </div>
+                                        ` : `
+                                            <div style="text-align: center; padding: 20px; color: #999; font-size: 0.9em;">
+                                                <i class="fas fa-info-circle"></i> 此學校的學生尚未填寫科系資訊
+                                            </div>
+                                        `}
+                                    </div>
+                                </div>
+                            `;
+                        }).join('')}
+                    </div>
+                `}
+            </div>
+        `;
+        
+        document.getElementById('newstudentAnalyticsContent').innerHTML = content;
+    }
+    
+   
+    
+    // 清除新生統計圖表
+    function clearNewStudentCharts() {
+        console.log('clearNewStudentCharts 被調用');
+        document.getElementById('newstudentAnalyticsContent').innerHTML = `
+            <div class="empty-state">
+                <i class="fas fa-chart-line fa-3x" style="margin-bottom: 16px;"></i>
+                <h4>選擇上方的統計類型來查看詳細分析</h4>
+                <p>提供新生經營活動參與度、活動類型分布、時間趨勢等多維度統計</p>
+            </div>
+        `;
     }
     
     function clearActivityCharts() {

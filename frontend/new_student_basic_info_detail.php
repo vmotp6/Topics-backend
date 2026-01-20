@@ -96,14 +96,46 @@ try {
   if (!$conn) throw new Exception('資料庫連接失敗');
   ensureNewStudentBasicInfoTable($conn);
 
-  $stmt = $conn->prepare("SELECT
-      id, student_no, student_name, class_name, enrollment_identity, birthday, gender, id_number, mobile, address, previous_school, photo_path,
-      parent_title, parent_name, parent_birth_year, parent_occupation, parent_phone, parent_education,
-      guardian_relation, guardian_name, guardian_phone, guardian_mobile, guardian_line, guardian_email,
-      emergency_name, emergency_phone, emergency_mobile,
-      is_indigenous, is_new_immigrant_child, is_overseas_chinese,
-      DATE_FORMAT(created_at, '%Y-%m-%d %H:%i:%s') AS created_at
-    FROM new_student_basic_info WHERE id = ? LIMIT 1");
+  $stmt = $conn->prepare("
+  SELECT
+    ns.id,
+    ns.student_no,
+    ns.student_name,
+    ns.class_name,
+    ns.enrollment_identity,
+    ns.birthday,
+    ns.gender,
+    ns.id_number,
+    ns.mobile,
+    ns.address,
+    ns.previous_school,
+    sd.name AS previous_school_name,
+    ns.photo_path,
+    ns.parent_title,
+    ns.parent_name,
+    ns.parent_birth_year,
+    ns.parent_occupation,
+    ns.parent_phone,
+    ns.parent_education,
+    ns.guardian_relation,
+    ns.guardian_name,
+    ns.guardian_phone,
+    ns.guardian_mobile,
+    ns.guardian_line,
+    ns.guardian_email,
+    ns.emergency_name,
+    ns.emergency_phone,
+    ns.emergency_mobile,
+    ns.is_indigenous,
+    ns.is_new_immigrant_child,
+    ns.is_overseas_chinese,
+    DATE_FORMAT(ns.created_at, '%Y-%m-%d %H:%i:%s') AS created_at
+  FROM new_student_basic_info ns
+  LEFT JOIN school_data sd
+    ON ns.previous_school = sd.school_code
+  WHERE ns.id = ?
+  LIMIT 1 ");
+
   if (!$stmt) throw new Exception('查詢準備失敗');
   $stmt->bind_param('i', $id);
   $stmt->execute();
@@ -236,7 +268,7 @@ try {
               <div class="field"><label>身分證號</label><div class="value"><?php echo htmlspecialchars($row['id_number'] ?? ''); ?></div></div>
               <div class="field"><label>手機</label><div class="value"><?php echo htmlspecialchars($row['mobile'] ?? ''); ?></div></div>
               <div class="field" style="grid-column: 1 / -1;"><label>通訊地址</label><div class="value"><?php echo htmlspecialchars($row['address'] ?? ''); ?></div></div>
-              <div class="field"><label>前一學校</label><div class="value"><?php echo htmlspecialchars($row['previous_school'] ?? ''); ?></div></div>
+              <div class="field"><label>前一學校</label><div class="value"><?php echo  htmlspecialchars($row['previous_school_name'] ?? '')  ?></div></div>
               <div class="field">
                 <label>2 吋照片</label>
                 <div class="value" style="display:flex; align-items:center; gap:12px;">
