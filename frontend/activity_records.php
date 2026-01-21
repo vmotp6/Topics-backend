@@ -274,13 +274,15 @@ if ($teacher_id > 0) {
                     $school_code = $school['school_code'];
                     $dept_sql = "
                         SELECT 
-                            class_name AS department_name,
+                            COALESCE(d.name, ns.department_id, '未填寫') AS department_name,
+                            ns.department_id,
                             COUNT(*) AS student_count
-                        FROM new_student_basic_info
-                        WHERE previous_school = ?
-                        AND class_name IS NOT NULL AND class_name != ''
-                        GROUP BY class_name
-                        ORDER BY student_count DESC, class_name ASC
+                        FROM new_student_basic_info ns
+                        LEFT JOIN departments d ON ns.department_id = d.code
+                        WHERE ns.previous_school = ?
+                        AND ns.department_id IS NOT NULL AND ns.department_id != ''
+                        GROUP BY ns.department_id, d.name
+                        ORDER BY student_count DESC, department_name ASC
                     ";
                     $dept_stmt = $conn->prepare($dept_sql);
                     if ($dept_stmt) {
@@ -297,19 +299,29 @@ if ($teacher_id > 0) {
                 $new_student_school_stats = $schools_data;
             }
             
-            // 查詢科系分布統計（按 class_name 分組）- 保留用於單獨顯示
+            // 查詢科系分布統計（按 department_id 分組）- 保留用於單獨顯示
             $dept_stats_sql = "
                 SELECT 
-                    class_name AS department_name,
+                    COALESCE(d.name, ns.department_id, '未填寫') AS department_name,
+                    ns.department_id,
                     COUNT(*) AS student_count
-                FROM new_student_basic_info
-                WHERE class_name IS NOT NULL AND class_name != ''
-                GROUP BY class_name
-                ORDER BY student_count DESC, class_name ASC
+                FROM new_student_basic_info ns
+                LEFT JOIN departments d ON ns.department_id = d.code
+                WHERE ns.department_id IS NOT NULL AND ns.department_id != ''
+                GROUP BY ns.department_id, d.name
+                ORDER BY student_count DESC, department_name ASC
             ";
             $dept_stats_result = $conn->query($dept_stats_sql);
             if ($dept_stats_result) {
                 $new_student_department_stats = $dept_stats_result->fetch_all(MYSQLI_ASSOC);
+            }
+            
+            // 獲取所有科系列表（用於科系選擇下拉選單）
+            $all_departments_sql = "SELECT code, name FROM departments ORDER BY name ASC";
+            $all_departments_result = $conn->query($all_departments_sql);
+            $all_departments = [];
+            if ($all_departments_result) {
+                $all_departments = $all_departments_result->fetch_all(MYSQLI_ASSOC);
             }
         }
     } catch (Exception $e) {
@@ -594,7 +606,11 @@ $conn->close();
         .chart-container {
             position: relative;
             height: 400px;
-            margin: 20px 0;
+            margin: 20px auto;
+            max-width: 90%;
+            display: flex;
+            justify-content: center;
+            align-items: center;
         }
 
         .chart-card {
@@ -606,7 +622,7 @@ $conn->close();
         }
 
         .chart-title {
-            font-size: 1.1em;
+            font-size: 1.3em;
             font-weight: 600;
             color: #333;
             margin-bottom: 15px;
@@ -1001,6 +1017,12 @@ $conn->close();
                             <div style="display: flex; gap: 12px; margin-bottom: 24px; flex-wrap: wrap;">
                                 <button class="btn-view" onclick="showNewStudentSchoolStats()">
                                     <i class="fas fa-school"></i> 學校來源統計
+                                </button>
+                                <button class="btn-view" onclick="showNewStudentSchoolChart()">
+                                    <i class="fas fa-chart-bar"></i> 學校統計
+                                </button>
+                                <button class="btn-view" onclick="showNewStudentDepartmentStats()">
+                                    <i class="fas fa-layer-group"></i> 科系統計
                                 </button>
                                 <button class="btn-view" onclick="clearNewStudentCharts()" style="background: #dc3545; color: white; border-color: #dc3545;">
                                     <i class="fas fa-arrow-up"></i> 收回圖表
@@ -1972,11 +1994,369 @@ $conn->close();
         document.getElementById('newstudentAnalyticsContent').innerHTML = content;
     }
     
-   
+    
+    // 顯示學校統計（無科系下拉，直接整體統計）
+    function showNewStudentSchoolChart() {
+        console.log('showNewStudentSchoolChart 被調用');
+        
+        const schoolStats = <?php echo json_encode($new_student_school_stats); ?>;
+        
+        if (!schoolStats || schoolStats.length === 0) {
+            document.getElementById('newstudentAnalyticsContent').innerHTML = `
+                <div style="text-align: center; padding: 40px; color: #6c757d;">
+                    <i class="fas fa-inbox fa-3x" style="margin-bottom: 16px;"></i>
+                    <h4>暫無數據</h4>
+                    <p>目前沒有學校統計數據</p>
+                </div>
+            `;
+            return;
+        }
+        
+        const normalized = (schoolStats || [])
+            .map(item => ({
+                school_name: item.school_name || '未填寫',
+                student_count: parseInt(item.student_count || 0) || 0
+            }))
+            .filter(item => item.student_count > 0)
+            .sort((a, b) => b.student_count - a.student_count);
+        
+        const totalStudents = normalized.reduce((sum, item) => sum + item.student_count, 0);
+        
+        const content = `
+            <div style="margin-bottom: 20px;">
+                <h4 style="color: #667eea; margin-bottom: 15px;">
+                    <i class="fas fa-chart-bar"></i> 學校統計
+                </h4>
+                
+                <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 20px; border-radius: 10px; margin-bottom: 20px;">
+                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px; text-align: center;">
+                        <div>
+                            <div style="font-size: 2.4em; font-weight: bold; margin-bottom: 5px;">${normalized.length}</div>
+                            <div style="font-size: 1em; opacity: 0.9;">學校數</div>
+                        </div>
+                        <div>
+                            <div style="font-size: 2.4em; font-weight: bold; margin-bottom: 5px;">${totalStudents}</div>
+                            <div style="font-size: 1em; opacity: 0.9;">總學生數</div>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="chart-card" style="display: flex; flex-direction: column; align-items: center;">
+                    <div class="chart-title">各學校新生人數統計</div>
+                    <div class="chart-container" style="width: 100%; display: flex; justify-content: center;">
+                        <canvas id="newStudentSchoolChart"></canvas>
+                    </div>
+                </div>
+                
+                <div style="margin-top: 20px;">
+                    <h5 style="color: #333; margin-bottom: 15px;">詳細數據</h5>
+                    <div style="overflow-x: auto;">
+                        <table style="width: 100%; border-collapse: collapse; background: white;">
+                            <thead>
+                                <tr style="background: #f8f9fa; border-bottom: 2px solid #dee2e6;">
+                                    <th style="padding: 12px; text-align: left; font-weight: 600; color: #495057;">學校名稱</th>
+                                    <th style="padding: 12px; text-align: center; font-weight: 600; color: #495057;">學生人數</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                ${normalized.map((item, index) => `
+                                    <tr style="border-bottom: 1px solid #e9ecef; ${index % 2 === 0 ? 'background: #f8f9fa;' : ''}">
+                                        <td style="padding: 12px; font-weight: 500; color: #333;">${item.school_name}</td>
+                                        <td style="padding: 12px; text-align: center; font-weight: bold; color: #667eea;">${item.student_count}</td>
+                                    </tr>
+                                `).join('')}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        `;
+        
+        document.getElementById('newstudentAnalyticsContent').innerHTML = content;
+        
+        const verticalTextPlugin = {
+            id: 'verticalTextPlugin',
+            afterDraw(chart) {
+                const { ctx, chartArea } = chart;
+                ctx.save();
+                ctx.fillStyle = '#333';
+                ctx.font = 'bold 18px Arial';
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                const text = ['學', '生', '人', '數'];
+                const x = chartArea.left - 40;
+                const centerY = (chartArea.top + chartArea.bottom) / 2;
+                const lineHeight = 22;
+                text.forEach((char, i) => {
+                    ctx.fillText(char, x, centerY + (i - (text.length - 1) / 2) * lineHeight);
+                });
+                ctx.restore();
+            }
+        };
+        
+        setTimeout(() => {
+            const ctx = document.getElementById('newStudentSchoolChart');
+            if (!ctx) return;
+            
+            if (window.newStudentSchoolChartInstance) {
+                window.newStudentSchoolChartInstance.destroy();
+            }
+            
+            const colors = ['#667eea', '#764ba2', '#f093fb', '#4facfe', '#43e97b', '#fa709a', '#fee140', '#30cfd0'];
+            
+            window.newStudentSchoolChartInstance = new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: normalized.map(item => item.school_name),
+                    datasets: [{
+                        label: '學生人數',
+                        data: normalized.map(item => item.student_count),
+                        backgroundColor: normalized.map((_, index) => colors[index % colors.length]),
+                        borderColor: normalized.map((_, index) => colors[index % colors.length]),
+                        borderWidth: 2,
+                        borderRadius: 8
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: true,
+                    layout: {
+                        padding: {
+                            left: 50
+                        }
+                    },
+                    plugins: {
+                        legend: { display: false },
+                        tooltip: {
+                            backgroundColor: 'rgba(0, 0, 0, 0.8)',
+                            padding: 15,
+                            titleFont: { size: 16, weight: 'bold' },
+                            bodyFont: { size: 15 },
+                            callbacks: {
+                                label: function(context) {
+                                    return `學生人數: ${context.parsed.y} 人`;
+                                }
+                            }
+                        }
+                    },
+                    scales: {
+                        y: {
+                            beginAtZero: true,
+                            ticks: {
+                                stepSize: 1,
+                                font: { size: 16 }
+                            },
+                            title: { display: false }
+                        },
+                        x: {
+                            ticks: {
+                                font: { size: 14 },
+                                maxRotation: 45,
+                                minRotation: 45
+                            },
+                            title: {
+                                display: true,
+                                text: '學校名稱',
+                                font: { size: 18, weight: 'bold' },
+                                padding: { top: 10, bottom: 0 }
+                            }
+                        }
+                    }
+                },
+                plugins: [verticalTextPlugin]
+            });
+        }, 100);
+    }
+    
+    // 顯示科系統計（所有科系新生入學人數）
+    function showNewStudentDepartmentStats() {
+        console.log('showNewStudentDepartmentStats 被調用');
+        
+        const departmentStats = <?php echo json_encode($new_student_department_stats); ?>;
+        
+        if (!departmentStats || departmentStats.length === 0) {
+            document.getElementById('newstudentAnalyticsContent').innerHTML = `
+                <div style="text-align: center; padding: 40px; color: #6c757d;">
+                    <i class="fas fa-inbox fa-3x" style="margin-bottom: 16px;"></i>
+                    <h4>暫無數據</h4>
+                    <p>目前沒有科系統計數據</p>
+                </div>
+            `;
+            return;
+        }
+        
+        const normalized = (departmentStats || [])
+            .map(item => ({
+                department_name: item.department_name || '未填寫',
+                student_count: parseInt(item.student_count || 0) || 0
+            }))
+            .filter(item => item.student_count > 0)
+            .sort((a, b) => b.student_count - a.student_count);
+        
+        const totalStudents = normalized.reduce((sum, item) => sum + item.student_count, 0);
+        
+        const content = `
+            <div style="margin-bottom: 20px;">
+                <h4 style="color: #667eea; margin-bottom: 15px;">
+                    <i class="fas fa-layer-group"></i> 科系統計
+                </h4>
+                
+                <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 20px; border-radius: 10px; margin-bottom: 20px;">
+                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px; text-align: center;">
+                        <div>
+                            <div style="font-size: 2.4em; font-weight: bold; margin-bottom: 5px;">${normalized.length}</div>
+                            <div style="font-size: 1em; opacity: 0.9;">科系列表</div>
+                        </div>
+                        <div>
+                            <div style="font-size: 2.4em; font-weight: bold; margin-bottom: 5px;">${totalStudents}</div>
+                            <div style="font-size: 1em; opacity: 0.9;">總學生數</div>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="chart-card" style="display: flex; flex-direction: column; align-items: center;">
+                    <div class="chart-title">各科系新生人數統計</div>
+                    <div class="chart-container" style="width: 100%; display: flex; justify-content: center;">
+                        <canvas id="newStudentDepartmentChart"></canvas>
+                    </div>
+                </div>
+                
+                <div style="margin-top: 20px;">
+                    <h5 style="color: #333; margin-bottom: 15px;">詳細數據</h5>
+                    <div style="overflow-x: auto;">
+                        <table style="width: 100%; border-collapse: collapse; background: white;">
+                            <thead>
+                                <tr style="background: #f8f9fa; border-bottom: 2px solid #dee2e6;">
+                                    <th style="padding: 12px; text-align: left; font-weight: 600; color: #495057;">科系名稱</th>
+                                    <th style="padding: 12px; text-align: center; font-weight: 600; color: #495057;">學生人數</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                ${normalized.map((item, index) => `
+                                    <tr style="border-bottom: 1px solid #e9ecef; ${index % 2 === 0 ? 'background: #f8f9fa;' : ''}">
+                                        <td style="padding: 12px; font-weight: 500; color: #333;">${item.department_name}</td>
+                                        <td style="padding: 12px; text-align: center; font-weight: bold; color: #667eea;">${item.student_count}</td>
+                                    </tr>
+                                `).join('')}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        `;
+        
+        document.getElementById('newstudentAnalyticsContent').innerHTML = content;
+        
+        const verticalTextPlugin = {
+            id: 'verticalTextPlugin',
+            afterDraw(chart) {
+                const { ctx, chartArea } = chart;
+                ctx.save();
+                ctx.fillStyle = '#333';
+                ctx.font = 'bold 18px Arial';
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                const text = ['學', '生', '人', '數'];
+                const x = chartArea.left - 40;
+                const centerY = (chartArea.top + chartArea.bottom) / 2;
+                const lineHeight = 22;
+                text.forEach((char, i) => {
+                    ctx.fillText(char, x, centerY + (i - (text.length - 1) / 2) * lineHeight);
+                });
+                ctx.restore();
+            }
+        };
+        
+        setTimeout(() => {
+            const ctx = document.getElementById('newStudentDepartmentChart');
+            if (!ctx) return;
+            
+            if (window.newStudentDepartmentChartInstance) {
+                window.newStudentDepartmentChartInstance.destroy();
+            }
+            
+            const colors = ['#667eea', '#764ba2', '#f093fb', '#4facfe', '#43e97b', '#fa709a', '#fee140', '#30cfd0'];
+            
+            window.newStudentDepartmentChartInstance = new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: normalized.map(item => item.department_name),
+                    datasets: [{
+                        label: '學生人數',
+                        data: normalized.map(item => item.student_count),
+                        backgroundColor: normalized.map((_, index) => colors[index % colors.length]),
+                        borderColor: normalized.map((_, index) => colors[index % colors.length]),
+                        borderWidth: 2,
+                        borderRadius: 8
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: true,
+                    layout: {
+                        padding: {
+                            left: 50
+                        }
+                    },
+                    plugins: {
+                        legend: { display: false },
+                        tooltip: {
+                            backgroundColor: 'rgba(0, 0, 0, 0.8)',
+                            padding: 15,
+                            titleFont: { size: 16, weight: 'bold' },
+                            bodyFont: { size: 15 },
+                            callbacks: {
+                                label: function(context) {
+                                    return `學生人數: ${context.parsed.y} 人`;
+                                }
+                            }
+                        }
+                    },
+                    scales: {
+                        y: {
+                            beginAtZero: true,
+                            ticks: {
+                                stepSize: 1,
+                                font: { size: 16 }
+                            },
+                            title: { display: false }
+                        },
+                        x: {
+                            ticks: {
+                                font: { size: 14 },
+                                maxRotation: 45,
+                                minRotation: 45
+                            },
+                            title: {
+                                display: true,
+                                text: '科系名稱',
+                                font: { size: 18, weight: 'bold' },
+                                padding: { top: 10, bottom: 0 }
+                            }
+                        }
+                    }
+                },
+                plugins: [verticalTextPlugin]
+            });
+        }, 100);
+    }
     
     // 清除新生統計圖表
     function clearNewStudentCharts() {
         console.log('clearNewStudentCharts 被調用');
+        // 清除圖表實例
+        if (window.departmentSchoolChartInstance) {
+            window.departmentSchoolChartInstance.destroy();
+            window.departmentSchoolChartInstance = null;
+        }
+        if (window.newStudentSchoolChartInstance) {
+            window.newStudentSchoolChartInstance.destroy();
+            window.newStudentSchoolChartInstance = null;
+        }
+        if (window.newStudentDepartmentChartInstance) {
+            window.newStudentDepartmentChartInstance.destroy();
+            window.newStudentDepartmentChartInstance = null;
+        }
         document.getElementById('newstudentAnalyticsContent').innerHTML = `
             <div class="empty-state">
                 <i class="fas fa-chart-line fa-3x" style="margin-bottom: 16px;"></i>

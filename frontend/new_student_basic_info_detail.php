@@ -34,6 +34,7 @@ function ensureNewStudentBasicInfoTable($conn) {
     student_no VARCHAR(50) NOT NULL,
     student_name VARCHAR(100) NOT NULL,
     class_name VARCHAR(100) NOT NULL,
+    department_id VARCHAR(50) NOT NULL,
     enrollment_identity VARCHAR(100) DEFAULT NULL,
     birthday DATE DEFAULT NULL,
     gender VARCHAR(20) DEFAULT NULL,
@@ -102,6 +103,7 @@ try {
     ns.student_no,
     ns.student_name,
     ns.class_name,
+    ns.department_id , d.name AS department_name,
     ns.enrollment_identity,
     ns.birthday,
     ns.gender,
@@ -131,8 +133,15 @@ try {
     ns.is_overseas_chinese,
     DATE_FORMAT(ns.created_at, '%Y-%m-%d %H:%i:%s') AS created_at
   FROM new_student_basic_info ns
+  
+  -- 🔹 前一學校
   LEFT JOIN school_data sd
     ON ns.previous_school = sd.school_code
+
+  -- 🔹 科系
+  LEFT JOIN departments d
+    ON ns.department_id = d.code
+
   WHERE ns.id = ?
   LIMIT 1 ");
 
@@ -262,6 +271,7 @@ try {
               <div class="field"><label>學號</label><div class="value"><?php echo htmlspecialchars($row['student_no'] ?? ''); ?></div></div>
               <div class="field"><label>姓名</label><div class="value"><?php echo htmlspecialchars($row['student_name'] ?? ''); ?></div></div>
               <div class="field"><label>班級</label><div class="value"><?php echo htmlspecialchars($row['class_name'] ?? ''); ?></div></div>
+              <div class="field"><label>所在科系</label><div class="value"><?php echo htmlspecialchars($row['department_name'] ?? ''); ?></div></div>
               <div class="field"><label>在學身分</label><div class="value"><?php echo htmlspecialchars($row['enrollment_identity'] ?? ''); ?></div></div>
               <div class="field"><label>生日</label><div class="value"><?php echo htmlspecialchars($row['birthday'] ?? ''); ?></div></div>
               <div class="field"><label>性別</label><div class="value"><?php echo htmlspecialchars($row['gender'] ?? ''); ?></div></div>
