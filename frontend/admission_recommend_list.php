@@ -6,6 +6,8 @@ checkBackendLogin();
 
 // 引入資料庫設定
 require_once '../../Topics-frontend/frontend/config.php';
+// 引入審核結果通知（通過/不通過）郵件功能
+require_once __DIR__ . '/recommendation_review_email.php';
 
 // 獲取使用者資訊
 $username = isset($_SESSION['username']) ? $_SESSION['username'] : '';
@@ -17,13 +19,35 @@ $is_imd = ($username === 'IMD'); // 保留用於向後兼容
 // 僅指定帳號（username=12）且角色為招生中心（STA）可「查看」審核結果
 $can_view_review_result = ($username === '12' && $user_role === 'STA');
 
-// 屆別/歷屆：預設只顯示「當屆」（今年建立的資料），可切換查看歷屆
-// cohort=current(預設)/past(歷屆)/all(全部)
-$cohort_mode = isset($_GET['cohort']) ? trim((string)$_GET['cohort']) : 'current';
-if ($cohort_mode === '') $cohort_mode = 'current';
-if (!in_array($cohort_mode, ['current', 'past', 'all'], true)) $cohort_mode = 'current';
-$current_year = (int)date('Y');
-$cohort_qs = ($cohort_mode !== 'current') ? ('&cohort=' . urlencode($cohort_mode)) : '';
+// 學生興趣：CSV(code,code,...) -> 名稱列表
+function format_student_interest_display($interest_codes_csv, $departments_map) {
+    $raw = trim((string)$interest_codes_csv);
+    if ($raw === '') return '';
+    $codes = array_values(array_filter(array_map('trim', explode(',', $raw)), function($v){ return $v !== ''; }));
+    if (empty($codes)) return '';
+    $names = [];
+    foreach ($codes as $c) {
+        $names[] = $departments_map[$c] ?? $c;
+    }
+    // 去重但保留順序
+    $seen = [];
+    $out = [];
+    foreach ($names as $n) {
+        if (isset($seen[$n])) continue;
+        $seen[$n] = true;
+        $out[] = $n;
+    }
+    return implode('、', $out);
+}
+
+function interest_contains_code($interest_codes_csv, $code) {
+    $raw = trim((string)$interest_codes_csv);
+    $code = trim((string)$code);
+    if ($raw === '' || $code === '') return false;
+    $parts = array_values(array_filter(array_map('trim', explode(',', $raw)), function($v){ return $v !== ''; }));
+    if (empty($parts)) return false;
+    return in_array($code, $parts, true);
+}
 
 // 手機比對：只取數字
 function digits_only($s) {
@@ -255,11 +279,11 @@ try {
     $where_clause = "";
     if ($is_director && !empty($user_department_code)) {
         // 主任只能看到學生興趣是自己科系的記錄，或已被分配給自己科系的記錄
-        // student_interest 是科系代碼（如 'IM', 'AF'），需要與 departments 表關聯
+        // student_interest 可能是單一 code 或 CSV（多選）
         if ($has_assigned_department) {
-            $where_clause = " WHERE (ar.student_interest = ? OR ar.assigned_department = ?)";
+            $where_clause = " WHERE (FIND_IN_SET(?, ar.student_interest) OR ar.assigned_department = ?)";
         } else {
-            $where_clause = " WHERE ar.student_interest = ?";
+            $where_clause = " WHERE FIND_IN_SET(?, ar.student_interest)";
         }
     }
 
@@ -280,9 +304,6 @@ try {
         // 'all' -> 不加入狀態過濾
         $status_condition_sql = '';
     }
-
-    // 獎金發送：只在「通過」檢視 (view=pass) 顯示按鈕，且沿用審核結果可視權限（username=12 & role=STA）
-    $can_send_bonus = ($can_view_review_result && $view_mode === 'pass');
 
     // 注意：不要在 SQL 階段過濾狀態，改為在 PHP 計算 auto_review_result 後再過濾
     // 這能避免 database 中 status 欄位未同步或使用不同表示法時查詢結果為空的問題。
@@ -420,6 +441,27 @@ try {
     $result = $stmt->get_result();
     $recommendations = $result->fetch_all(MYSQLI_ASSOC);
 
+    // 取得 departments 對照（用於 student_interest CSV 顯示成名稱）
+    $departments_map = [];
+    try {
+        $dres = $conn->query("SELECT code, name FROM departments");
+        if ($dres) {
+            while ($dr = $dres->fetch_assoc()) {
+                $departments_map[$dr['code']] = $dr['name'];
+            }
+        }
+    } catch (Exception $e) {
+        $departments_map = [];
+    }
+    foreach ($recommendations as &$r0) {
+        $csv = $r0['student_interest_code'] ?? '';
+        $disp = format_student_interest_display($csv, $departments_map);
+        if ($disp !== '') {
+            $r0['student_interest'] = $disp;
+        }
+    }
+    unset($r0);
+
     // -------------------------------------------------------------
     // 自動審核比對：recommended(name/school/phone) vs new_student_basic_info(student_name/previous_school/mobile)
     // 規則：3個欄位都對上 => 通過；對上 1~2 個 => 需人工確認；0 個 => 不通過
@@ -470,9 +512,9 @@ try {
 
         // 判斷科系是否匹配：推薦人科系 vs 學生志願科系（若都有代碼則直接比對）
         $rec_dept = trim((string)($tmp['recommender_department_code'] ?? ''));
-        $stu_interest = trim((string)($tmp['student_interest_code'] ?? ''));
+        $stu_interest = trim((string)($tmp['student_interest_code'] ?? '')); // 可能是 CSV
         $dept_match = false;
-        if ($rec_dept !== '' && $stu_interest !== '' && $rec_dept === $stu_interest) {
+        if ($rec_dept !== '' && $stu_interest !== '' && interest_contains_code($stu_interest, $rec_dept)) {
             $dept_match = true;
         }
 
@@ -651,8 +693,14 @@ try {
             if ($rid > 0 && $stmt_update_status && $desired_status_code !== '' && $current_status_code !== $desired_status_code) {
                 $stmt_update_status->bind_param('si', $desired_status_code, $rid);
                 // 若外鍵狀態不存在會更新失敗；上方已確保 application_statuses 有該 code
-                @$stmt_update_status->execute();
-                $it['status'] = $desired_status_code; // 同步本次畫面資料
+                $ok = @$stmt_update_status->execute();
+                if ($ok) {
+                    $it['status'] = $desired_status_code; // 同步本次畫面資料
+                    // 審核結果 email 通知：通過(AP)/不通過(RE) 都寄信（每筆每狀態只寄一次）
+                    if (function_exists('send_review_result_email_once')) {
+                        @send_review_result_email_once($conn, $rid, $desired_status_code, $username);
+                    }
+                }
             }
         }
     }
@@ -661,22 +709,6 @@ try {
     if ($stmt_nsbi_by_name) $stmt_nsbi_by_name->close();
     if ($stmt_nsbi_by_phone) $stmt_nsbi_by_phone->close();
     if (isset($stmt_update_status) && $stmt_update_status) $stmt_update_status->close();
-
-    // --- 屆別過濾（當屆/歷屆/全部） ---
-    // current：只顯示 created_at 年份 = 當年
-    // past：只顯示 created_at 年份 < 當年
-    // all：全部
-    if ($cohort_mode !== 'all') {
-        $tmp_filtered = [];
-        foreach ($recommendations as $rec) {
-            $ts = strtotime((string)($rec['created_at'] ?? ''));
-            if ($ts === false) continue; // 無日期就不納入當屆/歷屆（避免誤判）
-            $yr = (int)date('Y', $ts);
-            if ($cohort_mode === 'current' && $yr === $current_year) $tmp_filtered[] = $rec;
-            if ($cohort_mode === 'past' && $yr < $current_year) $tmp_filtered[] = $rec;
-        }
-        $recommendations = $tmp_filtered;
-    }
     
     // 調試信息：記錄查詢結果數量
     error_log("招生推薦查詢結果: " . count($recommendations) . " 筆記錄");
@@ -1161,7 +1193,6 @@ function getEnrollmentStatusClass($status) {
             display: flex;
             justify-content: space-between;
             align-items: center;
-            
         }
         .modal-header h3 {
             margin: 0;
@@ -1226,10 +1257,6 @@ function getEnrollmentStatusClass($status) {
             display: flex;
             justify-content: flex-end;
             gap: 12px;
-        }
-        .bonus-name {
-            color: #cf1322;
-            font-weight: 900;
         }
         .btn-cancel, .btn-confirm {
             padding: 8px 16px;
@@ -1337,24 +1364,6 @@ function getEnrollmentStatusClass($status) {
                         <?php endif; ?>
                     </div>
                     <div class="table-search">
-                        <?php
-                            // 查看歷屆按鈕：放在搜尋框左邊
-                            $view_for_link = ($view_mode === '' ? 'all' : $view_mode);
-                            $base_view = '?view=' . urlencode($view_for_link);
-                        ?>
-                        <?php if ($cohort_mode === 'past'): ?>
-                            <a class="btn-view" href="<?php echo htmlspecialchars($base_view); ?>">
-                                <i class="fas fa-undo"></i> 查看當屆名單
-                            </a>
-                        <?php elseif ($cohort_mode === 'all'): ?>
-                            <a class="btn-view" href="<?php echo htmlspecialchars($base_view); ?>">
-                                <i class="fas fa-undo"></i> 返回當屆
-                            </a>
-                        <?php else: ?>
-                            <a class="btn-view" href="<?php echo htmlspecialchars($base_view . '&cohort=past'); ?>">
-                                <i class="fas fa-history"></i> 查看歷屆名單
-                            </a>
-                        <?php endif; ?>
                         <input type="text" id="searchInput" class="search-input" placeholder="搜尋被推薦人姓名、學校或電話...">
 
                        
@@ -1386,15 +1395,10 @@ function getEnrollmentStatusClass($status) {
                         ?>
                         <?php if (empty($recommendations)): ?>
                             <div style="display:flex; align-items:center; gap:12px; margin-bottom:12px; margin-left: 55px; margin-top: 15px;">
-                                <a class="btn-view<?php echo ($view_mode === '') ? ' active' : ''; ?>" href="?view=all<?php echo $cohort_qs; ?>">顯示全部</a>
-                                <a class="btn-view<?php echo ($view_mode === 'pass') ? ' active' : ''; ?>" href="?view=pass<?php echo $cohort_qs; ?>">通過</a>
-                                <a class="btn-view<?php echo ($view_mode === 'manual') ? ' active' : ''; ?>" href="?view=manual<?php echo $cohort_qs; ?>">需人工審核</a>
-                                <a class="btn-view<?php echo ($view_mode === 'fail') ? ' active' : ''; ?>" href="?view=fail<?php echo $cohort_qs; ?>">不通過</a>
-                                <?php if ($can_view_review_result): ?>
-                                    <a class="btn-view" href="bonus_send_list.php" style="margin-left:auto; white-space:nowrap;">
-                                        <i class="fas fa-list"></i> 查看獎金發送名單
-                                    </a>
-                                <?php endif; ?>
+                                <a class="btn-view<?php echo ($view_mode === '') ? ' active' : ''; ?>" href="?view=all">顯示全部</a>
+                                <a class="btn-view<?php echo ($view_mode === 'pass') ? ' active' : ''; ?>" href="?view=pass">通過</a>
+                                <a class="btn-view<?php echo ($view_mode === 'manual') ? ' active' : ''; ?>" href="?view=manual">需人工審核</a>
+                                <a class="btn-view<?php echo ($view_mode === 'fail') ? ' active' : ''; ?>" href="?view=fail">不通過</a>
                             </div>
                             <div class="empty-state" style="margin-left:55px; margin-top:24px; text-align:center;">
                                 <i class="fas fa-inbox fa-3x" style="color:#8c8c8c; display:block; margin:0 auto 10px;"></i>
@@ -1402,15 +1406,10 @@ function getEnrollmentStatusClass($status) {
                             </div>
                         <?php else: ?>
                             <div style="display:flex; align-items:center; gap:12px; margin-bottom:12px; margin-left: 55px; margin-top: 15px;">
-                                <a class="btn-view<?php echo ($view_mode === '') ? ' active' : ''; ?>" href="?view=all<?php echo $cohort_qs; ?>">顯示全部</a>
-                                <a class="btn-view<?php echo ($view_mode === 'pass') ? ' active' : ''; ?>" href="?view=pass<?php echo $cohort_qs; ?>">通過</a>
-                                <a class="btn-view<?php echo ($view_mode === 'manual') ? ' active' : ''; ?>" href="?view=manual<?php echo $cohort_qs; ?>">需人工審核</a>
-                                <a class="btn-view<?php echo ($view_mode === 'fail') ? ' active' : ''; ?>" href="?view=fail<?php echo $cohort_qs; ?>">不通過</a>
-                                <?php if ($can_view_review_result): ?>
-                                    <a class="btn-view" href="bonus_send_list.php" style="margin-left:auto; white-space:nowrap;">
-                                        <i class="fas fa-list"></i> 查看獎金發送名單
-                                    </a>
-                                <?php endif; ?>
+                                <a class="btn-view<?php echo ($view_mode === '') ? ' active' : ''; ?>" href="?view=all">顯示全部</a>
+                                <a class="btn-view<?php echo ($view_mode === 'pass') ? ' active' : ''; ?>" href="?view=pass">通過</a>
+                                <a class="btn-view<?php echo ($view_mode === 'manual') ? ' active' : ''; ?>" href="?view=manual">需人工審核</a>
+                                <a class="btn-view<?php echo ($view_mode === 'fail') ? ' active' : ''; ?>" href="?view=fail">不通過</a>
                             </div>
                             <table class="table" id="recommendationTable">
                                 <thead>
@@ -1560,14 +1559,6 @@ function getEnrollmentStatusClass($status) {
                                                    onclick="toggleDetail(<?php echo $item['id']; ?>)">
                                                     <i class="fas fa-eye"></i> <span class="btn-text">查看詳情</span>
                                                 </button>
-                                                <?php if (!empty($can_send_bonus)): ?>
-                                                <button type="button"
-                                                   class="btn-view"
-                                                   style="background:#52c41a; color:#fff; border-color:#52c41a;"
-                                                   onclick='confirmSendBonus(<?php echo (int)($item["id"] ?? 0); ?>, <?php echo htmlspecialchars(json_encode((string)($item["recommender_name"] ?? "")), ENT_QUOTES, "UTF-8"); ?>)'>
-                                                    <i class="fas fa-gift"></i> 獎金發送
-                                                </button>
-                                                <?php endif; ?>
                                                 <?php
                                                     $current_status = isset($item['status']) ? trim((string)$item['status']) : '';
                                                     $auto_review = isset($item['auto_review_result']) ? trim((string)$item['auto_review_result']) : '';
@@ -1618,14 +1609,6 @@ function getEnrollmentStatusClass($status) {
                                                    onclick="toggleDetail(<?php echo $item['id']; ?>)">
                                                     <i class="fas fa-eye"></i> <span class="btn-text">查看詳情</span>
                                                 </button>
-                                                <?php if (!empty($can_send_bonus)): ?>
-                                                <button type="button"
-                                                   class="btn-view"
-                                                   style="background:#52c41a; color:#fff; border-color:#52c41a;"
-                                                   onclick='confirmSendBonus(<?php echo (int)($item["id"] ?? 0); ?>, <?php echo htmlspecialchars(json_encode((string)($item["recommender_name"] ?? "")), ENT_QUOTES, "UTF-8"); ?>)'>
-                                                    <i class="fas fa-gift"></i> 獎金發送
-                                                </button>
-                                                <?php endif; ?>
                                                 <?php 
                                                     // 檢查是否需要顯示修改結果按鈕（僅在審核結果為需人工確認時）
                                                     $current_status = isset($item['status']) ? trim((string)$item['status']) : '';
@@ -1656,14 +1639,6 @@ function getEnrollmentStatusClass($status) {
                                                    onclick="toggleDetail(<?php echo $item['id']; ?>)">
                                                     <i class="fas fa-eye"></i> <span class="btn-text">查看詳情</span>
                                                 </button>
-                                                <?php if (!empty($can_send_bonus)): ?>
-                                                <button type="button"
-                                                   class="btn-view"
-                                                   style="background:#52c41a; color:#fff; border-color:#52c41a;"
-                                                   onclick='confirmSendBonus(<?php echo (int)($item["id"] ?? 0); ?>, <?php echo htmlspecialchars(json_encode((string)($item["recommender_name"] ?? "")), ENT_QUOTES, "UTF-8"); ?>)'>
-                                                    <i class="fas fa-gift"></i> 獎金發送
-                                                </button>
-                                                <?php endif; ?>
                                                 <?php 
                                                     // 檢查是否需要顯示修改結果按鈕（僅在審核結果為需人工確認時）
                                                     $current_status = isset($item['status']) ? trim((string)$item['status']) : '';
@@ -1937,27 +1912,6 @@ function getEnrollmentStatusClass($status) {
             <div class="modal-footer">
                 <button class="btn-cancel" onclick="closeUpdateReviewResultModal()">取消</button>
                 <button class="btn-confirm" onclick="updateReviewResult()">確認修改</button>
-            </div>
-        </div>
-    </div>
-    <?php endif; ?>
-
-    <!-- 獎金發送彈出視窗（置中顯示，取代瀏覽器內建 confirm/alert） -->
-    <?php if ($can_view_review_result): ?>
-    <div id="sendBonusModal" class="modal" style="display: none;">
-        <div class="modal-content">
-            <div class="modal-header">
-                <h3 id="sendBonusModalTitle">獎金發送</h3>
-                <span class="close" onclick="closeSendBonusModal()">&times;</span>
-            </div>
-            <div class="modal-body">
-                <p id="sendBonusModalMessage" style="margin-bottom: 0;">
-                    <span id="sendBonusModalPrefix">是否要發送獎金給推薦人「</span><span id="sendBonusModalName" class="bonus-name"></span><span id="sendBonusModalSuffix">」?</span>
-                </p>
-            </div>
-            <div class="modal-footer" id="sendBonusModalFooter">
-                <button class="btn-cancel" id="sendBonusBtnNo" onclick="sendBonusNo()">否</button>
-                <button class="btn-confirm" id="sendBonusBtnYes" onclick="sendBonusYes()">是</button>
             </div>
         </div>
     </div>
@@ -2386,132 +2340,6 @@ function getEnrollmentStatusClass($status) {
     }
 
     // （已移除）審核結果手動更新 JS
-
-    // 獎金發送：自訂置中彈窗（兩次確認 -> 成功提示）
-    let sendBonusStep = 0; // 1=第一次確認, 2=第二次確認, 3=成功提示
-    let sendBonusRecommendationId = 0;
-    let sendBonusName = '';
-
-    function confirmSendBonus(recommendationId, recommenderName) {
-        sendBonusRecommendationId = parseInt(recommendationId || 0, 10) || 0;
-        sendBonusName = (recommenderName || '').trim() || '（未填寫）';
-        sendBonusStep = 1;
-        renderSendBonusModal();
-        openSendBonusModal();
-    }
-
-    function openSendBonusModal() {
-        const modal = document.getElementById('sendBonusModal');
-        if (modal) modal.style.display = 'flex';
-    }
-
-    function closeSendBonusModal() {
-        const modal = document.getElementById('sendBonusModal');
-        if (modal) modal.style.display = 'none';
-        sendBonusStep = 0;
-        sendBonusRecommendationId = 0;
-        sendBonusName = '';
-    }
-
-    function renderSendBonusModal() {
-        const prefix = document.getElementById('sendBonusModalPrefix');
-        const nameEl = document.getElementById('sendBonusModalName');
-        const suffix = document.getElementById('sendBonusModalSuffix');
-        const btnNo = document.getElementById('sendBonusBtnNo');
-        const btnYes = document.getElementById('sendBonusBtnYes');
-        const title = document.getElementById('sendBonusModalTitle');
-        if (!prefix || !nameEl || !suffix || !btnNo || !btnYes || !title) return;
-
-        // 姓名固定用紅字 span 顯示
-        nameEl.textContent = sendBonusName;
-
-        if (sendBonusStep === 1) {
-            title.textContent = '獎金發送';
-            prefix.textContent = '是否要發送獎金給推薦人「';
-            suffix.textContent = '」?';
-            btnNo.style.display = '';
-            btnYes.style.display = '';
-            btnNo.textContent = '否';
-            btnYes.textContent = '是';
-        } else if (sendBonusStep === 2) {
-            title.textContent = '獎金發送';
-            prefix.textContent = '再次確認：是否要發送獎金給推薦人「';
-            suffix.textContent = '」?';
-            btnNo.style.display = '';
-            btnYes.style.display = '';
-            btnNo.textContent = '否';
-            btnYes.textContent = '是';
-        } else if (sendBonusStep === 3) {
-            title.textContent = '完成';
-            prefix.textContent = '獎金已成功發送給推薦人「';
-            suffix.textContent = '」';
-            btnNo.style.display = 'none';
-            btnYes.style.display = '';
-            btnYes.textContent = '確定';
-        }
-    }
-
-    function sendBonusYes() {
-        if (sendBonusStep === 1) {
-            sendBonusStep = 2;
-            renderSendBonusModal();
-            return;
-        }
-        if (sendBonusStep === 2) {
-            // 寫入「已發送獎金」log（成功後才顯示成功提示）
-            if (!sendBonusRecommendationId) {
-                alert('系統錯誤：缺少推薦ID，無法發送');
-                closeSendBonusModal();
-                return;
-            }
-
-            const xhr = new XMLHttpRequest();
-            xhr.open('POST', 'send_bonus.php', true);
-            xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
-            xhr.onreadystatechange = function() {
-                if (xhr.readyState === 4) {
-                    if (xhr.status === 200) {
-                        let resp = null;
-                        try { resp = JSON.parse(xhr.responseText); } catch (e) {}
-                        if (resp && resp.success) {
-                            sendBonusStep = 3;
-                            // 若後端回傳正確姓名，以後端為準
-                            if (resp.recommender_name) {
-                                sendBonusName = (resp.recommender_name || '').trim() || sendBonusName;
-                            }
-                            renderSendBonusModal();
-                        } else {
-                            const msg = (resp && resp.message) ? resp.message : '發送失敗';
-                            alert(msg);
-                            closeSendBonusModal();
-                        }
-                    } else {
-                        alert('請求失敗，狀態碼：' + xhr.status);
-                        closeSendBonusModal();
-                    }
-                }
-            };
-            xhr.send('recommendation_id=' + encodeURIComponent(String(sendBonusRecommendationId)));
-            return;
-        }
-        if (sendBonusStep === 3) {
-            closeSendBonusModal();
-        }
-    }
-
-    function sendBonusNo() {
-        closeSendBonusModal();
-    }
-
-    // 點擊彈出視窗外部關閉（置中 modal）
-    const sendBonusModal = document.getElementById('sendBonusModal');
-    if (sendBonusModal) {
-        sendBonusModal.addEventListener('click', function(e) {
-            if (e.target === this) {
-                closeSendBonusModal();
-            }
-        });
-    }
 
     // 點擊分配部門彈出視窗外部關閉
     const assignRecommendationDepartmentModal = document.getElementById('assignRecommendationDepartmentModal');

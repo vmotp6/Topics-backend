@@ -148,6 +148,35 @@ try {
       border-bottom: 1px solid var(--border-color);
     }
     .toolbar .count { color: var(--text-secondary-color); font-size: 14px; }
+    .toolbar-right {
+      display:flex;
+      align-items:center;
+      gap: 10px;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+    .search-input {
+      padding: 8px 10px;
+      border: 1px solid #d9d9d9;
+      border-radius: 8px;
+      font-size: 14px;
+      width: 190px;
+    }
+    .search-input:focus {
+      outline: none;
+      border-color: #1890ff;
+      box-shadow: 0 0 0 2px rgba(24,144,255,0.15);
+    }
+    .btn-secondary {
+      background: #fff;
+      color: #595959;
+      border-color: #d9d9d9;
+    }
+    .btn-secondary:hover {
+      border-color: #1890ff;
+      color: #1890ff;
+      background: #fff;
+    }
     .table-container { overflow-x: auto; }
     table { width: 100%; border-collapse: collapse; }
     th, td {
@@ -265,7 +294,13 @@ try {
               <i class="fas fa-list" style="color:#1890ff;"></i>
               <strong>已發送獎金名單</strong>
             </div>
-            <div class="count">共 <?php echo count($rows); ?> 筆</div>
+            <div class="toolbar-right">
+              <input type="text" id="filterRecommenderName" class="search-input" placeholder="查詢推薦人姓名">
+              <input type="text" id="filterRecommenderId" class="search-input" placeholder="查詢推薦人學號/編號">
+              <button type="button" class="btn-view" id="btnBonusQuery"><i class="fas fa-search"></i> 查詢</button>
+              <button type="button" class="btn-view btn-secondary" id="btnBonusClear"><i class="fas fa-eraser"></i> 清除</button>
+              <div class="count" id="bonusCount">共 <?php echo count($rows); ?> 筆</div>
+            </div>
           </div>
           <div class="table-container">
             <?php if (empty($rows)): ?>
@@ -290,6 +325,9 @@ try {
                 <tbody>
                   <?php foreach ($rows as $r): ?>
                     <tr>
+                      <tr class="bonus-row"
+                          data-recommender-name="<?php echo htmlspecialchars((string)($r['recommender_name'] ?? '')); ?>"
+                          data-recommender-id="<?php echo htmlspecialchars((string)($r['recommender_student_id'] ?? '')); ?>">
                       <td><?php echo htmlspecialchars($r['recommendation_id'] ?? ''); ?></td>
                       <td><?php echo htmlspecialchars($r['recommender_name'] ?? ''); ?></td>
                       <td><?php echo htmlspecialchars($r['recommender_student_id'] ?? ''); ?></td>
@@ -302,7 +340,7 @@ try {
                           <i class="fas fa-eye"></i> 查看詳情
                         </button>
                       </td>
-                    </tr>
+                      </tr>
                   <?php endforeach; ?>
                 </tbody>
               </table>
@@ -361,6 +399,33 @@ try {
   </div>
 
   <script>
+    // 已發送獎金名單：查詢/清除（前端過濾，不重新查 DB）
+    function applyBonusFilters() {
+      const nameVal = (document.getElementById('filterRecommenderName')?.value || '').trim().toLowerCase();
+      const idVal = (document.getElementById('filterRecommenderId')?.value || '').trim().toLowerCase();
+      const rows = Array.from(document.querySelectorAll('tr.bonus-row'));
+      let visible = 0;
+      rows.forEach(tr => {
+        const nm = (tr.getAttribute('data-recommender-name') || '').toLowerCase();
+        const rid = (tr.getAttribute('data-recommender-id') || '').toLowerCase();
+        let ok = true;
+        if (nameVal && nm.indexOf(nameVal) === -1) ok = false;
+        if (idVal && rid.indexOf(idVal) === -1) ok = false;
+        tr.style.display = ok ? '' : 'none';
+        if (ok) visible++;
+      });
+      const cnt = document.getElementById('bonusCount');
+      if (cnt) cnt.textContent = `共 ${visible} 筆`;
+    }
+
+    function clearBonusFilters() {
+      const n = document.getElementById('filterRecommenderName');
+      const i = document.getElementById('filterRecommenderId');
+      if (n) n.value = '';
+      if (i) i.value = '';
+      applyBonusFilters();
+    }
+
     function setText(id, value) {
       const el = document.getElementById(id);
       if (!el) return;
@@ -432,6 +497,23 @@ try {
         if (e.target === this) closeBonusDetail();
       });
     }
+
+    // 綁定查詢/清除
+    document.addEventListener('DOMContentLoaded', function() {
+      const btnQ = document.getElementById('btnBonusQuery');
+      const btnC = document.getElementById('btnBonusClear');
+      const n = document.getElementById('filterRecommenderName');
+      const i = document.getElementById('filterRecommenderId');
+      if (btnQ) btnQ.addEventListener('click', applyBonusFilters);
+      if (btnC) btnC.addEventListener('click', clearBonusFilters);
+      // Enter 觸發查詢
+      [n, i].forEach(el => {
+        if (!el) return;
+        el.addEventListener('keyup', function(e) {
+          if (e.key === 'Enter') applyBonusFilters();
+        });
+      });
+    });
   </script>
 </body>
 </html>

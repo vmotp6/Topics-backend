@@ -54,7 +54,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                 break;
 
             case 'update_session':
-                $sql = "UPDATE admission_sessions SET session_name = ?, session_date = ?, session_end_date = ?, session_type = ?, max_participants = ?, description = ?, is_active = ? WHERE id = ?";
+                $sql = "UPDATE admission_sessions SET session_name = ?, session_date = ?, session_end_date = ?, session_type = ?, session_link = ?, session_location = ?, max_participants = ?, description = ?, is_active = ? WHERE id = ?";
                 $stmt = $conn->prepare($sql);
                 // session_type: 1=線上, 2=實體
                 $session_type = ($_POST['session_type'] === '線上' || $_POST['session_type'] === '1') ? 1 : 2;
@@ -64,16 +64,30 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                 $session_date = date('Y-m-d H:i:s', strtotime($_POST['session_date']));
                 // 處理結束時間
                 $session_end_date = !empty($_POST['session_end_date']) ? date('Y-m-d H:i:s', strtotime($_POST['session_end_date'])) : null;
+                // 處理線上連結和實體地點
+                $session_link = ($session_type == 1 && !empty($_POST['session_link'])) ? trim($_POST['session_link']) : null;
+                $session_location = ($session_type == 2 && !empty($_POST['session_location'])) ? trim($_POST['session_location']) : null;
                 // 處理 max_participants：如果為空則設為 null
                 $max_participants = !empty($_POST['max_participants']) ? intval($_POST['max_participants']) : null;
                 // 處理說明
                 $description = !empty($_POST['description']) ? $_POST['description'] : null;
-                // bind_param: session_name(s), session_date(s), session_end_date(s), session_type(i), max_participants(i), description(s), is_active(i), session_id(i)
+                // bind_param: 共10个参数
+                // session_name(s), session_date(s), session_end_date(s), session_type(i), 
+                // session_link(s), session_location(s), max_participants(i), description(s), is_active(i), session_id(i)
                 $session_name = $_POST['session_name'];
-                $stmt->bind_param("sssiisii", $session_name, $session_date, $session_end_date, $session_type, $max_participants, $description, $is_active, $session_id);
+                // 类型字符串：sssississii (10个字符对应10个参数)
+                // 参数顺序：session_name(s), session_date(s), session_end_date(s), session_type(i), 
+                //          session_link(s), session_location(s), max_participants(i), description(s), is_active(i), session_id(i)
+                // 类型字符串应该是10个字符对应10个参数
+                // s-s-s-i-s-s-i-s-s-i-i (11个字符，错误！)
+                // 应该是：s-s-s-i-s-s-i-s-s-i (10个字符)
+                $stmt->bind_param("sssississi", $session_name, $session_date, $session_end_date, $session_type, $session_link, $session_location, $max_participants, $description, $is_active, $session_id);
                 if ($stmt->execute()) {
                     $message = "場次更新成功！"; $messageType = "success";
+                } else {
+                    $message = "場次更新失敗：" . $stmt->error; $messageType = "error";
                 }
+                $stmt->close();
                 break;
 
             case 'delete_session':
@@ -82,12 +96,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                 $stmt->bind_param("i", $_POST['session_id']);
                 if ($stmt->execute()) {
                     $message = "場次刪除成功！"; $messageType = "success";
+                } else {
+                    $message = "場次刪除失敗：" . $stmt->error; $messageType = "error";
                 }
+                $stmt->close();
                 break;
 
-        }
-        if (isset($stmt) && $stmt->error) {
-            throw new Exception($stmt->error);
         }
     } catch (Exception $e) {
         $message = "操作失敗：" . $e->getMessage();
@@ -335,13 +349,13 @@ $conn->close();
         .status-inactive { background: #fff2f0; color: var(--danger-color); border: 1px solid #ffccc7; }
 
         .modal { display: none; position: fixed; z-index: 2000; left: 0; top: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.45); }
-        .modal-content { background-color: #fff; margin: 5% auto; padding: 0; border-radius: 8px; width: 90%; max-width: 600px; box-shadow: 0 4px 12px rgba(0,0,0,0.15); }
+        .modal-content { background-color: #fff; margin: 2% auto; padding: 0; border-radius: 8px; width: 90%; max-width: 600px; max-height: 90vh; box-shadow: 0 4px 12px rgba(0,0,0,0.15); display: flex; flex-direction: column; }
         .modal-header { padding: 16px 24px; border-bottom: 1px solid var(--border-color); display: flex; justify-content: space-between; align-items: center; }
         .modal-title { font-size: 16px; font-weight: 600; }
         .close { color: var(--text-secondary-color); font-size: 20px; font-weight: bold; cursor: pointer; }
         .close:hover { color: var(--text-color); }
-        .modal-body { padding: 24px; }
-        .modal-footer { padding: 16px 24px; border-top: 1px solid var(--border-color); display: flex; justify-content: flex-end; gap: 8px; background: #fafafa; }
+        .modal-body { padding: 24px; overflow-y: auto; flex: 1; }
+        .modal-footer { padding: 16px 24px; border-top: 1px solid var(--border-color); display: flex; justify-content: flex-end; gap: 8px; background: #fafafa; flex-shrink: 0; }
         .required-asterisk { color: var(--danger-color); margin-right: 4px; }
     </style>
 </head>
@@ -569,7 +583,7 @@ $conn->close();
                     </div>
                     <div class="form-group" id="edit_session_location_group">
                         <label class="form-label"><span class="required-asterisk">*</span> 實體場次地點</label>
-                        <input type="text" name="session_location" id="edit_session_location" class="form-control" placeholder="例如：台北市信義區信義路五段7號">
+                        <input type="text" name="session_location" id="edit_session_location" class="form-control" placeholder="例如：康寧大學A棟先雲廳">
                         <small style="color: var(--text-secondary-color); margin-top: 4px; display: block;">請輸入實體場次的舉辦地點</small>
                     </div>
                     <div class="form-group">
