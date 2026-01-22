@@ -123,6 +123,43 @@ if ($current_user === 'IMD' || $is_im) {
     $department_filter = " AND (t.department = '資訊管理科' OR t.department LIKE '%資管%' OR t.department = 'IM')";
 }
 
+// 計算當前學年度的開始和結束日期
+// 學年度定義：6月 ~ 隔年6月（例如：2026/06/01 ~ 2027/06/30 為 2026 學年度）
+function getCurrentAcademicYearRange() {
+    $current_month = (int)date('m');
+    $current_year = (int)date('Y');
+    
+    // 如果當前月份 >= 6月，學年度從今年6月開始到明年6月結束
+    // 如果當前月份 < 6月，學年度從去年6月開始到今年6月結束
+    if ($current_month >= 6) {
+        $start_year = $current_year;
+        $end_year = $current_year + 1;
+    } else {
+        $start_year = $current_year - 1;
+        $end_year = $current_year;
+    }
+    
+    return [
+        'start' => sprintf('%04d-06-01 00:00:00', $start_year),
+        'end' => sprintf('%04d-06-30 23:59:59', $end_year)
+    ];
+}
+
+// 根據西元年份計算學年度範圍（民國年）
+// 學年度：6月 ~ 隔年6月
+// 例如：2026年6月1日 ~ 2027年6月30日 為 115學年度（2026-1911=115）
+function getAcademicYearRangeByRocYear($roc_year) {
+    $ad_year = $roc_year + 1911; // 民國年轉西元年
+    return [
+        'start' => sprintf('%04d-06-01 00:00:00', $ad_year),
+        'end' => sprintf('%04d-06-30 23:59:59', $ad_year + 1)
+    ];
+}
+
+// 獲取新生統計的視圖類型（新生或歷屆學生）
+$new_student_view = isset($_GET['new_student_view']) ? $_GET['new_student_view'] : 'active'; // 'active' 為新生，'previous' 為歷屆學生
+$selected_roc_year = isset($_GET['roc_year']) ? (int)$_GET['roc_year'] : 0; // 選中的學年度（民國年）
+
 // 建立資料庫連接
 $conn = getDatabaseConnection();
     
@@ -253,6 +290,81 @@ if ($teacher_id > 0) {
         // 檢查表是否存在
         $table_check = $conn->query("SHOW TABLES LIKE 'new_student_basic_info'");
         if ($table_check && $table_check->num_rows > 0) {
+            // 取得當前學年度範圍
+            $academic_year = getCurrentAcademicYearRange();
+            
+            // 根據視圖類型構建 WHERE 條件
+            // 五專修業 5 年，畢業日：入學第 5 年的 7/31
+            $graduateExpr = "DATE(CONCAT(YEAR(created_at) + 5, '-07-31'))";
+            
+            // 查詢所有可用的學年度選項（用於歷屆學生選擇）
+            $available_roc_years = [];
+            if ($new_student_view === 'previous') {
+                // 查詢所有歷屆學生的學年度（非新生但仍在學）
+                $yearSql = "SELECT DISTINCT 
+                    (CASE 
+                        WHEN MONTH(created_at) < 6 THEN YEAR(created_at) - 1
+                        ELSE YEAR(created_at)
+                    END) - 1911 AS roc_year
+                    FROM new_student_basic_info
+                    WHERE CURDATE() <= DATE(CONCAT(YEAR(created_at) + 5, '-07-31'))
+                    AND created_at NOT BETWEEN ? AND ?
+                    HAVING roc_year > 0
+                    ORDER BY roc_year DESC";
+                
+                $yearStmt = $conn->prepare($yearSql);
+                if ($yearStmt) {
+                    $yearStmt->bind_param('ss', $academic_year['start'], $academic_year['end']);
+                    $yearStmt->execute();
+                    $yearResult = $yearStmt->get_result();
+                    if ($yearResult) {
+                        while ($yearRow = $yearResult->fetch_assoc()) {
+                            $roc_year = (int)$yearRow['roc_year'];
+                            if ($roc_year > 0) {
+                                $available_roc_years[] = $roc_year;
+                            }
+                        }
+                    }
+                    $yearStmt->close();
+                }
+                rsort($available_roc_years);
+            }
+            
+            // 構建 WHERE 條件和參數
+            $where_params = [];
+            $where_types = '';
+            
+            if ($new_student_view === 'previous') {
+                // 歷屆學生：非新生但仍在學
+                $base_where = " WHERE CURDATE() <= $graduateExpr
+                    AND created_at NOT BETWEEN ? AND ?";
+                $where_params[] = $academic_year['start'];
+                $where_params[] = $academic_year['end'];
+                $where_types .= 'ss';
+                
+                // 如果有選擇學年度，進一步篩選
+                if ($selected_roc_year > 0) {
+                    $selected_year_range = getAcademicYearRangeByRocYear($selected_roc_year);
+                    $base_where .= " AND created_at >= ? AND created_at <= ?";
+                    $where_params[] = $selected_year_range['start'];
+                    $where_params[] = $selected_year_range['end'];
+                    $where_types .= 'ss';
+                }
+                
+                $where_condition = $base_where . " AND ns.previous_school IS NOT NULL AND ns.previous_school != ''";
+                $where_condition_dept = $base_where . " AND ns.department_id IS NOT NULL AND ns.department_id != ''";
+            } else {
+                // 新生：當學年度新生
+                $where_condition = " WHERE CURDATE() <= $graduateExpr
+                    AND created_at BETWEEN ? AND ?
+                    AND ns.previous_school IS NOT NULL AND ns.previous_school != ''";
+                $where_condition_dept = " WHERE CURDATE() <= $graduateExpr
+                    AND created_at BETWEEN ? AND ?
+                    AND ns.department_id IS NOT NULL AND ns.department_id != ''";
+                $where_params = [$academic_year['start'], $academic_year['end']];
+                $where_types = 'ss';
+            }
+            
             // 查詢學校來源統計（按 previous_school 分組，包含科系信息）
             $school_stats_sql = "
                 SELECT 
@@ -261,42 +373,75 @@ if ($teacher_id > 0) {
                     COUNT(*) AS student_count
                 FROM new_student_basic_info ns
                 LEFT JOIN school_data sd ON ns.previous_school = sd.school_code
-                WHERE ns.previous_school IS NOT NULL AND ns.previous_school != ''
+                $where_condition
                 GROUP BY ns.previous_school, sd.name
                 ORDER BY student_count DESC, school_name ASC
             ";
-            $school_stats_result = $conn->query($school_stats_sql);
-            if ($school_stats_result) {
-                $schools_data = $school_stats_result->fetch_all(MYSQLI_ASSOC);
-                
-                // 為每個學校查詢科系分布
-                foreach ($schools_data as &$school) {
-                    $school_code = $school['school_code'];
-                    $dept_sql = "
-                        SELECT 
-                            COALESCE(d.name, ns.department_id, '未填寫') AS department_name,
-                            ns.department_id,
-                            COUNT(*) AS student_count
-                        FROM new_student_basic_info ns
-                        LEFT JOIN departments d ON ns.department_id = d.code
-                        WHERE ns.previous_school = ?
-                        AND ns.department_id IS NOT NULL AND ns.department_id != ''
-                        GROUP BY ns.department_id, d.name
-                        ORDER BY student_count DESC, department_name ASC
-                    ";
-                    $dept_stmt = $conn->prepare($dept_sql);
-                    if ($dept_stmt) {
-                        $dept_stmt->bind_param('s', $school_code);
-                        $dept_stmt->execute();
-                        $dept_result = $dept_stmt->get_result();
-                        $school['departments'] = $dept_result->fetch_all(MYSQLI_ASSOC);
-                        $dept_stmt->close();
-                    } else {
-                        $school['departments'] = [];
-                    }
+            $school_stmt = $conn->prepare($school_stats_sql);
+            if ($school_stmt) {
+                if (!empty($where_params)) {
+                    $school_stmt->bind_param($where_types, ...$where_params);
                 }
-                
-                $new_student_school_stats = $schools_data;
+                $school_stmt->execute();
+                $school_stats_result = $school_stmt->get_result();
+                if ($school_stats_result) {
+                    $schools_data = $school_stats_result->fetch_all(MYSQLI_ASSOC);
+                    
+                    // 為每個學校查詢科系分布
+                    foreach ($schools_data as &$school) {
+                        $school_code = $school['school_code'];
+                        $dept_where_params = [$school_code];
+                        $dept_where_types = 's';
+                        $dept_base_where = "WHERE ns.previous_school = ?
+                            AND ns.department_id IS NOT NULL AND ns.department_id != ''
+                            AND CURDATE() <= DATE(CONCAT(YEAR(ns.created_at) + 5, '-07-31'))";
+                        
+                        if ($new_student_view === 'previous') {
+                            $dept_base_where .= " AND ns.created_at NOT BETWEEN ? AND ?";
+                            $dept_where_params[] = $academic_year['start'];
+                            $dept_where_params[] = $academic_year['end'];
+                            $dept_where_types .= 'ss';
+                            
+                            if ($selected_roc_year > 0) {
+                                $selected_year_range = getAcademicYearRangeByRocYear($selected_roc_year);
+                                $dept_base_where .= " AND ns.created_at >= ? AND ns.created_at <= ?";
+                                $dept_where_params[] = $selected_year_range['start'];
+                                $dept_where_params[] = $selected_year_range['end'];
+                                $dept_where_types .= 'ss';
+                            }
+                        } else {
+                            $dept_base_where .= " AND ns.created_at BETWEEN ? AND ?";
+                            $dept_where_params[] = $academic_year['start'];
+                            $dept_where_params[] = $academic_year['end'];
+                            $dept_where_types .= 'ss';
+                        }
+                        
+                        $dept_sql = "
+                            SELECT 
+                                COALESCE(d.name, ns.department_id, '未填寫') AS department_name,
+                                ns.department_id,
+                                COUNT(*) AS student_count
+                            FROM new_student_basic_info ns
+                            LEFT JOIN departments d ON ns.department_id = d.code
+                            $dept_base_where
+                            GROUP BY ns.department_id, d.name
+                            ORDER BY student_count DESC, department_name ASC
+                        ";
+                        $dept_stmt = $conn->prepare($dept_sql);
+                        if ($dept_stmt) {
+                            $dept_stmt->bind_param($dept_where_types, ...$dept_where_params);
+                            $dept_stmt->execute();
+                            $dept_result = $dept_stmt->get_result();
+                            $school['departments'] = $dept_result->fetch_all(MYSQLI_ASSOC);
+                            $dept_stmt->close();
+                        } else {
+                            $school['departments'] = [];
+                        }
+                    }
+                    
+                    $new_student_school_stats = $schools_data;
+                }
+                $school_stmt->close();
             }
             
             // 查詢科系分布統計（按 department_id 分組）- 保留用於單獨顯示
@@ -307,13 +452,21 @@ if ($teacher_id > 0) {
                     COUNT(*) AS student_count
                 FROM new_student_basic_info ns
                 LEFT JOIN departments d ON ns.department_id = d.code
-                WHERE ns.department_id IS NOT NULL AND ns.department_id != ''
+                $where_condition_dept
                 GROUP BY ns.department_id, d.name
                 ORDER BY student_count DESC, department_name ASC
             ";
-            $dept_stats_result = $conn->query($dept_stats_sql);
-            if ($dept_stats_result) {
-                $new_student_department_stats = $dept_stats_result->fetch_all(MYSQLI_ASSOC);
+            $dept_stmt = $conn->prepare($dept_stats_sql);
+            if ($dept_stmt) {
+                if (!empty($where_params)) {
+                    $dept_stmt->bind_param($where_types, ...$where_params);
+                }
+                $dept_stmt->execute();
+                $dept_stats_result = $dept_stmt->get_result();
+                if ($dept_stats_result) {
+                    $new_student_department_stats = $dept_stats_result->fetch_all(MYSQLI_ASSOC);
+                }
+                $dept_stmt->close();
             }
             
             // 獲取所有科系列表（用於科系選擇下拉選單）
@@ -1894,6 +2047,7 @@ $conn->close();
     // 顯示新生學校來源統計
     function showNewStudentSchoolStats() {
         console.log('showNewStudentSchoolStats 被調用');
+        sessionStorage.setItem('lastNewStudentChartType', 'schoolStats');
         
         const schoolStats = <?php echo json_encode($new_student_school_stats); ?>;
         
@@ -1912,9 +2066,27 @@ $conn->close();
         
         const content = `
             <div style="margin-bottom: 20px;">
-                <h4 style="color: #667eea; margin-bottom: 15px;">
-                    <i class="fas fa-school"></i> 國中學校來源統計
-                </h4>
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; flex-wrap: wrap; gap: 10px;">
+                    <h4 style="color: #667eea; margin: 0;">
+                        <i class="fas fa-school"></i> 國中學校來源統計
+                    </h4>
+                    <div style="display: flex; gap: 10px; align-items: center;">
+                        <select id="newStudentViewSelect" onchange="changeNewStudentView(this.value)" style="padding: 8px 12px; border: 1px solid #d9d9d9; border-radius: 6px; background: #fff; color: #333; font-size: 14px; cursor: pointer;">
+                            <option value="active" <?php echo $new_student_view === 'active' ? 'selected' : ''; ?>>新生資料</option>
+                            <option value="previous" <?php echo $new_student_view === 'previous' ? 'selected' : ''; ?>>歷屆學生資料</option>
+                        </select>
+                        <?php if ($new_student_view === 'previous' && !empty($available_roc_years)): ?>
+                            <select id="rocYearSelect" onchange="changeRocYear(this.value)" style="padding: 8px 12px; border: 1px solid #d9d9d9; border-radius: 6px; background: #fff; color: #333; font-size: 14px; cursor: pointer;">
+                                <option value="0">全部學年</option>
+                                <?php foreach ($available_roc_years as $roc_year): ?>
+                                    <option value="<?php echo $roc_year; ?>" <?php echo $selected_roc_year == $roc_year ? 'selected' : ''; ?>>
+                                        <?php echo $roc_year; ?>學年
+                                    </option>
+                                <?php endforeach; ?>
+                            </select>
+                        <?php endif; ?>
+                    </div>
+                </div>
                 
                 <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 20px; border-radius: 10px; margin-bottom: 20px;">
                     <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px; text-align: center;">
@@ -1998,6 +2170,7 @@ $conn->close();
     // 顯示學校統計（無科系下拉，直接整體統計）
     function showNewStudentSchoolChart() {
         console.log('showNewStudentSchoolChart 被調用');
+        sessionStorage.setItem('lastNewStudentChartType', 'schoolChart');
         
         const schoolStats = <?php echo json_encode($new_student_school_stats); ?>;
         
@@ -2024,9 +2197,27 @@ $conn->close();
         
         const content = `
             <div style="margin-bottom: 20px;">
-                <h4 style="color: #667eea; margin-bottom: 15px;">
-                    <i class="fas fa-chart-bar"></i> 學校統計
-                </h4>
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; flex-wrap: wrap; gap: 10px;">
+                    <h4 style="color: #667eea; margin: 0;">
+                        <i class="fas fa-chart-bar"></i> 學校統計
+                    </h4>
+                    <div style="display: flex; gap: 10px; align-items: center;">
+                        <select id="newStudentViewSelect" onchange="changeNewStudentView(this.value)" style="padding: 8px 12px; border: 1px solid #d9d9d9; border-radius: 6px; background: #fff; color: #333; font-size: 14px; cursor: pointer;">
+                            <option value="active" <?php echo $new_student_view === 'active' ? 'selected' : ''; ?>>新生資料</option>
+                            <option value="previous" <?php echo $new_student_view === 'previous' ? 'selected' : ''; ?>>歷屆學生資料</option>
+                        </select>
+                        <?php if ($new_student_view === 'previous' && !empty($available_roc_years)): ?>
+                            <select id="rocYearSelect" onchange="changeRocYear(this.value)" style="padding: 8px 12px; border: 1px solid #d9d9d9; border-radius: 6px; background: #fff; color: #333; font-size: 14px; cursor: pointer;">
+                                <option value="0">全部學年</option>
+                                <?php foreach ($available_roc_years as $roc_year): ?>
+                                    <option value="<?php echo $roc_year; ?>" <?php echo $selected_roc_year == $roc_year ? 'selected' : ''; ?>>
+                                        <?php echo $roc_year; ?>學年
+                                    </option>
+                                <?php endforeach; ?>
+                            </select>
+                        <?php endif; ?>
+                    </div>
+                </div>
                 
                 <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 20px; border-radius: 10px; margin-bottom: 20px;">
                     <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px; text-align: center;">
@@ -2171,6 +2362,7 @@ $conn->close();
     // 顯示科系統計（所有科系新生入學人數）
     function showNewStudentDepartmentStats() {
         console.log('showNewStudentDepartmentStats 被調用');
+        sessionStorage.setItem('lastNewStudentChartType', 'departmentStats');
         
         const departmentStats = <?php echo json_encode($new_student_department_stats); ?>;
         
@@ -2197,9 +2389,27 @@ $conn->close();
         
         const content = `
             <div style="margin-bottom: 20px;">
-                <h4 style="color: #667eea; margin-bottom: 15px;">
-                    <i class="fas fa-layer-group"></i> 科系統計
-                </h4>
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; flex-wrap: wrap; gap: 10px;">
+                    <h4 style="color: #667eea; margin: 0;">
+                        <i class="fas fa-layer-group"></i> 科系統計
+                    </h4>
+                    <div style="display: flex; gap: 10px; align-items: center;">
+                        <select id="newStudentViewSelect" onchange="changeNewStudentView(this.value)" style="padding: 8px 12px; border: 1px solid #d9d9d9; border-radius: 6px; background: #fff; color: #333; font-size: 14px; cursor: pointer;">
+                            <option value="active" <?php echo $new_student_view === 'active' ? 'selected' : ''; ?>>新生資料</option>
+                            <option value="previous" <?php echo $new_student_view === 'previous' ? 'selected' : ''; ?>>歷屆學生資料</option>
+                        </select>
+                        <?php if ($new_student_view === 'previous' && !empty($available_roc_years)): ?>
+                            <select id="rocYearSelect" onchange="changeRocYear(this.value)" style="padding: 8px 12px; border: 1px solid #d9d9d9; border-radius: 6px; background: #fff; color: #333; font-size: 14px; cursor: pointer;">
+                                <option value="0">全部學年</option>
+                                <?php foreach ($available_roc_years as $roc_year): ?>
+                                    <option value="<?php echo $roc_year; ?>" <?php echo $selected_roc_year == $roc_year ? 'selected' : ''; ?>>
+                                        <?php echo $roc_year; ?>學年
+                                    </option>
+                                <?php endforeach; ?>
+                            </select>
+                        <?php endif; ?>
+                    </div>
+                </div>
                 
                 <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 20px; border-radius: 10px; margin-bottom: 20px;">
                     <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px; text-align: center;">
@@ -2364,6 +2574,31 @@ $conn->close();
                 <p>提供新生經營活動參與度、活動類型分布、時間趨勢等多維度統計</p>
             </div>
         `;
+    }
+    
+    // 變更新生視圖類型（新生或歷屆學生）
+    function changeNewStudentView(viewType) {
+        const url = new URL(window.location.href);
+        url.searchParams.set('new_student_view', viewType);
+        // 清除學年度參數（如果從歷屆切換到新生）
+        if (viewType === 'active') {
+            url.searchParams.delete('roc_year');
+        }
+        // 重新載入頁面以更新數據
+        window.location.href = url.toString();
+    }
+    
+    // 變更學年度篩選
+    function changeRocYear(rocYear) {
+        const url = new URL(window.location.href);
+        url.searchParams.set('new_student_view', 'previous');
+        if (rocYear && rocYear !== '0') {
+            url.searchParams.set('roc_year', rocYear);
+        } else {
+            url.searchParams.delete('roc_year');
+        }
+        // 重新載入頁面以更新數據
+        window.location.href = url.toString();
     }
     
     function clearActivityCharts() {
@@ -5499,6 +5734,32 @@ function showContinuedAdmissionChoicesStats() {
     // 搜尋功能
     document.addEventListener('DOMContentLoaded', function() {
         console.log('DOM已載入，開始初始化...');
+        
+        // 檢查是否有新生統計的篩選條件，如果有則自動顯示圖表
+        const urlParams = new URLSearchParams(window.location.search);
+        const newStudentView = urlParams.get('new_student_view');
+        const rocYear = urlParams.get('roc_year');
+        
+        // 如果有篩選條件，自動顯示圖表
+        if (newStudentView) {
+            console.log('檢測到新生統計篩選條件，自動顯示圖表');
+            setTimeout(() => {
+                // 檢查最後點擊的圖表類型（從 sessionStorage 獲取）
+                const lastChartType = sessionStorage.getItem('lastNewStudentChartType');
+                if (lastChartType === 'schoolChart' && typeof showNewStudentSchoolChart === 'function') {
+                    showNewStudentSchoolChart();
+                } else if (lastChartType === 'departmentStats' && typeof showNewStudentDepartmentStats === 'function') {
+                    showNewStudentDepartmentStats();
+                } else if (lastChartType === 'schoolStats' && typeof showNewStudentSchoolStats === 'function') {
+                    showNewStudentSchoolStats();
+                } else {
+                    // 默認顯示學校來源統計
+                    if (typeof showNewStudentSchoolStats === 'function') {
+                        showNewStudentSchoolStats();
+                    }
+                }
+            }, 500);
+        }
         
         // 如果是學校行政人員且在教師列表視圖，自動顯示科系招生總覽
         if (isSchoolAdmin && isTeacherListView) {
