@@ -280,6 +280,12 @@ function hasPermission($permission_code, $user_role, $permissions_array) {
                 </a>
             <?php endif; ?>
 
+            <!-- 電子簽章 - 所有已登入用戶都可以使用 -->
+            <a href="signature.php" class="menu-item <?php echo $current_page === 'signature' ? 'active' : ''; ?>">
+                <i class="fas fa-file-signature"></i>
+                <span>電子簽章</span>
+            </a>
+
             <!-- 招生推薦 - 僅學校行政和管理員，STAM和AS需要權限 -->
             <?php if (($is_staff || $is_admin || $is_director) || ($is_stam && hasPermission('admission_recommend_list', $user_role, $stam_permissions)) || ($is_as && hasPermission('admission_recommend_list', $user_role, $as_permissions))): ?>
                 <a href="admission_recommend_list.php" class="menu-item <?php echo $current_page === 'admission_recommend_list' ? 'active' : ''; ?>">

@@ -25,11 +25,13 @@ $is_admin_or_staff = in_array($user_role, $allowed_center_roles);
 
 // 判斷是否為主任
 $is_director = ($user_role === 'DI');
+// 判斷是否為一般老師
+$is_teacher = ($user_role === 'TE' || $user_role === '老師');
 $user_department_code = null;
 $is_department_user = false;
 
-// 如果是主任，獲取其科系代碼
-if ($is_director && $user_id > 0) {
+// 如果是主任或老師，獲取其科系代碼
+if (($is_director || $is_teacher) && $user_id > 0) {
     try {
         $conn_temp = getDatabaseConnection();
         $table_check = $conn_temp->query("SHOW TABLES LIKE 'director'");
@@ -60,8 +62,10 @@ $is_admission_center = $is_admin_or_staff && !$is_department_user;
 // 權限判斷：主任和科助不能管理名單（不能管理名額、不能修改狀態）
 $can_manage_list = in_array($user_role, ['ADM', 'STA']); // 只有管理員和學校行政可以管理
 
-// 主任可以審核分配給他的名單
-$can_review = $can_manage_list || ($is_director && !empty($user_department_code));
+// 主任可以分配給老師
+$can_assign = $is_director && !empty($user_department_code);
+// 老師可以評分被分配的學生
+$can_score = $is_teacher && !empty($user_id);
 
 // 建立資料庫連接
 try {
@@ -79,7 +83,20 @@ $view_mode = $_GET['view'] ?? 'active';
 
 // 年份篩選：預設為報名編號 apply_no 的前四碼等於當年
 $current_year = (int)date('Y');
-$filter_year = isset($_GET['year']) ? (int)$_GET['year'] : $current_year;
+// 在 active 模式下，強制使用今年，忽略 URL 參數
+// 在 history 模式下，使用 URL 參數，但預設為去年（如果沒有提供）
+if ($view_mode === 'active') {
+    $filter_year = $current_year; // 目前名單只能顯示今年
+} else {
+    // 歷史資料：如果有提供年份參數且不是今年，使用該年份；否則使用去年
+    $requested_year = isset($_GET['year']) ? (int)$_GET['year'] : ($current_year - 1);
+    // 如果選擇的是今年，改為去年
+    if ($requested_year === $current_year) {
+        $filter_year = $current_year - 1;
+    } else {
+        $filter_year = $requested_year;
+    }
+}
 
 // 如果是歷史檢視，更新標題提示
 if ($view_mode === 'history') {
@@ -116,14 +133,61 @@ $assigned_dept_field = $has_assigned_department ? "ca.assigned_department" : "NU
 // 根據 view_mode 設定狀態與年份過濾條件
 $status_condition = '';
 if ($view_mode === 'history') {
-    // 歷史資料：顯示所有非今年的資料（不管錄取狀態），apply_no 前四碼 <> 今年
-    $status_condition = " AND LEFT(ca.apply_no, 4) <> ? ";
+    // 歷史資料：顯示指定年份的資料（不管錄取狀態），apply_no 前四碼 = filter_year，且 filter_year 不能是今年
+    // 注意：filter_year 在 history 模式下已經確保不是今年
+    $status_condition = " AND LEFT(ca.apply_no, 4) = ? ";
 } else {
-    // 目前名單：只看非錄取，且 apply_no 前四碼 = 當年度
+    // 目前名單：只看非錄取，且 apply_no 前四碼 = 今年（強制使用 current_year）
     $status_condition = " AND (ca.status IS NULL OR (ca.status <> 'approved' AND ca.status <> 'AP')) AND LEFT(ca.apply_no, 4) = ? ";
 }
 
-if ($is_director && !empty($user_department_code)) {
+// 檢查是否使用正規化分配表
+$has_normalized_assignments = false;
+$table_check = $conn->query("SHOW TABLES LIKE 'continued_admission_assignments'");
+if ($table_check && $table_check->num_rows > 0) {
+    $has_normalized_assignments = true;
+}
+
+if ($is_teacher && !empty($user_id)) {
+    // 老師只能看到被分配給他的學生（使用正規化分配表）
+    if ($has_normalized_assignments) {
+        $stmt = $conn->prepare("SELECT DISTINCT ca.id, ca.apply_no, ca.name, ca.school, ca.status, ca.created_at, $assigned_dept_field, sd.name as school_name 
+                      FROM continued_admission ca
+                      LEFT JOIN school_data sd ON ca.school = sd.school_code
+                      INNER JOIN continued_admission_assignments caa ON ca.id = caa.application_id
+                      WHERE caa.reviewer_user_id = ? " . $status_condition . "
+                      ORDER BY ca.$sortBy $sortOrder");
+        // active 模式用 current_year（今年），history 模式用 filter_year（已確保不是今年）
+        $year_param = $view_mode === 'active' ? $current_year : $filter_year;
+        $stmt->bind_param("ii", $user_id, $year_param);
+    } else {
+        // 如果沒有正規化表，嘗試使用舊的欄位
+        $has_assigned_teacher = false;
+        $teacher_column_check = $conn->query("SHOW COLUMNS FROM continued_admission LIKE 'assigned_teacher_1_id'");
+        if ($teacher_column_check && $teacher_column_check->num_rows > 0) {
+            $has_assigned_teacher = true;
+        }
+        
+        if ($has_assigned_teacher) {
+            $stmt = $conn->prepare("SELECT ca.id, ca.apply_no, ca.name, ca.school, ca.status, ca.created_at, $assigned_dept_field, sd.name as school_name 
+                          FROM continued_admission ca
+                          LEFT JOIN school_data sd ON ca.school = sd.school_code
+                          WHERE (ca.assigned_teacher_1_id = ? OR ca.assigned_teacher_2_id = ?) " . $status_condition . "
+                          ORDER BY ca.$sortBy $sortOrder");
+            $year_param = $view_mode === 'active' ? $current_year : $filter_year;
+            $stmt->bind_param("iii", $user_id, $user_id, $year_param);
+        } else {
+            // 如果沒有分配欄位，老師看不到任何資料
+            $stmt = $conn->prepare("SELECT ca.id, ca.apply_no, ca.name, ca.school, ca.status, ca.created_at, $assigned_dept_field, sd.name as school_name 
+                          FROM continued_admission ca
+                          LEFT JOIN school_data sd ON ca.school = sd.school_code
+                          WHERE 1=0 " . $status_condition . "
+                          ORDER BY ca.$sortBy $sortOrder");
+            $year_param = $view_mode === 'active' ? $current_year : $filter_year;
+            $stmt->bind_param("i", $year_param);
+        }
+    }
+} elseif ($is_director && !empty($user_department_code)) {
     // 主任只能看到已分配給他的科系的名單（assigned_department = 他的科系代碼）
     // 如果沒有 assigned_department 字段，則通過 continued_admission_choices 來過濾
     if ($has_assigned_department) {
@@ -132,8 +196,8 @@ if ($is_director && !empty($user_department_code)) {
                       LEFT JOIN school_data sd ON ca.school = sd.school_code
                       WHERE ca.assigned_department = ? " . $status_condition . "
                       ORDER BY ca.$sortBy $sortOrder");
-        // 歷史資料用 current_year（非今年），目前名單用 filter_year（今年）
-        $year_param = $view_mode === 'history' ? $current_year : $filter_year;
+        // active 模式用 current_year（今年），history 模式用 filter_year（已確保不是今年）
+        $year_param = $view_mode === 'active' ? $current_year : $filter_year;
         $stmt->bind_param("si", $user_department_code, $year_param);
     } else {
         // 如果沒有 assigned_department 字段，通過 continued_admission_choices 來過濾
@@ -143,8 +207,8 @@ if ($is_director && !empty($user_department_code)) {
                       INNER JOIN continued_admission_choices cac ON ca.id = cac.application_id
                       WHERE cac.department_code = ? " . $status_condition . "
                       ORDER BY ca.$sortBy $sortOrder");
-        // 歷史資料用 current_year（非今年），目前名單用 filter_year（今年）
-        $year_param = $view_mode === 'history' ? $current_year : $filter_year;
+        // active 模式用 current_year（今年），history 模式用 filter_year（已確保不是今年）
+        $year_param = $view_mode === 'active' ? $current_year : $filter_year;
         $stmt->bind_param("si", $user_department_code, $year_param);
     }
 } elseif ($is_imd_user) {
@@ -156,8 +220,8 @@ if ($is_director && !empty($user_department_code)) {
                           INNER JOIN departments d ON cac.department_code = d.code
                           WHERE (d.code = 'IM' OR d.name LIKE '%資訊管理%' OR d.name LIKE '%資管%') " . $status_condition . "
                           ORDER BY ca.$sortBy $sortOrder");
-    // 歷史資料用 current_year（非今年），目前名單用 filter_year（今年）
-    $year_param = $view_mode === 'history' ? $current_year : $filter_year;
+    // active 模式用 current_year（今年），history 模式用 filter_year（已確保不是今年）
+    $year_param = $view_mode === 'active' ? $current_year : $filter_year;
     $stmt->bind_param("i", $year_param);
 } else {
     // 招生中心/管理員可以看到所有續招報名
@@ -166,8 +230,8 @@ if ($is_director && !empty($user_department_code)) {
                           LEFT JOIN school_data sd ON ca.school = sd.school_code
                       WHERE 1=1 " . $status_condition . "
                           ORDER BY ca.$sortBy $sortOrder");
-    // 歷史資料用 current_year（非今年），目前名單用 filter_year（今年）
-    $year_param = $view_mode === 'history' ? $current_year : $filter_year;
+    // active 模式用 current_year（今年），history 模式用 filter_year（已確保不是今年）
+    $year_param = $view_mode === 'active' ? $current_year : $filter_year;
     $stmt->bind_param("i", $year_param);
 }
 $stmt->execute();
@@ -190,7 +254,7 @@ function getDepartmentName($code, $departments) {
     return $code; // 如果找不到名稱，返回代碼
 }
 
-// 為每個報名獲取志願選擇（包含代碼和名稱）
+// 為每個報名獲取志願選擇（包含代碼和名稱）和分配資訊
 foreach ($applications as &$app) {
     $choices_stmt = $conn->prepare("
         SELECT cac.choice_order, d.name as department_name, cac.department_code
@@ -215,6 +279,46 @@ foreach ($applications as &$app) {
     $app['choices'] = json_encode($choices, JSON_UNESCAPED_UNICODE);
     $app['choices_with_codes'] = $choices_with_codes; // 保存帶代碼的志願數據
     $choices_stmt->close();
+    
+    // 獲取分配資訊（從正規化表或舊欄位）
+    if ($has_normalized_assignments) {
+        $assign_stmt = $conn->prepare("
+            SELECT reviewer_user_id, reviewer_type, assignment_order
+            FROM continued_admission_assignments
+            WHERE application_id = ?
+            ORDER BY assignment_order ASC
+        ");
+        $assign_stmt->bind_param('i', $app['id']);
+        $assign_stmt->execute();
+        $assign_result = $assign_stmt->get_result();
+        $app['assigned_teacher_1_id'] = null;
+        $app['assigned_teacher_2_id'] = null;
+        $app['assigned_director_id'] = null;
+        while ($assign_row = $assign_result->fetch_assoc()) {
+            if ($assign_row['assignment_order'] == 1) {
+                $app['assigned_teacher_1_id'] = $assign_row['reviewer_user_id'];
+            } elseif ($assign_row['assignment_order'] == 2) {
+                $app['assigned_teacher_2_id'] = $assign_row['reviewer_user_id'];
+            } elseif ($assign_row['assignment_order'] == 3) {
+                $app['assigned_director_id'] = $assign_row['reviewer_user_id'];
+            }
+        }
+        $assign_stmt->close();
+    } else {
+        // 使用舊欄位（向後兼容）
+        $old_check = $conn->query("SHOW COLUMNS FROM continued_admission LIKE 'assigned_teacher_1_id'");
+        if ($old_check && $old_check->num_rows > 0) {
+            $old_stmt = $conn->prepare("SELECT assigned_teacher_1_id, assigned_teacher_2_id FROM continued_admission WHERE id = ?");
+            $old_stmt->bind_param('i', $app['id']);
+            $old_stmt->execute();
+            $old_result = $old_stmt->get_result();
+            if ($old_row = $old_result->fetch_assoc()) {
+                $app['assigned_teacher_1_id'] = $old_row['assigned_teacher_1_id'] ?? null;
+                $app['assigned_teacher_2_id'] = $old_row['assigned_teacher_2_id'] ?? null;
+            }
+            $old_stmt->close();
+        }
+    }
 }
 unset($app);
 
@@ -816,26 +920,30 @@ function getStatusClass($status) {
                             <div style="display:flex; align-items:center; gap:12px; margin-bottom:12px; margin-left: 60px;margin-right: 60px;">
                                 <div style="display:flex; gap:16px;">
                                     <?php
-                                        // 年份下拉選單使用目前網址中的 year 參數
-                                        $year_param = isset($_GET['year']) ? (int)$_GET['year'] : $current_year;
-                                        // 以當前年份往回 5 年給選項
-                                        $years = [];
-                                        for ($y = $current_year; $y >= $current_year - 5; $y--) {
-                                            $years[] = $y;
-                                        }
                                         // 產生帶年份參數的 URL
-                                        $build_url = function($view, $year) use ($sortBy, $sortOrder) {
-                                            return 'continued_admission_list.php?tab=list&view=' . urlencode($view) . '&year=' . intval($year) . '&sort_by=' . urlencode($sortBy) . '&sort_order=' . urlencode($sortOrder);
+                                        $build_url = function($view, $year) use ($sortBy, $sortOrder, $current_year) {
+                                            // active 模式不需要年份參數（固定顯示今年）
+                                            if ($view === 'active') {
+                                                return 'continued_admission_list.php?tab=list&view=' . urlencode($view) . '&sort_by=' . urlencode($sortBy) . '&sort_order=' . urlencode($sortOrder);
+                                            } else {
+                                                // history 模式需要年份參數，但不能是今年
+                                                $year_to_use = ($year === $current_year) ? ($current_year - 1) : $year;
+                                                return 'continued_admission_list.php?tab=list&view=' . urlencode($view) . '&year=' . intval($year_to_use) . '&sort_by=' . urlencode($sortBy) . '&sort_order=' . urlencode($sortOrder);
+                                            }
                                         };
                                     ?>
-                                    <a href="<?php echo htmlspecialchars($build_url('active', $year_param)); ?>" class="btn" style="padding:6px 10px; color:#877f7f; <?php echo $view_active ? 'background:#f0f7ff; border-color: #91d5ff; color:#1890ff;' : ''; ?>">目前名單</a>
-                                    <a href="<?php echo htmlspecialchars($build_url('history', $year_param)); ?>" class="btn" style="padding:6px 10px; color:#877f7f; <?php echo $view_history ? 'background:#f0f7ff; border-color: #91d5ff; color:#1890ff;' : ''; ?>">歷史資料</a>
+                                    <a href="<?php echo htmlspecialchars($build_url('active', $current_year)); ?>" class="btn" style="padding:6px 10px; color:#877f7f; <?php echo $view_active ? 'background:#f0f7ff; border-color: #91d5ff; color:#1890ff;' : ''; ?>">目前名單</a>
+                                    <a href="<?php echo htmlspecialchars($build_url('history', $filter_year)); ?>" class="btn" style="padding:6px 10px; color:#877f7f; <?php echo $view_history ? 'background:#f0f7ff; border-color: #91d5ff; color:#1890ff;' : ''; ?>">歷史資料</a>
                                 </div>
                                 <?php
                                     // 建立匯出連結，保留目前 GET 參數
                                     $export_params = $_GET;
                                     $export_params['tab'] = 'list';
                                     if (!isset($export_params['view'])) $export_params['view'] = $view_mode;
+                                    // active 模式下不帶年份參數（固定顯示今年）
+                                    if ($view_mode === 'active') {
+                                        unset($export_params['year']);
+                                    }
                                     $export_csv_params = $export_params; $export_csv_params['export'] = 'csv';
                                     $export_excel_params = $export_params; $export_excel_params['export'] = 'excel';
                                     $export_csv_url = 'continued_admission_list.php?' . http_build_query($export_csv_params);
@@ -845,14 +953,23 @@ function getStatusClass($status) {
                                     <a href="<?php echo htmlspecialchars($export_csv_url); ?>" class="btn" style="padding:6px 10px; background: #6291f9f5; color: white;">匯出 CSV</a>
                                     <a href="<?php echo htmlspecialchars($export_excel_url); ?>" class="btn" style="padding:6px 10px; background: rgb(40, 167, 69); color: white;">匯出 Excel</a>
                                     <div style="color:var(--text-secondary-color); font-size:14px;">
-                                        顯示模式：<?php echo $current_view === 'history' ? '歷史（非今年）' : '目前在審／未錄取'; ?>
-                                        <?php if ($current_view === 'active'): ?>
+                                        顯示模式：<?php echo $current_view === 'history' ? '歷史資料' : '目前在審／未錄取'; ?>
+                                        <?php if ($current_view === 'history'): ?>
                                             ，年份：
+                                            <?php
+                                            // 歷史資料的年份選項：排除今年，從去年開始往回 5 年
+                                            $history_years = [];
+                                            for ($y = $current_year - 1; $y >= $current_year - 6; $y--) {
+                                                $history_years[] = $y;
+                                            }
+                                            ?>
                                             <select id="yearFilter" onchange="onChangeYear(this.value)" style="padding:4px 6px; border-radius:4px; border:1px solid #d9d9d9; margin-left:4px;">
-                                                <?php foreach ($years as $y): ?>
-                                                    <option value="<?php echo $y; ?>" <?php echo $y === $year_param ? 'selected' : ''; ?>><?php echo $y; ?></option>
+                                                <?php foreach ($history_years as $y): ?>
+                                                    <option value="<?php echo $y; ?>" <?php echo $y === $filter_year ? 'selected' : ''; ?>><?php echo $y; ?></option>
                                                 <?php endforeach; ?>
                                             </select>
+                                        <?php else: ?>
+                                            <span style="margin-left:4px;">（<?php echo $current_year; ?>年）</span>
                                         <?php endif; ?>
                                     </div>
                                 </div>
@@ -1026,18 +1143,46 @@ function getStatusClass($status) {
                                                 $is_waitlist = ($current_status === 'waitlist' || $current_status === 'AD');
                                                 
                                                 $assigned_dept = $item['assigned_department'] ?? '';
+                                                $assigned_teacher_1 = $item['assigned_teacher_1_id'] ?? null;
+                                                $assigned_teacher_2 = $item['assigned_teacher_2_id'] ?? null;
+                                                $assigned_director_id = $item['assigned_director_id'] ?? null;
                                                 
-                                                // 只有主任（DI）可以審核，學校行政（STA）不能審核
-                                                // 且只有在待審核狀態時才顯示審核按鈕
-                                                $can_review_this = false;
+                                                // 主任可以分配給老師（狀態為待審核且已分配給該科系）
+                                                $can_assign_this = false;
                                                 if ($is_pending && $is_director && !empty($user_department_code)) {
-                                                    // 主任只能審核分配給他的科系的名單
-                                                    $can_review_this = ($assigned_dept === $user_department_code);
+                                                    $can_assign_this = ($assigned_dept === $user_department_code);
                                                 }
                                                 
-                                                // 顯示審核按鈕（只有主任可以看到，且狀態為待審核）
-                                                if ($can_review_this && $is_pending): ?>
-                                                    <a href="continued_admission_detail.php?id=<?php echo $item['id']; ?>&action=review" class="btn-review">審核</a>
+                                                // 老師可以評分（已被分配給該老師）
+                                                $can_score_this = false;
+                                                $teacher_slot = null; // 1, 2, 或 3（3=主任）
+                                                if ($is_teacher && !empty($user_id)) {
+                                                    if ($assigned_teacher_1 == $user_id) {
+                                                        $can_score_this = true;
+                                                        $teacher_slot = 1;
+                                                    } elseif ($assigned_teacher_2 == $user_id) {
+                                                        $can_score_this = true;
+                                                        $teacher_slot = 2;
+                                                    }
+                                                }
+                                                
+                                                // 主任可以評分（已分配給該科系且主任被分配為評審者）
+                                                if ($is_director && !empty($user_id) && !empty($user_department_code) && $assigned_dept === $user_department_code) {
+                                                    if ($assigned_director_id == $user_id || $assigned_director_id === null) {
+                                                        // 如果主任被分配或還沒分配（向後兼容），允許評分
+                                                        $can_score_this = true;
+                                                        $teacher_slot = 3; // 使用 3 表示主任
+                                                    }
+                                                }
+                                                
+                                                // 顯示分配按鈕（只有主任可以看到，且狀態為待審核）
+                                                if ($can_assign_this && $is_pending): ?>
+                                                    <button onclick="showAssignTeacherModal(<?php echo $item['id']; ?>, '<?php echo htmlspecialchars($item['name'], ENT_QUOTES); ?>', '<?php echo htmlspecialchars($user_department_code, ENT_QUOTES); ?>')" class="btn-review" style="margin-left: 8px;">分配</button>
+                                                <?php endif; 
+                                                
+                                                // 顯示評分按鈕（老師和主任都可以看到，且已被分配）
+                                                if ($can_score_this): ?>
+                                                    <a href="continued_admission_detail.php?id=<?php echo $item['id']; ?>&action=score&slot=<?php echo $teacher_slot; ?>" class="btn-review" style="margin-left: 8px;">評分</a>
                                                 <?php endif; ?>
                                             </td>
                                         </tr>
@@ -1076,6 +1221,32 @@ function getStatusClass($status) {
     <!-- 訊息提示框 -->
     <div id="toast" style="position: fixed; top: 20px; right: 20px; background-color: #333; color: white; padding: 15px 20px; border-radius: 8px; z-index: 9999; display: none; opacity: 0; transition: opacity 0.5s;"></div>
 
+    <!-- 分配老師模態框 -->
+    <?php if ($can_assign): ?>
+    <div id="assignTeacherModal" class="modal" style="display: none;">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>分配給老師</h3>
+                <span class="close" onclick="closeAssignTeacherModal()">&times;</span>
+            </div>
+            <div class="modal-body">
+                <p>學生：<span id="assignStudentName"></span></p>
+                <div class="teacher-list">
+                    <h4>選擇老師（最多兩位）：</h4>
+                    <div class="teacher-options" id="assignTeacherOptions">
+                        <div style="text-align: center; padding: 20px; color: var(--text-secondary-color);">
+                            <i class="fas fa-spinner fa-spin"></i> 準備老師名單中...
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn-cancel" onclick="closeAssignTeacherModal()">取消</button>
+                <button class="btn-confirm" onclick="confirmAssignTeacher()">確認分配</button>
+            </div>
+        </div>
+    </div>
+    <?php endif; ?>
 
     <script>
     // 排序表格
@@ -1088,13 +1259,19 @@ function getStatusClass($status) {
         const currentSortOrder = urlParams.get('sort_order') || 'desc';
         const currentTab = urlParams.get('tab') || 'list'; // 保留當前 TAB
         const currentView = urlParams.get('view') || 'active'; // 保留當前 view（active/history）
-        const currentYear = urlParams.get('year') || '<?php echo $filter_year; ?>'; // 保留當前年份
         
         if (currentSortBy === field) {
             newSortOrder = currentSortOrder === 'asc' ? 'desc' : 'asc';
         }
         
-        window.location.href = `continued_admission_list.php?sort_by=${field}&sort_order=${newSortOrder}&tab=${currentTab}&view=${currentView}&year=${currentYear}`;
+        // 構建 URL：active 模式不帶年份參數，history 模式帶年份參數
+        let url = `continued_admission_list.php?sort_by=${field}&sort_order=${newSortOrder}&tab=${currentTab}&view=${currentView}`;
+        if (currentView === 'history') {
+            const currentYear = urlParams.get('year') || '<?php echo $filter_year; ?>';
+            url += `&year=${currentYear}`;
+        }
+        
+        window.location.href = url;
     }
     
     // 更新排序圖標
@@ -1339,8 +1516,199 @@ function getStatusClass($status) {
         const currentView = urlParams.get('view') || 'active';
         const sortBy = urlParams.get('sort_by') || 'created_at';
         const sortOrder = urlParams.get('sort_order') || 'desc';
+        
+        // 如果是 active 模式，不允許改變年份（固定顯示今年）
+        if (currentView === 'active') {
+            return;
+        }
+        
+        // history 模式下，確保選擇的年份不是今年
+        const currentYear = <?php echo $current_year; ?>;
+        if (parseInt(year) === currentYear) {
+            // 如果選擇的是今年，改為去年
+            year = currentYear - 1;
+        }
+        
         window.location.href = `continued_admission_list.php?tab=${currentTab}&view=${currentView}&year=${year}&sort_by=${sortBy}&sort_order=${sortOrder}`;
     }
+
+    <?php if ($can_assign): ?>
+    // 分配老師相關變數
+    let currentAssignApplicationId = null;
+    let currentAssignDepartmentCode = null;
+
+    // 顯示分配老師模態框
+    function showAssignTeacherModal(applicationId, studentName, departmentCode) {
+        currentAssignApplicationId = applicationId;
+        currentAssignDepartmentCode = departmentCode;
+        
+        document.getElementById('assignStudentName').textContent = studentName;
+        const optionsContainer = document.getElementById('assignTeacherOptions');
+        optionsContainer.innerHTML = '<div style="text-align: center; padding: 20px; color: var(--text-secondary-color);"><i class="fas fa-spinner fa-spin"></i> 載入老師名單中...</div>';
+        
+        // 載入該科系的老師名單
+        fetch(`get_department_teachers.php?department=${encodeURIComponent(departmentCode)}`)
+            .then(response => {
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                return response.json();
+            })
+            .then(data => {
+                console.log('get_department_teachers.php response:', data);
+                
+                if (data.success) {
+                    if (data.teachers && data.teachers.length > 0) {
+                        optionsContainer.innerHTML = '';
+                        data.teachers.forEach(teacher => {
+                            const label = document.createElement('label');
+                            label.className = 'teacher-option';
+                            label.innerHTML = `
+                                <input type="checkbox" name="teacher" value="${teacher.user_id}" data-teacher-name="${teacher.name}">
+                                <div class="teacher-info">
+                                    <strong>${teacher.name}</strong>
+                                    <span class="teacher-dept">${teacher.username || ''}</span>
+                                </div>
+                            `;
+                            optionsContainer.appendChild(label);
+                        });
+                    } else {
+                        let errorMsg = '該科系目前沒有可分配的老師。';
+                        let debugDetails = '';
+                        
+                        if (data.debug) {
+                            errorMsg += '<br><small style="color: #8c8c8c;">調試資訊：科系代碼=' + data.debug.department_code + 
+                                      ', 科系名稱=' + (data.debug.department_name || '未找到') + 
+                                      ', 找到數量=' + (data.debug.found_count || 0) + '</small>';
+                            
+                            // 顯示該科系的所有老師（包括主任）
+                            if (data.debug.teachers_in_department && data.debug.teachers_in_department.length > 0) {
+                                debugDetails += '<div style="margin-top: 10px; padding: 10px; background: #fff3cd; border-radius: 4px; text-align: left;">';
+                                debugDetails += '<strong>該科系找到 ' + data.debug.teachers_in_department.length + ' 位老師/主任：</strong><ul style="margin: 5px 0; padding-left: 20px;">';
+                                data.debug.teachers_in_department.forEach(teacher => {
+                                    debugDetails += '<li>' + teacher.name + ' (role: ' + teacher.role + ', department: ' + teacher.department + ', 是否主任: ' + teacher.is_director + ')</li>';
+                                });
+                                debugDetails += '</ul></div>';
+                            }
+                            
+                            // 顯示系統中所有老師
+                            if (data.debug.all_teachers_sample && data.debug.all_teachers_sample.length > 0) {
+                                debugDetails += '<div style="margin-top: 10px; padding: 10px; background: #e7f3ff; border-radius: 4px; text-align: left;">';
+                                debugDetails += '<strong>系統中所有老師 (共 ' + (data.debug.all_teachers_count || data.debug.all_teachers_sample.length) + ' 位)：</strong><ul style="margin: 5px 0; padding-left: 20px; max-height: 150px; overflow-y: auto;">';
+                                data.debug.all_teachers_sample.forEach(teacher => {
+                                    debugDetails += '<li>' + teacher.name + ' (role: ' + teacher.role + ', department: ' + (teacher.department || 'NULL') + ')</li>';
+                                });
+                                debugDetails += '</ul></div>';
+                            }
+                            
+                            // 顯示寬鬆匹配的老師
+                            if (data.debug.loose_match_teachers && data.debug.loose_match_teachers.length > 0) {
+                                debugDetails += '<div style="margin-top: 10px; padding: 10px; background: #d4edda; border-radius: 4px; text-align: left;">';
+                                debugDetails += '<strong>寬鬆匹配找到 ' + data.debug.loose_match_count + ' 位老師：</strong><ul style="margin: 5px 0; padding-left: 20px;">';
+                                data.debug.loose_match_teachers.forEach(teacher => {
+                                    debugDetails += '<li>' + teacher.name + ' (role: ' + teacher.role + ', department: ' + teacher.department + ')</li>';
+                                });
+                                debugDetails += '</ul></div>';
+                            }
+                            
+                            // 顯示該科系的所有用戶
+                            if (data.debug.all_users_in_department && data.debug.all_users_in_department.length > 0) {
+                                debugDetails += '<div style="margin-top: 10px; padding: 10px; background: #f8d7da; border-radius: 4px; text-align: left;">';
+                                debugDetails += '<strong>該科系所有用戶 (共 ' + (data.debug.all_users_in_department_count || data.debug.all_users_in_department.length) + ' 位)：</strong><ul style="margin: 5px 0; padding-left: 20px;">';
+                                data.debug.all_users_in_department.forEach(user => {
+                                    debugDetails += '<li>' + user.name + ' (role: ' + user.role + ', teacher_dept: ' + (user.teacher_dept || 'NULL') + ', director_dept: ' + (user.director_dept || 'NULL') + ')</li>';
+                                });
+                                debugDetails += '</ul></div>';
+                            }
+                        }
+                        
+                        optionsContainer.innerHTML = '<div style="padding: 10px; color: var(--text-secondary-color); text-align: center;">' + errorMsg + debugDetails + '</div>';
+                    }
+                } else {
+                    let errorMsg = data.message || '載入老師名單失敗';
+                    if (data.debug && data.debug.error) {
+                        errorMsg += ': ' + data.debug.error;
+                    }
+                    optionsContainer.innerHTML = '<p style="padding: 10px; color: #f5222d; text-align: center;">' + errorMsg + '</p>';
+                }
+            })
+            .catch(error => {
+                console.error('Error loading teachers:', error);
+                optionsContainer.innerHTML = '<p style="padding: 10px; color: #f5222d; text-align: center;">載入老師名單失敗：' + error.message + '<br><small>請檢查瀏覽器控制台和伺服器日誌</small></p>';
+            });
+        
+        document.getElementById('assignTeacherModal').style.display = 'flex';
+    }
+
+    // 關閉分配模態框
+    function closeAssignTeacherModal() {
+        document.getElementById('assignTeacherModal').style.display = 'none';
+        currentAssignApplicationId = null;
+        currentAssignDepartmentCode = null;
+    }
+
+    // 確認分配
+    function confirmAssignTeacher() {
+        const selectedTeachers = Array.from(document.querySelectorAll('input[name="teacher"]:checked'));
+        
+        if (selectedTeachers.length === 0) {
+            showToast('請至少選擇一位老師', false);
+            return;
+        }
+        
+        if (selectedTeachers.length > 2) {
+            showToast('最多只能選擇兩位老師', false);
+            return;
+        }
+        
+        const teacherIds = selectedTeachers.map(t => t.value);
+        const teacher1Id = teacherIds[0] || null;
+        const teacher2Id = teacherIds[1] || null;
+        
+        if (!currentAssignApplicationId) {
+            showToast('系統錯誤：找不到報名記錄', false);
+            return;
+        }
+        
+        // 發送分配請求
+        const formData = new FormData();
+        formData.append('application_id', currentAssignApplicationId);
+        formData.append('teacher_1_id', teacher1Id || '');
+        formData.append('teacher_2_id', teacher2Id || '');
+        
+        fetch('assign_continued_admission_teacher.php', {
+            method: 'POST',
+            body: formData
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                showToast(data.message || '分配成功', true);
+                setTimeout(() => {
+                    window.location.reload();
+                }, 1000);
+            } else {
+                showToast(data.message || '分配失敗', false);
+            }
+        })
+        .catch(error => {
+            console.error('Error:', error);
+            showToast('系統錯誤，請稍後再試', false);
+        });
+    }
+
+    // 點擊彈出視窗外部關閉
+    document.addEventListener('DOMContentLoaded', function() {
+        const assignModal = document.getElementById('assignTeacherModal');
+        if (assignModal) {
+            assignModal.addEventListener('click', function(e) {
+                if (e.target === this) {
+                    closeAssignTeacherModal();
+                }
+            });
+        }
+    });
+    <?php endif; ?>
 
     </script>
 </body>
