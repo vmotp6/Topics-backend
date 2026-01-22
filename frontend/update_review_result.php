@@ -32,6 +32,7 @@ if ($recommendation_id <= 0 || !in_array($review_result, $allowed_results, true)
 }
 
 require_once '../../Topics-frontend/frontend/config.php';
+require_once __DIR__ . '/recommendation_review_email.php';
 
 // 確保 application_statuses 中存在指定的狀態 code（避免 status 外鍵寫入失敗）
 // $needed 格式：['通過' => ['code'=>'AP','name'=>'通過','order'=>90], ...]
@@ -152,6 +153,10 @@ try {
     if ($update->execute()) {
         // 檢查是否有受影響的行
         if ($update->affected_rows > 0) {
+            // 審核結果 email 通知：通過(AP)/不通過(RE) 都寄信（每筆每狀態只寄一次）
+            if (function_exists('send_review_result_email_once')) {
+                @send_review_result_email_once($conn, $recommendation_id, $status_code, $username);
+            }
             echo json_encode([
                 'success' => true,
                 'message' => '審核結果更新成功',
