@@ -34,6 +34,7 @@ function ensureNewStudentBasicInfoTable($conn) {
     student_no VARCHAR(50) NOT NULL,
     student_name VARCHAR(100) NOT NULL,
     class_name VARCHAR(100) NOT NULL,
+    department_id VARCHAR(50) NOT NULL,
     enrollment_identity VARCHAR(100) DEFAULT NULL,
     birthday DATE DEFAULT NULL,
     gender VARCHAR(20) DEFAULT NULL,
@@ -147,11 +148,15 @@ try {
     // 4. 取得列表資料
     // ========================================
     $listSql = "SELECT
-        id, student_no, student_name, class_name,
-        DATE_FORMAT(created_at, '%Y-%m-%d %H:%i:%s') AS created_at
-      FROM new_student_basic_info" . $where . "
-      ORDER BY created_at DESC, id DESC
-      LIMIT ? OFFSET ?";
+    s.id,
+    s.student_no,
+    s.student_name,
+    s.class_name,
+    s.department_id,
+    d.name AS department_name,
+    DATE_FORMAT(s.created_at, '%Y-%m-%d %H:%i:%s') AS created_at FROM new_student_basic_info s LEFT JOIN departments d
+    ON s.department_id = d.code" . $where . " ORDER BY s.created_at DESC, s.id DESC LIMIT ? OFFSET ?";
+
 
     $stmt = $conn->prepare($listSql);
     if (!$stmt) throw new Exception('查詢準備失敗');
@@ -386,7 +391,7 @@ $grad_threshold_year = ($current_month >= 8) ? $current_year : $current_year - 1
               <tr class="table-row-clickable">
                 <th style="min-width:110px;">學號</th>
                 <th style="min-width:110px;">姓名</th>
-                <th style="min-width:110px;">班級</th>
+                <th style="min-width:140px;">所在科系</th>
                 <th style="min-width:160px;" id="th-created-at">建立時間  <i class="fas fa-sort"></i></th>
                 <th style="min-width:120px;">操作</th>
               </tr>
@@ -402,7 +407,7 @@ $grad_threshold_year = ($current_month >= 8) ? $current_year : $current_year - 1
                         <?php endif; ?>
                     </td>
                     <td><strong><?php echo htmlspecialchars($r['student_name'] ?? ''); ?></strong></td>
-                    <td><?php echo htmlspecialchars($r['class_name'] ?? ''); ?></td>
+                    <td><?php echo htmlspecialchars($r['department_name'] ?? '—'); ?></td>
                     <td><?php echo htmlspecialchars($r['created_at'] ?? ''); ?></td>
                     <td>
                       <a href="new_student_basic_info_detail.php?id=<?php echo (int)($r['id'] ?? 0); ?>" style="display:inline-block; padding:6px 10px; border:1px solid #1890ff; border-radius:6px; text-decoration:none; color:#1890ff; font-weight:700; background:#fff;">
