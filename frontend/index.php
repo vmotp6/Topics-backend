@@ -56,8 +56,8 @@ if (isset($role_map[$user_role])) {
 }
 
 // 檢查用戶角色是否被允許進入後台
-// 只允許管理員、行政人員、主任、科助進入後台
-$allowed_backend_roles = ['ADM', 'STA', 'DI', 'AS', '管理員', '行政人員', '主任', '科助'];
+// 允許管理員、行政人員、主任、老師、科助進入後台
+$allowed_backend_roles = ['ADM', 'STA', 'DI', 'TEA', 'AS', '管理員', '行政人員', '主任', '老師', '科助'];
 if (!in_array($user_role, $allowed_backend_roles)) {
     // 角色不允許進入後台，清除登入狀態
     $_SESSION['admin_logged_in'] = false;

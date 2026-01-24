@@ -54,7 +54,7 @@ function checkBackendLogin() {
 
     // 驗證角色
     $user_role = $_SESSION['role'] ?? '';
-    $allowed_backend_roles = ['ADM', 'STA', 'DI', 'IM', 'AS', '管理員', '行政人員', '主任', '資管科主任', '科助'];
+    $allowed_backend_roles = ['ADM', 'STA', 'DI', 'TEA', 'IM', 'AS', '管理員', '行政人員', '主任', '老師', '資管科主任', '科助'];
     
     if (!in_array($user_role, $allowed_backend_roles)) {
         $_SESSION['admin_logged_in'] = false;
