@@ -14,10 +14,12 @@ $can_manage_list = in_array($user_role, ['ADM', 'STA']); // 只有管理員和�
 
 // 判斷是否為主任
 $is_director = ($user_role === 'DI');
+// 判斷是否為一般老師
+$is_teacher = ($user_role === 'TE' || $user_role === '老師');
 $user_department_code = null;
 
-// 如果是主任，獲取其科系代碼
-if ($is_director && $user_id > 0) {
+// 如果是主任或老師，獲取其科系代碼
+if (($is_director || $is_teacher) && $user_id > 0) {
     try {
         $conn_temp = getDatabaseConnection();
         $table_check = $conn_temp->query("SHOW TABLES LIKE 'director'");
@@ -41,6 +43,8 @@ if ($is_director && $user_id > 0) {
 
 // 主任可以審核分配給他的名單
 $can_review = $can_manage_list || ($is_director && !empty($user_department_code));
+// 老師和主任都可以評分被分配的學生
+$can_score = ($is_teacher && !empty($user_id)) || ($is_director && !empty($user_department_code));
 
 $application_id = isset($_GET['id']) ? (int)$_GET['id'] : 0;
 $action = isset($_GET['action']) ? $_GET['action'] : 'view';
@@ -59,6 +63,50 @@ $stmt->execute();
 $result = $stmt->get_result();
 $application = $result->fetch_assoc();
 $stmt->close();
+
+// 檢查是否使用正規化表
+$has_normalized_tables = false;
+$assign_table_check = $conn->query("SHOW TABLES LIKE 'continued_admission_assignments'");
+$score_table_check = $conn->query("SHOW TABLES LIKE 'continued_admission_scores'");
+if ($assign_table_check && $assign_table_check->num_rows > 0 && 
+    $score_table_check && $score_table_check->num_rows > 0) {
+    $has_normalized_tables = true;
+}
+
+// 從正規化表獲取分配和評分資訊
+$application['assignments'] = [];
+$application['scores'] = [];
+if ($has_normalized_tables) {
+    // 獲取分配資訊
+    $assign_stmt = $conn->prepare("
+        SELECT reviewer_user_id, reviewer_type, assignment_order, assigned_at
+        FROM continued_admission_assignments
+        WHERE application_id = ?
+        ORDER BY assignment_order ASC
+    ");
+    $assign_stmt->bind_param("i", $application_id);
+    $assign_stmt->execute();
+    $assign_result = $assign_stmt->get_result();
+    while ($assign_row = $assign_result->fetch_assoc()) {
+        $application['assignments'][$assign_row['assignment_order']] = $assign_row;
+    }
+    $assign_stmt->close();
+    
+    // 獲取評分資訊
+    $score_stmt = $conn->prepare("
+        SELECT reviewer_user_id, reviewer_type, assignment_order, self_intro_score, skills_score, scored_at
+        FROM continued_admission_scores
+        WHERE application_id = ?
+        ORDER BY assignment_order ASC
+    ");
+    $score_stmt->bind_param("i", $application_id);
+    $score_stmt->execute();
+    $score_result = $score_stmt->get_result();
+    while ($score_row = $score_result->fetch_assoc()) {
+        $application['scores'][$score_row['assignment_order']] = $score_row;
+    }
+    $score_stmt->close();
+}
 
 if (!$application) {
     $conn->close();
@@ -83,6 +131,86 @@ if ($action === 'review') {
         // 沒有權限，重定向到查看頁面
         header("Location: continued_admission_detail.php?id=" . $application_id);
         exit;
+    }
+}
+
+// 檢查老師或主任是否有權限評分此名單
+$teacher_slot = null; // 1, 2, 或 3（3=主任）
+if ($action === 'score') {
+    $assigned_dept = $application['assigned_department'] ?? '';
+    
+    // 從 URL 參數獲取 slot
+    $url_slot = $_GET['slot'] ?? null;
+    
+    if ($has_normalized_tables) {
+        // 使用正規化表檢查
+        $assignment_found = false;
+        foreach ($application['assignments'] as $order => $assign) {
+            if ($assign['reviewer_user_id'] == $user_id) {
+                // 驗證 slot 是否匹配
+                if ($url_slot && (int)$url_slot == $order) {
+                    $teacher_slot = $order;
+                    $assignment_found = true;
+                    break;
+                } elseif (!$url_slot) {
+                    // 如果沒有指定 slot，使用第一個匹配的分配
+                    $teacher_slot = $order;
+                    $assignment_found = true;
+                    break;
+                }
+            }
+        }
+        
+        if (!$assignment_found) {
+            header("Location: continued_admission_detail.php?id=" . $application_id);
+            exit;
+        }
+        
+        // 額外驗證：主任只能評分自己科系的學生
+        if ($is_director && $teacher_slot == 3) {
+            if ($assigned_dept !== $user_department_code) {
+                header("Location: continued_admission_detail.php?id=" . $application_id);
+                exit;
+            }
+        }
+    } else {
+        // 向後兼容：使用舊欄位
+        $assigned_teacher_1 = $application['assigned_teacher_1_id'] ?? null;
+        $assigned_teacher_2 = $application['assigned_teacher_2_id'] ?? null;
+        
+        if ($is_teacher && !empty($user_id)) {
+            // 老師評分
+            if ($url_slot == '1' && $assigned_teacher_1 == $user_id) {
+                $teacher_slot = 1;
+            } elseif ($url_slot == '2' && $assigned_teacher_2 == $user_id) {
+                $teacher_slot = 2;
+            } elseif ($assigned_teacher_1 == $user_id) {
+                $teacher_slot = 1;
+            } elseif ($assigned_teacher_2 == $user_id) {
+                $teacher_slot = 2;
+            } else {
+                header("Location: continued_admission_detail.php?id=" . $application_id);
+                exit;
+            }
+        } elseif ($is_director && !empty($user_department_code)) {
+            // 主任評分
+            if ($url_slot == 'director' || $url_slot == '3') {
+                if ($assigned_dept === $user_department_code) {
+                    $teacher_slot = 3;
+                } else {
+                    header("Location: continued_admission_detail.php?id=" . $application_id);
+                    exit;
+                }
+            } elseif ($assigned_dept === $user_department_code) {
+                $teacher_slot = 3;
+            } else {
+                header("Location: continued_admission_detail.php?id=" . $application_id);
+                exit;
+            }
+        } else {
+            header("Location: continued_admission_detail.php?id=" . $application_id);
+            exit;
+        }
     }
 }
 
@@ -145,7 +273,13 @@ if (!empty($application['reviewer_id'])) {
 
 $conn->close();
 
-$page_title = ($action === 'review') ? '續招報名審核 - ' . htmlspecialchars($application['name']) : '續招報名詳情 - ' . htmlspecialchars($application['name']);
+if ($action === 'review') {
+    $page_title = '續招報名審核 - ' . htmlspecialchars($application['name']);
+} elseif ($action === 'score') {
+    $page_title = '續招報名評分 - ' . htmlspecialchars($application['name']);
+} else {
+    $page_title = '續招報名詳情 - ' . htmlspecialchars($application['name']);
+}
 $current_page = 'continued_admission_detail';
 
 $documents = json_decode($application['documents'], true);
@@ -246,12 +380,28 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_status'])) {
             <?php include 'header.php'; ?>
             <div class="content">
                 <div class="breadcrumb">
-                    <a href="index.php">首頁</a> / <a href="continued_admission_list.php">續招報名管理</a> / <?php echo ($action === 'review') ? '報名審核' : '報名詳情'; ?>
+                    <a href="index.php">首頁</a> / <a href="continued_admission_list.php">續招報名管理</a> / <?php 
+                        if ($action === 'review') {
+                            echo '報名審核';
+                        } elseif ($action === 'score') {
+                            echo '報名評分';
+                        } else {
+                            echo '報名詳情';
+                        }
+                    ?>
                 </div>
 
                 <div class="card">
                     <div class="card-header">
-                        <h3><?php echo ($action === 'review') ? '報名審核' : '報名詳情'; ?> (編號: <?php echo $application['apply_no'] ?? $application['ID']; ?>)</h3>
+                        <h3><?php 
+                            if ($action === 'review') {
+                                echo '報名審核';
+                            } elseif ($action === 'score') {
+                                echo '報名評分';
+                            } else {
+                                echo '報名詳情';
+                            }
+                        ?> (編號: <?php echo $application['apply_no'] ?? $application['ID']; ?>)</h3>
                         <a href="continued_admission_list.php" class="btn-secondary"><i class="fas fa-arrow-left"></i> 返回列表</a>
                     </div>
                     <div class="card-body">
@@ -410,6 +560,54 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_status'])) {
                                 </form>
                             </div>
                             <?php endif; ?>
+
+                            <?php if ($action === 'score' && $teacher_slot): 
+                                // 根據 slot 獲取當前分數（從正規化表或舊欄位）
+                                $current_self_intro_score = '';
+                                $current_skills_score = '';
+                                
+                                if ($has_normalized_tables && isset($application['scores'][$teacher_slot])) {
+                                    $score_data = $application['scores'][$teacher_slot];
+                                    $current_self_intro_score = $score_data['self_intro_score'] ?? '';
+                                    $current_skills_score = $score_data['skills_score'] ?? '';
+                                } else {
+                                    // 向後兼容：使用舊欄位
+                                    if ($teacher_slot == 1) {
+                                        $current_self_intro_score = $application['self_intro_score_1'] ?? '';
+                                        $current_skills_score = $application['skills_score_1'] ?? '';
+                                    } elseif ($teacher_slot == 2) {
+                                        $current_self_intro_score = $application['self_intro_score_2'] ?? '';
+                                        $current_skills_score = $application['skills_score_2'] ?? '';
+                                    } elseif ($teacher_slot == 3) {
+                                        $current_self_intro_score = $application['self_intro_score_director'] ?? '';
+                                        $current_skills_score = $application['skills_score_director'] ?? '';
+                                    }
+                                }
+                                
+                                $reviewer_label = ($teacher_slot == 3) ? '主任' : '老師' . $teacher_slot;
+                            ?>
+                            <div class="detail-section" style="background: #fffbe6; text-align: left;">
+                                <h4 style="color: #faad14; text-align: left;"><i class="fas fa-star"></i> 評分（<?php echo $reviewer_label; ?>）</h4>
+                                <form id="scoreForm" style="text-align: left;">
+                                    <div style="margin-bottom: 20px; text-align: left;">
+                                        <label for="selfIntroScore" style="display: block; margin-bottom: 8px; font-weight: 500; text-align: left;">自傳/自我介紹分數 <span style="color: #8c8c8c; font-size: 12px;">(滿分 80)</span>:</label>
+                                        <input type="number" id="selfIntroScore" name="self_intro_score" min="0" max="80" 
+                                               value="<?php echo htmlspecialchars($current_self_intro_score); ?>" 
+                                               required style="width: 100%; padding: 8px; border: 1px solid #d9d9d9; border-radius: 6px; font-size: 14px; text-align: left;">
+                                    </div>
+                                    <div style="margin-bottom: 20px; text-align: left;">
+                                        <label for="skillsScore" style="display: block; margin-bottom: 8px; font-weight: 500; text-align: left;">興趣/專長分數 <span style="color: #8c8c8c; font-size: 12px;">(滿分 20)</span>:</label>
+                                        <input type="number" id="skillsScore" name="skills_score" min="0" max="20" 
+                                               value="<?php echo htmlspecialchars($current_skills_score); ?>" 
+                                               required style="width: 100%; padding: 8px; border: 1px solid #d9d9d9; border-radius: 6px; font-size: 14px; text-align: left;">
+                                    </div>
+                                    <div style="display: flex; gap: 12px; text-align: left;">
+                                        <button type="submit" class="btn-primary"><i class="fas fa-save"></i> 送出評分</button>
+                                        <button type="button" onclick="history.back()" class="btn-secondary"><i class="fas fa-times"></i> 取消</button>
+                                    </div>
+                                </form>
+                            </div>
+                            <?php endif; ?>
                         </div>
                     </div>
                 </div>
@@ -432,6 +630,56 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_status'])) {
             setTimeout(() => { toast.style.display = 'none'; }, 500);
         }, 3000);
     }
+
+    <?php if ($action === 'score' && $teacher_slot): ?>
+    document.getElementById('scoreForm').addEventListener('submit', function(e) {
+        e.preventDefault();
+        
+        const applicationId = <?php echo $application_id; ?>;
+        const teacherSlot = <?php echo $teacher_slot; ?>;
+        const formData = new FormData(this);
+        const selfIntroScore = parseInt(formData.get('self_intro_score'));
+        const skillsScore = parseInt(formData.get('skills_score'));
+        
+        if (selfIntroScore < 0 || selfIntroScore > 80) {
+            showToast('自傳分數必須在 0-80 之間', false);
+            return;
+        }
+        
+        if (skillsScore < 0 || skillsScore > 20) {
+            showToast('興趣/專長分數必須在 0-20 之間', false);
+            return;
+        }
+
+        fetch('submit_continued_admission_score.php', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ 
+                application_id: applicationId,
+                teacher_slot: teacherSlot,
+                self_intro_score: selfIntroScore,
+                skills_score: skillsScore
+            }),
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                showToast('評分已送出！');
+                setTimeout(() => {
+                    window.location.href = 'continued_admission_list.php';
+                }, 1500);
+            } else {
+                showToast('評分失敗：' + (data.message || '未知錯誤'), false);
+            }
+        })
+        .catch(error => {
+            console.error('Error:', error);
+            showToast('操作失敗：' + error.message, false);
+        });
+    });
+    <?php endif; ?>
 
     <?php if ($action === 'review'): ?>
     document.getElementById('reviewForm').addEventListener('submit', function(e) {
