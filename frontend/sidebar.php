@@ -350,7 +350,7 @@ function hasPermission($permission_code, $user_role, $permissions_array) {
             
             <!-- 入學說明會 - 僅學校行政和管理員，STAM需要權限 -->
             <?php if (($is_staff || $is_admin) || ($is_stam && hasPermission('settings', $user_role, $stam_permissions))): ?>
-                <a href="settings.php" class="menu-item <?php echo $current_page === 'settings' ? 'active' : ''; ?>">
+                <a href="settings.php" class="menu-item <?php echo in_array($current_page, ['settings','view_registrations', 'attendance_management']) ?'active' : ''; ?>">
                     <i class="fas fa-cogs"></i>
                     <span>入學說明會</span>
                 </a>

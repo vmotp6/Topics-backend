@@ -326,7 +326,6 @@ if ($view === 'history') {
     
     if ($view === 'previous') {
         // 查詢所有歷屆學生的學年度（非新生但仍在學）
-        // 學年度計算：如果月份 < 6，學年度是前一年；否則學年度是該年份
         $yearSql = "SELECT DISTINCT 
             (CASE 
                 WHEN MONTH(created_at) < 6 THEN YEAR(created_at) - 1
@@ -355,27 +354,7 @@ if ($view === 'history') {
         }
     }
     
-    // 同時查詢所有已畢業學生的學年度（用於顯示所有可用的學年度選項）
-    // 學年度計算：根據 created_at 計算，如果月份 < 6，學年度是前一年；否則學年度是該年份
-    $allYearSql = "SELECT DISTINCT 
-        (CASE 
-            WHEN MONTH(created_at) < 6 THEN YEAR(created_at) - 1
-            ELSE YEAR(created_at)
-        END) - 1911 AS roc_year
-        FROM new_student_basic_info
-        WHERE CURDATE() > DATE(CONCAT(YEAR(created_at) + 5, '-07-31'))
-        HAVING roc_year > 0
-        ORDER BY roc_year DESC";
-    
-    $allYearResult = $conn->query($allYearSql);
-    if ($allYearResult) {
-        while ($yearRow = $allYearResult->fetch_assoc()) {
-            $roc_year = (int)$yearRow['roc_year'];
-            if ($roc_year > 0 && !in_array($roc_year, $available_roc_years)) {
-                $available_roc_years[] = $roc_year;
-            }
-        }
-    }
+
     
     // 排序學年度（從大到小）
     rsort($available_roc_years);
