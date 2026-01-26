@@ -14,18 +14,25 @@ $can_manage_list = in_array($user_role, ['ADM', 'STA']); // 只有管理員和�
 
 // 判斷是否為主任
 $is_director = ($user_role === 'DI');
-// 判斷是否為一般老師
-$is_teacher = ($user_role === 'TE' || $user_role === '老師');
+// 判斷是否為一般老師（支援 'TE', 'TEA', '老師'）
+$is_teacher = ($user_role === 'TE' || $user_role === 'TEA' || $user_role === '老師');
 $user_department_code = null;
 
 // 如果是主任或老師，獲取其科系代碼
 if (($is_director || $is_teacher) && $user_id > 0) {
     try {
         $conn_temp = getDatabaseConnection();
-        $table_check = $conn_temp->query("SHOW TABLES LIKE 'director'");
-        if ($table_check && $table_check->num_rows > 0) {
-            $stmt_dept = $conn_temp->prepare("SELECT department FROM director WHERE user_id = ?");
+        if ($is_director) {
+            // 主任從 director 表查詢
+            $table_check = $conn_temp->query("SHOW TABLES LIKE 'director'");
+            if ($table_check && $table_check->num_rows > 0) {
+                $stmt_dept = $conn_temp->prepare("SELECT department FROM director WHERE user_id = ?");
+            } else {
+                // 如果沒有 director 表，從 teacher 表查詢（向後兼容）
+                $stmt_dept = $conn_temp->prepare("SELECT department FROM teacher WHERE user_id = ?");
+            }
         } else {
+            // 老師直接從 teacher 表查詢
             $stmt_dept = $conn_temp->prepare("SELECT department FROM teacher WHERE user_id = ?");
         }
         $stmt_dept->bind_param("i", $user_id);
@@ -243,18 +250,37 @@ $stmt->close();
 
 // 查詢志願選擇
 $choices = [];
-$stmt = $conn->prepare("
-    SELECT cac.choice_order, d.name as department_name, cac.department_code
-    FROM continued_admission_choices cac
-    LEFT JOIN departments d ON cac.department_code = d.code
-    WHERE cac.application_id = ?
-    ORDER BY cac.choice_order ASC
-");
-$stmt->bind_param("i", $application_id);
+$choices_with_codes = []; // 保存完整的志願資料（包含代碼）
+if (($is_director || $is_teacher) && !empty($user_department_code)) {
+    // 主任和老師：只查詢自己科系的志願
+    $stmt = $conn->prepare("
+        SELECT cac.choice_order, d.name as department_name, cac.department_code
+        FROM continued_admission_choices cac
+        LEFT JOIN departments d ON cac.department_code = d.code
+        WHERE cac.application_id = ? AND cac.department_code = ?
+        ORDER BY cac.choice_order ASC
+    ");
+    $stmt->bind_param("is", $application_id, $user_department_code);
+} else {
+    // 招生中心/管理員：查詢所有志願
+    $stmt = $conn->prepare("
+        SELECT cac.choice_order, d.name as department_name, cac.department_code
+        FROM continued_admission_choices cac
+        LEFT JOIN departments d ON cac.department_code = d.code
+        WHERE cac.application_id = ?
+        ORDER BY cac.choice_order ASC
+    ");
+    $stmt->bind_param("i", $application_id);
+}
 $stmt->execute();
 $choices_result = $stmt->get_result();
 while ($choice_row = $choices_result->fetch_assoc()) {
     $choices[] = $choice_row['department_name'] ?? $choice_row['department_code'];
+    $choices_with_codes[] = [
+        'order' => $choice_row['choice_order'],
+        'name' => $choice_row['department_name'] ?? $choice_row['department_code'],
+        'code' => $choice_row['department_code']
+    ];
 }
 $stmt->close();
 
@@ -425,8 +451,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_status'])) {
                                 <div class="detail-item" style="text-align: left !important; justify-items: start;"><span class="detail-item-label">監護人行動電話:</span> <span class="detail-item-value" style="text-align: left !important;"><?php echo htmlspecialchars($application['guardian_mobile']); ?></span></div>
                             </div>
 
-                            <?php if (!($is_director && !empty($user_department_code))): ?>
-                            <!-- 主任不顯示志願序 -->
+                            <?php if (!(($is_director || $is_teacher) && !empty($user_department_code))): ?>
+                            <!-- 主任和老師不顯示志願序 -->
                             <div class="detail-section">
                                 <h4><i class="fas fa-star"></i> 志願序</h4>
                                 <?php if (!empty($choices)): ?>
@@ -439,6 +465,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_status'])) {
                                     <p style="margin: 0; text-align: left;">未選擇志願</p>
                                 <?php endif; ?>
                             </div>
+                            <?php else: ?>
+                            <!-- 主任和老師：只顯示自己科系的志願，不顯示序號 -->
+                            <?php if (!empty($choices)): ?>
+                            <div class="detail-section">
+                                <h4><i class="fas fa-star"></i> 志願</h4>
+                                <ul style="margin: 0; padding-left: 20px; text-align: left; list-style: none;">
+                                    <?php foreach ($choices as $choice): ?>
+                                        <li style="margin-bottom: 8px; text-align: left;"><?php echo htmlspecialchars($choice); ?></li>
+                                    <?php endforeach; ?>
+                                </ul>
+                            </div>
+                            <?php endif; ?>
                             <?php endif; ?>
                             <div class="detail-section">
                                 <h4><i class="fas fa-pen"></i> 自傳/專長</h4>
