@@ -67,6 +67,7 @@ function ensureNewStudentBasicInfoTable($conn) {
     is_overseas_chinese TINYINT(1) DEFAULT 0,
 
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    is_graduated TINYINT(1) DEFAULT 0,
     INDEX idx_student_no (student_no),
     INDEX idx_student_name (student_name),
     INDEX idx_created_at (created_at)
@@ -110,9 +111,60 @@ function photoUrl($photo_path) {
   return '/Topics-frontend/frontend/' . ltrim($p, '/');
 }
 
+// 計算當前學年度的開始和結束日期
+// 學年度定義：6月 ~ 隔年6月（例如：2026/06/01 ~ 2027/06/30 為 2026 學年度）
+function getCurrentAcademicYearRange() {
+  $current_month = (int)date('m');
+  $current_year = (int)date('Y');
+  
+  // 如果當前月份 >= 6月，學年度從今年6月開始到明年6月結束
+  // 如果當前月份 < 6月，學年度從去年6月開始到今年6月結束
+  if ($current_month >= 6) {
+    $start_year = $current_year;
+    $end_year = $current_year + 1;
+  } else {
+    $start_year = $current_year - 1;
+    $end_year = $current_year;
+  }
+  
+  return [
+    'start' => sprintf('%04d-06-01 00:00:00', $start_year),
+    'end' => sprintf('%04d-06-30 23:59:59', $end_year)
+  ];
+}
+
+// 根據西元年份計算學年度範圍（民國年）
+// 學年度：6月 ~ 隔年6月
+// 例如：2026年6月1日 ~ 2027年6月30日 為 115學年度（2026-1911=115）
+function getAcademicYearRangeByRocYear($roc_year) {
+  $ad_year = $roc_year + 1911; // 民國年轉西元年
+  return [
+    'start' => sprintf('%04d-06-01 00:00:00', $ad_year),
+    'end' => sprintf('%04d-06-30 23:59:59', $ad_year + 1)
+  ];
+}
+
+// 根據 created_at 計算學年度（民國年）
+// 如果月份 >= 6，學年度是該年份；如果月份 < 6，學年度是前一年份
+function getRocYearFromCreatedAt($created_at) {
+  $timestamp = strtotime($created_at);
+  if ($timestamp === false) return null;
+  
+  $year = (int)date('Y', $timestamp);
+  $month = (int)date('m', $timestamp);
+  
+  // 如果月份 < 6，學年度是前一年
+  if ($month < 6) {
+    $year -= 1;
+  }
+  
+  return $year - 1911; // 轉換為民國年
+}
+
 $page_title = '新生基本資料管理';
 $q = isset($_GET['q']) ? trim((string)$_GET['q']) : '';
  $view = isset($_GET['view']) ? $_GET['view'] : 'active';
+$selected_roc_year = isset($_GET['roc_year']) ? (int)$_GET['roc_year'] : 0; // 選中的學年度（民國年）
 $limit = isset($_GET['limit']) ? (int)$_GET['limit'] : 50;
 $offset = isset($_GET['offset']) ? (int)$_GET['offset'] : 0;
 if ($limit <= 0) $limit = 50;
@@ -152,24 +204,63 @@ try {
             $dept_join = "";
         }
     }
+    // 取得當前學年度範圍
+    $academic_year = getCurrentAcademicYearRange();
 
     // ========================================
-    // 1. 基本 WHERE 條件：歷史/目前學生
+    // 1. 基本 WHERE 條件：新生/歷屆學生/歷史資料
     // ========================================
     $where = ' WHERE 1=1 ';
-    if ($view === 'history') {
-        // 歷史資料：畢業日期 <= 今天
-        $where .= " AND (LENGTH(student_no) >= 3 AND CURDATE() >= DATE(CONCAT(CAST(SUBSTRING(student_no, 1, 3) AS UNSIGNED) + 1916, '-08-01'))) ";
-    } else {
-        // 目前學生：畢業日期 > 今天 或 學號格式不符
-        $where .= " AND (LENGTH(student_no) < 3 OR CURDATE() < DATE(CONCAT(CAST(SUBSTRING(student_no, 1, 3) AS UNSIGNED) + 1916, '-08-01'))) ";
+
+/*
+判斷基準：
+- 五專修業 5 年
+- 畢業日：入學第 5 年的 7/31
+*/
+
+$graduateExpr = "DATE(CONCAT(YEAR(created_at) + 5, '-07-31'))";
+
+if ($view === 'history') {
+    // 已畢業
+    $where .= " AND CURDATE() > $graduateExpr ";
+} elseif ($view === 'previous') {
+    // 非新生但仍在學
+    $where .= " AND CURDATE() <= $graduateExpr
+                AND created_at NOT BETWEEN ? AND ? ";
+    
+    // 如果有選擇學年度，進一步篩選
+    if ($selected_roc_year > 0) {
+        $selected_year_range = getAcademicYearRangeByRocYear($selected_roc_year);
+        $where .= " AND created_at >= ? AND created_at <= ? ";
     }
+} else {
+    // active：當學年度新生
+    $where .= " AND CURDATE() <= $graduateExpr
+                AND created_at BETWEEN ? AND ? ";
+}
+
+
 
     // ========================================
     // 2. 搜尋條件
     // ========================================
     $types = '';
     $params = [];
+    
+    // 如果是「新生」或「歷屆學生」，需要加入學年度範圍參數
+    if ($view === 'active' || $view === 'previous') {
+        $types .= 'ss';
+        $params[] = $academic_year['start'];
+        $params[] = $academic_year['end'];
+        
+        // 如果是「歷屆學生」且有選擇學年度，加入學年度篩選參數
+        if ($view === 'previous' && $selected_roc_year > 0) {
+            $types .= 'ss';
+            $params[] = $selected_year_range['start'];
+            $params[] = $selected_year_range['end'];
+        }
+    }
+    
     if ($q !== '') {
         $like = '%' . $q . '%';
         $where .= " AND (
@@ -180,7 +271,7 @@ try {
             mobile LIKE ?
         ) ";
         $types .= 'sssss';
-        $params = [$like, $like, $like, $like, $like];
+        $params = array_merge($params, [$like, $like, $like, $like, $like]);
     }
 
     // ========================================
@@ -195,6 +286,7 @@ try {
     $total = 0;
     if ($r = $res->fetch_assoc()) $total = (int)$r['cnt'];
     $countStmt->close();
+    
 
     // ========================================
     // 4. 取得列表資料
@@ -226,6 +318,67 @@ try {
     $r2 = $stmt->get_result();
     $rows = $r2 ? $r2->fetch_all(MYSQLI_ASSOC) : [];
     $stmt->close();
+    
+    // ========================================
+    // 5. 查詢所有可用的學年度選項（自動抓取所有學年度）
+    // ========================================
+    $available_roc_years = [];
+    
+    if ($view === 'previous') {
+        // 查詢所有歷屆學生的學年度（非新生但仍在學）
+        // 學年度計算：如果月份 < 6，學年度是前一年；否則學年度是該年份
+        $yearSql = "SELECT DISTINCT 
+            (CASE 
+                WHEN MONTH(created_at) < 6 THEN YEAR(created_at) - 1
+                ELSE YEAR(created_at)
+            END) - 1911 AS roc_year
+            FROM new_student_basic_info
+            WHERE CURDATE() <= DATE(CONCAT(YEAR(created_at) + 5, '-07-31'))
+            AND created_at NOT BETWEEN ? AND ?
+            HAVING roc_year > 0
+            ORDER BY roc_year DESC";
+        
+        $yearStmt = $conn->prepare($yearSql);
+        if ($yearStmt) {
+            $yearStmt->bind_param('ss', $academic_year['start'], $academic_year['end']);
+            $yearStmt->execute();
+            $yearResult = $yearStmt->get_result();
+            if ($yearResult) {
+                while ($yearRow = $yearResult->fetch_assoc()) {
+                    $roc_year = (int)$yearRow['roc_year'];
+                    if ($roc_year > 0) {
+                        $available_roc_years[] = $roc_year;
+                    }
+                }
+            }
+            $yearStmt->close();
+        }
+    }
+    
+    // 同時查詢所有已畢業學生的學年度（用於顯示所有可用的學年度選項）
+    // 學年度計算：根據 created_at 計算，如果月份 < 6，學年度是前一年；否則學年度是該年份
+    $allYearSql = "SELECT DISTINCT 
+        (CASE 
+            WHEN MONTH(created_at) < 6 THEN YEAR(created_at) - 1
+            ELSE YEAR(created_at)
+        END) - 1911 AS roc_year
+        FROM new_student_basic_info
+        WHERE CURDATE() > DATE(CONCAT(YEAR(created_at) + 5, '-07-31'))
+        HAVING roc_year > 0
+        ORDER BY roc_year DESC";
+    
+    $allYearResult = $conn->query($allYearSql);
+    if ($allYearResult) {
+        while ($yearRow = $allYearResult->fetch_assoc()) {
+            $roc_year = (int)$yearRow['roc_year'];
+            if ($roc_year > 0 && !in_array($roc_year, $available_roc_years)) {
+                $available_roc_years[] = $roc_year;
+            }
+        }
+    }
+    
+    // 排序學年度（從大到小）
+    rsort($available_roc_years);
 
     $conn->close();
 } catch (Exception $e) {
@@ -233,15 +386,7 @@ try {
 }
 
 
-// ==========================================
-// 處理分頁與歷史資料邏輯
-// ==========================================
-$view_mode = $_GET['view'] ?? 'active'; 
-$selected_year = isset($_GET['year']) ? (int)$_GET['year'] : 0;
 
-$current_month = (int)date('m');
-$current_year = (int)date('Y');
-$grad_threshold_year = ($current_month >= 8) ? $current_year : $current_year - 1;
 ?>
 <!DOCTYPE html>
 <html lang="zh-TW">
@@ -425,18 +570,32 @@ $grad_threshold_year = ($current_month >= 8) ? $current_year : $current_year - 1
 
           <form method="GET" class="filters">
             <input type="hidden" name="view" value="<?php echo htmlspecialchars($view); ?>">
+            <?php if ($view === 'previous' && $selected_roc_year > 0): ?>
+              <input type="hidden" name="roc_year" value="<?php echo (int)$selected_roc_year; ?>">
+            <?php endif; ?>
             <input name="q" value="<?php echo htmlspecialchars($q); ?>" placeholder="搜尋：學號/姓名/班級/身分證號/手機">
             <button type="submit"><i class="fas fa-search"></i> 查詢</button>
             <a class="reset" href="new_student_basic_info_management.php"><i class="fas fa-eraser"></i> 清除</a>
-            <a class="reset" href="new_student_basic_info_management.php?view=<?php echo htmlspecialchars($view); ?>"><i class="fas fa-eraser"></i> 清除</a>
+            <a class="reset" href="new_student_basic_info_management.php?view=<?php echo htmlspecialchars($view); ?><?php echo ($view === 'previous' && $selected_roc_year > 0) ? '&roc_year=' . (int)$selected_roc_year : ''; ?>"><i class="fas fa-eraser"></i> 清除</a>
           </form>
         </div>
 
         <div class="panel" style="padding:0; overflow:auto;">
           <table  id="enrollmentTable">
-            <div style="margin-bottom: 15px; display: flex; gap: 10px; margin-top:15px; margin-left:10px;">
-              <a href="?view=active" style="padding: 6px 12px; border: 1px solid <?php echo $view !== 'history' ? '#91d5ff' : '#d9d9d9'; ?>; border-radius: 6px; text-decoration: none; background: <?php echo $view !== 'history' ? '#f0f7ff' : '#fff'; ?>; color: <?php echo $view !== 'history' ? '#1890ff' : '#595959'; ?>;">目前學生</a>
+            <div style="margin-bottom: 15px; display: flex; gap: 10px; align-items: center; margin-top:15px; margin-left:10px;">
+              <a href="?view=active" style="padding: 6px 12px; border: 1px solid <?php echo $view === 'active' ? '#91d5ff' : '#d9d9d9'; ?>; border-radius: 6px; text-decoration: none; background: <?php echo $view === 'active' ? '#f0f7ff' : '#fff'; ?>; color: <?php echo $view === 'active' ? '#1890ff' : '#595959'; ?>;">新生</a>
+              <a href="?view=previous<?php echo $selected_roc_year > 0 ? '&roc_year=' . $selected_roc_year : ''; ?>" style="padding: 6px 12px; border: 1px solid <?php echo $view === 'previous' ? '#91d5ff' : '#d9d9d9'; ?>; border-radius: 6px; text-decoration: none; background: <?php echo $view === 'previous' ? '#f0f7ff' : '#fff'; ?>; color: <?php echo $view === 'previous' ? '#1890ff' : '#595959'; ?>;">歷屆學生</a>
               <a href="?view=history" style="padding: 6px 12px; border: 1px solid <?php echo $view === 'history' ? '#91d5ff' : '#d9d9d9'; ?>; border-radius: 6px; text-decoration: none; background: <?php echo $view === 'history' ? '#f0f7ff' : '#fff'; ?>; color: <?php echo $view === 'history' ? '#1890ff' : '#595959'; ?>;">歷史資料</a>
+              <?php if ($view === 'previous'): ?>
+                <select id="rocYearSelect" onchange="changeRocYear(this.value)" style="padding: 6px 12px; border: 1px solid #d9d9d9; border-radius: 6px; background: #fff; color: #333; font-size: 14px; cursor: pointer; margin-left: 75%;">
+                  <option value="0">全部學年</option>
+                  <?php foreach ($available_roc_years as $roc_year): ?>
+                    <option value="<?php echo $roc_year; ?>" <?php echo $selected_roc_year == $roc_year ? 'selected' : ''; ?>>
+                      <?php echo $roc_year; ?>學年
+                    </option>
+                  <?php endforeach; ?>
+                </select>
+              <?php endif; ?>
             </div>
             <thead>
               <tr class="table-row-clickable">
@@ -453,17 +612,28 @@ $grad_threshold_year = ($current_month >= 8) ? $current_year : $current_year - 1
               <?php else: ?>
                 <?php foreach ($rows as $r): ?>
                   <tr  class="table-row-clickable">
-                    <td> <?php echo htmlspecialchars($r['student_no'] ?? ''); ?> <?php if($view === 'history'): ?>
+                    <td> 
+                      <?php echo htmlspecialchars($r['student_no'] ?? ''); ?> 
+                      <?php if($view === 'history'): ?>
                         <span class="tag" style="background:#fff1f0; color:#cf1322;">歷史資料</span>
-                        <?php endif; ?>
+                      <?php elseif($view === 'previous'): ?>
+                        <span class="tag" style="background:#fff7e6; color:#d46b08;">歷屆學生</span>
+                      <?php endif; ?>
                     </td>
                     <td><strong><?php echo htmlspecialchars($r['student_name'] ?? ''); ?></strong></td>
                     <td><?php echo htmlspecialchars($r['department_name'] ?? '—'); ?></td>
                     <td><?php echo htmlspecialchars($r['created_at'] ?? ''); ?></td>
                     <td>
-                      <a href="new_student_basic_info_detail.php?id=<?php echo (int)($r['id'] ?? 0); ?>" style="display:inline-block; padding:6px 10px; border:1px solid #1890ff; border-radius:6px; text-decoration:none; color:#1890ff; font-weight:700; background:#fff;">
-                        查看詳情
-                      </a>
+                      <div style="display:flex; gap:8px; align-items:center;">
+                        <a href="new_student_basic_info_detail.php?id=<?php echo (int)($r['id'] ?? 0); ?>" style="display:inline-block; padding:6px 10px; border:1px solid #1890ff; border-radius:6px; text-decoration:none; color:#1890ff; font-weight:700; background:#fff;">
+                          查看詳情
+                        </a>
+                        <?php if($view === 'previous'): ?>
+                          <button onclick="addToCurrentStudents(<?php echo (int)($r['id'] ?? 0); ?>)" style="padding:6px 10px; border:1px solid #52c41a; border-radius:6px; background:#f6ffed; color:#52c41a; font-weight:700; cursor:pointer;">
+                            加入新生
+                          </button>
+                        <?php endif; ?>
+                      </div>
                     </td>
                   </tr>
                 <?php endforeach; ?>
@@ -666,6 +836,49 @@ $grad_threshold_year = ($current_month >= 8) ? $current_year : $current_year - 1
                     pageNumbers.appendChild(btn);
                 }
             }
+        }
+
+        // 加入目前學生（新生）
+        function addToCurrentStudents(studentId) {
+            if (!confirm('確定要將此學生加入「新生」嗎？系統會更新學生的建立時間到當前學年度。')) {
+                return;
+            }
+            
+            fetch('add_student_to_current.php', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                },
+                body: 'student_id=' + encodeURIComponent(studentId)
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    alert('已成功將學生加入「新生」');
+                    // 重新載入頁面
+                    window.location.reload();
+                } else {
+                    alert('操作失敗：' + (data.message || '未知錯誤'));
+                }
+            })
+            .catch(error => {
+                console.error('Error:', error);
+                alert('操作失敗：網路錯誤');
+            });
+        }
+
+        // 變更學年度篩選
+        function changeRocYear(rocYear) {
+            const url = new URL(window.location.href);
+            url.searchParams.set('view', 'previous');
+            if (rocYear && rocYear !== '0') {
+                url.searchParams.set('roc_year', rocYear);
+            } else {
+                url.searchParams.delete('roc_year');
+            }
+            // 清除分頁參數
+            url.searchParams.delete('offset');
+            window.location.href = url.toString();
         }
     </script>
 </body>
