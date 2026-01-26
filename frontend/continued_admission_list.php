@@ -25,8 +25,8 @@ $is_admin_or_staff = in_array($user_role, $allowed_center_roles);
 
 // 判斷是否為主任
 $is_director = ($user_role === 'DI');
-// 判斷是否為一般老師
-$is_teacher = ($user_role === 'TE' || $user_role === '老師');
+// 判斷是否為一般老師（支援 'TE', 'TEA', '老師'）
+$is_teacher = ($user_role === 'TE' || $user_role === 'TEA' || $user_role === '老師');
 $user_department_code = null;
 $is_department_user = false;
 
@@ -34,10 +34,17 @@ $is_department_user = false;
 if (($is_director || $is_teacher) && $user_id > 0) {
     try {
         $conn_temp = getDatabaseConnection();
-        $table_check = $conn_temp->query("SHOW TABLES LIKE 'director'");
-        if ($table_check && $table_check->num_rows > 0) {
-            $stmt_dept = $conn_temp->prepare("SELECT department FROM director WHERE user_id = ?");
+        if ($is_director) {
+            // 主任從 director 表查詢
+            $table_check = $conn_temp->query("SHOW TABLES LIKE 'director'");
+            if ($table_check && $table_check->num_rows > 0) {
+                $stmt_dept = $conn_temp->prepare("SELECT department FROM director WHERE user_id = ?");
+            } else {
+                // 如果沒有 director 表，從 teacher 表查詢（向後兼容）
+                $stmt_dept = $conn_temp->prepare("SELECT department FROM teacher WHERE user_id = ?");
+            }
         } else {
+            // 老師直接從 teacher 表查詢
             $stmt_dept = $conn_temp->prepare("SELECT department FROM teacher WHERE user_id = ?");
         }
         $stmt_dept->bind_param("i", $user_id);
@@ -148,18 +155,36 @@ if ($table_check && $table_check->num_rows > 0) {
     $has_normalized_assignments = true;
 }
 
-if ($is_teacher && !empty($user_id)) {
-    // 老師只能看到被分配給他的學生（使用正規化分配表）
+if ($is_teacher && !empty($user_id) && !empty($user_department_code)) {
+    // 老師只能看到被分配給他的學生，且該學生的 assigned_department 必須等於老師的科系代碼
+    // 並且 reviewer_type 必須是 'teacher'（排除主任）
     if ($has_normalized_assignments) {
-        $stmt = $conn->prepare("SELECT DISTINCT ca.id, ca.apply_no, ca.name, ca.school, ca.status, ca.created_at, $assigned_dept_field, sd.name as school_name 
-                      FROM continued_admission ca
-                      LEFT JOIN school_data sd ON ca.school = sd.school_code
-                      INNER JOIN continued_admission_assignments caa ON ca.id = caa.application_id
-                      WHERE caa.reviewer_user_id = ? " . $status_condition . "
-                      ORDER BY ca.$sortBy $sortOrder");
-        // active 模式用 current_year（今年），history 模式用 filter_year（已確保不是今年）
-        $year_param = $view_mode === 'active' ? $current_year : $filter_year;
-        $stmt->bind_param("ii", $user_id, $year_param);
+        if ($has_assigned_department) {
+            // 有 assigned_department 欄位：檢查分配給老師且 reviewer_type = 'teacher'
+            // 科系匹配會在 PHP 層再次檢查，這裡先不過濾 assigned_department，確保能看到被分配的學生
+            $stmt = $conn->prepare("SELECT DISTINCT ca.id, ca.apply_no, ca.name, ca.school, ca.status, ca.created_at, $assigned_dept_field, sd.name as school_name 
+                          FROM continued_admission ca
+                          LEFT JOIN school_data sd ON ca.school = sd.school_code
+                          INNER JOIN continued_admission_assignments caa ON ca.id = caa.application_id
+                          WHERE caa.reviewer_user_id = ? 
+                          AND caa.reviewer_type = 'teacher' " . $status_condition . "
+                          ORDER BY ca.$sortBy $sortOrder");
+            // active 模式用 current_year（今年），history 模式用 filter_year（已確保不是今年）
+            $year_param = $view_mode === 'active' ? $current_year : $filter_year;
+            $stmt->bind_param("ii", $user_id, $year_param);
+        } else {
+            // 沒有 assigned_department 欄位：只檢查分配給老師且 reviewer_type = 'teacher'（向後兼容）
+            $stmt = $conn->prepare("SELECT DISTINCT ca.id, ca.apply_no, ca.name, ca.school, ca.status, ca.created_at, $assigned_dept_field, sd.name as school_name 
+                          FROM continued_admission ca
+                          LEFT JOIN school_data sd ON ca.school = sd.school_code
+                          INNER JOIN continued_admission_assignments caa ON ca.id = caa.application_id
+                          WHERE caa.reviewer_user_id = ? 
+                          AND caa.reviewer_type = 'teacher' " . $status_condition . "
+                          ORDER BY ca.$sortBy $sortOrder");
+            // active 模式用 current_year（今年），history 模式用 filter_year（已確保不是今年）
+            $year_param = $view_mode === 'active' ? $current_year : $filter_year;
+            $stmt->bind_param("ii", $user_id, $year_param);
+        }
     } else {
         // 如果沒有正規化表，嘗試使用舊的欄位
         $has_assigned_teacher = false;
@@ -169,13 +194,26 @@ if ($is_teacher && !empty($user_id)) {
         }
         
         if ($has_assigned_teacher) {
-            $stmt = $conn->prepare("SELECT ca.id, ca.apply_no, ca.name, ca.school, ca.status, ca.created_at, $assigned_dept_field, sd.name as school_name 
-                          FROM continued_admission ca
-                          LEFT JOIN school_data sd ON ca.school = sd.school_code
-                          WHERE (ca.assigned_teacher_1_id = ? OR ca.assigned_teacher_2_id = ?) " . $status_condition . "
-                          ORDER BY ca.$sortBy $sortOrder");
-            $year_param = $view_mode === 'active' ? $current_year : $filter_year;
-            $stmt->bind_param("iii", $user_id, $user_id, $year_param);
+            if ($has_assigned_department) {
+                // 有 assigned_department 欄位：檢查分配給老師
+                // 科系匹配會在 PHP 層再次檢查，這裡先不過濾 assigned_department
+                $stmt = $conn->prepare("SELECT ca.id, ca.apply_no, ca.name, ca.school, ca.status, ca.created_at, $assigned_dept_field, sd.name as school_name 
+                              FROM continued_admission ca
+                              LEFT JOIN school_data sd ON ca.school = sd.school_code
+                              WHERE (ca.assigned_teacher_1_id = ? OR ca.assigned_teacher_2_id = ?) " . $status_condition . "
+                              ORDER BY ca.$sortBy $sortOrder");
+                $year_param = $view_mode === 'active' ? $current_year : $filter_year;
+                $stmt->bind_param("iii", $user_id, $user_id, $year_param);
+            } else {
+                // 沒有 assigned_department 欄位：只檢查分配給老師（向後兼容，但理論上不應該有這種情況）
+                $stmt = $conn->prepare("SELECT ca.id, ca.apply_no, ca.name, ca.school, ca.status, ca.created_at, $assigned_dept_field, sd.name as school_name 
+                              FROM continued_admission ca
+                              LEFT JOIN school_data sd ON ca.school = sd.school_code
+                              WHERE (ca.assigned_teacher_1_id = ? OR ca.assigned_teacher_2_id = ?) " . $status_condition . "
+                              ORDER BY ca.$sortBy $sortOrder");
+                $year_param = $view_mode === 'active' ? $current_year : $filter_year;
+                $stmt->bind_param("iii", $user_id, $user_id, $year_param);
+            }
         } else {
             // 如果沒有分配欄位，老師看不到任何資料
             $stmt = $conn->prepare("SELECT ca.id, ca.apply_no, ca.name, ca.school, ca.status, ca.created_at, $assigned_dept_field, sd.name as school_name 
@@ -295,11 +333,14 @@ foreach ($applications as &$app) {
         $app['assigned_teacher_2_id'] = null;
         $app['assigned_director_id'] = null;
         while ($assign_row = $assign_result->fetch_assoc()) {
-            if ($assign_row['assignment_order'] == 1) {
-                $app['assigned_teacher_1_id'] = $assign_row['reviewer_user_id'];
-            } elseif ($assign_row['assignment_order'] == 2) {
-                $app['assigned_teacher_2_id'] = $assign_row['reviewer_user_id'];
-            } elseif ($assign_row['assignment_order'] == 3) {
+            // 只處理 reviewer_type = 'teacher' 的分配（排除主任）
+            if ($assign_row['reviewer_type'] === 'teacher') {
+                if ($assign_row['assignment_order'] == 1) {
+                    $app['assigned_teacher_1_id'] = $assign_row['reviewer_user_id'];
+                } elseif ($assign_row['assignment_order'] == 2) {
+                    $app['assigned_teacher_2_id'] = $assign_row['reviewer_user_id'];
+                }
+            } elseif ($assign_row['reviewer_type'] === 'director' && $assign_row['assignment_order'] == 3) {
                 $app['assigned_director_id'] = $assign_row['reviewer_user_id'];
             }
         }
@@ -321,6 +362,50 @@ foreach ($applications as &$app) {
     }
 }
 unset($app);
+
+// 對於老師：在獲取分配資訊後，再次過濾，確保只顯示主任分配給他的學生
+if ($is_teacher && !empty($user_id) && !empty($applications)) {
+    $filtered_applications = [];
+    foreach ($applications as $app) {
+        // 檢查是否真的被分配給該老師（必須先通過這個檢查）
+        $is_assigned_to_teacher = false;
+        if ($has_normalized_assignments) {
+            // 檢查正規化分配表
+            if (isset($app['assigned_teacher_1_id']) && (int)$app['assigned_teacher_1_id'] === (int)$user_id) {
+                $is_assigned_to_teacher = true;
+            } elseif (isset($app['assigned_teacher_2_id']) && (int)$app['assigned_teacher_2_id'] === (int)$user_id) {
+                $is_assigned_to_teacher = true;
+            }
+        } else {
+            // 檢查舊欄位
+            if (isset($app['assigned_teacher_1_id']) && (int)$app['assigned_teacher_1_id'] === (int)$user_id) {
+                $is_assigned_to_teacher = true;
+            } elseif (isset($app['assigned_teacher_2_id']) && (int)$app['assigned_teacher_2_id'] === (int)$user_id) {
+                $is_assigned_to_teacher = true;
+            }
+        }
+        
+        // 如果沒有被分配給該老師，跳過
+        if (!$is_assigned_to_teacher) {
+            continue;
+        }
+        
+        // 如果有科系代碼，檢查 assigned_department 是否等於老師科系代碼
+        if (!empty($user_department_code)) {
+            $assigned_dept = trim(strtoupper($app['assigned_department'] ?? ''));
+            $teacher_dept = trim(strtoupper($user_department_code));
+            
+            // 如果 assigned_department 有值且不匹配，跳過
+            if (!empty($assigned_dept) && $assigned_dept !== $teacher_dept) {
+                continue; // 跳過科系不匹配的學生
+            }
+        }
+        
+        // 保留被分配給該老師的學生
+        $filtered_applications[] = $app;
+    }
+    $applications = $filtered_applications;
+}
 
 // 如果請求匯出 CSV 或 Excel，輸出並結束（Excel 使用 .xls 與 vnd.ms-excel header，但內容為 CSV，方便相容）
 if (isset($_GET['export']) && in_array($_GET['export'], ['csv', 'excel'])) {
@@ -982,19 +1067,23 @@ function getStatusClass($status) {
                             <?php else: 
                                 // 根據用戶角色決定隱藏哪些欄位
                                 $table_classes = 'table application-table';
-                                if ($is_director && !empty($user_department_code)) {
-                                    // 主任：檢查哪些意願欄位需要顯示
+                                if ($is_teacher || ($is_director && !empty($user_department_code))) {
+                                    // 老師和主任：檢查哪些意願欄位需要顯示（只顯示自己科系的志願）
                                     $has_choice1 = false;
                                     $has_choice2 = false;
                                     $has_choice3 = false;
-                                    foreach ($applications as $check_item) {
-                                        $check_choices = $check_item['choices_with_codes'] ?? [];
-                                        foreach ($check_choices as $check_choice) {
-                                            if ($check_choice['code'] === $user_department_code) {
-                                                $order = $check_choice['order'] ?? 0;
-                                                if ($order == 1) $has_choice1 = true;
-                                                elseif ($order == 2) $has_choice2 = true;
-                                                elseif ($order == 3) $has_choice3 = true;
+                                    $target_dept_code = !empty($user_department_code) ? $user_department_code : null;
+                                    
+                                    if ($target_dept_code) {
+                                        foreach ($applications as $check_item) {
+                                            $check_choices = $check_item['choices_with_codes'] ?? [];
+                                            foreach ($check_choices as $check_choice) {
+                                                if ($check_choice['code'] === $target_dept_code) {
+                                                    $order = $check_choice['order'] ?? 0;
+                                                    if ($order == 1) $has_choice1 = true;
+                                                    elseif ($order == 2) $has_choice2 = true;
+                                                    elseif ($order == 3) $has_choice3 = true;
+                                                }
                                             }
                                         }
                                     }
@@ -1020,18 +1109,23 @@ function getStatusClass($status) {
                                     if (!$has_choice1) $table_classes .= ' hide-choice1';
                                     if (!$has_choice2) $table_classes .= ' hide-choice2';
                                     if (!$has_choice3) $table_classes .= ' hide-choice3';
+                                } else {
+                                    // 招生中心/管理員：顯示所有志願欄位
+                                    $has_choice1 = true;
+                                    $has_choice2 = true;
+                                    $has_choice3 = true;
                                 }
                             ?>
-                                <table class="<?php echo $table_classes; ?>" id="applicationTable"<?php if ($is_director && !empty($user_department_code)): ?> data-director-view="true"<?php endif; ?>>
+                                <table class="<?php echo $table_classes; ?>" id="applicationTable"<?php if ($is_teacher || ($is_director && !empty($user_department_code))): ?> data-director-view="true"<?php endif; ?>>
                                     <thead>
                                         <tr>
                                             <th onclick="sortTable('apply_no')">報名編號 <span class="sort-icon" id="sort-apply_no"></span></th>
                                             <th onclick="sortTable('name')">姓名 <span class="sort-icon" id="sort-name"></span></th>
-                                            <?php if ($is_director && !empty($user_department_code)): ?>
-                                                <!-- 主任：只顯示「志願」，不顯示數字 -->
+                                            <?php if ($is_teacher || ($is_director && !empty($user_department_code))): ?>
+                                                <!-- 老師和主任：只顯示「志願」，不顯示數字 -->
                                                 <th class="choice1-column">志願</th>
-                                                <?php if ($has_choice2): ?><th class="choice2-column">志願</th><?php endif; ?>
-                                                <?php if ($has_choice3): ?><th class="choice3-column">志願</th><?php endif; ?>
+                                                <?php if (isset($has_choice2) && $has_choice2): ?><th class="choice2-column">志願</th><?php endif; ?>
+                                                <?php if (isset($has_choice3) && $has_choice3): ?><th class="choice3-column">志願</th><?php endif; ?>
                                             <?php else: ?>
                                                 <!-- 招生中心/管理員：顯示「志願1」、「志願2」、「志願3」 -->
                                                 <th class="choice1-column">志願1</th>
@@ -1069,11 +1163,14 @@ function getStatusClass($status) {
                                             $display_choice2 = false;
                                             $display_choice3 = false;
                                             
-                                            if ($is_director && !empty($user_department_code)) {
-                                                // 主任：只顯示自己科系的志願
-                                                if ($choice1 && $choice1['code'] === $user_department_code) $display_choice1 = true;
-                                                if ($choice2 && $choice2['code'] === $user_department_code) $display_choice2 = true;
-                                                if ($choice3 && $choice3['code'] === $user_department_code) $display_choice3 = true;
+                                            if ($is_teacher || ($is_director && !empty($user_department_code))) {
+                                                // 老師和主任：只顯示自己科系的志願
+                                                $target_dept_code = !empty($user_department_code) ? $user_department_code : null;
+                                                if ($target_dept_code) {
+                                                    if ($choice1 && $choice1['code'] === $target_dept_code) $display_choice1 = true;
+                                                    if ($choice2 && $choice2['code'] === $target_dept_code) $display_choice2 = true;
+                                                    if ($choice3 && $choice3['code'] === $target_dept_code) $display_choice3 = true;
+                                                }
                                             } elseif ($is_imd_user) {
                                                 // IMD用戶：只顯示資訊管理科相關的志願
                                                 if ($choice1 && ($choice1['code'] === 'IM' || strpos($choice1['name'], '資訊管理') !== false || strpos($choice1['name'], '資管') !== false)) $display_choice1 = true;
@@ -1147,10 +1244,13 @@ function getStatusClass($status) {
                                                 $assigned_teacher_2 = $item['assigned_teacher_2_id'] ?? null;
                                                 $assigned_director_id = $item['assigned_director_id'] ?? null;
                                                 
-                                                // 主任可以分配給老師（狀態為待審核且已分配給該科系）
+                                                // 判斷是否已經分配（至少有一位老師被分配，或者主任已被分配）
+                                                $is_assigned = ($assigned_teacher_1 !== null || $assigned_teacher_2 !== null || $assigned_director_id !== null);
+                                                
+                                                // 主任可以分配給老師（狀態為待審核且已分配給該科系，且尚未分配老師）
                                                 $can_assign_this = false;
                                                 if ($is_pending && $is_director && !empty($user_department_code)) {
-                                                    $can_assign_this = ($assigned_dept === $user_department_code);
+                                                    $can_assign_this = ($assigned_dept === $user_department_code && !$is_assigned);
                                                 }
                                                 
                                                 // 老師可以評分（已被分配給該老師）
@@ -1166,21 +1266,22 @@ function getStatusClass($status) {
                                                     }
                                                 }
                                                 
-                                                // 主任可以評分（已分配給該科系且主任被分配為評審者）
+                                                // 主任可以評分（已分配給該科系且已經分配過老師）
                                                 if ($is_director && !empty($user_id) && !empty($user_department_code) && $assigned_dept === $user_department_code) {
-                                                    if ($assigned_director_id == $user_id || $assigned_director_id === null) {
-                                                        // 如果主任被分配或還沒分配（向後兼容），允許評分
+                                                    if ($is_assigned) {
+                                                        // 已經分配過，允許評分
                                                         $can_score_this = true;
                                                         $teacher_slot = 3; // 使用 3 表示主任
                                                     }
                                                 }
                                                 
-                                                // 顯示分配按鈕（只有主任可以看到，且狀態為待審核）
-                                                if ($can_assign_this && $is_pending): ?>
+                                                // 顯示分配按鈕（只有主任可以看到，且狀態為待審核，且尚未分配）
+                                                if ($can_assign_this): ?>
                                                     <button onclick="showAssignTeacherModal(<?php echo $item['id']; ?>, '<?php echo htmlspecialchars($item['name'], ENT_QUOTES); ?>', '<?php echo htmlspecialchars($user_department_code, ENT_QUOTES); ?>')" class="btn-review" style="margin-left: 8px;">分配</button>
                                                 <?php endif; 
                                                 
                                                 // 顯示評分按鈕（老師和主任都可以看到，且已被分配）
+                                                // 對於主任：只有在已經分配後才顯示評分按鈕
                                                 if ($can_score_this): ?>
                                                     <a href="continued_admission_detail.php?id=<?php echo $item['id']; ?>&action=score&slot=<?php echo $teacher_slot; ?>" class="btn-review" style="margin-left: 8px;">評分</a>
                                                 <?php endif; ?>
