@@ -124,11 +124,12 @@ if (!in_array(strtolower($sortOrder), ['asc', 'desc'])) {
 
 // 獲取所有資料（包含出席統計）
 // 場次設定頁面顯示所有場次，不區分歷史紀錄
+// 注意：報名人數和出席人數只計算與場次年份相同的記錄
 $sessions_sql = "
     SELECT s.*, 
-           COUNT(DISTINCT a.id) as registration_count,
-           (s.max_participants - COUNT(DISTINCT a.id)) as remaining_slots,
-           COUNT(DISTINCT CASE WHEN ar.attendance_status = 1 THEN ar.id END) as attendance_count
+           COUNT(DISTINCT CASE WHEN YEAR(a.created_at) = YEAR(s.session_date) THEN a.id END) as registration_count,
+           (s.max_participants - COUNT(DISTINCT CASE WHEN YEAR(a.created_at) = YEAR(s.session_date) THEN a.id END)) as remaining_slots,
+           COUNT(DISTINCT CASE WHEN ar.attendance_status = 1 AND YEAR(ar.check_in_time) = YEAR(s.session_date) THEN ar.id END) as attendance_count
     FROM admission_sessions s
     LEFT JOIN admission_applications a ON s.id = a.session_id 
     LEFT JOIN attendance_records ar ON s.id = ar.session_id AND a.id = ar.application_id
@@ -375,6 +376,7 @@ $conn->close();
                     </div>
                     <div class="table-search">
                         <input type="text" id="tableSearchInput" placeholder="搜尋場次..." onkeyup="filterTable()">
+                        <a href="attendance_statistics.php" class="btn btn-secondary"><i class="fas fa-chart-bar"></i> 實到人數統計與預估</a>
                         <button class="btn btn-primary" onclick="showModal('addSessionModal')"><i class="fas fa-plus"></i> 新增場次</button>
                     </div>
                 </div>
