@@ -3,6 +3,7 @@ require_once __DIR__ . '/session_config.php';
 checkBackendLogin();
 
 header('Content-Type: application/json; charset=utf-8');
+require_once __DIR__ . '/recommendation_review_email.php';
 
 // 僅允許 POST
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
@@ -13,8 +14,7 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
 
 // 權限：沿用審核結果可視權限（username=12 & role=STA）
 $username = isset($_SESSION['username']) ? $_SESSION['username'] : '';
-$user_role = isset($_SESSION['role']) ? $_SESSION['role'] : '';
-$can_view_review_result = ($username === '12' && $user_role === 'STA');
+$can_view_review_result = (isStaff() || isAdmin());
 if (!$can_view_review_result) {
     http_response_code(403);
     echo json_encode(['success' => false, 'message' => '權限不足'], JSON_UNESCAPED_UNICODE);
@@ -54,33 +54,19 @@ try {
         }
     }
 
-    // 建立設定表（若不存在）：獎金金額可調整
-    $tset = $conn->query("SHOW TABLES LIKE 'bonus_settings'");
-    if ($tset && $tset->num_rows == 0) {
-        $conn->query("CREATE TABLE bonus_settings (
-            id INT PRIMARY KEY,
-            amount INT NOT NULL DEFAULT 1500,
-            updated_by VARCHAR(100) NOT NULL DEFAULT '',
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
+    // 依學年度（屆別）讀取獎金金額：預設使用目前學年度（8 月切換）
+    $bonus_year = function_exists('get_current_academic_year_roc') ? (int)get_current_academic_year_roc() : 0;
+    if ($bonus_year <= 0) {
+        $y = (int)date('Y');
+        $m = (int)date('n');
+        $bonus_year = ($m >= 8) ? ($y - 1911) : ($y - 1912);
     }
-    // 確保 id=1 存在
-    $exists = $conn->query("SELECT id FROM bonus_settings WHERE id = 1 LIMIT 1");
-    if (!$exists || $exists->num_rows == 0) {
-        $stmt_ins = $conn->prepare("INSERT INTO bonus_settings (id, amount, updated_by) VALUES (1, 1500, ?)");
-        if ($stmt_ins) {
-            $stmt_ins->bind_param('s', $username);
-            @$stmt_ins->execute();
-            $stmt_ins->close();
-        }
+    if (function_exists('ensure_bonus_year_row')) {
+        @ensure_bonus_year_row($conn, $bonus_year, $username);
     }
-    // 讀取目前金額
-    $bonus_amount = 1500;
-    $rset = $conn->query("SELECT amount FROM bonus_settings WHERE id = 1 LIMIT 1");
-    if ($rset && $rr = $rset->fetch_assoc()) {
-        $bonus_amount = intval($rr['amount'] ?? 1500);
-        if ($bonus_amount < 0) $bonus_amount = 1500;
-    }
+    $bonus_amount = function_exists('get_bonus_amount_for_year')
+        ? (int)get_bonus_amount_for_year($conn, $bonus_year)
+        : 1500;
 
     // 取得推薦人資料（優先 recommender 表）與被推薦人姓名（用於獎金平分）
     $has_recommender_table = false;
@@ -183,42 +169,43 @@ try {
     $check->close();
 
     // -----------------------------
-    // 同名且通過者獎金平分（餘數依 created_at/ID 由早到晚分配 +1）
+    // 同名且通過者獎金平分
+    // 不再依建立時間判斷誰先填；排序僅作為「不可整除」時的餘數分配用（以 id 由小到大）
     // -----------------------------
     $final_amount = $bonus_amount;
     $split_count = 1;
     if ($student_name !== '') {
         $rows_ap = [];
         if ($has_recommended_table) {
-            $q = $conn->prepare("SELECT ar.id, ar.created_at
+            $q = $conn->prepare("SELECT ar.id
                 FROM admission_recommendations ar
                 LEFT JOIN recommended red ON ar.id = red.recommendations_id
                 WHERE red.name = ? AND ar.status IN ('AP','approved','APPROVED')
-                ORDER BY ar.created_at ASC, ar.id ASC");
+                ORDER BY ar.id ASC");
             if ($q) {
                 $q->bind_param('s', $student_name);
                 $q->execute();
                 $res2 = $q->get_result();
                 if ($res2) {
                     while ($r2 = $res2->fetch_assoc()) {
-                        $rows_ap[] = ['id' => (int)$r2['id'], 'created_at' => (string)$r2['created_at']];
+                        $rows_ap[] = ['id' => (int)$r2['id']];
                     }
                 }
                 $q->close();
             }
         } else {
             // 向後相容：若沒有 recommended 表，改用 admission_recommendations.student_name
-            $q = $conn->prepare("SELECT ar.id, ar.created_at
+            $q = $conn->prepare("SELECT ar.id
                 FROM admission_recommendations ar
                 WHERE ar.student_name = ? AND ar.status IN ('AP','approved','APPROVED')
-                ORDER BY ar.created_at ASC, ar.id ASC");
+                ORDER BY ar.id ASC");
             if ($q) {
                 $q->bind_param('s', $student_name);
                 $q->execute();
                 $res2 = $q->get_result();
                 if ($res2) {
                     while ($r2 = $res2->fetch_assoc()) {
-                        $rows_ap[] = ['id' => (int)$r2['id'], 'created_at' => (string)$r2['created_at']];
+                        $rows_ap[] = ['id' => (int)$r2['id']];
                     }
                 }
                 $q->close();
@@ -248,6 +235,11 @@ try {
         throw new Exception('寫入失敗: ' . $ins->error);
     }
     $ins->close();
+
+    // 寄送「獎金已發送」通知（每筆只寄一次）
+    if (function_exists('send_bonus_sent_email_once')) {
+        @send_bonus_sent_email_once($conn, $recommendation_id, $final_amount, $split_count, $username);
+    }
 
     echo json_encode([
         'success' => true,

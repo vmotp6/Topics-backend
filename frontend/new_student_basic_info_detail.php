@@ -74,6 +74,33 @@ function ensureNewStudentBasicInfoTable($conn) {
   $conn->query($sql);
 }
 
+function hasColumn($conn, $table, $column) {
+  if (!$conn) return false;
+  $table = trim((string)$table);
+  $column = trim((string)$column);
+  if ($table === '' || $column === '') return false;
+  try {
+    $stmt = $conn->prepare("SHOW COLUMNS FROM `$table` LIKE ?");
+    if (!$stmt) return false;
+    $stmt->bind_param('s', $column);
+    $stmt->execute();
+    $res = $stmt->get_result();
+    $ok = ($res && $res->num_rows > 0);
+    $stmt->close();
+    return $ok;
+  } catch (Exception $e) {
+    return false;
+  }
+}
+
+function detectFirstExistingColumn($conn, $table, $candidates) {
+  if (!is_array($candidates)) return '';
+  foreach ($candidates as $col) {
+    if (hasColumn($conn, $table, $col)) return (string)$col;
+  }
+  return '';
+}
+
 function photoUrl($photo_path) {
   $p = trim((string)$photo_path);
   if ($p === '') return '';
@@ -97,13 +124,33 @@ try {
   if (!$conn) throw new Exception('資料庫連接失敗');
   ensureNewStudentBasicInfoTable($conn);
 
+  $dept_col = detectFirstExistingColumn($conn, 'new_student_basic_info', [
+    'department_id',
+    'department',
+    'department_code',
+    'dept_code',
+    'dept'
+  ]);
+  $dept_key = '';
+  if (hasColumn($conn, 'departments', 'code')) $dept_key = 'code';
+  elseif (hasColumn($conn, 'departments', 'id')) $dept_key = 'id';
+
+  $dept_select = "'' AS department_code, '' AS department_name";
+  $dept_join = "";
+  if ($dept_col !== '' && $dept_key !== '' && hasColumn($conn, 'departments', 'name')) {
+    $dept_select = "ns.`$dept_col` AS department_code, COALESCE(d.name,'') AS department_name";
+    $dept_join = " LEFT JOIN departments d ON ns.`$dept_col` = d.`$dept_key` ";
+  } elseif ($dept_col !== '') {
+    $dept_select = "ns.`$dept_col` AS department_code, '' AS department_name";
+  }
+
   $stmt = $conn->prepare("
   SELECT
     ns.id,
     ns.student_no,
     ns.student_name,
     ns.class_name,
-    ns.department_id , d.name AS department_name,
+    $dept_select,
     ns.enrollment_identity,
     ns.birthday,
     ns.gender,
@@ -139,8 +186,7 @@ try {
     ON ns.previous_school = sd.school_code
 
   -- 🔹 科系
-  LEFT JOIN departments d
-    ON ns.department_id = d.code
+  $dept_join
 
   WHERE ns.id = ?
   LIMIT 1 ");

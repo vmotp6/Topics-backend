@@ -157,10 +157,9 @@ function ensure_application_status_codes($conn, $needed) {
     $stmt_ins->close();
 }
 
-// 判斷用戶角色
-$allowed_center_roles = ['ADM', 'STA'];
-$is_admin_or_staff = in_array($user_role, $allowed_center_roles);
-$is_director = ($user_role === 'DI');
+// 判斷用戶角色（使用 session_config.php helper，支援中文/代碼角色）
+$is_admin_or_staff = (isAdmin() || isStaff());
+$is_director = isDirector();
 $user_department_code = null;
 $is_department_user = false;
 
@@ -496,43 +495,32 @@ try {
     $stmt_update_status = $conn->prepare("UPDATE admission_recommendations SET status = ? WHERE id = ?");
 
     // -------------------------------------------------------------
-    // 同名去重提示：若多人填寫相同「被推薦人姓名」，以 created_at 最早者為優先
-    // 其餘較晚建立者在審核結果顯示紅字提示
+    // 同名重複提示：若多人填寫相同「被推薦人姓名」
+    // 以 created_at 最早者為第一筆，其餘皆顯示「此被推薦人先前已有人填寫」
     // -------------------------------------------------------------
-    // 建立同名推薦的優先者：若老師科系與學生志願科系相同，則優先；否則以建立時間/ID 最早者為優先
-    $earliest_by_name = []; // key => ['ts' => int, 'id' => int, 'dept_match' => bool]
+    $earliest_by_name = []; // key => ['ts' => int, 'id' => int]
+    $dup_count_by_name = []; // key => int
     foreach ($recommendations as $tmp) {
         $nm = trim((string)($tmp['student_name'] ?? ''));
         if ($nm === '') continue;
         $key = normalize_text($nm);
         if ($key === '') continue;
+
+        if (!isset($dup_count_by_name[$key])) $dup_count_by_name[$key] = 0;
+        $dup_count_by_name[$key] += 1;
+
         $ts = strtotime((string)($tmp['created_at'] ?? ''));
         if ($ts === false) $ts = PHP_INT_MAX;
         $idv = (int)($tmp['id'] ?? 0);
 
-        // 判斷科系是否匹配：推薦人科系 vs 學生志願科系（若都有代碼則直接比對）
-        $rec_dept = trim((string)($tmp['recommender_department_code'] ?? ''));
-        $stu_interest = trim((string)($tmp['student_interest_code'] ?? '')); // 可能是 CSV
-        $dept_match = false;
-        if ($rec_dept !== '' && $stu_interest !== '' && interest_contains_code($stu_interest, $rec_dept)) {
-            $dept_match = true;
-        }
-
         if (!isset($earliest_by_name[$key])) {
-            $earliest_by_name[$key] = ['ts' => $ts, 'id' => $idv, 'dept_match' => $dept_match];
+            $earliest_by_name[$key] = ['ts' => $ts, 'id' => $idv];
             continue;
         }
         $cur = $earliest_by_name[$key];
-        // 若新筆有科系匹配而目前儲存的沒有，則以新筆為優先（科系優先於時間）
-        if ($dept_match && empty($cur['dept_match'])) {
-            $earliest_by_name[$key] = ['ts' => $ts, 'id' => $idv, 'dept_match' => $dept_match];
-            continue;
-        }
-        // 若兩者科系匹配狀態相同，則以時間/ID 最早者為優先
-        if ((bool)$dept_match === (bool)$cur['dept_match']) {
-            if ($ts < $cur['ts'] || ($ts === $cur['ts'] && $idv < $cur['id'])) {
-                $earliest_by_name[$key] = ['ts' => $ts, 'id' => $idv, 'dept_match' => $dept_match];
-            }
+        // 以時間/ID 最早者為第一筆
+        if ($ts < $cur['ts'] || ($ts === $cur['ts'] && $idv < $cur['id'])) {
+            $earliest_by_name[$key] = ['ts' => $ts, 'id' => $idv];
         }
     }
 
@@ -640,28 +628,23 @@ try {
         $it['auto_review_nsbi_previous_school'] = $bestMatch['nsbi_previous_school'];
         $it['auto_review_nsbi_mobile'] = $bestMatch['nsbi_mobile'];
 
-        // 同名較晚建立者：標記提示（只做顯示，不改變自動審核判定）
+        // 同名重複：非第一筆都標記提示（只做顯示，不改變自動審核判定）
         $nm2 = trim((string)($it['student_name'] ?? ''));
         $key2 = $nm2 !== '' ? normalize_text($nm2) : '';
         $it['duplicate_note'] = 0;
+        $it['duplicate_count'] = 1;
         if ($key2 !== '' && isset($earliest_by_name[$key2])) {
             $ear = $earliest_by_name[$key2];
-            $ts2 = strtotime((string)($it['created_at'] ?? ''));
-            if ($ts2 === false) $ts2 = PHP_INT_MAX;
             $id2 = (int)($it['id'] ?? 0);
-            // 非最早者都標記
-            if ($id2 !== (int)$ear['id']) {
-                if ($ts2 > (int)$ear['ts'] || ($ts2 === (int)$ear['ts'] && $id2 > (int)$ear['id'])) {
-                    $it['duplicate_note'] = 1;
-                }
-            }
+            // 非第一筆都標記
+            if ($id2 > 0 && $id2 !== (int)$ear['id']) $it['duplicate_note'] = 1;
+        }
+        if ($key2 !== '' && isset($dup_count_by_name[$key2])) {
+            $it['duplicate_count'] = (int)$dup_count_by_name[$key2];
         }
 
-        // 規則：出現「此被推薦人先前已有人填寫」者，審核結果一律為不通過
-        // 但如果三個都正確（bestScore === 3），則保持為通過
-        if (!empty($it['duplicate_note']) && $bestScore !== 3) {
-            $it['auto_review_result'] = '不通過';
-        }
+        // 2026-01 起：同名重複填寫不再影響審核結果（僅做提示）
+        // 若有多筆「通過」將於獎金發送時依人數平分
 
         // 將審核結果寫回 admission_recommendations.status（對應 application_statuses.code）
         // 規則：若使用者已手動填寫 status（AP/RE），則以手動為準，不覆蓋
@@ -702,6 +685,13 @@ try {
                     }
                 }
             }
+        }
+
+        // 若 status 已經是 AP/RE（可能先前就寫入過），但尚未寄過信，也在此補寄一次
+        $rid2 = (int)($it['id'] ?? 0);
+        $st2 = trim((string)($it['status'] ?? ''));
+        if ($rid2 > 0 && in_array($st2, ['AP', 'RE'], true) && function_exists('send_review_result_email_once')) {
+            @send_review_result_email_once($conn, $rid2, $st2, $username);
         }
     }
     unset($it);
@@ -779,8 +769,6 @@ try {
 
 // 獲取老師列表（用於分配功能）
 $teachers = [];
-$is_department_user = false; // 預設為 false，如果需要可以根據實際需求設定
-$is_admission_center = false; // 預設為 false，如果需要可以根據實際需求設定
 if ($is_department_user) {
     try {
         $table_check = $conn->query("SHOW TABLES LIKE 'user'");
@@ -846,6 +834,64 @@ function getEnrollmentStatusClass($status) {
         case '放棄入學': return 'enrollment-cancelled';
         default: return 'enrollment-not';
     }
+}
+
+// -----------------------------
+// 獎金：顯示「已發送」狀態/金額（以及提供發送按鈕）
+// 規則：同名且通過者，獎金依人數平分（由 send_bonus.php 計算並寫入 amount）
+// -----------------------------
+$can_send_bonus = (isStaff() || isAdmin());
+$bonus_sent_map = []; // recommendation_id => ['sent_at'=>..., 'sent_by'=>..., 'amount'=>...]
+try {
+    if (isset($conn) && $conn) {
+        $tb = $conn->query("SHOW TABLES LIKE 'bonus_send_logs'");
+        if ($tb && $tb->num_rows > 0 && !empty($recommendations)) {
+            // 舊表補欄位（向後相容）
+            $c = $conn->query("SHOW COLUMNS FROM bonus_send_logs LIKE 'amount'");
+            if ($c && $c->num_rows == 0) {
+                @$conn->query("ALTER TABLE bonus_send_logs ADD COLUMN amount INT NOT NULL DEFAULT 1500 AFTER recommender_student_id");
+            }
+
+            $ids = [];
+            foreach ($recommendations as $r) {
+                $rid = (int)($r['id'] ?? 0);
+                if ($rid > 0) $ids[] = $rid;
+            }
+            $ids = array_values(array_unique($ids));
+
+            if (!empty($ids)) {
+                $placeholders = implode(',', array_fill(0, count($ids), '?'));
+                $sql = "SELECT recommendation_id, sent_at, sent_by, COALESCE(amount, 1500) AS amount
+                        FROM bonus_send_logs
+                        WHERE recommendation_id IN ($placeholders)";
+                $stmt = $conn->prepare($sql);
+                if ($stmt) {
+                    $types = str_repeat('i', count($ids));
+                    $params = array_merge([$types], $ids);
+                    $refs = [];
+                    foreach ($params as $k => $v) $refs[$k] = &$params[$k];
+                    call_user_func_array([$stmt, 'bind_param'], $refs);
+                    if ($stmt->execute()) {
+                        $res = $stmt->get_result();
+                        if ($res) {
+                            while ($row = $res->fetch_assoc()) {
+                                $rid = (int)($row['recommendation_id'] ?? 0);
+                                if ($rid <= 0) continue;
+                                $bonus_sent_map[$rid] = [
+                                    'sent_at' => (string)($row['sent_at'] ?? ''),
+                                    'sent_by' => (string)($row['sent_by'] ?? ''),
+                                    'amount' => (int)($row['amount'] ?? 1500),
+                                ];
+                            }
+                        }
+                    }
+                    $stmt->close();
+                }
+            }
+        }
+    }
+} catch (Exception $e) {
+    // ignore
 }
 ?>
 <!DOCTYPE html>
@@ -1366,7 +1412,14 @@ function getEnrollmentStatusClass($status) {
                     <div class="table-search">
                         <input type="text" id="searchInput" class="search-input" placeholder="搜尋被推薦人姓名、學校或電話...">
 
-                       
+                        <?php if (!empty($can_send_bonus)): ?>
+                            <a class="btn-view" href="bonus_center.php" style="margin-left: 10px;">
+                                <i class="fas fa-gift"></i> 獎金專區
+                            </a>
+                            <a class="btn-view" href="bonus_send_list.php" style="margin-left: 8px;">
+                                <i class="fas fa-receipt"></i> 已發送獎金名單
+                            </a>
+                        <?php endif; ?>
                     </div>
                 </div>
 
@@ -1520,9 +1573,17 @@ function getEnrollmentStatusClass($status) {
                                                 <span class="info-value" title="<?php echo htmlspecialchars($dbg_title); ?>">
                                                     <span class="<?php echo htmlspecialchars($badge_class); ?>"><?php echo htmlspecialchars($display_review); ?></span>
                                                     <span style="color:#8c8c8c; font-size:12px; margin-left:6px;">(<?php echo htmlspecialchars($debug_short); ?>)</span>
-                                                    <?php if (!empty($item['duplicate_note'])): ?>
+                                                    <?php
+                                                        $dupCnt = (int)($item['duplicate_count'] ?? 1);
+                                                        $isDupGroup = ($dupCnt > 1);
+                                                    ?>
+                                                    <?php if ($isDupGroup): ?>
                                                         <div style="margin-top:6px; color:#cf1322; font-size:12px; font-weight:900;">
-                                                            此被推薦人先前已有人填寫
+                                                            <?php if (!empty($item['duplicate_note'])): ?>
+                                                                此被推薦人先前已有人填寫故獎金平分
+                                                            <?php else: ?>
+                                                                此被推薦人先前已有人填寫故獎金平分
+                                                            <?php endif; ?>
                                                         </div>
                                                     <?php endif; ?>
                                                 </span>
@@ -1560,8 +1621,13 @@ function getEnrollmentStatusClass($status) {
                                                     <i class="fas fa-eye"></i> <span class="btn-text">查看詳情</span>
                                                 </button>
                                                 <?php
+                                                    $rid = (int)($item['id'] ?? 0);
                                                     $current_status = isset($item['status']) ? trim((string)$item['status']) : '';
                                                     $auto_review = isset($item['auto_review_result']) ? trim((string)$item['auto_review_result']) : '';
+                                                    $is_approved_for_bonus = in_array($current_status, ['AP', 'approved', 'APPROVED'], true);
+                                                    $bonus_sent = ($rid > 0 && isset($bonus_sent_map[$rid]));
+                                                    $bonus_sent_amount = $bonus_sent ? (int)($bonus_sent_map[$rid]['amount'] ?? 1500) : 0;
+                                                    $bonus_sent_at = $bonus_sent ? (string)($bonus_sent_map[$rid]['sent_at'] ?? '') : '';
 
                                                     // 統一人工確認名稱
                                                     if ($auto_review === '人工確認') {
@@ -1574,6 +1640,21 @@ function getEnrollmentStatusClass($status) {
                                                         $auto_review === '需人工確認' &&
                                                         !in_array($current_status, ['AP', 'RE'], true);
                                                 ?>
+
+                                                <?php if (!empty($can_send_bonus) && $is_approved_for_bonus): ?>
+                                                    <?php if ($bonus_sent): ?>
+                                                        <span class="btn-view" style="background:#f6ffed; border-color:#b7eb8f; color:#389e0d; cursor: default;">
+                                                            <i class="fas fa-check-circle"></i> 已發送 $<?php echo number_format((int)$bonus_sent_amount); ?>
+                                                        </span>
+                                                    <?php else: ?>
+                                                        <button type="button"
+                                                            class="btn-view"
+                                                            style="background:#52c41a; color:white; border-color:#52c41a;"
+                                                            onclick="sendBonus(<?php echo (int)$rid; ?>, this)">
+                                                            <i class="fas fa-coins"></i> 發送獎金
+                                                        </button>
+                                                    <?php endif; ?>
+                                                <?php endif; ?>
 
                                                 <?php if ($show_update_btn): ?>
                                                 <button type="button" 
@@ -1611,12 +1692,32 @@ function getEnrollmentStatusClass($status) {
                                                 </button>
                                                 <?php 
                                                     // 檢查是否需要顯示修改結果按鈕（僅在審核結果為需人工確認時）
+                                                    $rid = (int)($item['id'] ?? 0);
                                                     $current_status = isset($item['status']) ? trim((string)$item['status']) : '';
                                                     $auto_review = isset($item['auto_review_result']) ? trim((string)$item['auto_review_result']) : '';
                                                     if ($auto_review === '人工確認') $auto_review = '需人工確認';
+                                                    $is_approved_for_bonus = in_array($current_status, ['AP', 'approved', 'APPROVED'], true);
+                                                    $bonus_sent = ($rid > 0 && isset($bonus_sent_map[$rid]));
+                                                    $bonus_sent_amount = $bonus_sent ? (int)($bonus_sent_map[$rid]['amount'] ?? 1500) : 0;
                                                     $show_update_btn = ($can_view_review_result && ($current_status === 'MC' || $auto_review === '需人工確認'));
                                                     $show_update_btn = ($can_view_review_result && ($current_status === 'MC' || $auto_review === '需人工確認') && $current_status !== 'AP' && $current_status !== 'RE');
                                                 ?>
+
+                                                <?php if (!empty($can_send_bonus) && $is_approved_for_bonus): ?>
+                                                    <?php if ($bonus_sent): ?>
+                                                        <span class="btn-view" style="background:#f6ffed; border-color:#b7eb8f; color:#389e0d; cursor: default;">
+                                                            <i class="fas fa-check-circle"></i> 已發送 $<?php echo number_format((int)$bonus_sent_amount); ?>
+                                                        </span>
+                                                    <?php else: ?>
+                                                        <button type="button"
+                                                            class="btn-view"
+                                                            style="background:#52c41a; color:white; border-color:#52c41a;"
+                                                            onclick="sendBonus(<?php echo (int)$rid; ?>, this)">
+                                                            <i class="fas fa-coins"></i> 發送獎金
+                                                        </button>
+                                                    <?php endif; ?>
+                                                <?php endif; ?>
+
                                                 <?php if ($show_update_btn): ?>
                                                 <button type="button" 
                                                    class="btn-view" 
@@ -1641,12 +1742,32 @@ function getEnrollmentStatusClass($status) {
                                                 </button>
                                                 <?php 
                                                     // 檢查是否需要顯示修改結果按鈕（僅在審核結果為需人工確認時）
+                                                    $rid = (int)($item['id'] ?? 0);
                                                     $current_status = isset($item['status']) ? trim((string)$item['status']) : '';
                                                     $auto_review = isset($item['auto_review_result']) ? trim((string)$item['auto_review_result']) : '';
                                                     if ($auto_review === '人工確認') $auto_review = '需人工確認';
+                                                    $is_approved_for_bonus = in_array($current_status, ['AP', 'approved', 'APPROVED'], true);
+                                                    $bonus_sent = ($rid > 0 && isset($bonus_sent_map[$rid]));
+                                                    $bonus_sent_amount = $bonus_sent ? (int)($bonus_sent_map[$rid]['amount'] ?? 1500) : 0;
                                                     $show_update_btn = ($can_view_review_result && ($current_status === 'MC' || $auto_review === '需人工確認'));
                                                     $show_update_btn = ($can_view_review_result && ($current_status === 'MC' || $auto_review === '需人工確認') && $current_status !== 'AP' && $current_status !== 'RE');
                                                 ?>
+
+                                                <?php if (!empty($can_send_bonus) && $is_approved_for_bonus): ?>
+                                                    <?php if ($bonus_sent): ?>
+                                                        <span class="btn-view" style="background:#f6ffed; border-color:#b7eb8f; color:#389e0d; cursor: default;">
+                                                            <i class="fas fa-check-circle"></i> 已發送 $<?php echo number_format((int)$bonus_sent_amount); ?>
+                                                        </span>
+                                                    <?php else: ?>
+                                                        <button type="button"
+                                                            class="btn-view"
+                                                            style="background:#52c41a; color:white; border-color:#52c41a;"
+                                                            onclick="sendBonus(<?php echo (int)$rid; ?>, this)">
+                                                            <i class="fas fa-coins"></i> 發送獎金
+                                                        </button>
+                                                    <?php endif; ?>
+                                                <?php endif; ?>
+
                                                 <?php if ($show_update_btn): ?>
                                                 <button type="button" 
                                                    class="btn-view" 
@@ -2412,6 +2533,57 @@ function getEnrollmentStatusClass($status) {
         
         xhr.send('recommendation_id=' + encodeURIComponent(currentUpdateReviewResultId) + 
                  '&review_result=' + encodeURIComponent(reviewResult));
+    }
+
+    // 發送獎金（同名且通過者由後端自動平分）
+    function sendBonus(recommendationId, btnEl) {
+        const rid = parseInt(recommendationId || 0, 10) || 0;
+        if (!rid) return;
+        if (!confirm('確認要發送此筆獎金？（同名且通過者會自動平分）')) return;
+
+        if (btnEl) {
+            btnEl.disabled = true;
+            btnEl.style.opacity = '0.7';
+        }
+
+        fetch('send_bonus.php', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: 'recommendation_id=' + encodeURIComponent(String(rid)),
+            credentials: 'same-origin'
+        })
+        .then(r => r.json())
+        .then(data => {
+            if (!data || !data.success) {
+                throw new Error((data && data.message) ? data.message : '發送失敗');
+            }
+
+            const amount = (data.amount !== undefined && data.amount !== null) ? parseInt(data.amount, 10) : null;
+            const splitCount = (data.split_count !== undefined && data.split_count !== null) ? parseInt(data.split_count, 10) : null;
+            const studentName = (data.student_name || '').trim();
+
+            let msg = '獎金已標記為發送';
+            if (amount !== null && !isNaN(amount)) {
+                msg += `：$${amount.toLocaleString()}`;
+            }
+            if (splitCount && splitCount > 1) {
+                msg += `（同名通過共 ${splitCount} 人，已自動平分）`;
+            }
+            if (studentName) {
+                msg += `\n被推薦人：${studentName}`;
+            }
+
+            alert(msg);
+            // 直接刷新讓「已發送」狀態與金額顯示更新
+            location.reload();
+        })
+        .catch(err => {
+            alert('發送失敗：' + (err && err.message ? err.message : '未知錯誤'));
+            if (btnEl) {
+                btnEl.disabled = false;
+                btnEl.style.opacity = '';
+            }
+        });
     }
 
     // 點擊修改審核結果彈出視窗外部關閉
