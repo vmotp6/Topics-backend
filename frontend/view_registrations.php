@@ -38,17 +38,20 @@ if (!$session) {
 }
 
 // 獲取該場次的報名者列表（包含學校名稱）
+// 注意：只顯示當前年份的報名記錄
+$current_year = date('Y');
 $stmt = $conn->prepare("
     SELECT aa.*, sd.name as school_name_display
     FROM admission_applications aa
     LEFT JOIN school_data sd ON aa.school = sd.school_code
     WHERE aa.session_id = ?
+    AND YEAR(aa.created_at) = ?
     ORDER BY aa.id DESC
 ");
 if (!$stmt) {
     die("準備語句失敗: " . $conn->error);
 }
-$stmt->bind_param("i", $session_id);
+$stmt->bind_param("ii", $session_id, $current_year);
 $stmt->execute();
 $registrations_result = $stmt->get_result();
 $registrations = $registrations_result->fetch_all(MYSQLI_ASSOC);

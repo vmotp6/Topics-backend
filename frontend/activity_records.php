@@ -263,6 +263,7 @@ if ($teacher_id > 0) {
     }
     
     // 獲取出席記錄數據（用於出席統計圖表）- 按場次統計實到人數
+    // 注意：只計算與場次年份相同的簽到記錄
     $attendance_stats_sql = "
         SELECT 
             s.id as session_id,
@@ -273,6 +274,7 @@ if ($teacher_id > 0) {
         INNER JOIN admission_sessions s ON ar.session_id = s.id
         WHERE ar.attendance_status = 1 
         AND ar.check_in_time IS NOT NULL
+        AND YEAR(ar.check_in_time) = YEAR(s.session_date)
         GROUP BY s.id, s.session_name, s.session_date
         ORDER BY attendance_count DESC
     ";
