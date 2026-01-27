@@ -324,7 +324,8 @@ if ($check_table_exists && $check_table_exists->num_rows > 0) {
             ar.check_in_time,
             aa.student_name as registered_name,
             aa.email as registered_email,
-            aa.contact_phone as registered_phone
+            aa.contact_phone as registered_phone,
+            aa.notes as application_notes
         FROM online_check_in_records oc
         LEFT JOIN admission_applications aa ON oc.application_id = aa.id
         LEFT JOIN attendance_records ar ON oc.session_id = ar.session_id 
@@ -543,7 +544,7 @@ $page_title = '出席紀錄管理 - ' . htmlspecialchars($session['session_name'
                     <div class="table-search">
                         <input type="text" id="tableSearchInput" placeholder="搜尋姓名、Email..." onkeyup="filterTable()">
                         <a href="export_attendance.php?session_id=<?php echo $session_id; ?>" class="btn btn-secondary"><i class="fas fa-file-export"></i> 匯出出席紀錄</a>
-                        <a href="activity_records.php?view=attendance" class="btn btn-secondary" style="background: var(--primary-color); color: white; border-color: var(--primary-color);"><i class="fas fa-chart-bar"></i> 出席統計圖</a>
+                        <!--<a href="activity_records.php?view=attendance" class="btn btn-secondary" style="background: var(--primary-color); color: white; border-color: var(--primary-color);"><i class="fas fa-chart-bar"></i> 出席統計圖</a>-->
                         <?php if (!$is_history): ?>
                             <a href="online_check_in.php?session_id=<?php echo $session_id; ?>" target="_blank" class="btn btn-success"><i class="fas fa-check-circle"></i> 線上簽到表單</a>
                             <button class="btn btn-secondary" onclick="toggleCheckInRecords()"><i class="fas fa-list"></i> 查看簽到表記錄</button>
@@ -552,6 +553,9 @@ $page_title = '出席紀錄管理 - ' . htmlspecialchars($session['session_name'
                                 <button class="btn btn-primary" onclick="syncCheckInRecords()"><i class="fas fa-sync-alt"></i> 比對並同步簽到記錄</button>
                             <?php endif; ?>
                             <button class="btn btn-primary" onclick="saveAttendance()"><i class="fas fa-save"></i> 儲存變更</button>
+                            <a href="absent_reminder.php?session_id=<?php echo $session_id; ?>" class="btn" style="background: var(--danger-color); color: white; border-color: var(--danger-color);">
+                                <i class="fas fa-exclamation-triangle"></i> 未到警示
+                            </a>
                         <?php endif; ?>
                         <a href="settings.php" class="btn btn-secondary"><i class="fas fa-arrow-left"></i> 返回</a>
                     </div>
@@ -701,7 +705,19 @@ $page_title = '出席紀錄管理 - ' . htmlspecialchars($session['session_name'
                                         <?php echo htmlspecialchars($check_in['phone'] ?: '-'); ?>
                                     </td>
                                     <td>
-                                        <?php if ($check_in['is_registered']): ?>
+                                        <?php 
+                                        // 判斷是否為真正報名：必須 is_registered = 1 且 application_id 存在且對應的報名記錄存在
+                                        // 且報名記錄的 notes 不包含「未報名但有來」（表示不是自動創建的）
+                                        $is_truly_registered = false;
+                                        if ($check_in['is_registered'] && !empty($check_in['application_id'])) {
+                                            $app_notes = $check_in['application_notes'] ?? '';
+                                            // 如果報名記錄存在且 notes 不包含「未報名但有來」，才是真正報名
+                                            if (!empty($check_in['registered_name']) && strpos($app_notes, '未報名但有來') === false) {
+                                                $is_truly_registered = true;
+                                            }
+                                        }
+                                        ?>
+                                        <?php if ($is_truly_registered): ?>
                                             <span class="status-badge status-attended">
                                                 <i class="fas fa-check"></i> 有報名
                                             </span>

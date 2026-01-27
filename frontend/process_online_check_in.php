@@ -25,10 +25,6 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
 
 // 獲取表單資料
 $session_id = isset($_POST['session_id']) ? intval($_POST['session_id']) : 0;
-$name = isset($_POST['name']) ? trim($_POST['name']) : '';
-$email = isset($_POST['email']) ? trim($_POST['email']) : '';
-$phone = isset($_POST['phone']) ? trim($_POST['phone']) : '';
-$notes = isset($_POST['notes']) ? trim($_POST['notes']) : '';
 
 // 清除輸出緩衝（確保沒有意外輸出）
 ob_clean();
@@ -37,25 +33,6 @@ ob_clean();
 if ($session_id === 0) {
     ob_end_clean();
     echo json_encode(['success' => false, 'message' => '缺少場次ID']);
-    exit;
-}
-
-if (empty($name)) {
-    ob_end_clean();
-    echo json_encode(['success' => false, 'message' => '請輸入姓名']);
-    exit;
-}
-
-if (empty($phone)) {
-    ob_end_clean();
-    echo json_encode(['success' => false, 'message' => '請輸入電話號碼']);
-    exit;
-}
-
-// 驗證 Email 格式（如果有填寫）
-if (!empty($email) && !filter_var($email, FILTER_VALIDATE_EMAIL)) {
-    ob_end_clean();
-    echo json_encode(['success' => false, 'message' => 'Email 格式不正確']);
     exit;
 }
 
@@ -72,7 +49,7 @@ try {
     }
     
     // 檢查場次是否存在
-    $stmt = $conn->prepare("SELECT id, session_name FROM admission_sessions WHERE id = ?");
+    $stmt = $conn->prepare("SELECT id, session_name, session_date, session_end_date, session_link FROM admission_sessions WHERE id = ?");
     $stmt->bind_param("i", $session_id);
     $stmt->execute();
     $session_result = $stmt->get_result();
@@ -86,6 +63,96 @@ try {
         exit;
     }
     
+    // 獲取表單配置
+    $form_config = null;
+    $config_stmt = $conn->prepare("SELECT field_config FROM online_check_in_form_config WHERE session_id = ?");
+    $config_stmt->bind_param("i", $session_id);
+    $config_stmt->execute();
+    $config_result = $config_stmt->get_result();
+    if ($config_result->num_rows > 0) {
+        $config_data = $config_result->fetch_assoc();
+        $form_config = json_decode($config_data['field_config'], true);
+    }
+    $config_stmt->close();
+    
+    // 如果沒有配置，使用預設配置（向後兼容）
+    if (!$form_config) {
+        $form_config = [
+            ['name' => 'name', 'label' => '姓名', 'type' => 'text', 'required' => true],
+            ['name' => 'email', 'label' => 'Email', 'type' => 'email', 'required' => false],
+            ['name' => 'phone', 'label' => '電話', 'type' => 'tel', 'required' => true],
+            ['name' => 'notes', 'label' => '備註', 'type' => 'textarea', 'required' => false]
+        ];
+    }
+    
+    // 收集表單資料
+    $form_data = [];
+    $name = '';
+    $email = '';
+    $phone = '';
+    $notes = '';
+    $custom_fields = [];
+    
+    foreach ($form_config as $field) {
+        $field_name = $field['name'];
+        $field_value = isset($_POST[$field_name]) ? trim($_POST[$field_name]) : '';
+        $form_data[$field_name] = $field_value;
+        
+        // 保留標準欄位名稱以向後兼容
+        if ($field_name === 'name') {
+            $name = $field_value;
+        } elseif ($field_name === 'email') {
+            $email = $field_value;
+        } elseif ($field_name === 'phone') {
+            $phone = $field_value;
+        } elseif ($field_name === 'notes') {
+            $notes = $field_value;
+        } else {
+            // 自定義欄位
+            $custom_fields[$field_name] = [
+                'label' => $field['label'],
+                'value' => $field_value
+            ];
+        }
+        
+        // 驗證必填欄位
+        if (!empty($field['required']) && empty($field_value)) {
+            ob_end_clean();
+            echo json_encode(['success' => false, 'message' => '請輸入' . $field['label']]);
+            $conn->close();
+            exit;
+        }
+        
+        // 驗證 Email 格式
+        if ($field['type'] === 'email' && !empty($field_value) && !filter_var($field_value, FILTER_VALIDATE_EMAIL)) {
+            ob_end_clean();
+            echo json_encode(['success' => false, 'message' => $field['label'] . ' 格式不正確']);
+            $conn->close();
+            exit;
+        }
+    }
+    
+    // 如果使用預設配置，確保 name 和 phone 有值（向後兼容）
+    if (empty($name) && empty($form_data['name'])) {
+        ob_end_clean();
+        echo json_encode(['success' => false, 'message' => '請輸入姓名']);
+        $conn->close();
+        exit;
+    }
+    
+    if (empty($phone) && empty($form_data['phone'])) {
+        ob_end_clean();
+        echo json_encode(['success' => false, 'message' => '請輸入電話號碼']);
+        $conn->close();
+        exit;
+    }
+    
+    // 使用表單資料中的值
+    $name = $form_data['name'] ?? $name;
+    $phone = $form_data['phone'] ?? $phone;
+    $email = $form_data['email'] ?? $email;
+    $notes = $form_data['notes'] ?? $notes;
+    
     // 檢查 online_check_in_records 表是否存在，如果不存在則創建
     $table_check = $conn->query("SHOW TABLES LIKE 'online_check_in_records'");
     if (!$table_check || $table_check->num_rows == 0) {
@@ -98,6 +165,7 @@ try {
           `email` varchar(255) DEFAULT NULL COMMENT 'Email',
           `phone` varchar(50) DEFAULT NULL COMMENT '電話',
           `notes` text DEFAULT NULL COMMENT '備註（用於標記沒有報名但有來的人）',
+          `custom_fields` text DEFAULT NULL COMMENT '自定義欄位 JSON',
           `is_registered` tinyint(1) NOT NULL DEFAULT 0 COMMENT '是否有報名: 0=未報名, 1=已報名',
           `check_in_time` datetime DEFAULT CURRENT_TIMESTAMP COMMENT '簽到時間',
           `created_at` datetime DEFAULT CURRENT_TIMESTAMP COMMENT '建立時間',
@@ -111,73 +179,40 @@ try {
         if (!$conn->query($create_table_sql)) {
             throw new Exception("創建資料表失敗: " . $conn->error);
         }
+    } else {
+        // 檢查是否有 custom_fields 欄位，如果沒有則添加
+        $column_check = $conn->query("SHOW COLUMNS FROM online_check_in_records LIKE 'custom_fields'");
+        if (!$column_check || $column_check->num_rows == 0) {
+            $conn->query("ALTER TABLE `online_check_in_records` ADD COLUMN `custom_fields` text DEFAULT NULL COMMENT '自定義欄位 JSON' AFTER `notes`");
+        }
     }
     
+    // 將自定義欄位轉換為 JSON
+    $custom_fields_json = !empty($custom_fields) ? json_encode($custom_fields, JSON_UNESCAPED_UNICODE) : null;
+    
     // 嘗試根據姓名和電話找到對應的報名記錄
+    // 重要：必須姓名和電話都完全符合，且只看今年度的報名資料
     $application_id = null;
     $is_registered = 0;
     
     // 正規化電話號碼（只取數字）
     $normalized_phone = preg_replace('/\D+/', '', $phone);
     
-    // 優先：同時比對姓名和電話（最嚴格）
+    // 獲取當前年份，只查詢今年的報名資料
+    $current_year = (int)date('Y');
+    
+    // 必須同時比對姓名和電話（嚴格匹配）
+    // 只看今年度的報名資料（YEAR(created_at) = 當前年份）
     if (!empty($name) && !empty($normalized_phone)) {
         $find_stmt = $conn->prepare("
             SELECT id FROM admission_applications 
             WHERE session_id = ? 
             AND student_name = ?
-            AND (
-                REPLACE(REPLACE(REPLACE(REPLACE(contact_phone, '-', ''), ' ', ''), '(', ''), ')', '') = ?
-                OR REPLACE(REPLACE(REPLACE(REPLACE(contact_phone, '-', ''), ' ', ''), '(', ''), ')', '') LIKE ?
-            )
+            AND REPLACE(REPLACE(REPLACE(REPLACE(contact_phone, '-', ''), ' ', ''), '(', ''), ')', '') = ?
+            AND YEAR(created_at) = ?
             LIMIT 1
         ");
-        $phone_exact = $normalized_phone;
-        $phone_pattern = '%' . $normalized_phone . '%';
-        $find_stmt->bind_param("isss", $session_id, $name, $phone_exact, $phone_pattern);
-        $find_stmt->execute();
-        $result = $find_stmt->get_result();
-        if ($result->num_rows > 0) {
-            $application = $result->fetch_assoc();
-            $application_id = $application['id'];
-            $is_registered = 1;
-        }
-        $find_stmt->close();
-    }
-    
-    // 如果還沒找到，嘗試只根據電話號碼匹配（可能姓名有差異）
-    if (!$application_id && !empty($normalized_phone)) {
-        $find_stmt = $conn->prepare("
-            SELECT id FROM admission_applications 
-            WHERE session_id = ? 
-            AND (
-                REPLACE(REPLACE(REPLACE(REPLACE(contact_phone, '-', ''), ' ', ''), '(', ''), ')', '') = ?
-                OR REPLACE(REPLACE(REPLACE(REPLACE(contact_phone, '-', ''), ' ', ''), '(', ''), ')', '') LIKE ?
-            )
-            LIMIT 1
-        ");
-        $phone_exact = $normalized_phone;
-        $phone_pattern = '%' . $normalized_phone . '%';
-        $find_stmt->bind_param("iss", $session_id, $phone_exact, $phone_pattern);
-        $find_stmt->execute();
-        $result = $find_stmt->get_result();
-        if ($result->num_rows > 0) {
-            $application = $result->fetch_assoc();
-            $application_id = $application['id'];
-            $is_registered = 1;
-        }
-        $find_stmt->close();
-    }
-    
-    // 如果還沒找到，嘗試根據姓名和 Email 匹配
-    if (!$application_id && !empty($name) && !empty($email)) {
-        $find_stmt = $conn->prepare("
-            SELECT id FROM admission_applications 
-            WHERE session_id = ? 
-            AND (student_name = ? OR email = ?)
-            LIMIT 1
-        ");
-        $find_stmt->bind_param("iss", $session_id, $name, $email);
+        $find_stmt->bind_param("issi", $session_id, $name, $normalized_phone, $current_year);
         $find_stmt->execute();
         $result = $find_stmt->get_result();
         if ($result->num_rows > 0) {
@@ -238,7 +273,9 @@ try {
         }
         
         $application_id = $conn->insert_id;
-        $is_registered = 1; // 現在已經有報名記錄了
+        // 重要：自動創建的記錄不應該標記為已報名（is_registered = 0）
+        // 因為這是未報名但有到場的情況
+        $is_registered = 0; // 保持為未報名狀態
         $insert_application_stmt->close();
         
         // 更新 online_check_in_records 的備註
@@ -248,7 +285,7 @@ try {
             $notes = '未報名但有到場（已自動創建報名記錄） - ' . $notes;
         }
     } else {
-        // 如果有找到報名記錄，在備註中標記
+        // 如果有找到報名記錄（姓名和電話都符合），在備註中標記
         if (empty($notes)) {
             $notes = '已報名且有到場';
         }
@@ -260,17 +297,18 @@ try {
     // 插入簽到記錄
     $insert_stmt = $conn->prepare("
         INSERT INTO online_check_in_records 
-        (session_id, application_id, name, email, phone, notes, is_registered, check_in_time, created_at) 
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        (session_id, application_id, name, email, phone, notes, custom_fields, is_registered, check_in_time, created_at) 
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ");
     
-    $insert_stmt->bind_param("iissssiss", 
+    $insert_stmt->bind_param("iisssssiss", 
         $session_id, 
         $application_id, 
         $name, 
         $email, 
         $phone, 
-        $notes, 
+        $notes,
+        $custom_fields_json,
         $is_registered,
         $check_in_time,
         $check_in_time
@@ -328,6 +366,106 @@ try {
         }
     }
     
+    // 簽到成功後，發送感謝簡訊或 Email
+    $notification_sent = false;
+    try {
+        // 引入 Email 發送功能
+        $email_functions_path = __DIR__ . '/../../Topics-frontend/frontend/includes/email_functions.php';
+        if (file_exists($email_functions_path)) {
+            require_once $email_functions_path;
+            
+            // 獲取場次資訊（用於生成簡報下載連結）
+            $session_name = htmlspecialchars($session['session_name']);
+            $session_date = !empty($session['session_date']) ? date('Y年m月d日', strtotime($session['session_date'])) : '';
+            
+            // 生成簡報下載連結（如果有提供 session_link，則使用；否則生成預設連結）
+            $briefing_link = !empty($session['session_link']) 
+                ? $session['session_link'] 
+                : 'http://' . $_SERVER['HTTP_HOST'] . dirname($_SERVER['PHP_SELF']) . '/attendance_management.php?session_id=' . $session_id;
+            
+            // 如果有 Email，發送感謝 Email
+            if (!empty($email) && filter_var($email, FILTER_VALIDATE_EMAIL)) {
+                $subject = "【感謝參與】{$session_name} - 活動簡報下載";
+                
+                $body = "
+                <!DOCTYPE html>
+                <html>
+                <head>
+                    <meta charset='UTF-8'>
+                    <style>
+                        body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+                        .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+                        .header { background: #1890ff; color: white; padding: 20px; text-align: center; border-radius: 8px 8px 0 0; }
+                        .content { background: #f9f9f9; padding: 20px; border: 1px solid #e0e0e0; }
+                        .info-box { background: white; padding: 15px; margin: 15px 0; border-radius: 6px; border-left: 4px solid #1890ff; }
+                        .button { display: inline-block; padding: 12px 24px; background: #1890ff; color: white; text-decoration: none; border-radius: 6px; margin: 20px 0; }
+                        .footer { text-align: center; color: #999; font-size: 12px; margin-top: 20px; }
+                    </style>
+                </head>
+                <body>
+                    <div class='container'>
+                        <div class='header'>
+                            <h2>感謝您的參與</h2>
+                        </div>
+                        <div class='content'>
+                            <p>親愛的 {$name}：</p>
+                            
+                            <p>感謝您參與「<strong>{$session_name}</strong>」活動！</p>
+                            
+                            <div class='info-box'>
+                                <h3 style='margin-top: 0; color: #1890ff;'>📋 活動資訊</h3>
+                                <p><strong>活動名稱：</strong>{$session_name}</p>
+                                " . (!empty($session_date) ? "<p><strong>活動日期：</strong>{$session_date}</p>" : "") . "
+                            </div>
+                            
+                            <p>我們已為您準備了當天的活動簡報，歡迎下載參考：</p>
+                            
+                            <div style='text-align: center;'>
+                                <a href='{$briefing_link}' class='button'>下載活動簡報</a>
+                            </div>
+                            
+                            <p style='color: #666; font-size: 14px;'>
+                                如有任何問題，歡迎隨時與我們聯繫。期待下次再相見！
+                            </p>
+                        </div>
+                        <div class='footer'>
+                            <p>此為系統自動發送的郵件，請勿直接回覆。</p>
+                        </div>
+                    </div>
+                </body>
+                </html>
+                ";
+                
+                $altBody = "親愛的 {$name}：\n\n感謝您參與「{$session_name}」活動！\n\n活動簡報下載連結：{$briefing_link}\n\n如有任何問題，歡迎隨時與我們聯繫。期待下次再相見！";
+                
+                if (function_exists('sendEmail')) {
+                    $notification_sent = sendEmail($email, $subject, $body, $altBody);
+                }
+            }
+            
+            // 如果有電話，可以發送簡訊（需要簡訊 API）
+            // 這裡先記錄，實際簡訊發送需要整合簡訊 API
+            if (!empty($phone)) {
+                // 檢查是否有簡訊發送功能
+                $sms_functions_path = __DIR__ . '/../../Topics-frontend/frontend/includes/sms_functions.php';
+                if (file_exists($sms_functions_path)) {
+                    require_once $sms_functions_path;
+                    if (function_exists('sendSMS')) {
+                        $sms_message = "感謝您參與「{$session_name}」活動！活動簡報下載連結：{$briefing_link}";
+                        try {
+                            sendSMS($phone, $sms_message);
+                        } catch (Exception $e) {
+                            error_log("發送簡訊失敗: " . $e->getMessage());
+                        }
+                    }
+                }
+            }
+        }
+    } catch (Exception $e) {
+        // 發送通知失敗不影響簽到流程，只記錄錯誤
+        error_log("發送簽到感謝通知失敗: " . $e->getMessage());
+    }
+    
     $conn->close();
     
     // 清除輸出緩衝並輸出 JSON
@@ -341,11 +479,17 @@ try {
             ? "簽到成功！已找到您的報名記錄。" 
             : "簽到成功！感謝您的參與。");
     
+    // 如果已發送通知，在訊息中提示
+    if ($notification_sent && !empty($email)) {
+        $message .= "我們已將活動簡報下載連結發送至您的 Email。";
+    }
+    
     $response = json_encode([
         'success' => true, 
         'message' => $message,
         'is_registered' => $is_registered,
-        'was_auto_created' => $was_auto_created
+        'was_auto_created' => $was_auto_created,
+        'notification_sent' => $notification_sent
     ], JSON_UNESCAPED_UNICODE);
     
     if ($response === false) {

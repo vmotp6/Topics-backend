@@ -88,57 +88,71 @@ try {
         $normalized_phone = preg_replace('/\D+/', '', $check_in_phone);
         
         // 根據姓名和電話在 admission_applications 中查找匹配的記錄
-        // 先嘗試精確匹配姓名和電話
+        // 重要：必須姓名和電話都完全符合，且只看今年度的報名資料
+        $current_year = (int)date('Y');
+        
+        // 必須同時比對姓名和電話（嚴格匹配）
+        // 只看今年度的報名資料（YEAR(created_at) = 當前年份）
         $find_stmt = $conn->prepare("
-            SELECT id, student_name, contact_phone, email
+            SELECT id, student_name, contact_phone, email, notes, YEAR(created_at) as created_year
             FROM admission_applications
             WHERE session_id = ?
             AND student_name = ?
-            AND (
-                REPLACE(REPLACE(REPLACE(REPLACE(contact_phone, '-', ''), ' ', ''), '(', ''), ')', '') = ?
-                OR REPLACE(REPLACE(REPLACE(REPLACE(contact_phone, '-', ''), ' ', ''), '(', ''), ')', '') LIKE ?
-            )
+            AND REPLACE(REPLACE(REPLACE(REPLACE(contact_phone, '-', ''), ' ', ''), '(', ''), ')', '') = ?
+            AND YEAR(created_at) = ?
             LIMIT 1
         ");
         
-        $phone_exact = $normalized_phone;
-        $phone_pattern = '%' . $normalized_phone . '%';
-        $find_stmt->bind_param("isss", $session_id, $check_in_name, $phone_exact, $phone_pattern);
+        $find_stmt->bind_param("issi", $session_id, $check_in_name, $normalized_phone, $current_year);
         $find_stmt->execute();
         $result = $find_stmt->get_result();
         $matched_application = $result->fetch_assoc();
         $find_stmt->close();
         
-        // 如果精確匹配失敗，嘗試只匹配電話（可能姓名有差異）
-        if (!$matched_application && !empty($normalized_phone)) {
-            $find_stmt2 = $conn->prepare("
-                SELECT id, student_name, contact_phone, email
-                FROM admission_applications
-                WHERE session_id = ?
-                AND (
-                    REPLACE(REPLACE(REPLACE(REPLACE(contact_phone, '-', ''), ' ', ''), '(', ''), ')', '') = ?
-                    OR REPLACE(REPLACE(REPLACE(REPLACE(contact_phone, '-', ''), ' ', ''), '(', ''), ')', '') LIKE ?
-                )
-                LIMIT 1
-            ");
-            $find_stmt2->bind_param("iss", $session_id, $phone_exact, $phone_pattern);
-            $find_stmt2->execute();
-            $result2 = $find_stmt2->get_result();
-            $matched_application = $result2->fetch_assoc();
-            $find_stmt2->close();
+        // 如果找到匹配的記錄，檢查是否為自動創建的（notes 包含「未報名但有來」）
+        if ($matched_application) {
+            $app_notes = $matched_application['notes'] ?? '';
+            // 如果 notes 包含「未報名但有來」，則視為未報名（自動創建的）
+            if (strpos($app_notes, '未報名但有來') !== false) {
+                $matched_application = null; // 視為未找到匹配
+            }
         }
         
         if ($matched_application) {
             $application_id = $matched_application['id'];
             $matched_count++;
             
-            // 更新 online_check_in_records 的 application_id
-            $update_check_in_stmt = $conn->prepare("
-                UPDATE online_check_in_records
-                SET application_id = ?, is_registered = 1
+            // 檢查這個報名記錄是否為今年度且是真正報名的（不是自動創建的）
+            // 檢查 notes 欄位是否包含「未報名但有來」，如果包含則表示是自動創建的
+            $check_notes_stmt = $conn->prepare("
+                SELECT notes, YEAR(created_at) as created_year
+                FROM admission_applications
                 WHERE id = ?
             ");
-            $update_check_in_stmt->bind_param("ii", $application_id, $check_in['id']);
+            $check_notes_stmt->bind_param("i", $application_id);
+            $check_notes_stmt->execute();
+            $app_info = $check_notes_stmt->get_result()->fetch_assoc();
+            $check_notes_stmt->close();
+            
+            // 判斷是否為已報名：必須是今年度的記錄，且 notes 不包含「未報名但有來」
+            $current_year = (int)date('Y');
+            $is_truly_registered = false;
+            if ($app_info) {
+                $app_year = (int)$app_info['created_year'];
+                $app_notes = $app_info['notes'] ?? '';
+                // 只有今年度的記錄，且 notes 不包含「未報名但有來」，才算是真正報名
+                $is_truly_registered = ($app_year === $current_year && 
+                                       strpos($app_notes, '未報名但有來') === false);
+            }
+            
+            // 更新 online_check_in_records 的 application_id 和 is_registered
+            $update_check_in_stmt = $conn->prepare("
+                UPDATE online_check_in_records
+                SET application_id = ?, is_registered = ?
+                WHERE id = ?
+            ");
+            $is_registered_value = $is_truly_registered ? 1 : 0;
+            $update_check_in_stmt->bind_param("iii", $application_id, $is_registered_value, $check_in['id']);
             $update_check_in_stmt->execute();
             $update_check_in_stmt->close();
             
@@ -230,9 +244,10 @@ try {
                 $new_application_id = $conn->insert_id;
                 
                 // 更新 online_check_in_records 的 application_id
+                // 重要：自動創建的記錄不應該標記為已報名（is_registered = 0）
                 $update_check_in_stmt = $conn->prepare("
                     UPDATE online_check_in_records
-                    SET application_id = ?, is_registered = 1
+                    SET application_id = ?, is_registered = 0
                     WHERE id = ?
                 ");
                 $update_check_in_stmt->bind_param("ii", $new_application_id, $check_in['id']);
