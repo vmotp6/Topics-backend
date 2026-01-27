@@ -230,8 +230,9 @@ try {
     $has_status = false;
     $has_enrollment_status = false;
     $has_review_result = false;
+    $has_academic_year = false;
     
-    $columns_to_check = ['assigned_department', 'assigned_teacher_id', 'status', 'enrollment_status', 'review_result'];
+    $columns_to_check = ['assigned_department', 'assigned_teacher_id', 'status', 'enrollment_status', 'review_result', 'academic_year'];
     foreach ($columns_to_check as $column) {
         $column_check = $conn->query("SHOW COLUMNS FROM admission_recommendations LIKE '$column'");
         if ($column_check && $column_check->num_rows > 0) {
@@ -246,6 +247,8 @@ try {
                 $has_enrollment_status = true;
             } elseif ($column === 'review_result') {
                 $has_review_result = true;
+            } elseif ($column === 'academic_year') {
+                $has_academic_year = true;
             }
         } else {
             // 字段不存在，動態添加
@@ -265,6 +268,19 @@ try {
                 } elseif ($column === 'review_result') {
                     $conn->query("ALTER TABLE admission_recommendations ADD COLUMN review_result VARCHAR(20) DEFAULT NULL");
                     $has_review_result = true;
+                } elseif ($column === 'academic_year') {
+                    // 學年度（民國年）：用 created_at 判斷
+                    // 113：2024/08/01-2025/07/31；114：2025/08/01-2026/07/31（以每年 8/1 切換）
+                    $conn->query("ALTER TABLE admission_recommendations ADD COLUMN academic_year INT(3) DEFAULT NULL COMMENT '學年度(民國年，例如113/114)'");
+                    $has_academic_year = true;
+                    // 回填既有資料（只回填 academic_year 為 NULL 的記錄）
+                    @$conn->query("UPDATE admission_recommendations
+                        SET academic_year = CASE
+                            WHEN created_at IS NULL THEN NULL
+                            WHEN MONTH(created_at) >= 8 THEN YEAR(created_at) - 1911
+                            ELSE YEAR(created_at) - 1912
+                        END
+                        WHERE academic_year IS NULL");
                 }
             } catch (Exception $e) {
                 error_log("添加字段 $column 失敗: " . $e->getMessage());
@@ -317,6 +333,7 @@ try {
     $status_field = $has_status ? "COALESCE(ar.status, 'pending')" : "'pending'";
     $enrollment_status_field = $has_enrollment_status ? "COALESCE(ar.enrollment_status, '未入學')" : "'未入學'";
     $review_result_field = $has_review_result ? "COALESCE(ar.review_result, '')" : "''";
+    $academic_year_field = $has_academic_year ? "ar.academic_year" : "NULL";
     
     if ($has_recommender_table && $has_recommended_table) {
         // 使用新的表結構：recommender 和 recommended 表
@@ -351,6 +368,7 @@ try {
             $assigned_fields
             $teacher_name_field,
             $teacher_username_field,
+            $academic_year_field as academic_year,
             ar.created_at,
             ar.updated_at
             FROM admission_recommendations ar
@@ -394,6 +412,7 @@ try {
             $assigned_fields
             $teacher_name_field,
             $teacher_username_field,
+            $academic_year_field as academic_year,
             ar.created_at,
             ar.updated_at
             FROM admission_recommendations ar
@@ -1075,6 +1094,13 @@ try {
             width: 170px;
         }
 
+        .search-label {
+            font-size: 14px;
+            font-weight: 700;
+            color: #595959;
+            white-space: nowrap;
+        }
+
         .search-select:focus {
             outline: none;
             border-color: #1890ff;
@@ -1410,6 +1436,38 @@ try {
                         <?php endif; ?>
                     </div>
                     <div class="table-search">
+                        <?php
+                            // 科系篩選選項（departments.code）
+                            $interest_options = (isset($departments_map) && is_array($departments_map)) ? $departments_map : [];
+                            if (!empty($interest_options)) {
+                                ksort($interest_options);
+                            }
+
+                            // 學年度篩選選項（民國年，以每年 8/1 切換）
+                            $y_now = (int)date('Y');
+                            $m_now = (int)date('n');
+                            $current_ay_roc = ($m_now >= 8) ? ($y_now - 1911) : ($y_now - 1912);
+                            $year_options = [$current_ay_roc, $current_ay_roc - 1];
+                            $year_options = array_values(array_unique(array_filter($year_options, function($v){ return is_int($v) && $v > 0; })));
+                            rsort($year_options);
+                        ?>
+
+                        <span class="search-label">科系篩選</span>
+                        <select id="interestFilter" class="search-select" title="依學生興趣(科系)篩選">
+                            <option value="">全部科系</option>
+                            <?php foreach ($interest_options as $code => $name): ?>
+                                <option value="<?php echo htmlspecialchars((string)$code); ?>"><?php echo htmlspecialchars((string)$name); ?></option>
+                            <?php endforeach; ?>
+                        </select>
+
+                        <span class="search-label">年度篩選</span>
+                        <select id="academicYearFilter" class="search-select" title="依學年度篩選">
+                            <option value="">全部學年度</option>
+                            <?php foreach ($year_options as $yy): ?>
+                                <option value="<?php echo htmlspecialchars((string)$yy); ?>"><?php echo htmlspecialchars((string)$yy); ?></option>
+                            <?php endforeach; ?>
+                        </select>
+
                         <input type="text" id="searchInput" class="search-input" placeholder="搜尋被推薦人姓名、學校或電話...">
 
                         <?php if (!empty($can_send_bonus)): ?>
@@ -1494,7 +1552,9 @@ try {
                                         $row_review = isset($item['auto_review_result']) ? trim((string)$item['auto_review_result']) : '';
                                         if ($row_review === '人工確認') $row_review = '需人工確認';
                                     ?>
-                                    <tr data-review-result="<?php echo htmlspecialchars($row_review); ?>">
+                                    <tr data-review-result="<?php echo htmlspecialchars($row_review); ?>"
+                                        data-student-interest="<?php echo htmlspecialchars((string)($item['student_interest_code'] ?? '')); ?>"
+                                        data-academic-year="<?php echo htmlspecialchars((string)($item['academic_year'] ?? '')); ?>">
                                         <td><?php echo htmlspecialchars($item['id']); ?></td>
                                         <td>
                                             <div class="info-row">
@@ -2049,6 +2109,8 @@ try {
     document.addEventListener('DOMContentLoaded', function() {
         const searchInput = document.getElementById('searchInput');
         const reviewFilter = document.getElementById('reviewResultFilter');
+        const interestFilter = document.getElementById('interestFilter');
+        const academicYearFilter = document.getElementById('academicYearFilter');
         const btnQuery = document.getElementById('btnQuery');
         const btnClear = document.getElementById('btnClear');
         const table = document.getElementById('recommendationTable');
@@ -2105,6 +2167,8 @@ try {
             function applyFilters() {
                 const filterText = (searchInput.value || '').toLowerCase();
                 const reviewVal = (reviewFilter && reviewFilter.value) ? reviewFilter.value : '';
+                const interestVal = (interestFilter && interestFilter.value) ? interestFilter.value : '';
+                const yearVal = (academicYearFilter && academicYearFilter.value) ? academicYearFilter.value : '';
 
                 if (!tbody) return;
 
@@ -2115,7 +2179,20 @@ try {
                         if (rr !== reviewVal) return false;
                     }
 
-                    // 2) 關鍵字搜尋（全欄位文字）
+                    // 2) 學生興趣（student_interest CSV code）篩選
+                    if (interestVal) {
+                        const raw = row.dataset ? (row.dataset.studentInterest || '') : '';
+                        const parts = raw.split(',').map(s => (s || '').trim()).filter(Boolean);
+                        if (!parts.includes(interestVal)) return false;
+                    }
+
+                    // 3) 學年度（academic_year）篩選
+                    if (yearVal) {
+                        const yy = row.dataset ? (row.dataset.academicYear || '') : '';
+                        if (String(yy) !== String(yearVal)) return false;
+                    }
+
+                    // 4) 關鍵字搜尋（全欄位文字）
                     if (!filterText) return true;
 
                     const cells = row.getElementsByTagName('td');
@@ -2139,12 +2216,17 @@ try {
                     if (e.key === 'Enter') applyFilters();
                 });
             }
+            // 下拉選單：變更即套用
+            if (interestFilter) interestFilter.addEventListener('change', applyFilters);
+            if (academicYearFilter) academicYearFilter.addEventListener('change', applyFilters);
 
             // 清除：重置條件並顯示全部
             if (btnClear) {
                 btnClear.addEventListener('click', function() {
                     if (searchInput) searchInput.value = '';
                     if (reviewFilter) reviewFilter.value = '';
+                    if (interestFilter) interestFilter.value = '';
+                    if (academicYearFilter) academicYearFilter.value = '';
                     applyFilters();
                 });
             }
