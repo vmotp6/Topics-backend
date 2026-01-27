@@ -433,7 +433,7 @@ $conn->close();
                                         if ($registration_count > 0) {
                                             $attendance_rate = round(($attendance_count / $registration_count) * 100, 1);
                                             echo '<span style="color: var(--success-color); font-weight: 600;">' . $attendance_count . '</span> / ' . $registration_count;
-                                            echo ' <small style="color: var(--text-secondary-color);">(' . $attendance_rate . '%)</small>';
+                                          
                                         } else {
                                             echo '<span style="color: var(--text-secondary-color);">0 / 0</span>';
                                         }
