@@ -237,14 +237,19 @@ $session_year = date('Y', strtotime($session['session_date']));
 $stmt = $conn->prepare("
     SELECT 
         aa.*, 
+        aa.grade as grade_code,
+        COALESCE(io.name, aa.grade) as grade,
         aa.notes as application_notes,
         sd.name as school_name_display,
         ar.attendance_status,
         ar.check_in_time,
         ar.absent_time,
-        ar.notes as attendance_notes
+        ar.notes as attendance_notes,
+        as_session.session_type
     FROM admission_applications aa
     LEFT JOIN school_data sd ON aa.school = sd.school_code
+    LEFT JOIN identity_options io ON aa.grade = io.code
+    LEFT JOIN admission_sessions as_session ON aa.session_id = as_session.id
     LEFT JOIN attendance_records ar ON aa.id = ar.application_id 
         AND ar.session_id = ? 
         AND (
@@ -254,7 +259,14 @@ $stmt = $conn->prepare("
         )
     WHERE aa.session_id = ? 
     AND YEAR(aa.created_at) = ?
-    ORDER BY aa.student_name ASC
+    ORDER BY 
+        CASE 
+            WHEN aa.grade IS NOT NULL AND (aa.grade LIKE '%國三%' OR aa.grade = '3' OR aa.grade LIKE 'G3%' OR aa.grade LIKE '%G3%' OR COALESCE(io.name, '') LIKE '%國三%') THEN 1
+            WHEN aa.grade IS NOT NULL AND (aa.grade LIKE '%國二%' OR aa.grade = '2' OR aa.grade LIKE 'G2%' OR aa.grade LIKE '%G2%' OR COALESCE(io.name, '') LIKE '%國二%') THEN 2
+            WHEN aa.grade IS NOT NULL AND (aa.grade LIKE '%國一%' OR aa.grade = '1' OR aa.grade LIKE 'G1%' OR aa.grade LIKE '%G1%' OR COALESCE(io.name, '') LIKE '%國一%') THEN 3
+            ELSE 4
+        END ASC,
+        aa.student_name ASC
 ");
 if ($stmt === false) {
     die("準備 SQL 語句失敗：" . $conn->error);
@@ -264,6 +276,76 @@ $stmt->execute();
 $registrations_result = $stmt->get_result();
 $registrations = $registrations_result->fetch_all(MYSQLI_ASSOC);
 $stmt->close();
+
+// 計算每個學生的意願度分數
+foreach ($registrations as &$reg) {
+    $score = 0;
+    
+    // 1. 有報名：+1
+    $score += 1;
+    
+    // 2. 有簽到：+3
+    if (isset($reg['attendance_status']) && $reg['attendance_status'] == 1) {
+        $score += 3;
+    }
+    
+    // 3. 實體場：+2
+    if (isset($reg['session_type']) && $reg['session_type'] == 2) {
+        $score += 2;
+    }
+    
+    // 4. 參加 2 場以上：+2（需要查詢該學生報名的場次數，使用 email 或電話匹配）
+    $email = $reg['email'] ?? '';
+    $phone = $reg['contact_phone'] ?? '';
+    if (!empty($email) || !empty($phone)) {
+        $count_stmt = $conn->prepare("
+            SELECT COUNT(DISTINCT session_id) as session_count
+            FROM admission_applications
+            WHERE YEAR(created_at) = ? 
+            AND (email = ? OR contact_phone = ?)
+        ");
+        if ($count_stmt) {
+            $count_stmt->bind_param("iss", $session_year, $email, $phone);
+            $count_stmt->execute();
+            $count_result = $count_stmt->get_result();
+            if ($count_row = $count_result->fetch_assoc()) {
+                if ($count_row['session_count'] >= 2) {
+                    $score += 2;
+                }
+            }
+            $count_stmt->close();
+        }
+    }
+    
+    // 5. 有選科系：+1
+    if (!empty($reg['course_priority_1']) || !empty($reg['course_priority_2'])) {
+        $score += 1;
+    }
+    
+    // 6. 國三生：+1
+    $grade_text = $reg['grade'] ?? '';
+    $grade_code = $reg['grade_code'] ?? '';
+    if (strpos($grade_text, '國三') !== false || 
+        preg_match('/\b3\b/', $grade_text) || 
+        strpos($grade_code, 'G3') !== false || 
+        $grade_code === '3' ||
+        preg_match('/\b3\b/', $grade_code)) {
+        $score += 1;
+    }
+    
+    // 判斷意願度等級
+    if ($score >= 6) {
+        $reg['willingness_level'] = '高意願';
+        $reg['willingness_score'] = $score;
+    } elseif ($score >= 4) {
+        $reg['willingness_level'] = '中意願';
+        $reg['willingness_score'] = $score;
+    } else {
+        $reg['willingness_level'] = '低意願';
+        $reg['willingness_score'] = $score;
+    }
+}
+unset($reg); // 解除引用
 
 // 判斷是否為歷史紀錄：以簽到時間作為基準，非今年份的區分到歷史資料
 $current_year = date('Y');
@@ -324,7 +406,8 @@ if ($check_table_exists && $check_table_exists->num_rows > 0) {
             ar.check_in_time,
             aa.student_name as registered_name,
             aa.email as registered_email,
-            aa.contact_phone as registered_phone
+            aa.contact_phone as registered_phone,
+            aa.notes as application_notes
         FROM online_check_in_records oc
         LEFT JOIN admission_applications aa ON oc.application_id = aa.id
         LEFT JOIN attendance_records ar ON oc.session_id = ar.session_id 
@@ -504,6 +587,17 @@ $page_title = '出席紀錄管理 - ' . htmlspecialchars($session['session_name'
         .status-attended { background: #f6ffed; color: var(--success-color); border: 1px solid #b7eb8f; }
         .status-absent { background: #fff2f0; color: var(--danger-color); border: 1px solid #ffccc7; }
         .status-unknown { background: #f5f5f5; color: var(--text-secondary-color); border: 1px solid #d9d9d9; }
+        
+        .grade-badge { padding: 4px 10px; border-radius: 4px; font-size: 13px; font-weight: 600; display: inline-block; }
+        .grade-g3 { background: #e6f7ff; color: #1890ff; border: 1px solid #91d5ff; }
+        .grade-g2 { background: #f6ffed; color: #52c41a; border: 1px solid #b7eb8f; }
+        .grade-g1 { background: #fff7e6; color: #fa8c16; border: 1px solid #ffd591; }
+        .grade-other { background: #f5f5f5; color: var(--text-secondary-color); border: 1px solid #d9d9d9; }
+        
+        .willingness-badge { padding: 4px 10px; border-radius: 4px; font-size: 13px; font-weight: 600; display: inline-block; }
+        .willingness-high { background: #f6ffed; color: #52c41a; border: 1px solid #b7eb8f; }
+        .willingness-medium { background: #fff7e6; color: #fa8c16; border: 1px solid #ffd591; }
+        .willingness-low { background: #fff2f0; color: #ff4d4f; border: 1px solid #ffccc7; }
 
         .attendance-select {
             padding: 6px 12px;
@@ -543,7 +637,7 @@ $page_title = '出席紀錄管理 - ' . htmlspecialchars($session['session_name'
                     <div class="table-search">
                         <input type="text" id="tableSearchInput" placeholder="搜尋姓名、Email..." onkeyup="filterTable()">
                         <a href="export_attendance.php?session_id=<?php echo $session_id; ?>" class="btn btn-secondary"><i class="fas fa-file-export"></i> 匯出出席紀錄</a>
-                        <a href="activity_records.php?view=attendance" class="btn btn-secondary" style="background: var(--primary-color); color: white; border-color: var(--primary-color);"><i class="fas fa-chart-bar"></i> 出席統計圖</a>
+                        <!--<a href="activity_records.php?view=attendance" class="btn btn-secondary" style="background: var(--primary-color); color: white; border-color: var(--primary-color);"><i class="fas fa-chart-bar"></i> 出席統計圖</a>-->
                         <?php if (!$is_history): ?>
                             <a href="online_check_in.php?session_id=<?php echo $session_id; ?>" target="_blank" class="btn btn-success"><i class="fas fa-check-circle"></i> 線上簽到表單</a>
                             <button class="btn btn-secondary" onclick="toggleCheckInRecords()"><i class="fas fa-list"></i> 查看簽到表記錄</button>
@@ -552,6 +646,9 @@ $page_title = '出席紀錄管理 - ' . htmlspecialchars($session['session_name'
                                 <button class="btn btn-primary" onclick="syncCheckInRecords()"><i class="fas fa-sync-alt"></i> 比對並同步簽到記錄</button>
                             <?php endif; ?>
                             <button class="btn btn-primary" onclick="saveAttendance()"><i class="fas fa-save"></i> 儲存變更</button>
+                            <a href="absent_reminder.php?session_id=<?php echo $session_id; ?>" class="btn" style="background: var(--danger-color); color: white; border-color: var(--danger-color);">
+                                <i class="fas fa-exclamation-triangle"></i> 未到警示
+                            </a>
                         <?php endif; ?>
                         <a href="settings.php" class="btn btn-secondary"><i class="fas fa-arrow-left"></i> 返回</a>
                     </div>
@@ -594,6 +691,8 @@ $page_title = '出席紀錄管理 - ' . htmlspecialchars($session['session_name'
                                         <th>Email</th>
                                         <th>電話</th>
                                         <th>就讀學校</th>
+                                        <th>年級</th>
+                                        <th>意願度</th>
                                         <th>出席狀態</th>
                                         <th>簽到時間</th>
                                         <th>備註</th>
@@ -606,6 +705,59 @@ $page_title = '出席紀錄管理 - ' . htmlspecialchars($session['session_name'
                                         <td><?php echo htmlspecialchars($reg['email']); ?></td>
                                         <td><?php echo htmlspecialchars($reg['contact_phone']); ?></td>
                                         <td><?php echo htmlspecialchars($reg['school_name_display'] ?? $reg['school'] ?? '-'); ?></td>
+                                        <td>
+                                            <?php
+                                            $grade_text = $reg['grade'] ?? '';
+                                            $grade_code = $reg['grade_code'] ?? '';
+                                            $grade_class = 'grade-other';
+                                            
+                                            if (!empty($grade_text) || !empty($grade_code)) {
+                                                // 檢查國三
+                                                if (strpos($grade_text, '國三') !== false || 
+                                                    preg_match('/\b3\b/', $grade_text) || 
+                                                    strpos($grade_code, 'G3') !== false || 
+                                                    $grade_code === '3' ||
+                                                    preg_match('/\b3\b/', $grade_code)) {
+                                                    $grade_class = 'grade-g3';
+                                                } 
+                                                // 檢查國二
+                                                elseif (strpos($grade_text, '國二') !== false || 
+                                                       preg_match('/\b2\b/', $grade_text) || 
+                                                       strpos($grade_code, 'G2') !== false || 
+                                                       $grade_code === '2' ||
+                                                       preg_match('/\b2\b/', $grade_code)) {
+                                                    $grade_class = 'grade-g2';
+                                                } 
+                                                // 檢查國一
+                                                elseif (strpos($grade_text, '國一') !== false || 
+                                                       preg_match('/\b1\b/', $grade_text) || 
+                                                       strpos($grade_code, 'G1') !== false || 
+                                                       $grade_code === '1' ||
+                                                       preg_match('/\b1\b/', $grade_code)) {
+                                                    $grade_class = 'grade-g1';
+                                                }
+                                            }
+                                            ?>
+                                            <span class="grade-badge <?php echo $grade_class; ?>">
+                                                <?php echo !empty($grade_text) ? htmlspecialchars($grade_text) : (!empty($grade_code) ? htmlspecialchars($grade_code) : '-'); ?>
+                                            </span>
+                                        </td>
+                                        <td>
+                                            <?php
+                                            $willingness_level = $reg['willingness_level'] ?? '低意願';
+                                            $willingness_score = $reg['willingness_score'] ?? 0;
+                                            $willingness_class = 'willingness-low';
+                                            
+                                            if ($willingness_level === '高意願') {
+                                                $willingness_class = 'willingness-high';
+                                            } elseif ($willingness_level === '中意願') {
+                                                $willingness_class = 'willingness-medium';
+                                            }
+                                            ?>
+                                            <span class="willingness-badge <?php echo $willingness_class; ?>" title="分數：<?php echo $willingness_score; ?>">
+                                                <?php echo htmlspecialchars($willingness_level); ?> 
+                                            </span>
+                                        </td>
                                         <td>
                                             <?php if ($is_history): ?>
                                                 <span class="status-badge <?php echo (isset($reg['attendance_status']) && $reg['attendance_status'] == 1) ? 'status-attended' : 'status-absent'; ?>">
@@ -701,7 +853,19 @@ $page_title = '出席紀錄管理 - ' . htmlspecialchars($session['session_name'
                                         <?php echo htmlspecialchars($check_in['phone'] ?: '-'); ?>
                                     </td>
                                     <td>
-                                        <?php if ($check_in['is_registered']): ?>
+                                        <?php 
+                                        // 判斷是否為真正報名：必須 is_registered = 1 且 application_id 存在且對應的報名記錄存在
+                                        // 且報名記錄的 notes 不包含「未報名但有來」（表示不是自動創建的）
+                                        $is_truly_registered = false;
+                                        if ($check_in['is_registered'] && !empty($check_in['application_id'])) {
+                                            $app_notes = $check_in['application_notes'] ?? '';
+                                            // 如果報名記錄存在且 notes 不包含「未報名但有來」，才是真正報名
+                                            if (!empty($check_in['registered_name']) && strpos($app_notes, '未報名但有來') === false) {
+                                                $is_truly_registered = true;
+                                            }
+                                        }
+                                        ?>
+                                        <?php if ($is_truly_registered): ?>
                                             <span class="status-badge status-attended">
                                                 <i class="fas fa-check"></i> 有報名
                                             </span>

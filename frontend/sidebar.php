@@ -355,6 +355,7 @@ function hasPermission($permission_code, $user_role, $permissions_array) {
                     <span>入學說明會</span>
                 </a>
             <?php endif; ?>
+            
 
             <?php if ($is_staff || $is_admin): ?>
                 <a href="bulletin_board.php" class="menu-item <?php echo in_array($current_page, ['bulletin_board', 'edit_bulletin']) ? 'active' : ''; ?>">
