@@ -139,7 +139,13 @@ try {
   $dept_join = "";
   if ($dept_col !== '' && $dept_key !== '' && hasColumn($conn, 'departments', 'name')) {
     $dept_select = "ns.`$dept_col` AS department_code, COALESCE(d.name,'') AS department_name";
-    $dept_join = " LEFT JOIN departments d ON ns.`$dept_col` = d.`$dept_key` ";
+    // 避免不同 collation 造成 Illegal mix of collations（多發生於 code 類字串欄位）
+    if ($dept_key === 'code') {
+      $dept_join = " LEFT JOIN departments d ON ns.`$dept_col` COLLATE utf8mb4_unicode_ci = d.`$dept_key` COLLATE utf8mb4_unicode_ci ";
+    } else {
+      // 若 departments 使用數字主鍵（id），用原本等號比較即可
+      $dept_join = " LEFT JOIN departments d ON ns.`$dept_col` = d.`$dept_key` ";
+    }
   } elseif ($dept_col !== '') {
     $dept_select = "ns.`$dept_col` AS department_code, '' AS department_name";
   }
@@ -183,7 +189,7 @@ try {
   
   -- 🔹 前一學校
   LEFT JOIN school_data sd
-    ON ns.previous_school = sd.school_code
+    ON ns.previous_school COLLATE utf8mb4_unicode_ci = sd.school_code COLLATE utf8mb4_unicode_ci
 
   -- 🔹 科系
   $dept_join
