@@ -303,18 +303,26 @@ try {
         $todos = $res_todo->fetch_all(MYSQLI_ASSOC);
     }
 
-    // D. 近期場次列表
+    // D. 近期場次列表（只顯示當年份的場次）
+    $current_year = date('Y');
     $sql_sessions = "
         SELECT s.session_name, s.session_date, s.session_type, s.max_participants,
-        (SELECT COUNT(*) FROM admission_applications aa WHERE aa.session_id = s.id) as current_count
+        (SELECT COUNT(*) FROM admission_applications aa 
+         WHERE aa.session_id = s.id 
+         AND YEAR(aa.created_at) = YEAR(s.session_date)) as current_count
         FROM admission_sessions s
         WHERE s.session_date >= CURDATE()
+        AND YEAR(s.session_date) = ?
         ORDER BY s.session_date ASC LIMIT 3
     ";
-    $res_sessions = $conn->query($sql_sessions);
+    $stmt_sessions = $conn->prepare($sql_sessions);
+    $stmt_sessions->bind_param("i", $current_year);
+    $stmt_sessions->execute();
+    $res_sessions = $stmt_sessions->get_result();
     if ($res_sessions) {
         $sessions = $res_sessions->fetch_all(MYSQLI_ASSOC);
     }
+    $stmt_sessions->close();
 
 } catch (Exception $e) {
     error_log("首頁資料查詢失敗: " . $e->getMessage());

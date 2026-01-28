@@ -5,8 +5,7 @@ checkBackendLogin();
 require_once '../../Topics-frontend/frontend/config.php';
 
 $username = isset($_SESSION['username']) ? $_SESSION['username'] : '';
-$user_role = isset($_SESSION['role']) ? $_SESSION['role'] : '';
-$can_view_review_result = ($username === '12' && $user_role === 'STA');
+$can_view_review_result = (isStaff() || isAdmin());
 if (!$can_view_review_result) {
     header('Location: admission_recommend_list.php');
     exit();
@@ -30,11 +29,18 @@ try {
             recommendation_id INT NOT NULL,
             recommender_name VARCHAR(100) NOT NULL DEFAULT '',
             recommender_student_id VARCHAR(50) NOT NULL DEFAULT '',
+            amount INT NOT NULL DEFAULT 1500,
             sent_by VARCHAR(100) NOT NULL DEFAULT '',
             sent_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             UNIQUE KEY uq_recommendation_id (recommendation_id),
             INDEX idx_sent_at (sent_at)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
+    } else {
+        // 舊表補欄位（向後相容）
+        $c = $conn->query("SHOW COLUMNS FROM bonus_send_logs LIKE 'amount'");
+        if ($c && $c->num_rows == 0) {
+            @$conn->query("ALTER TABLE bonus_send_logs ADD COLUMN amount INT NOT NULL DEFAULT 1500 AFTER recommender_student_id");
+        }
     }
 } catch (Exception $e) {
     // ignore

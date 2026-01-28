@@ -34,11 +34,15 @@ if (!$session) {
 }
 
 // 獲取該場次的報名者列表及出席紀錄
+// 注意：只顯示當前年份的報名記錄和簽到記錄
+$current_year = date('Y');
+$session_year = date('Y', strtotime($session['session_date']));
 $stmt = $conn->prepare("
     SELECT 
         aa.student_name,
         aa.email,
         aa.contact_phone,
+        aa.notes as application_notes,
         sd.name as school_name_display,
         aa.school,
         ar.attendance_status,
@@ -46,11 +50,18 @@ $stmt = $conn->prepare("
         ar.notes as attendance_notes
     FROM admission_applications aa
     LEFT JOIN school_data sd ON aa.school = sd.school_code
-    LEFT JOIN attendance_records ar ON aa.id = ar.application_id AND ar.session_id = ?
+    LEFT JOIN attendance_records ar ON aa.id = ar.application_id 
+        AND ar.session_id = ? 
+        AND (
+            (ar.check_in_time IS NOT NULL AND YEAR(ar.check_in_time) = ?)
+            OR (ar.check_in_time IS NULL AND ar.absent_time IS NOT NULL AND YEAR(ar.absent_time) = ?)
+            OR (ar.check_in_time IS NULL AND ar.absent_time IS NULL)
+        )
     WHERE aa.session_id = ? 
+    AND YEAR(aa.created_at) = ?
     ORDER BY aa.student_name ASC
 ");
-$stmt->bind_param("ii", $session_id, $session_id);
+$stmt->bind_param("iiiii", $session_id, $session_year, $session_year, $session_id, $session_year);
 $stmt->execute();
 $registrations_result = $stmt->get_result();
 $registrations = $registrations_result->fetch_all(MYSQLI_ASSOC);
@@ -90,7 +101,8 @@ foreach ($registrations as $reg) {
     }
     
     $school_name = $reg['school_name_display'] ?? $reg['school'] ?? '';
-    $notes = $reg['attendance_notes'] ?? '';
+    // 優先顯示 application_notes（用於標記未報名但有來），如果沒有則顯示 attendance_notes
+    $notes = $reg['application_notes'] ?? $reg['attendance_notes'] ?? '';
     
     fputcsv($output, [
         $reg['student_name'],

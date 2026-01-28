@@ -6,8 +6,7 @@ header('Content-Type: application/json; charset=utf-8');
 
 // 權限：沿用審核結果可視權限（username=12 & role=STA）
 $username = isset($_SESSION['username']) ? $_SESSION['username'] : '';
-$user_role = isset($_SESSION['role']) ? $_SESSION['role'] : '';
-$can_view_review_result = ($username === '12' && $user_role === 'STA');
+$can_view_review_result = (isStaff() || isAdmin());
 if (!$can_view_review_result) {
     http_response_code(403);
     echo json_encode(['success' => false, 'message' => '權限不足'], JSON_UNESCAPED_UNICODE);

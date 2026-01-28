@@ -41,6 +41,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                         
                         // 檢查是否已存在紀錄
                         $check_stmt = $conn->prepare("SELECT id FROM attendance_records WHERE session_id = ? AND application_id = ?");
+                        if ($check_stmt === false) {
+                            throw new Exception("準備 SQL 語句失敗：" . $conn->error);
+                        }
                         $check_stmt->bind_param("ii", $session_id, $application_id);
                         $check_stmt->execute();
                         $exists = $check_stmt->get_result()->fetch_assoc();
@@ -49,12 +52,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                         if ($exists) {
                             // 更新現有紀錄
                             $update_stmt = $conn->prepare("UPDATE attendance_records SET attendance_status = ?, check_in_time = ?, absent_time = ? WHERE session_id = ? AND application_id = ?");
-                            $update_stmt->bind_param("isssii", $attendance_status, $check_in_time, $absent_time, $session_id, $application_id);
+                            if ($update_stmt === false) {
+                                throw new Exception("準備 SQL 語句失敗：" . $conn->error);
+                            }
+                            $update_stmt->bind_param("issii", $attendance_status, $check_in_time, $absent_time, $session_id, $application_id);
                             $update_stmt->execute();
                             $update_stmt->close();
                         } else {
                             // 新增紀錄
                             $insert_stmt = $conn->prepare("INSERT INTO attendance_records (session_id, application_id, attendance_status, check_in_time, absent_time) VALUES (?, ?, ?, ?, ?)");
+                            if ($insert_stmt === false) {
+                                throw new Exception("準備 SQL 語句失敗：" . $conn->error);
+                            }
                             $insert_stmt->bind_param("iiiss", $session_id, $application_id, $attendance_status, $check_in_time, $absent_time);
                             $insert_stmt->execute();
                             $insert_stmt->close();
@@ -132,6 +141,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                         
                         // 根據姓名或 Email 查找報名紀錄
                         $find_stmt = $conn->prepare("SELECT id FROM admission_applications WHERE session_id = ? AND (student_name = ? OR email = ?)");
+                        if ($find_stmt === false) {
+                            throw new Exception("準備 SQL 語句失敗：" . $conn->error);
+                        }
                         $find_stmt->bind_param("iss", $session_id, $name, $email);
                         $find_stmt->execute();
                         $result = $find_stmt->get_result();
@@ -147,6 +159,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                             
                             // 檢查是否已存在紀錄
                             $check_stmt = $conn->prepare("SELECT id FROM attendance_records WHERE session_id = ? AND application_id = ?");
+                            if ($check_stmt === false) {
+                                throw new Exception("準備 SQL 語句失敗：" . $conn->error);
+                            }
                             $check_stmt->bind_param("ii", $session_id, $application_id);
                             $check_stmt->execute();
                             $exists = $check_stmt->get_result()->fetch_assoc();
@@ -154,11 +169,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                             
                             if ($exists) {
                                 $update_stmt = $conn->prepare("UPDATE attendance_records SET attendance_status = ?, check_in_time = ?, absent_time = ? WHERE session_id = ? AND application_id = ?");
-                                $update_stmt->bind_param("isssii", $attendance_status, $check_in_time, $absent_time, $session_id, $application_id);
+                                if ($update_stmt === false) {
+                                    throw new Exception("準備 SQL 語句失敗：" . $conn->error);
+                                }
+                                $update_stmt->bind_param("issii", $attendance_status, $check_in_time, $absent_time, $session_id, $application_id);
                                 $update_stmt->execute();
                                 $update_stmt->close();
                             } else {
                                 $insert_stmt = $conn->prepare("INSERT INTO attendance_records (session_id, application_id, attendance_status, check_in_time, absent_time) VALUES (?, ?, ?, ?, ?)");
+                                if ($insert_stmt === false) {
+                                    throw new Exception("準備 SQL 語句失敗：" . $conn->error);
+                                }
                                 $insert_stmt->bind_param("iiiss", $session_id, $application_id, $attendance_status, $check_in_time, $absent_time);
                                 $insert_stmt->execute();
                                 $insert_stmt->close();
@@ -182,11 +203,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                 break;
         }
     } catch (Exception $e) {
-        // 使用兼容方式检查事务状态
+        // 使用兼容方式檢查事物狀態
         if (method_exists($conn, 'in_transaction') && $conn->in_transaction()) {
             $conn->rollback();
         } else {
-            // 如果没有 in_transaction 方法，直接尝试回滚
+            // 如果沒有 in_transaction 方法，直接嘗試回滾
             @$conn->rollback();
         }
         $message = "操作失敗：" . $e->getMessage();
@@ -196,6 +217,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
 
 // 獲取場次資訊
 $stmt = $conn->prepare("SELECT * FROM admission_sessions WHERE id = ?");
+if ($stmt === false) {
+    die("準備 SQL 語句失敗：" . $conn->error);
+}
 $stmt->bind_param("i", $session_id);
 $stmt->execute();
 $session_result = $stmt->get_result();
@@ -208,25 +232,162 @@ if (!$session) {
 }
 
 // 獲取該場次的報名者列表及出席紀錄（包含未到時間）
+// 注意：只顯示與場次年份相同的報名記錄和簽到記錄
+$session_year = date('Y', strtotime($session['session_date']));
 $stmt = $conn->prepare("
     SELECT 
         aa.*, 
+        aa.grade as grade_code,
+        COALESCE(io.name, aa.grade) as grade,
+        aa.notes as application_notes,
         sd.name as school_name_display,
         ar.attendance_status,
         ar.check_in_time,
         ar.absent_time,
-        ar.notes as attendance_notes
+        ar.notes as attendance_notes,
+        as_session.session_type
     FROM admission_applications aa
     LEFT JOIN school_data sd ON aa.school = sd.school_code
-    LEFT JOIN attendance_records ar ON aa.id = ar.application_id AND ar.session_id = ?
+    LEFT JOIN identity_options io ON aa.grade = io.code
+    LEFT JOIN admission_sessions as_session ON aa.session_id = as_session.id
+    LEFT JOIN attendance_records ar ON aa.id = ar.application_id 
+        AND ar.session_id = ? 
+        AND (
+            (ar.check_in_time IS NOT NULL AND YEAR(ar.check_in_time) = ?)
+            OR (ar.check_in_time IS NULL AND ar.absent_time IS NOT NULL AND YEAR(ar.absent_time) = ?)
+            OR (ar.check_in_time IS NULL AND ar.absent_time IS NULL)
+        )
     WHERE aa.session_id = ? 
-    ORDER BY aa.student_name ASC
+    AND YEAR(aa.created_at) = ?
+    ORDER BY 
+        CASE 
+            WHEN aa.grade IS NOT NULL AND (aa.grade LIKE '%國三%' OR aa.grade = '3' OR aa.grade LIKE 'G3%' OR aa.grade LIKE '%G3%' OR COALESCE(io.name, '') LIKE '%國三%') THEN 1
+            WHEN aa.grade IS NOT NULL AND (aa.grade LIKE '%國二%' OR aa.grade = '2' OR aa.grade LIKE 'G2%' OR aa.grade LIKE '%G2%' OR COALESCE(io.name, '') LIKE '%國二%') THEN 2
+            WHEN aa.grade IS NOT NULL AND (aa.grade LIKE '%國一%' OR aa.grade = '1' OR aa.grade LIKE 'G1%' OR aa.grade LIKE '%G1%' OR COALESCE(io.name, '') LIKE '%國一%') THEN 3
+            ELSE 4
+        END ASC,
+        aa.student_name ASC
 ");
-$stmt->bind_param("ii", $session_id, $session_id);
+if ($stmt === false) {
+    die("準備 SQL 語句失敗：" . $conn->error);
+}
+$stmt->bind_param("iiiii", $session_id, $session_year, $session_year, $session_id, $session_year);
 $stmt->execute();
 $registrations_result = $stmt->get_result();
 $registrations = $registrations_result->fetch_all(MYSQLI_ASSOC);
 $stmt->close();
+
+// 計算每個學生的意願度分數
+foreach ($registrations as &$reg) {
+    $score = 0;
+    
+    // 1. 有報名：+1
+    $score += 1;
+    
+    // 2. 有簽到：+3
+    if (isset($reg['attendance_status']) && $reg['attendance_status'] == 1) {
+        $score += 3;
+    }
+    
+    // 3. 實體場：+2
+    if (isset($reg['session_type']) && $reg['session_type'] == 2) {
+        $score += 2;
+    }
+    
+    // 4. 參加 2 場以上：+2（需要查詢該學生報名的場次數，使用 email 或電話匹配）
+    $email = $reg['email'] ?? '';
+    $phone = $reg['contact_phone'] ?? '';
+    if (!empty($email) || !empty($phone)) {
+        $count_stmt = $conn->prepare("
+            SELECT COUNT(DISTINCT session_id) as session_count
+            FROM admission_applications
+            WHERE YEAR(created_at) = ? 
+            AND (email = ? OR contact_phone = ?)
+        ");
+        if ($count_stmt) {
+            $count_stmt->bind_param("iss", $session_year, $email, $phone);
+            $count_stmt->execute();
+            $count_result = $count_stmt->get_result();
+            if ($count_row = $count_result->fetch_assoc()) {
+                if ($count_row['session_count'] >= 2) {
+                    $score += 2;
+                }
+            }
+            $count_stmt->close();
+        }
+    }
+    
+    // 5. 有選科系：+1
+    if (!empty($reg['course_priority_1']) || !empty($reg['course_priority_2'])) {
+        $score += 1;
+    }
+    
+    // 6. 國三生：+1
+    $grade_text = $reg['grade'] ?? '';
+    $grade_code = $reg['grade_code'] ?? '';
+    if (strpos($grade_text, '國三') !== false || 
+        preg_match('/\b3\b/', $grade_text) || 
+        strpos($grade_code, 'G3') !== false || 
+        $grade_code === '3' ||
+        preg_match('/\b3\b/', $grade_code)) {
+        $score += 1;
+    }
+    
+    // 判斷意願度等級
+    if ($score >= 6) {
+        $reg['willingness_level'] = '高意願';
+        $reg['willingness_score'] = $score;
+        $reg['willingness_order'] = 1; // 用於排序：1=高, 2=中, 3=低
+    } elseif ($score >= 4) {
+        $reg['willingness_level'] = '中意願';
+        $reg['willingness_score'] = $score;
+        $reg['willingness_order'] = 2;
+    } else {
+        $reg['willingness_level'] = '低意願';
+        $reg['willingness_score'] = $score;
+        $reg['willingness_order'] = 3;
+    }
+    
+    // 計算年級排序順序：國三優先
+    $grade_text = $reg['grade'] ?? '';
+    $grade_code = $reg['grade_code'] ?? '';
+    if (strpos($grade_text, '國三') !== false || 
+        preg_match('/\b3\b/', $grade_text) || 
+        strpos($grade_code, 'G3') !== false || 
+        $grade_code === '3' ||
+        preg_match('/\b3\b/', $grade_code)) {
+        $reg['grade_order'] = 1; // 國三
+    } elseif (strpos($grade_text, '國二') !== false || 
+              preg_match('/\b2\b/', $grade_text) || 
+              strpos($grade_code, 'G2') !== false || 
+              $grade_code === '2' ||
+              preg_match('/\b2\b/', $grade_code)) {
+        $reg['grade_order'] = 2; // 國二
+    } elseif (strpos($grade_text, '國一') !== false || 
+              preg_match('/\b1\b/', $grade_text) || 
+              strpos($grade_code, 'G1') !== false || 
+              $grade_code === '1' ||
+              preg_match('/\b1\b/', $grade_code)) {
+        $reg['grade_order'] = 3; // 國一
+    } else {
+        $reg['grade_order'] = 4; // 其他
+    }
+}
+unset($reg); // 解除引用
+
+// 排序：先按年級（國三優先），再按意願度（高>中>低）
+usort($registrations, function($a, $b) {
+    // 先按年級排序
+    if ($a['grade_order'] != $b['grade_order']) {
+        return $a['grade_order'] - $b['grade_order'];
+    }
+    // 再按意願度排序
+    if ($a['willingness_order'] != $b['willingness_order']) {
+        return $a['willingness_order'] - $b['willingness_order'];
+    }
+    // 最後按姓名排序
+    return strcmp($a['student_name'], $b['student_name']);
+});
 
 // 判斷是否為歷史紀錄：以簽到時間作為基準，非今年份的區分到歷史資料
 $current_year = date('Y');
@@ -264,6 +425,52 @@ foreach ($registrations as $reg) {
         $attended_count++;
     } else {
         $absent_count++;
+    }
+}
+
+// 獲取線上簽到記錄（不管有沒有報名）
+// 注意：簽到時間從 attendance_records 資料表抓取，而不是 online_check_in_records
+// 只顯示當前年份的記錄
+$current_year = date('Y');
+$online_check_ins = [];
+$check_table_exists = $conn->query("SHOW TABLES LIKE 'online_check_in_records'");
+if ($check_table_exists && $check_table_exists->num_rows > 0) {
+    $check_in_stmt = $conn->prepare("
+        SELECT 
+            oc.id,
+            oc.name,
+            oc.email,
+            oc.phone,
+            oc.is_registered,
+            oc.application_id,
+            oc.notes,
+            oc.created_at as oc_created_at,
+            ar.check_in_time,
+            aa.student_name as registered_name,
+            aa.email as registered_email,
+            aa.contact_phone as registered_phone,
+            aa.notes as application_notes
+        FROM online_check_in_records oc
+        LEFT JOIN admission_applications aa ON oc.application_id = aa.id
+        LEFT JOIN attendance_records ar ON oc.session_id = ar.session_id 
+            AND oc.application_id = ar.application_id
+            AND ar.attendance_status = 1
+        WHERE oc.session_id = ?
+        AND (
+            (ar.check_in_time IS NOT NULL AND YEAR(ar.check_in_time) = ?)
+            OR (ar.check_in_time IS NULL AND YEAR(oc.created_at) = ?)
+        )
+        ORDER BY COALESCE(ar.check_in_time, oc.created_at) DESC
+    ");
+    if ($check_in_stmt === false) {
+        // 如果準備語句失敗，記錄錯誤但不中斷執行
+        error_log("準備線上簽到記錄 SQL 語句失敗：" . $conn->error);
+    } else {
+        $check_in_stmt->bind_param("iii", $session_id, $current_year, $current_year);
+        $check_in_stmt->execute();
+        $check_in_result = $check_in_stmt->get_result();
+        $online_check_ins = $check_in_result->fetch_all(MYSQLI_ASSOC);
+        $check_in_stmt->close();
     }
 }
 
@@ -401,8 +608,10 @@ $page_title = '出席紀錄管理 - ' . htmlspecialchars($session['session_name'
         .btn-primary:hover { background: #40a9ff; border-color: #40a9ff; }
         .btn-secondary { background: #fff; color: #595959; border-color: #d9d9d9; }
         .btn-secondary:hover { background: #f5f5f5; border-color: #40a9ff; color: #40a9ff; }
-        .btn-success { background: var(--success-color); color: white; border-color: var(--success-color); }
-        .btn-success:hover { background: #73d13d; border-color: #73d13d; }
+        .btn-success { background: #dd9606d6; color: white; border-color: #dd9606d6; }
+        .btn-success:hover { background:#dd9606d6; border-color: #dd9606d6; }
+        .btn-excel { background: #73d13d; color: white; border-color: #73d13d;  }
+        .btn-excel:hover { background:#73d13d;  border-color: #73d13d;  }
 
         .form-group { margin-bottom: 20px; }
         .form-label { display: block; margin-bottom: 8px; font-weight: 500; }
@@ -420,6 +629,17 @@ $page_title = '出席紀錄管理 - ' . htmlspecialchars($session['session_name'
         .status-attended { background: #f6ffed; color: var(--success-color); border: 1px solid #b7eb8f; }
         .status-absent { background: #fff2f0; color: var(--danger-color); border: 1px solid #ffccc7; }
         .status-unknown { background: #f5f5f5; color: var(--text-secondary-color); border: 1px solid #d9d9d9; }
+        
+        .grade-badge { padding: 4px 10px; border-radius: 4px; font-size: 13px; font-weight: 600; display: inline-block; }
+        .grade-g3 { background: #e6f7ff; color: #1890ff; border: 1px solid #91d5ff; }
+        .grade-g2 { background: #f6ffed; color: #52c41a; border: 1px solid #b7eb8f; }
+        .grade-g1 { background: #fff7e6; color: #fa8c16; border: 1px solid #ffd591; }
+        .grade-other { background: #f5f5f5; color: var(--text-secondary-color); border: 1px solid #d9d9d9; }
+        
+        .willingness-badge { padding: 4px 10px; border-radius: 4px; font-size: 13px; font-weight: 600; display: inline-block; }
+        .willingness-high { background: #f6ffed; color: #52c41a; border: 1px solid #b7eb8f; }
+        .willingness-medium { background: #fff7e6; color: #fa8c16; border: 1px solid #ffd591; }
+        .willingness-low { background: #fff2f0; color: #ff4d4f; border: 1px solid #ffccc7; }
 
         .attendance-select {
             padding: 6px 12px;
@@ -458,13 +678,20 @@ $page_title = '出席紀錄管理 - ' . htmlspecialchars($session['session_name'
                     </div>
                     <div class="table-search">
                         <input type="text" id="tableSearchInput" placeholder="搜尋姓名、Email..." onkeyup="filterTable()">
-                        <a href="export_attendance_template.php?session_id=<?php echo $session_id; ?>" class="btn btn-secondary"><i class="fas fa-download"></i> 下載範本</a>
+                        
                         <a href="export_attendance.php?session_id=<?php echo $session_id; ?>" class="btn btn-secondary"><i class="fas fa-file-export"></i> 匯出出席紀錄</a>
-                        <a href="activity_records.php?view=attendance" class="btn btn-secondary" style="background: var(--primary-color); color: white; border-color: var(--primary-color);"><i class="fas fa-chart-bar"></i> 出席統計圖</a>
+                        <!--<a href="activity_records.php?view=attendance" class="btn btn-secondary" style="background: var(--primary-color); color: white; border-color: var(--primary-color);"><i class="fas fa-chart-bar"></i> 出席統計圖</a>-->
                         <?php if (!$is_history): ?>
-                            <button class="btn btn-success" onclick="showModal('uploadImageModal')"><i class="fas fa-image"></i> 上傳簽到表圖片</button>
-                            <button class="btn btn-success" onclick="showModal('importExcelModal')"><i class="fas fa-file-excel"></i> 匯入 Excel</button>
+                            <a href="online_check_in.php?session_id=<?php echo $session_id; ?>" target="_blank" class="btn btn-success"><i class="fas fa-check-circle"></i> 線上簽到表單</a>
+                            <button class="btn btn-secondary" onclick="toggleCheckInRecords()"><i class="fas fa-list"></i> 查看簽到表記錄</button>
+                            <?php if (!empty($online_check_ins)): ?>
+                                <a href="export_online_check_in.php?session_id=<?php echo $session_id; ?>" class="btn btn-excel"><i class="fas fa-file-excel"></i> 下載簽到表 Excel</a>
+                                <button class="btn btn-primary" onclick="syncCheckInRecords()"><i class="fas fa-sync-alt"></i> 比對並同步簽到記錄</button>
+                            <?php endif; ?>
                             <button class="btn btn-primary" onclick="saveAttendance()"><i class="fas fa-save"></i> 儲存變更</button>
+                            <a href="absent_reminder.php?session_id=<?php echo $session_id; ?>" class="btn" style="background: var(--danger-color); color: white; border-color: var(--danger-color);">
+                                <i class="fas fa-exclamation-triangle"></i> 未到警示
+                            </a>
                         <?php endif; ?>
                         <a href="settings.php" class="btn btn-secondary"><i class="fas fa-arrow-left"></i> 返回</a>
                     </div>
@@ -495,6 +722,26 @@ $page_title = '出席紀錄管理 - ' . htmlspecialchars($session['session_name'
                         <div class="value"><?php echo $absent_count; ?></div>
                     </div>
                 </div>
+                <div class="filter-group" style="margin-bottom:15px; margin-left:1290px;">
+                        <select id="filterGrade" class="form-control" style="width: auto; padding: 8px 12px; margin: 0;" onchange="filterTable()">
+                            <option value="">全部年級</option>
+                            <option value="國三">國三</option>
+                            <option value="國二">國二</option>
+                            <option value="國一">國一</option>
+                            <option value="其他">其他</option>
+                        </select>
+                        <select id="filterWillingness" class="form-control" style="width: auto; padding: 8px 12px; margin: 0;" onchange="filterTable()">
+                            <option value="">全部意願度</option>
+                            <option value="高意願">高意願</option>
+                            <option value="中意願">中意願</option>
+                            <option value="低意願">低意願</option>
+                        </select>
+                        <select id="filterAttendance" class="form-control" style="width: auto; padding: 8px 12px; margin: 0;" onchange="filterTable()">
+                            <option value="">全部狀態</option>
+                            <option value="已到">已到</option>
+                            <option value="未到">未到</option>
+                        </select>
+                </div>
 
                 <div class="table-wrapper">
                     <div class="table-container">
@@ -507,17 +754,109 @@ $page_title = '出席紀錄管理 - ' . htmlspecialchars($session['session_name'
                                         <th>Email</th>
                                         <th>電話</th>
                                         <th>就讀學校</th>
+                                        <th>年級</th>
+                                        <th>意願度</th>
                                         <th>出席狀態</th>
                                         <th>簽到時間</th>
+                                        <th>備註</th>
                                     </tr>
                                 </thead>
                                 <tbody>
                                     <?php foreach ($registrations as $reg): ?>
-                                    <tr>
+                                    <?php
+                                    // 判斷年級類別用於篩選
+                                    $grade_text = $reg['grade'] ?? '';
+                                    $grade_code = $reg['grade_code'] ?? '';
+                                    $grade_filter = '其他';
+                                    if (strpos($grade_text, '國三') !== false || 
+                                        preg_match('/\b3\b/', $grade_text) || 
+                                        strpos($grade_code, 'G3') !== false || 
+                                        $grade_code === '3' ||
+                                        preg_match('/\b3\b/', $grade_code)) {
+                                        $grade_filter = '國三';
+                                    } elseif (strpos($grade_text, '國二') !== false || 
+                                             preg_match('/\b2\b/', $grade_text) || 
+                                             strpos($grade_code, 'G2') !== false || 
+                                             $grade_code === '2' ||
+                                             preg_match('/\b2\b/', $grade_code)) {
+                                        $grade_filter = '國二';
+                                    } elseif (strpos($grade_text, '國一') !== false || 
+                                             preg_match('/\b1\b/', $grade_text) || 
+                                             strpos($grade_code, 'G1') !== false || 
+                                             $grade_code === '1' ||
+                                             preg_match('/\b1\b/', $grade_code)) {
+                                        $grade_filter = '國一';
+                                    }
+                                    
+                                    // 判斷出席狀態
+                                    $attendance_status_text = '未到';
+                                    if (isset($reg['attendance_status']) && $reg['attendance_status'] == 1) {
+                                        $attendance_status_text = '已到';
+                                    }
+                                    
+                                    // 意願度
+                                    $willingness_level = $reg['willingness_level'] ?? '低意願';
+                                    ?>
+                                    <tr data-grade="<?php echo htmlspecialchars($grade_filter); ?>" 
+                                        data-willingness="<?php echo htmlspecialchars($willingness_level); ?>" 
+                                        data-attendance="<?php echo htmlspecialchars($attendance_status_text); ?>">
                                         <td><?php echo htmlspecialchars($reg['student_name']); ?></td>
                                         <td><?php echo htmlspecialchars($reg['email']); ?></td>
                                         <td><?php echo htmlspecialchars($reg['contact_phone']); ?></td>
                                         <td><?php echo htmlspecialchars($reg['school_name_display'] ?? $reg['school'] ?? '-'); ?></td>
+                                        <td>
+                                            <?php
+                                            $grade_text = $reg['grade'] ?? '';
+                                            $grade_code = $reg['grade_code'] ?? '';
+                                            $grade_class = 'grade-other';
+                                            
+                                            if (!empty($grade_text) || !empty($grade_code)) {
+                                                // 檢查國三
+                                                if (strpos($grade_text, '國三') !== false || 
+                                                    preg_match('/\b3\b/', $grade_text) || 
+                                                    strpos($grade_code, 'G3') !== false || 
+                                                    $grade_code === '3' ||
+                                                    preg_match('/\b3\b/', $grade_code)) {
+                                                    $grade_class = 'grade-g3';
+                                                } 
+                                                // 檢查國二
+                                                elseif (strpos($grade_text, '國二') !== false || 
+                                                       preg_match('/\b2\b/', $grade_text) || 
+                                                       strpos($grade_code, 'G2') !== false || 
+                                                       $grade_code === '2' ||
+                                                       preg_match('/\b2\b/', $grade_code)) {
+                                                    $grade_class = 'grade-g2';
+                                                } 
+                                                // 檢查國一
+                                                elseif (strpos($grade_text, '國一') !== false || 
+                                                       preg_match('/\b1\b/', $grade_text) || 
+                                                       strpos($grade_code, 'G1') !== false || 
+                                                       $grade_code === '1' ||
+                                                       preg_match('/\b1\b/', $grade_code)) {
+                                                    $grade_class = 'grade-g1';
+                                                }
+                                            }
+                                            ?>
+                                            <span class="grade-badge <?php echo $grade_class; ?>">
+                                                <?php echo !empty($grade_text) ? htmlspecialchars($grade_text) : (!empty($grade_code) ? htmlspecialchars($grade_code) : '-'); ?>
+                                            </span>
+                                        </td>
+                                        <td>
+                                            <?php
+                                            $willingness_level = $reg['willingness_level'] ?? '低意願';
+                                            $willingness_score = $reg['willingness_score'] ?? 0;
+                                            $willingness_class = 'willingness-low';
+                                            
+                                            if ($willingness_level === '高意願') {
+                                                $willingness_class = 'willingness-high';
+                                            } elseif ($willingness_level === '中意願') {
+                                                $willingness_class = 'willingness-medium';
+                                            }
+                                            ?>
+                                            <span class="willingness-badge <?php echo $willingness_class; ?>" title="分數：<?php echo $willingness_score; ?>">
+                                                <?php echo htmlspecialchars($willingness_level); ?> 
+                                            </span>
+                                        </td>
                                         <td>
                                             <?php if ($is_history): ?>
                                                 <span class="status-badge <?php echo (isset($reg['attendance_status']) && $reg['attendance_status'] == 1) ? 'status-attended' : 'status-absent'; ?>">
@@ -548,6 +887,24 @@ $page_title = '出席紀錄管理 - ' . htmlspecialchars($session['session_name'
                                             }
                                             ?>
                                         </td>
+                                        <td>
+                                            <?php 
+                                            // 顯示備註，優先顯示 application_notes（用於標記未報名但有來）
+                                            $notes = $reg['application_notes'] ?? $reg['attendance_notes'] ?? '';
+                                            if (!empty($notes)) {
+                                                // 如果是未報名但有來的標記，用特殊樣式顯示
+                                                if (strpos($notes, '未報名但有來') !== false || strpos($notes, '無報名但有來') !== false) {
+                                                    echo '<span style="color: var(--warning-color); font-weight: 500; background: #fffbe6; padding: 4px 8px; border-radius: 4px; border: 1px solid #ffe58f; display: inline-block;">';
+                                                    echo '<i class="fas fa-exclamation-triangle"></i> ' . htmlspecialchars($notes);
+                                                    echo '</span>';
+                                                } else {
+                                                    echo '<span style="color: var(--text-secondary-color);">' . htmlspecialchars($notes) . '</span>';
+                                                }
+                                            } else {
+                                                echo '<span style="color: var(--text-secondary-color);">-</span>';
+                                            }
+                                            ?>
+                                        </td>
                                     </tr>
                                     <?php endforeach; ?>
                                 </tbody>
@@ -556,76 +913,92 @@ $page_title = '出席紀錄管理 - ' . htmlspecialchars($session['session_name'
                     </div>
                 </div>
 
-            </div>
-        </div>
-    </div>
+                <!-- 線上簽到記錄區塊 -->
+                <?php if (!empty($online_check_ins)): ?>
+                <div class="table-wrapper" id="checkInRecordsSection" style="margin-top: 24px; display: none;">
+                    <div style="padding: 16px 24px; border-bottom: 1px solid var(--border-color); background: #fafafa;">
+                        <h3 style="margin: 0; font-size: 16px; font-weight: 600;">
+                            <i class="fas fa-check-circle"></i> 線上簽到記錄
+                            <span style="font-size: 14px; font-weight: normal; color: var(--text-secondary-color); margin-left: 8px;">
+                                (共 <?php echo count($online_check_ins); ?> 筆)
+                            </span>
+                        </h3>
+                        <p style="margin: 8px 0 0 0; font-size: 13px; color: var(--text-secondary-color);">
+                            此區塊顯示所有透過線上簽到表單簽到的記錄，包含有報名和未報名的人員
+                        </p>
+                    </div>
+                    <div class="table-container">
+                        <table class="table">
+                            <thead>
+                                <tr>
+                                    <th>姓名</th>
+                                    <th>Email</th>
+                                    <th>電話</th>
+                                    <th>報名狀態</th>
+                                    <th>簽到時間</th>
+                                    <th>備註</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <?php foreach ($online_check_ins as $check_in): ?>
+                                <tr>
+                                    <td>
+                                        <?php echo htmlspecialchars($check_in['name']); ?>
+                                    </td>
+                                    <td>
+                                        <?php echo htmlspecialchars($check_in['email'] ?: '-'); ?>
+                                    </td>
+                                    <td>
+                                        <?php echo htmlspecialchars($check_in['phone'] ?: '-'); ?>
+                                    </td>
+                                    <td>
+                                        <?php 
+                                        // 判斷是否為真正報名：必須 is_registered = 1 且 application_id 存在且對應的報名記錄存在
+                                        // 且報名記錄的 notes 不包含「未報名但有來」（表示不是自動創建的）
+                                        $is_truly_registered = false;
+                                        if ($check_in['is_registered'] && !empty($check_in['application_id'])) {
+                                            $app_notes = $check_in['application_notes'] ?? '';
+                                            // 如果報名記錄存在且 notes 不包含「未報名但有來」，才是真正報名
+                                            if (!empty($check_in['registered_name']) && strpos($app_notes, '未報名但有來') === false) {
+                                                $is_truly_registered = true;
+                                            }
+                                        }
+                                        ?>
+                                        <?php if ($is_truly_registered): ?>
+                                            <span class="status-badge status-attended">
+                                                <i class="fas fa-check"></i> 有報名
+                                            </span>
+                                        <?php else: ?>
+                                            <span class="status-badge" style="background: #fffbe6; color: var(--warning-color); border: 1px solid #ffe58f;">
+                                                <i class="fas fa-exclamation-triangle"></i> 未報名
+                                            </span>
+                                        <?php endif; ?>
+                                    </td>
+                                    <td>
+                                        <span style="color: var(--success-color);">
+                                            <?php 
+                                            // 優先使用 attendance_records 的簽到時間，如果沒有則使用 online_check_in_records 的建立時間
+                                            $check_in_time = $check_in['check_in_time'] ?? $check_in['oc_created_at'] ?? null;
+                                            if ($check_in_time) {
+                                                echo date('Y/m/d H:i', strtotime($check_in_time));
+                                            } else {
+                                                echo '-';
+                                            }
+                                            ?>
+                                        </span>
+                                    </td>
+                                    <td>
+                                        <?php echo htmlspecialchars($check_in['notes'] ?: '-'); ?>
+                                    </td>
+                                </tr>
+                                <?php endforeach; ?>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+                <?php endif; ?>
 
-    <!-- 上傳簽到表圖片 Modal -->
-    <div id="uploadImageModal" class="modal">
-        <div class="modal-content">
-            <div class="modal-header">
-                <h3 class="modal-title">上傳簽到表圖片</h3>
-                <span class="close" onclick="closeModal('uploadImageModal')">&times;</span>
             </div>
-            <form id="uploadImageForm" enctype="multipart/form-data">
-                <input type="hidden" name="session_id" value="<?php echo $session_id; ?>">
-                <div class="modal-body">
-                    <div class="form-group">
-                        <label class="form-label">選擇簽到表圖片</label>
-                        <input type="file" name="image" id="imageInput" class="form-control" accept="image/*" required>
-                        <small style="color: var(--text-secondary-color); margin-top: 8px; display: block;">
-                            支援格式：JPG、PNG、GIF、WebP（最大 10MB）<br>
-                            <strong>簽到表格式說明：</strong><br>
-                            • 每行格式：姓名 電話號碼（例如：無名 0900000000）<br>
-                            • 系統會自動識別圖片中的文字<br>
-                            • 根據姓名和電話號碼自動匹配報名者<br>
-                            • 匹配成功者將自動標記為「已到」
-                        </small>
-                    </div>
-                    <div id="imagePreview" style="margin-top: 16px; display: none;">
-                        <img id="previewImg" src="" alt="預覽" style="max-width: 100%; max-height: 400px; border: 1px solid #d9d9d9; border-radius: 6px;">
-                    </div>
-                    <div id="uploadProgress" style="display: none; margin-top: 16px;">
-                        <div style="background: #f0f0f0; border-radius: 4px; padding: 4px;">
-                            <div id="progressBar" style="background: var(--primary-color); height: 20px; border-radius: 4px; width: 0%; transition: width 0.3s;"></div>
-                        </div>
-                        <p style="margin-top: 8px; color: var(--text-secondary-color);">正在識別圖片中的文字...</p>
-                    </div>
-                    <div id="uploadResult" style="margin-top: 16px; display: none;"></div>
-                    <div id="ocrEditSection" style="margin-top: 16px; display: none; background: #fff3cd; padding: 16px; border-radius: 6px; border: 1px solid #ffc107;">
-                        <div style="margin-bottom: 12px;">
-                            <strong style="color: #856404;">OCR 識別結果不準確？</strong>
-                            <p style="margin: 8px 0 0 0; color: #856404; font-size: 13px;">您可以手動編輯識別出的文字，然後重新解析和匹配。</p>
-                        </div>
-                        <div class="form-group" style="margin-bottom: 12px;">
-                            <label class="form-label" style="font-weight: 600;">識別出的文字（可編輯）：</label>
-                            <textarea id="ocrTextEdit" rows="8" style="width: 100%; padding: 8px; border: 1px solid #d9d9d9; border-radius: 4px; font-family: monospace; font-size: 13px; line-height: 1.6;" placeholder="每行格式：姓名 電話號碼&#10;例如：&#10;無名 0900000000&#10;張三 0912345678"></textarea>
-                            <small style="color: #856404; margin-top: 4px; display: block;">
-                                提示：每行一個記錄，格式為「姓名 電話號碼」，例如「無名 0900000000」
-                            </small>
-                        </div>
-                        <div style="display: flex; gap: 8px;">
-                            <button type="button" onclick="reparseOCRText()" class="btn btn-primary" style="flex: 1;">
-                                <i class="fas fa-redo"></i> 重新解析並匹配
-                            </button>
-                            <button type="button" onclick="document.getElementById('ocrEditSection').style.display='none'" class="btn btn-secondary">
-                                取消
-                            </button>
-                        </div>
-                    </div>
-                    <div id="debugInfo" style="margin-top: 16px; display: none; background: #f5f5f5; padding: 12px; border-radius: 6px; font-size: 12px; font-family: monospace; max-height: 300px; overflow-y: auto; border: 1px solid #d9d9d9;">
-                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
-                            <strong>調試信息：</strong>
-                            <button onclick="document.getElementById('debugInfo').style.display='none'" style="background: none; border: none; color: #8c8c8c; cursor: pointer; font-size: 14px;">隱藏</button>
-                        </div>
-                        <pre id="debugContent" style="margin: 0; white-space: pre-wrap; word-wrap: break-word; line-height: 1.5;"></pre>
-                    </div>
-                </div>
-                <div class="modal-footer">
-                    <button type="button" class="btn btn-secondary" onclick="closeModal('uploadImageModal')">取消</button>
-                    <button type="submit" class="btn btn-primary" id="uploadBtn">上傳並識別</button>
-                </div>
-            </form>
         </div>
     </div>
 
@@ -661,33 +1034,73 @@ $page_title = '出席紀錄管理 - ' . htmlspecialchars($session['session_name'
     <script>
         function filterTable() {
             const input = document.getElementById('tableSearchInput');
-            const filter = input.value.toLowerCase();
-            const table = document.getElementById('attendanceTable');
+            const searchFilter = input.value.toLowerCase();
+            const gradeFilter = document.getElementById('filterGrade').value;
+            const willingnessFilter = document.getElementById('filterWillingness').value;
+            const attendanceFilter = document.getElementById('filterAttendance').value;
             
+            const table = document.getElementById('attendanceTable');
             if (!table) return;
             
             const tbody = table.getElementsByTagName('tbody')[0];
             if (!tbody) return;
             
             const rows = tbody.getElementsByTagName('tr');
+            let visibleCount = 0;
             
             for (let i = 0; i < rows.length; i++) {
-                const cells = rows[i].getElementsByTagName('td');
-                let found = false;
+                const row = rows[i];
+                let show = true;
                 
-                for (let j = 0; j < cells.length - 1; j++) { // 排除最後一列（簽到時間）
-                    const cell = cells[j];
-                    if (cell) {
-                        const txtValue = cell.textContent || cell.innerText;
-                        if (txtValue.toLowerCase().indexOf(filter) > -1) {
-                            found = true;
-                            break;
+                // 文字搜尋篩選
+                if (searchFilter) {
+                    const cells = row.getElementsByTagName('td');
+                    let found = false;
+                    for (let j = 0; j < cells.length; j++) {
+                        const cell = cells[j];
+                        if (cell) {
+                            const txtValue = cell.textContent || cell.innerText;
+                            if (txtValue.toLowerCase().indexOf(searchFilter) > -1) {
+                                found = true;
+                                break;
+                            }
                         }
+                    }
+                    if (!found) {
+                        show = false;
                     }
                 }
                 
-                rows[i].style.display = found ? '' : 'none';
+                // 年級篩選
+                if (show && gradeFilter) {
+                    const rowGrade = row.getAttribute('data-grade');
+                    if (rowGrade !== gradeFilter) {
+                        show = false;
+                    }
+                }
+                
+                // 意願度篩選
+                if (show && willingnessFilter) {
+                    const rowWillingness = row.getAttribute('data-willingness');
+                    if (rowWillingness !== willingnessFilter) {
+                        show = false;
+                    }
+                }
+                
+                // 出席狀態篩選
+                if (show && attendanceFilter) {
+                    const rowAttendance = row.getAttribute('data-attendance');
+                    if (rowAttendance !== attendanceFilter) {
+                        show = false;
+                    }
+                }
+                
+                row.style.display = show ? '' : 'none';
+                if (show) visibleCount++;
             }
+            
+            // 更新顯示的記錄數（可選）
+            // console.log('顯示 ' + visibleCount + ' 筆記錄');
         }
 
         function saveAttendance() {
@@ -704,214 +1117,82 @@ $page_title = '出席紀錄管理 - ' . htmlspecialchars($session['session_name'
             document.getElementById(modalId).style.display = 'none';
         }
         
-        function toggleDebugInfo() {
-            const debugDiv = document.getElementById('debugInfo');
-            if (debugDiv) {
-                debugDiv.style.display = debugDiv.style.display === 'none' ? 'block' : 'none';
+        function toggleCheckInRecords() {
+            const section = document.getElementById('checkInRecordsSection');
+            if (section) {
+                if (section.style.display === 'none') {
+                    section.style.display = 'block';
+                } else {
+                    section.style.display = 'none';
+                }
             }
         }
         
-        function toggleErrorDebugInfo() {
-            const debugDiv = document.getElementById('errorDebugInfo');
-            if (debugDiv) {
-                debugDiv.style.display = debugDiv.style.display === 'none' ? 'block' : 'none';
+        function syncCheckInRecords() {
+            if (!confirm('確定要比對並同步簽到記錄嗎？系統會根據姓名和電話比對線上簽到記錄與報名資料，並自動更新出席狀態。')) {
+                return;
             }
-        }
-        
-        function escapeHtml(text) {
-            const div = document.createElement('div');
-            div.textContent = text;
-            return div.innerHTML;
+            
+            const sessionId = <?php echo $session_id; ?>;
+            const btn = event.target.closest('button');
+            const originalText = btn.innerHTML;
+            btn.disabled = true;
+            btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 比對中...';
+            
+            fetch(`sync_check_in_records.php?session_id=${sessionId}`)
+                .then(response => response.json())
+                .then(data => {
+                    btn.disabled = false;
+                    btn.innerHTML = originalText;
+                    
+                    if (data.success) {
+                        alert(data.message);
+                        // 刷新頁面以顯示更新後的資料
+                        setTimeout(() => {
+                            window.location.reload();
+                        }, 1000);
+                    } else {
+                        alert('比對失敗：' + data.message);
+                    }
+                })
+                .catch(error => {
+                    btn.disabled = false;
+                    btn.innerHTML = originalText;
+                    alert('發生錯誤：' + error.message);
+                });
         }
 
+        // 自動發送：進入頁面即對「國三＋高意願」且尚未寄過者發送
+        document.addEventListener('DOMContentLoaded', function () {
+            const isHistory = <?php echo $is_history ? 'true' : 'false'; ?>;
+            if (isHistory) return;
+
+            const sessionId = <?php echo (int)$session_id; ?>;
+            fetch(`send_enrollment_invitation.php?session_id=${sessionId}`)
+                .then(response => response.json())
+                .then(data => {
+                    if (!data || !data.success) {
+                        // 不阻斷操作，只提示失敗
+                        const msg = (data && data.message) ? data.message : '未知錯誤';
+                        alert('自動發送就讀意願邀請失敗：' + msg);
+                        return;
+                    }
+                    // 僅在有失敗時提示（成功或 0 筆就靜默）
+                    if ((data.failed_count || 0) > 0) {
+                        const details = (data.errors && data.errors.length) ? ('\n\n錯誤詳情：\n' + data.errors.join('\n')) : '';
+                        alert(`自動發送完成（部分失敗）\n成功：${data.sent_count || 0} 筆\n失敗：${data.failed_count || 0} 筆${details}`);
+                    }
+                })
+                .catch(err => {
+                    alert('自動發送就讀意願邀請發生錯誤：' + (err && err.message ? err.message : String(err)));
+                });
+        });
+        
         window.onclick = function(event) {
             if (event.target.classList.contains('modal')) {
                 event.target.style.display = 'none';
             }
         }
-
-        // 圖片預覽功能
-        document.getElementById('imageInput').addEventListener('change', function(e) {
-            const file = e.target.files[0];
-            if (file) {
-                const reader = new FileReader();
-                reader.onload = function(e) {
-                    document.getElementById('previewImg').src = e.target.result;
-                    document.getElementById('imagePreview').style.display = 'block';
-                };
-                reader.readAsDataURL(file);
-            } else {
-                document.getElementById('imagePreview').style.display = 'none';
-            }
-        });
-
-        // 處理圖片上傳和 OCR 識別
-        document.getElementById('uploadImageForm').addEventListener('submit', function(e) {
-            e.preventDefault();
-            
-            const formData = new FormData(this);
-            const uploadBtn = document.getElementById('uploadBtn');
-            const uploadProgress = document.getElementById('uploadProgress');
-            const uploadResult = document.getElementById('uploadResult');
-            const imagePreview = document.getElementById('imagePreview');
-            
-            // 顯示進度條
-            uploadProgress.style.display = 'block';
-            uploadResult.style.display = 'none';
-            uploadBtn.disabled = true;
-            uploadBtn.textContent = '處理中...';
-            
-            // 模擬進度（實際進度由服務器控制）
-            let progress = 0;
-            const progressInterval = setInterval(() => {
-                progress += 10;
-                if (progress <= 90) {
-                    document.getElementById('progressBar').style.width = progress + '%';
-                }
-            }, 200);
-            
-            fetch('process_attendance_image.php', {
-                method: 'POST',
-                body: formData
-            })
-            .then(response => response.json())
-            .then(data => {
-                clearInterval(progressInterval);
-                document.getElementById('progressBar').style.width = '100%';
-                
-                setTimeout(() => {
-                    uploadProgress.style.display = 'none';
-                    
-                    // 显示调试信息（如果有）
-                    const debugInfo = document.getElementById('debugInfo');
-                    const debugContent = document.getElementById('debugContent');
-                    if (data.ocr_debug_info) {
-                        let debugText = data.ocr_debug_info;
-                        
-                        // 如果有原始OCR文本，也显示
-                        if (data.ocr_raw_text) {
-                            debugText += '\n\n=== OCR 原始識別文本 ===\n';
-                            debugText += data.ocr_raw_text;
-                        }
-                        
-                        // 如果有解析后的数据，也显示
-                        if (data.parsed_data && data.parsed_data.length > 0) {
-                            debugText += '\n\n=== 解析後的數據 ===\n';
-                            data.parsed_data.forEach((item, index) => {
-                                debugText += `${index + 1}. 姓名：${item.name || '無名'}, 電話：${item.phone || '無'}\n`;
-                            });
-                        }
-                        
-                        debugContent.textContent = debugText;
-                        debugInfo.style.display = 'block';
-                    } else {
-                        debugInfo.style.display = 'none';
-                    }
-                    
-                    if (data.success) {
-                        uploadResult.innerHTML = `
-                            <div class="message success">
-                                <strong>${data.message}</strong>
-                                <div style="margin-top: 12px;">
-                                    <p><strong>匹配成功：</strong>${data.matched_count} 筆</p>
-                                    ${data.matched_count > 0 ? `
-                                        <div style="max-height: 200px; overflow-y: auto; margin-top: 8px;">
-                                            <table style="width: 100%; font-size: 12px;">
-                                                <tr style="background: #fafafa;">
-                                                    <th style="padding: 8px; text-align: left;">姓名</th>
-                                                    <th style="padding: 8px; text-align: left;">電話</th>
-                                                    <th style="padding: 8px; text-align: left;">匹配方式</th>
-                                                </tr>
-                                                ${data.matched_details.map(item => `
-                                                    <tr>
-                                                        <td style="padding: 6px;">${item.name}</td>
-                                                        <td style="padding: 6px;">${item.phone}</td>
-                                                        <td style="padding: 6px;">${item.matched_by === 'phone' ? '電話號碼' : '姓名'}</td>
-                                                    </tr>
-                                                `).join('')}
-                                            </table>
-                                        </div>
-                                    ` : ''}
-                                    ${data.unmatched_count > 0 ? `
-                                        <p style="margin-top: 12px; color: var(--warning-color);">
-                                            <strong>未匹配：</strong>${data.unmatched_count} 筆
-                                        </p>
-                                        ${data.unmatched_details.length <= 10 ? `
-                                            <div style="max-height: 150px; overflow-y: auto; margin-top: 8px; font-size: 12px; color: var(--text-secondary-color);">
-                                                ${data.unmatched_details.map(item => `
-                                                    <div>${item.name || '未知'} - ${item.phone || '無電話'}</div>
-                                                `).join('')}
-                                            </div>
-                                        ` : ''}
-                                    ` : ''}
-                                </div>
-                            </div>
-                        `;
-                        uploadResult.style.display = 'block';
-                        
-                        // 3秒後刷新頁面以顯示更新後的數據
-                        setTimeout(() => {
-                            window.location.reload();
-                        }, 3000);
-                    } else {
-                        let errorHtml = `
-                            <div class="message error" style="max-height: 300px; overflow-y: auto; word-wrap: break-word;">
-                                <strong>處理失敗：</strong><br>
-                                <div style="margin-top: 8px; white-space: pre-wrap;">${data.message.replace(/\n/g, '<br>')}</div>
-                            </div>
-                        `;
-                        
-                        // 如果有调试信息，显示可展开的调试面板
-                        if (data.ocr_debug_info) {
-                            let debugContent = escapeHtml(data.ocr_debug_info);
-                            
-                            // 如果有原始OCR文本，也显示
-                            if (data.ocr_raw_text) {
-                                debugContent += '\n\n=== OCR 原始識別文本 ===\n';
-                                debugContent += escapeHtml(data.ocr_raw_text);
-                            }
-                            
-                            // 如果有解析后的数据，也显示
-                            if (data.parsed_data && data.parsed_data.length > 0) {
-                                debugContent += '\n\n=== 解析後的數據 ===\n';
-                                data.parsed_data.forEach((item, index) => {
-                                    debugContent += `${index + 1}. 姓名：${item.name || '無名'}, 電話：${item.phone || '無'}\n`;
-                                });
-                            }
-                            
-                            errorHtml += `
-                                <div style="margin-top: 12px;">
-                                    <button onclick="toggleErrorDebugInfo()" style="background: #f0f0f0; border: 1px solid #d9d9d9; padding: 8px 16px; border-radius: 4px; cursor: pointer; font-size: 14px; width: 100%;">
-                                        <i class="fas fa-info-circle"></i> 查看詳細調試信息
-                                    </button>
-                                    <div id="errorDebugInfo" style="display: none; margin-top: 12px; background: #f5f5f5; padding: 12px; border-radius: 6px; font-size: 11px; font-family: 'Courier New', monospace; max-height: 400px; overflow-y: auto; border: 1px solid #d9d9d9; word-wrap: break-word;">
-                                        <pre style="margin: 0; white-space: pre-wrap; word-wrap: break-word; line-height: 1.6;">${debugContent}</pre>
-                                    </div>
-                                </div>
-                            `;
-                        }
-                        
-                        uploadResult.innerHTML = errorHtml;
-                        uploadResult.style.display = 'block';
-                    }
-                    
-                    uploadBtn.disabled = false;
-                    uploadBtn.textContent = '上傳並識別';
-                }, 500);
-            })
-            .catch(error => {
-                clearInterval(progressInterval);
-                uploadProgress.style.display = 'none';
-                uploadResult.innerHTML = `
-                    <div class="message error">
-                        <strong>上傳失敗：</strong>${error.message || '網絡錯誤，請重試'}
-                    </div>
-                `;
-                uploadResult.style.display = 'block';
-                uploadBtn.disabled = false;
-                uploadBtn.textContent = '上傳並識別';
-            });
-        });
     </script>
 </body>
 </html>

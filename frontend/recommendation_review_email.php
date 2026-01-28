@@ -4,6 +4,100 @@
 require_once __DIR__ . '/../../Topics-frontend/frontend/config.php';
 require_once __DIR__ . '/../../Topics-frontend/frontend/config/email_notification_config.php';
 
+function get_current_academic_year_roc() {
+    // 學年度切換：8 月起算新學年度（例：2026/01 屬於 114 學年度；2026/09 屬於 115 學年度）
+    $y = (int)date('Y');
+    $m = (int)date('n');
+    return ($m >= 8) ? ($y - 1911) : ($y - 1912);
+}
+
+function ensure_bonus_settings_yearly_table($conn) {
+    if (!$conn) return;
+    try {
+        $t = $conn->query("SHOW TABLES LIKE 'bonus_settings_yearly'");
+        if ($t && $t->num_rows > 0) return;
+        $conn->query("CREATE TABLE bonus_settings_yearly (
+            cohort_year INT PRIMARY KEY,
+            amount INT NOT NULL DEFAULT 1500,
+            updated_by VARCHAR(100) NOT NULL DEFAULT '',
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
+    } catch (Exception $e) {
+        // ignore
+    }
+}
+
+function ensure_bonus_year_row($conn, $cohort_year, $updated_by = '') {
+    if (!$conn) return;
+    $cohort_year = (int)$cohort_year;
+    if ($cohort_year <= 0) return;
+    ensure_bonus_settings_yearly_table($conn);
+    try {
+        $chk = $conn->prepare("SELECT cohort_year FROM bonus_settings_yearly WHERE cohort_year = ? LIMIT 1");
+        if ($chk) {
+            $chk->bind_param('i', $cohort_year);
+            $chk->execute();
+            $r = $chk->get_result();
+            $exists = ($r && $r->num_rows > 0);
+            $chk->close();
+            if (!$exists) {
+                $ins = $conn->prepare("INSERT INTO bonus_settings_yearly (cohort_year, amount, updated_by) VALUES (?, 1500, ?)");
+                if ($ins) {
+                    $ub = (string)$updated_by;
+                    $ins->bind_param('is', $cohort_year, $ub);
+                    @$ins->execute();
+                    $ins->close();
+                }
+            }
+        }
+    } catch (Exception $e) {
+        // ignore
+    }
+}
+
+function get_bonus_amount_for_year($conn, $cohort_year) {
+    $amount = 1500;
+    if (!$conn) return $amount;
+    $cohort_year = (int)$cohort_year;
+    if ($cohort_year <= 0) return $amount;
+
+    // 優先讀取年度表
+    try {
+        ensure_bonus_settings_yearly_table($conn);
+        $r = $conn->prepare("SELECT amount FROM bonus_settings_yearly WHERE cohort_year = ? LIMIT 1");
+        if ($r) {
+            $r->bind_param('i', $cohort_year);
+            $r->execute();
+            $res = $r->get_result();
+            if ($res && $row = $res->fetch_assoc()) {
+                $amount = (int)($row['amount'] ?? 1500);
+                if ($amount < 0) $amount = 1500;
+                $r->close();
+                return $amount;
+            }
+            $r->close();
+        }
+    } catch (Exception $e) {
+        // ignore
+    }
+
+    // 相容舊表（bonus_settings id=1）
+    try {
+        $t = $conn->query("SHOW TABLES LIKE 'bonus_settings'");
+        if ($t && $t->num_rows > 0) {
+            $r = $conn->query("SELECT amount FROM bonus_settings WHERE id = 1 LIMIT 1");
+            if ($r && $row = $r->fetch_assoc()) {
+                $amount = (int)($row['amount'] ?? 1500);
+                if ($amount < 0) $amount = 1500;
+            }
+        }
+    } catch (Exception $e) {
+        // ignore
+    }
+
+    return $amount;
+}
+
 function ensure_review_email_logs_table($conn) {
     if (!$conn) return;
     try {
@@ -30,27 +124,14 @@ function ensure_review_email_logs_table($conn) {
     }
 }
 
-function get_bonus_total_amount($conn) {
-    $amount = 1500;
-    if (!$conn) return $amount;
-    try {
-        $t = $conn->query("SHOW TABLES LIKE 'bonus_settings'");
-        if ($t && $t->num_rows > 0) {
-            $r = $conn->query("SELECT amount FROM bonus_settings WHERE id = 1 LIMIT 1");
-            if ($r && $row = $r->fetch_assoc()) {
-                $amount = (int)($row['amount'] ?? 1500);
-                if ($amount <= 0) $amount = 1500;
-            }
-        }
-    } catch (Exception $e) {
-        // ignore
-    }
-    return $amount;
+function get_bonus_total_amount($conn, $cohort_year = null) {
+    if ($cohort_year === null) $cohort_year = get_current_academic_year_roc();
+    return get_bonus_amount_for_year($conn, (int)$cohort_year);
 }
 
 // 同名通過者獎金分攤（若同名策略未啟用，通常只有 1 人通過）
 function compute_bonus_amount_for_recommendation($conn, $recommendation_id) {
-    $total = get_bonus_total_amount($conn);
+    $total = get_bonus_total_amount($conn, get_current_academic_year_roc());
     if (!$conn || $recommendation_id <= 0) return $total;
 
     $has_recommended = false;
@@ -89,16 +170,16 @@ function compute_bonus_amount_for_recommendation($conn, $recommendation_id) {
 
     $rows_ap = [];
     if ($has_recommended) {
-        $q = $conn->prepare("SELECT ar.id, ar.created_at
+        $q = $conn->prepare("SELECT ar.id
             FROM admission_recommendations ar
             LEFT JOIN recommended red ON ar.id = red.recommendations_id
             WHERE red.name = ? AND ar.status IN ('AP','approved','APPROVED')
-            ORDER BY ar.created_at ASC, ar.id ASC");
+            ORDER BY ar.id ASC");
     } else {
-        $q = $conn->prepare("SELECT ar.id, ar.created_at
+        $q = $conn->prepare("SELECT ar.id
             FROM admission_recommendations ar
             WHERE ar.student_name = ? AND ar.status IN ('AP','approved','APPROVED')
-            ORDER BY ar.created_at ASC, ar.id ASC");
+            ORDER BY ar.id ASC");
     }
 
     if ($q) {
@@ -107,7 +188,7 @@ function compute_bonus_amount_for_recommendation($conn, $recommendation_id) {
         $res = $q->get_result();
         if ($res) {
             while ($r = $res->fetch_assoc()) {
-                $rows_ap[] = ['id' => (int)$r['id'], 'created_at' => (string)$r['created_at']];
+                $rows_ap[] = ['id' => (int)$r['id']];
             }
         }
         $q->close();
@@ -274,5 +355,103 @@ function send_review_result_email_once($conn, $recommendation_id, $status_code, 
     }
 
     return ['sent' => $ok, 'message' => $ok ? 'sent' : 'failed', 'bonus_amount' => $bonus_amount];
+}
+
+function ensure_bonus_send_email_logs_table($conn) {
+    if (!$conn) return;
+    try {
+        $t = $conn->query("SHOW TABLES LIKE 'bonus_send_email_logs'");
+        if ($t && $t->num_rows > 0) return;
+        $conn->query("CREATE TABLE bonus_send_email_logs (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            recommendation_id INT NOT NULL,
+            recipient_email VARCHAR(255) NOT NULL DEFAULT '',
+            amount INT NOT NULL DEFAULT 0,
+            split_count INT NOT NULL DEFAULT 1,
+            template_name VARCHAR(50) NOT NULL DEFAULT '',
+            send_status VARCHAR(20) NOT NULL DEFAULT 'pending',
+            error_message TEXT NULL,
+            sent_by VARCHAR(100) NOT NULL DEFAULT '',
+            sent_at TIMESTAMP NULL DEFAULT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE KEY uq_rec (recommendation_id),
+            INDEX idx_sent_at (sent_at)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
+    } catch (Exception $e) {
+        // ignore
+    }
+}
+
+function send_bonus_sent_email_once($conn, $recommendation_id, $amount, $split_count = 1, $sent_by = '') {
+    if (!$conn || $recommendation_id <= 0) return ['sent' => false, 'message' => 'invalid'];
+    $amount = (int)$amount;
+    if ($amount < 0) $amount = 0;
+    $split_count = max(1, (int)$split_count);
+
+    ensure_bonus_send_email_logs_table($conn);
+
+    // 已成功寄過就跳過
+    $chk = $conn->prepare("SELECT send_status FROM bonus_send_email_logs WHERE recommendation_id = ? LIMIT 1");
+    if ($chk) {
+        $chk->bind_param('i', $recommendation_id);
+        $chk->execute();
+        $r = $chk->get_result();
+        if ($r && $row = $r->fetch_assoc()) {
+            if (($row['send_status'] ?? '') === 'sent') {
+                $chk->close();
+                return ['sent' => false, 'message' => 'already_sent'];
+            }
+        }
+        $chk->close();
+    }
+
+    $info = fetch_recommendation_recommender_contact($conn, $recommendation_id);
+    $to_email = trim((string)($info['recommender_email'] ?? ''));
+    if ($to_email === '') return ['sent' => false, 'message' => 'no_email'];
+
+    $template_name = 'bonus_sent_notification';
+    $payload = [
+        'recommender_name' => $info['recommender_name'] ?? '',
+        'recommender_student_id' => $info['recommender_student_id'] ?? '',
+        'recommender_department' => $info['recommender_department'] ?? '',
+        'student_name' => $info['student_name'] ?? '',
+        'student_school' => $info['student_school'] ?? '',
+        'student_grade' => $info['student_grade'] ?? '',
+        'bonus_amount' => (string)$amount,
+        'split_count' => (string)$split_count,
+        'sent_time' => date('Y-m-d H:i:s'),
+    ];
+
+    $ok = sendNotificationEmail($to_email, (string)($info['recommender_name'] ?? ''), $template_name, $payload);
+    $send_status = $ok ? 'sent' : 'failed';
+    $err = $ok ? null : 'email_send_failed';
+
+    $up = $conn->prepare("INSERT INTO bonus_send_email_logs
+        (recommendation_id, recipient_email, amount, split_count, template_name, send_status, error_message, sent_by, sent_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW())
+        ON DUPLICATE KEY UPDATE
+            recipient_email = VALUES(recipient_email),
+            amount = VALUES(amount),
+            split_count = VALUES(split_count),
+            template_name = VALUES(template_name),
+            send_status = VALUES(send_status),
+            error_message = VALUES(error_message),
+            sent_by = VALUES(sent_by),
+            sent_at = VALUES(sent_at)");
+    if ($up) {
+        $rid = $recommendation_id;
+        $re = $to_email;
+        $am = $amount;
+        $sc = $split_count;
+        $tn = $template_name;
+        $ss = $send_status;
+        $em = $err;
+        $sb = (string)$sent_by;
+        $up->bind_param('isiissss', $rid, $re, $am, $sc, $tn, $ss, $em, $sb);
+        @$up->execute();
+        $up->close();
+    }
+
+    return ['sent' => $ok, 'message' => $ok ? 'sent' : 'failed'];
 }
 

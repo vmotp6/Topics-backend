@@ -75,6 +75,33 @@ function ensureNewStudentBasicInfoTable($conn) {
   $conn->query($sql);
 }
 
+function hasColumn($conn, $table, $column) {
+  if (!$conn) return false;
+  $table = trim((string)$table);
+  $column = trim((string)$column);
+  if ($table === '' || $column === '') return false;
+  try {
+    $stmt = $conn->prepare("SHOW COLUMNS FROM `$table` LIKE ?");
+    if (!$stmt) return false;
+    $stmt->bind_param('s', $column);
+    $stmt->execute();
+    $res = $stmt->get_result();
+    $ok = ($res && $res->num_rows > 0);
+    $stmt->close();
+    return $ok;
+  } catch (Exception $e) {
+    return false;
+  }
+}
+
+function detectFirstExistingColumn($conn, $table, $candidates) {
+  if (!is_array($candidates)) return '';
+  foreach ($candidates as $col) {
+    if (hasColumn($conn, $table, $col)) return (string)$col;
+  }
+  return '';
+}
+
 function photoUrl($photo_path) {
   $p = trim((string)$photo_path);
   if ($p === '') return '';
@@ -153,6 +180,30 @@ try {
     if (!$conn) throw new Exception('資料庫連接失敗');
     ensureNewStudentBasicInfoTable($conn);
 
+    // 兼容不同版本欄位命名：department_id / department / department_code...
+    $dept_col = detectFirstExistingColumn($conn, 'new_student_basic_info', [
+        'department_id',
+        'department',
+        'department_code',
+        'dept_code',
+        'dept'
+    ]);
+    $dept_join = '';
+    $dept_select = "'' AS department_code, '' AS department_name";
+    if ($dept_col !== '') {
+        // departments 可能用 code 或 id 當鍵
+        $dept_key = '';
+        if (hasColumn($conn, 'departments', 'code')) $dept_key = 'code';
+        elseif (hasColumn($conn, 'departments', 'id')) $dept_key = 'id';
+
+        if ($dept_key !== '' && hasColumn($conn, 'departments', 'name')) {
+            $dept_select = "s.`$dept_col` AS department_code, COALESCE(d.name,'') AS department_name";
+            $dept_join = " LEFT JOIN departments d ON s.`$dept_col` = d.`$dept_key` ";
+        } else {
+            $dept_select = "s.`$dept_col` AS department_code, '' AS department_name";
+            $dept_join = "";
+        }
+    }
     // 取得當前學年度範圍
     $academic_year = getCurrentAcademicYearRange();
 
@@ -245,10 +296,9 @@ if ($view === 'history') {
     s.student_no,
     s.student_name,
     s.class_name,
-    s.department_id,
-    d.name AS department_name,
-    DATE_FORMAT(s.created_at, '%Y-%m-%d %H:%i:%s') AS created_at FROM new_student_basic_info s LEFT JOIN departments d
-    ON s.department_id = d.code" . $where . " ORDER BY s.created_at DESC, s.id DESC LIMIT ? OFFSET ?";
+    $dept_select,
+    DATE_FORMAT(s.created_at, '%Y-%m-%d %H:%i:%s') AS created_at
+    FROM new_student_basic_info s" . $dept_join . $where . " ORDER BY s.created_at DESC, s.id DESC LIMIT ? OFFSET ?";
 
 
     $stmt = $conn->prepare($listSql);
@@ -276,7 +326,6 @@ if ($view === 'history') {
     
     if ($view === 'previous') {
         // 查詢所有歷屆學生的學年度（非新生但仍在學）
-        // 學年度計算：如果月份 < 6，學年度是前一年；否則學年度是該年份
         $yearSql = "SELECT DISTINCT 
             (CASE 
                 WHEN MONTH(created_at) < 6 THEN YEAR(created_at) - 1
@@ -305,27 +354,7 @@ if ($view === 'history') {
         }
     }
     
-    // 同時查詢所有已畢業學生的學年度（用於顯示所有可用的學年度選項）
-    // 學年度計算：根據 created_at 計算，如果月份 < 6，學年度是前一年；否則學年度是該年份
-    $allYearSql = "SELECT DISTINCT 
-        (CASE 
-            WHEN MONTH(created_at) < 6 THEN YEAR(created_at) - 1
-            ELSE YEAR(created_at)
-        END) - 1911 AS roc_year
-        FROM new_student_basic_info
-        WHERE CURDATE() > DATE(CONCAT(YEAR(created_at) + 5, '-07-31'))
-        HAVING roc_year > 0
-        ORDER BY roc_year DESC";
-    
-    $allYearResult = $conn->query($allYearSql);
-    if ($allYearResult) {
-        while ($yearRow = $allYearResult->fetch_assoc()) {
-            $roc_year = (int)$yearRow['roc_year'];
-            if ($roc_year > 0 && !in_array($roc_year, $available_roc_years)) {
-                $available_roc_years[] = $roc_year;
-            }
-        }
-    }
+
     
     // 排序學年度（從大到小）
     rsort($available_roc_years);
