@@ -6,6 +6,7 @@ checkBackendLogin();
 
 // 引入資料庫設定
 require_once '../../Topics-frontend/frontend/config.php';
+require_once __DIR__ . '/includes/continued_admission_ranking.php';
 
 // 設置頁面標題
 $page_title = (isset($_SESSION['username']) && $_SESSION['username'] === 'IMD') ? '資管科續招報名管理' : '續招報名管理';
@@ -539,6 +540,7 @@ function getStatusClass($status) {
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title><?php echo $page_title; ?> - Topics 後台管理系統</title>
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
     <style>
         :root {
             --primary-color: #1890ff; --text-color: #262626; --text-secondary-color: #8c8c8c;
@@ -641,6 +643,34 @@ function getStatusClass($status) {
             gap: 6px;
         }
         
+        .btn-secondary {
+            background: #fff;
+            color: #262626;
+            border: 1px solid #d9d9d9;
+            padding: 8px 16px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+            transition: all 0.3s;
+        }
+        .btn-secondary:hover {
+            background: #f5f5f5;
+            border-color: #40a9ff;
+            color: #1890ff;
+        }
+        .btn-link {
+            color: #1890ff;
+            background: none;
+            border: none;
+            cursor: pointer;
+            padding: 4px 8px;
+            font-size: 13px;
+            text-decoration: none;
+        }
+        .btn-link:hover {
+            color: #40a9ff;
+            text-decoration: underline;
+        }
         .btn-primary {
             background: #1890ff;
             color: white;
@@ -911,6 +941,7 @@ function getStatusClass($status) {
                             $current_tab = $_GET['tab'] ?? ($can_manage_list ? 'quota' : 'list');
                             $quota_active = ($current_tab === 'quota') ? 'active' : '';
                             $list_active = ($current_tab === 'list') ? 'active' : '';
+                            $ranking_active = ($current_tab === 'ranking') ? 'active' : '';
                             ?>
                             <div class="tabs-nav-left">
                                 <?php if ($can_manage_list): // 只有可以管理的角色才顯示名額管理 TAB ?>
@@ -921,6 +952,11 @@ function getStatusClass($status) {
                                 <div class="tab-item <?php echo $list_active; ?>" onclick="switchTab('list')">
                                    續招報名名單
                                 </div>
+                                <?php if ($is_director || $is_admin_or_staff): // 主任和招生中心可以看到達到錄取標準名單 ?>
+                                <div class="tab-item <?php echo $ranking_active; ?>" onclick="switchTab('ranking')">
+                                    達到錄取標準名單
+                                </div>
+                                <?php endif; ?>
                             </div>
                             <div class="tabs-nav-right" id="tabActionButtons">
                                 <?php if ($can_manage_list): ?>
@@ -1314,6 +1350,274 @@ function getStatusClass($status) {
                         </div>
                         <?php endif; ?>
                     </div>
+
+                    <!-- 達到錄取標準名單 TAB 內容 -->
+                    <?php if ($is_director || $is_admin_or_staff): ?>
+                    <?php
+                    // 獲取達到錄取標準的名單
+                    $ranking_data = [];
+                    if ($is_director && !empty($user_department_code)) {
+                        // 主任：只顯示自己科系的名單
+                        $ranking_data = getDepartmentRanking($conn, $user_department_code);
+                    } elseif ($is_admin_or_staff) {
+                        // 招生中心：顯示所有科系的名單
+                        $all_departments = [];
+                        $dept_result = $conn->query("SELECT code, name FROM departments WHERE code != 'AA' ORDER BY code");
+                        if ($dept_result) {
+                            while ($row = $dept_result->fetch_assoc()) {
+                                $dept_ranking = getDepartmentRanking($conn, $row['code']);
+                                if (!empty($dept_ranking) && !empty($dept_ranking['applications'])) {
+                                    // 確保包含科系名稱
+                                    if (!isset($dept_ranking['department_name'])) {
+                                        $dept_ranking['department_name'] = $row['name'];
+                                    }
+                                    $all_departments[$row['code']] = $dept_ranking;
+                                }
+                            }
+                        }
+                        $ranking_data = ['all_departments' => $all_departments];
+                    }
+                    ?>
+                    <div id="tab-ranking" class="tab-content <?php echo $ranking_active; ?>">
+                        <div class="card-body">
+                            <?php if ($is_director && !empty($user_department_code)): ?>
+                                <!-- 主任：顯示單一科系名單 -->
+                                <?php if (!empty($ranking_data) && !empty($ranking_data['applications'])): ?>
+                                    <div style="margin-bottom: 16px; display: flex; justify-content: space-between; align-items: center;">
+                                        <div>
+                                            <h4 style="margin: 0; color: var(--text-color);"><?php echo htmlspecialchars($department_data[$user_department_code] ?? $user_department_code); ?> - 達到錄取標準名單</h4>
+                                            <p style="margin: 8px 0 0 0; color: var(--text-secondary-color); font-size: 14px;">
+                                                錄取標準：<?php echo $ranking_data['cutoff_score']; ?> 分 | 
+                                                名額：<?php echo $ranking_data['total_quota']; ?> 名 | 
+                                                已完成評分：<?php echo count($ranking_data['applications']); ?> 人
+                                            </p>
+                                        </div>
+                                        <button onclick="exportRankingExcel('<?php echo $user_department_code; ?>', '<?php echo htmlspecialchars($department_data[$user_department_code] ?? $user_department_code, ENT_QUOTES); ?>')" class="btn btn-primary" style="padding: 8px 16px;">
+                                            <i class="fas fa-file-excel" style="margin-right: 6px;"></i> 匯出 Excel
+                                        </button>
+                                    </div>
+                                    <div class="table-container">
+                                        <table class="table">
+                                            <thead>
+                                                <tr>
+                                                    <th>排名</th>
+                                                    <th>報名編號</th>
+                                                    <th>姓名</th>
+                                                    <th>老師1評分</th>
+                                                    <th>老師2評分</th>
+                                                    <th>主任評分</th>
+                                                    <th>平均分數</th>
+                                                    <th>錄取狀態</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody>
+                                                <?php foreach ($ranking_data['applications'] as $index => $app): 
+                                                    // 獲取三位評審的評分
+                                                    $teacher1_score = null;
+                                                    $teacher2_score = null;
+                                                    $director_score = null;
+                                                    foreach ($app['scores'] as $score) {
+                                                        if ($score['assignment_order'] == 1) {
+                                                            $teacher1_score = $score;
+                                                        } elseif ($score['assignment_order'] == 2) {
+                                                            $teacher2_score = $score;
+                                                        } elseif ($score['assignment_order'] == 3) {
+                                                            $director_score = $score;
+                                                        }
+                                                    }
+                                                ?>
+                                                <tr>
+                                                    <td><?php echo $index + 1; ?></td>
+                                                    <td><?php echo htmlspecialchars($app['apply_no'] ?? $app['id']); ?></td>
+                                                    <td><?php echo htmlspecialchars($app['name']); ?></td>
+                                                    <td>
+                                                        <?php if ($teacher1_score): ?>
+                                                            <?php echo $teacher1_score['self_intro_score'] + $teacher1_score['skills_score']; ?> 分
+                                                            <small style="color: #8c8c8c; display: block;">(自傳: <?php echo $teacher1_score['self_intro_score']; ?>, 專長: <?php echo $teacher1_score['skills_score']; ?>)</small>
+                                                        <?php else: ?>
+                                                            <span style="color: #8c8c8c;">未評分</span>
+                                                        <?php endif; ?>
+                                                    </td>
+                                                    <td>
+                                                        <?php if ($teacher2_score): ?>
+                                                            <?php echo $teacher2_score['self_intro_score'] + $teacher2_score['skills_score']; ?> 分
+                                                            <small style="color: #8c8c8c; display: block;">(自傳: <?php echo $teacher2_score['self_intro_score']; ?>, 專長: <?php echo $teacher2_score['skills_score']; ?>)</small>
+                                                        <?php else: ?>
+                                                            <span style="color: #8c8c8c;">未評分</span>
+                                                        <?php endif; ?>
+                                                    </td>
+                                                    <td>
+                                                        <?php if ($director_score): ?>
+                                                            <?php echo $director_score['self_intro_score'] + $director_score['skills_score']; ?> 分
+                                                            <small style="color: #8c8c8c; display: block;">(自傳: <?php echo $director_score['self_intro_score']; ?>, 專長: <?php echo $director_score['skills_score']; ?>)</small>
+                                                        <?php else: ?>
+                                                            <span style="color: #8c8c8c;">未評分</span>
+                                                        <?php endif; ?>
+                                                    </td>
+                                                    <td style="font-weight: bold; font-size: 16px; color: <?php echo $app['average_score'] >= $ranking_data['cutoff_score'] ? '#52c41a' : '#f5222d'; ?>;">
+                                                        <?php echo number_format($app['average_score'], 2); ?> 分
+                                                    </td>
+                                                    <td>
+                                                        <?php if ($app['average_score'] >= $ranking_data['cutoff_score']): ?>
+                                                            <?php if ($index < $ranking_data['total_quota']): ?>
+                                                                <span class="status-badge status-approved">正取 <?php echo $index + 1; ?> 號</span>
+                                                            <?php else: ?>
+                                                                <span class="status-badge status-waitlist">備取 <?php echo $index - $ranking_data['total_quota'] + 1; ?> 號</span>
+                                                            <?php endif; ?>
+                                                        <?php else: ?>
+                                                            <span class="status-badge status-rejected">不錄取</span>
+                                                        <?php endif; ?>
+                                                    </td>
+                                                </tr>
+                                                <?php endforeach; ?>
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                <?php else: ?>
+                                    <div class="empty-state">
+                                        <i class="fas fa-inbox fa-3x" style="margin-bottom: 16px;"></i>
+                                        <p>目前尚無達到錄取標準的學生名單。</p>
+                                    </div>
+                                <?php endif; ?>
+                            <?php elseif ($is_admin_or_staff): ?>
+                                <!-- 招生中心：顯示所有科系名單 -->
+                                <?php if (!empty($ranking_data) && isset($ranking_data['all_departments']) && !empty($ranking_data['all_departments'])): ?>
+                                    <div style="margin-bottom: 16px; display: flex; justify-content: space-between; align-items: center; gap: 12px;">
+                                        <div>
+                                            <h4 style="margin: 0; color: var(--text-color);">達到錄取標準名單（全部科系）</h4>
+                                            <p style="margin: 8px 0 0 0; color: var(--text-secondary-color); font-size: 14px;">
+                                                共 <?php echo count($ranking_data['all_departments']); ?> 個科系
+                                            </p>
+                                        </div>
+                                        <div style="display:flex; gap: 8px; align-items:center;">
+                                            <a href="continued_admission_committee.php" class="btn btn-secondary" style="padding: 8px 16px; text-decoration:none; display:inline-flex; align-items:center; gap:8px;">
+                                                <i class="fas fa-gavel"></i> 招生委員會：確認/公告/寄信
+                                            </a>
+                                            <button onclick="exportAllRankingExcel()" class="btn btn-primary" style="padding: 8px 16px;">
+                                                <i class="fas fa-file-excel" style="margin-right: 6px;"></i> 匯出全部科系 Excel
+                                            </button>
+                                        </div>
+                                    </div>
+                                    
+                                    <!-- 科系分頁（樣式比照評分頁的 Tab） -->
+                                    <div style="margin-bottom: 20px; border-bottom: 1px solid #f0f0f0;">
+                                        <div id="rankingDeptTabs" style="display:flex; gap: 18px; align-items: center; overflow-x: auto; padding: 8px 4px 0 4px;">
+                                            <button type="button" class="ranking-dept-tab active" data-dept="all" onclick="switchRankingDeptTab('all')"
+                                                    style="background: none; border: none; padding: 10px 6px; cursor: pointer; font-size: 16px; color: #595959; border-bottom: 2px solid var(--primary-color);">
+                                                全部科系
+                                            </button>
+                                            <?php foreach ($ranking_data['all_departments'] as $dept_code => $dept_ranking): 
+                                                $dept_name = $department_data[$dept_code] ?? $dept_code;
+                                            ?>
+                                                <button type="button" class="ranking-dept-tab" data-dept="<?php echo htmlspecialchars($dept_code, ENT_QUOTES); ?>" onclick="switchRankingDeptTab('<?php echo htmlspecialchars($dept_code, ENT_QUOTES); ?>')"
+                                                        style="background: none; border: none; padding: 10px 6px; cursor: pointer; font-size: 16px; color: #8c8c8c; border-bottom: 2px solid transparent; white-space: nowrap;">
+                                                    <?php echo htmlspecialchars($dept_name); ?>
+                                                </button>
+                                            <?php endforeach; ?>
+                                        </div>
+                                    </div>
+
+                                    <?php foreach ($ranking_data['all_departments'] as $dept_code => $dept_ranking): ?>
+                                        <div class="ranking-dept-section" data-dept-code="<?php echo htmlspecialchars($dept_code, ENT_QUOTES); ?>" style="margin-bottom: 32px;">
+                                            <div style="background: #fafafa; padding: 12px 16px; border-bottom: 2px solid var(--primary-color); margin-bottom: 16px;">
+                                                <h4 style="margin: 0; color: var(--text-color);">
+                                                    <?php echo htmlspecialchars($department_data[$dept_code] ?? $dept_code); ?>
+                                                </h4>
+                                                <p style="margin: 8px 0 0 0; color: var(--text-secondary-color); font-size: 14px;">
+                                                    錄取標準：<?php echo $dept_ranking['cutoff_score']; ?> 分 | 
+                                                    名額：<?php echo $dept_ranking['total_quota']; ?> 名 | 
+                                                    已完成評分：<?php echo count($dept_ranking['applications']); ?> 人
+                                                </p>
+                                            </div>
+                                            <div class="table-container">
+                                                <table class="table">
+                                                    <thead>
+                                                        <tr>
+                                                            <th>排名</th>
+                                                            <th>報名編號</th>
+                                                            <th>姓名</th>
+                                                            <th>老師1評分</th>
+                                                            <th>老師2評分</th>
+                                                            <th>主任評分</th>
+                                                            <th>平均分數</th>
+                                                            <th>錄取狀態</th>
+                                                        </tr>
+                                                    </thead>
+                                                    <tbody>
+                                                        <?php foreach ($dept_ranking['applications'] as $index => $app): 
+                                                            // 獲取三位評審的評分
+                                                            $teacher1_score = null;
+                                                            $teacher2_score = null;
+                                                            $director_score = null;
+                                                            foreach ($app['scores'] as $score) {
+                                                                if ($score['assignment_order'] == 1) {
+                                                                    $teacher1_score = $score;
+                                                                } elseif ($score['assignment_order'] == 2) {
+                                                                    $teacher2_score = $score;
+                                                                } elseif ($score['assignment_order'] == 3) {
+                                                                    $director_score = $score;
+                                                                }
+                                                            }
+                                                        ?>
+                                                        <tr>
+                                                            <td><?php echo $index + 1; ?></td>
+                                                            <td><?php echo htmlspecialchars($app['apply_no'] ?? $app['id']); ?></td>
+                                                            <td><?php echo htmlspecialchars($app['name']); ?></td>
+                                                            <td>
+                                                                <?php if ($teacher1_score): ?>
+                                                                    <?php echo $teacher1_score['self_intro_score'] + $teacher1_score['skills_score']; ?> 分
+                                                                    <small style="color: #8c8c8c; display: block;">(自傳: <?php echo $teacher1_score['self_intro_score']; ?>, 專長: <?php echo $teacher1_score['skills_score']; ?>)</small>
+                                                                <?php else: ?>
+                                                                    <span style="color: #8c8c8c;">未評分</span>
+                                                                <?php endif; ?>
+                                                            </td>
+                                                            <td>
+                                                                <?php if ($teacher2_score): ?>
+                                                                    <?php echo $teacher2_score['self_intro_score'] + $teacher2_score['skills_score']; ?> 分
+                                                                    <small style="color: #8c8c8c; display: block;">(自傳: <?php echo $teacher2_score['self_intro_score']; ?>, 專長: <?php echo $teacher2_score['skills_score']; ?>)</small>
+                                                                <?php else: ?>
+                                                                    <span style="color: #8c8c8c;">未評分</span>
+                                                                <?php endif; ?>
+                                                            </td>
+                                                            <td>
+                                                                <?php if ($director_score): ?>
+                                                                    <?php echo $director_score['self_intro_score'] + $director_score['skills_score']; ?> 分
+                                                                    <small style="color: #8c8c8c; display: block;">(自傳: <?php echo $director_score['self_intro_score']; ?>, 專長: <?php echo $director_score['skills_score']; ?>)</small>
+                                                                <?php else: ?>
+                                                                    <span style="color: #8c8c8c;">未評分</span>
+                                                                <?php endif; ?>
+                                                            </td>
+                                                            <td style="font-weight: bold; font-size: 16px; color: <?php echo $app['average_score'] >= $dept_ranking['cutoff_score'] ? '#52c41a' : '#f5222d'; ?>;">
+                                                                <?php echo number_format($app['average_score'], 2); ?> 分
+                                                            </td>
+                                                            <td>
+                                                                <?php if ($app['average_score'] >= $dept_ranking['cutoff_score']): ?>
+                                                                    <?php if ($index < $dept_ranking['total_quota']): ?>
+                                                                        <span class="status-badge status-approved">正取 <?php echo $index + 1; ?> 號</span>
+                                                                    <?php else: ?>
+                                                                        <span class="status-badge status-waitlist">備取 <?php echo $index - $dept_ranking['total_quota'] + 1; ?> 號</span>
+                                                                    <?php endif; ?>
+                                                                <?php else: ?>
+                                                                    <span class="status-badge status-rejected">不錄取</span>
+                                                                <?php endif; ?>
+                                                            </td>
+                                                        </tr>
+                                                        <?php endforeach; ?>
+                                                    </tbody>
+                                                </table>
+                                            </div>
+                                        </div>
+                                    <?php endforeach; ?>
+                                <?php else: ?>
+                                    <div class="empty-state">
+                                        <i class="fas fa-inbox fa-3x" style="margin-bottom: 16px;"></i>
+                                        <p>目前尚無達到錄取標準的學生名單。</p>
+                                    </div>
+                                <?php endif; ?>
+                            <?php endif; ?>
+                        </div>
+                    </div>
+                    <?php endif; ?>
                 </div>
             </div>
         </div>
@@ -1420,6 +1724,41 @@ function getStatusClass($status) {
         // 跳轉到新的 URL，保留排序參數和 TAB 參數
         window.location.href = `continued_admission_list.php?tab=${tabName}&sort_by=${sortBy}&sort_order=${sortOrder}`;
     }
+
+
+    // 初始化時顯示/隱藏按鈕和搜尋框
+    document.addEventListener('DOMContentLoaded', function() {
+        // 初始化時顯示/隱藏按鈕和搜尋框
+        const activeTab = document.querySelector('.tab-content.active');
+        const searchInput = document.getElementById('searchInput');
+        const deptFilterContainer = document.getElementById('departmentFilterContainer');
+        
+        if (activeTab && activeTab.id === 'tab-quota') {
+            const quotaActionButtons = document.querySelectorAll('.quota-action-btn');
+            quotaActionButtons.forEach(btn => {
+                btn.style.display = 'inline-flex';
+            });
+            if (searchInput) {
+                searchInput.style.display = 'none';
+            }
+            if (deptFilterContainer) {
+                deptFilterContainer.style.display = 'none';
+            }
+        } else if (activeTab && activeTab.id === 'tab-ranking') {
+            // 達到錄取標準名單 TAB
+            if (searchInput) {
+                searchInput.style.display = 'none';
+            }
+            if (deptFilterContainer) {
+                deptFilterContainer.style.display = 'none';
+            }
+        } else {
+            if (searchInput) {
+                searchInput.style.display = 'block';
+            }
+            // 招生中心顯示科系篩選（已在頁面內容中顯示，不需要在這裡控制）
+        }
+    });
 
     document.addEventListener('DOMContentLoaded', function() {
         // 初始化時顯示/隱藏按鈕和搜尋框
@@ -1808,6 +2147,287 @@ function getStatusClass($status) {
                 }
             });
         }
+    });
+    <?php endif; ?>
+
+    <?php if ($is_director || $is_admin_or_staff): ?>
+    // Excel 匯出功能
+    function exportRankingExcel(departmentCode, departmentName) {
+        // 從 API 獲取單一科系的排名數據
+        fetch(`get_department_ranking.php?department=${encodeURIComponent(departmentCode)}`)
+            .then(response => response.json())
+            .then(data => {
+                if (!data.success) {
+                    showToast('獲取數據失敗：' + (data.message || '未知錯誤'), false);
+                    return;
+                }
+
+                const deptData = data.department;
+                const excelData = [
+                    ['排名', '報名編號', '姓名', '老師1總分', '老師1自傳', '老師1專長', '老師2總分', '老師2自傳', '老師2專長', '主任總分', '主任自傳', '主任專長', '平均分數', '錄取狀態']
+                ];
+
+                deptData.applications.forEach((app, index) => {
+                    // 獲取三位評審的評分
+                    let teacher1Total = '', teacher1Intro = '', teacher1Skills = '';
+                    let teacher2Total = '', teacher2Intro = '', teacher2Skills = '';
+                    let directorTotal = '', directorIntro = '', directorSkills = '';
+
+                    app.scores.forEach(score => {
+                        const total = score.self_intro_score + score.skills_score;
+                        if (score.assignment_order == 1) {
+                            teacher1Total = total;
+                            teacher1Intro = score.self_intro_score;
+                            teacher1Skills = score.skills_score;
+                        } else if (score.assignment_order == 2) {
+                            teacher2Total = total;
+                            teacher2Intro = score.self_intro_score;
+                            teacher2Skills = score.skills_score;
+                        } else if (score.assignment_order == 3) {
+                            directorTotal = total;
+                            directorIntro = score.self_intro_score;
+                            directorSkills = score.skills_score;
+                        }
+                    });
+
+                    // 確定錄取狀態
+                    let status = '';
+                    if (app.average_score >= deptData.cutoff_score) {
+                        if (index < deptData.total_quota) {
+                            status = `正取 ${index + 1} 號`;
+                        } else {
+                            status = `備取 ${index - deptData.total_quota + 1} 號`;
+                        }
+                    } else {
+                        status = '不錄取';
+                    }
+
+                    excelData.push([
+                        index + 1,
+                        app.apply_no || app.id,
+                        app.name,
+                        teacher1Total || '',
+                        teacher1Intro || '',
+                        teacher1Skills || '',
+                        teacher2Total || '',
+                        teacher2Intro || '',
+                        teacher2Skills || '',
+                        directorTotal || '',
+                        directorIntro || '',
+                        directorSkills || '',
+                        app.average_score.toFixed(2),
+                        status
+                    ]);
+                });
+
+                // 創建工作表
+                const ws = XLSX.utils.aoa_to_sheet(excelData);
+                
+                // 設置列寬
+                ws['!cols'] = [
+                    { wch: 8 },  // 排名
+                    { wch: 15 }, // 報名編號
+                    { wch: 12 }, // 姓名
+                    { wch: 12 }, // 老師1總分
+                    { wch: 12 }, // 老師1自傳
+                    { wch: 12 }, // 老師1專長
+                    { wch: 12 }, // 老師2總分
+                    { wch: 12 }, // 老師2自傳
+                    { wch: 12 }, // 老師2專長
+                    { wch: 12 }, // 主任總分
+                    { wch: 12 }, // 主任自傳
+                    { wch: 12 }, // 主任專長
+                    { wch: 12 }, // 平均分數
+                    { wch: 15 }  // 錄取狀態
+                ];
+
+                // 創建工作簿
+                const wb = XLSX.utils.book_new();
+                // 工作表名稱限制為31個字符
+                const sheetName = departmentName.length > 31 
+                    ? departmentName.substring(0, 31) 
+                    : departmentName;
+                XLSX.utils.book_append_sheet(wb, ws, sheetName);
+
+                // 生成檔案名稱
+                const now = new Date();
+                const dateStr = now.getFullYear() + 
+                               String(now.getMonth() + 1).padStart(2, '0') + 
+                               String(now.getDate()).padStart(2, '0') + '_' +
+                               String(now.getHours()).padStart(2, '0') + 
+                               String(now.getMinutes()).padStart(2, '0');
+                const fileName = `達到錄取標準名單_${departmentName}_${dateStr}.xlsx`;
+
+                // 匯出檔案
+                XLSX.writeFile(wb, fileName);
+                showToast('Excel 匯出成功', true);
+            })
+            .catch(error => {
+                console.error('匯出錯誤:', error);
+                showToast('匯出失敗：' + error.message, false);
+            });
+    }
+
+    function exportAllRankingExcel() {
+        // 從 API 獲取所有科系的排名數據
+        fetch('get_all_department_ranking.php')
+            .then(response => response.json())
+            .then(data => {
+                if (!data.success) {
+                    showToast('獲取數據失敗：' + (data.message || '未知錯誤'), false);
+                    return;
+                }
+
+                // 創建工作簿
+                const wb = XLSX.utils.book_new();
+
+                // 為每個科系創建一個工作表
+                const selectedDeptCodes = getSelectedRankingDeptCodes();
+                const deptCodes = Object.keys(data.departments).filter(code => selectedDeptCodes === null || selectedDeptCodes.includes(code));
+
+                if (deptCodes.length === 0) {
+                    showToast('請先勾選至少一個科系再匯出', false);
+                    return;
+                }
+
+                deptCodes.forEach(deptCode => {
+                    const deptData = data.departments[deptCode];
+                    const excelData = [
+                        ['排名', '報名編號', '姓名', '老師1總分', '老師1自傳', '老師1專長', '老師2總分', '老師2自傳', '老師2專長', '主任總分', '主任自傳', '主任專長', '平均分數', '錄取狀態']
+                    ];
+
+                    deptData.applications.forEach((app, index) => {
+                        // 獲取三位評審的評分
+                        let teacher1Total = '', teacher1Intro = '', teacher1Skills = '';
+                        let teacher2Total = '', teacher2Intro = '', teacher2Skills = '';
+                        let directorTotal = '', directorIntro = '', directorSkills = '';
+
+                        app.scores.forEach(score => {
+                            const total = score.self_intro_score + score.skills_score;
+                            if (score.assignment_order == 1) {
+                                teacher1Total = total;
+                                teacher1Intro = score.self_intro_score;
+                                teacher1Skills = score.skills_score;
+                            } else if (score.assignment_order == 2) {
+                                teacher2Total = total;
+                                teacher2Intro = score.self_intro_score;
+                                teacher2Skills = score.skills_score;
+                            } else if (score.assignment_order == 3) {
+                                directorTotal = total;
+                                directorIntro = score.self_intro_score;
+                                directorSkills = score.skills_score;
+                            }
+                        });
+
+                        // 確定錄取狀態
+                        let status = '';
+                        if (app.average_score >= deptData.cutoff_score) {
+                            if (index < deptData.total_quota) {
+                                status = `正取 ${index + 1} 號`;
+                            } else {
+                                status = `備取 ${index - deptData.total_quota + 1} 號`;
+                            }
+                        } else {
+                            status = '不錄取';
+                        }
+
+                        excelData.push([
+                            index + 1,
+                            app.apply_no || app.id,
+                            app.name,
+                            teacher1Total || '',
+                            teacher1Intro || '',
+                            teacher1Skills || '',
+                            teacher2Total || '',
+                            teacher2Intro || '',
+                            teacher2Skills || '',
+                            directorTotal || '',
+                            directorIntro || '',
+                            directorSkills || '',
+                            app.average_score.toFixed(2),
+                            status
+                        ]);
+                    });
+
+                    // 創建工作表
+                    const ws = XLSX.utils.aoa_to_sheet(excelData);
+                    
+                    // 設置列寬
+                    ws['!cols'] = [
+                        { wch: 8 },  // 排名
+                        { wch: 15 }, // 報名編號
+                        { wch: 12 }, // 姓名
+                        { wch: 12 }, // 老師1總分
+                        { wch: 12 }, // 老師1自傳
+                        { wch: 12 }, // 老師1專長
+                        { wch: 12 }, // 老師2總分
+                        { wch: 12 }, // 老師2自傳
+                        { wch: 12 }, // 老師2專長
+                        { wch: 12 }, // 主任總分
+                        { wch: 12 }, // 主任自傳
+                        { wch: 12 }, // 主任專長
+                        { wch: 12 }, // 平均分數
+                        { wch: 15 }  // 錄取狀態
+                    ];
+
+                    // 添加工作表到工作簿（工作表名稱限制為31個字符）
+                    const sheetName = deptData.department_name.length > 31 
+                        ? deptData.department_name.substring(0, 31) 
+                        : deptData.department_name;
+                    XLSX.utils.book_append_sheet(wb, ws, sheetName);
+                });
+
+                // 生成檔案名稱
+                const now = new Date();
+                const dateStr = now.getFullYear() + 
+                               String(now.getMonth() + 1).padStart(2, '0') + 
+                               String(now.getDate()).padStart(2, '0') + '_' +
+                               String(now.getHours()).padStart(2, '0') + 
+                               String(now.getMinutes()).padStart(2, '0');
+                const fileName = `達到錄取標準名單_全部科系_${dateStr}.xlsx`;
+
+                // 匯出檔案
+                XLSX.writeFile(wb, fileName);
+                showToast('Excel 匯出成功', true);
+            })
+            .catch(error => {
+                console.error('匯出錯誤:', error);
+                showToast('匯出失敗：' + error.message, false);
+            });
+    }
+
+    // Ranking TAB 科系分頁（招生中心）：比照「評分」那種 tab 切換顯示
+    function switchRankingDeptTab(deptCode) {
+        const tabs = document.querySelectorAll('#rankingDeptTabs .ranking-dept-tab');
+        tabs.forEach(t => {
+            const isActive = (t.getAttribute('data-dept') === deptCode);
+            t.classList.toggle('active', isActive);
+            t.style.color = isActive ? '#262626' : '#8c8c8c';
+            t.style.borderBottomColor = isActive ? 'var(--primary-color)' : 'transparent';
+        });
+
+        const sections = document.querySelectorAll('.ranking-dept-section');
+        sections.forEach(sec => {
+            const code = sec.getAttribute('data-dept-code');
+            sec.style.display = (deptCode === 'all' || deptCode === code) ? '' : 'none';
+        });
+
+        // 記住最後選擇（刷新後保留）
+        try { localStorage.setItem('rankingDeptTab', deptCode); } catch (e) {}
+    }
+
+    document.addEventListener('DOMContentLoaded', function() {
+        const tabsWrap = document.getElementById('rankingDeptTabs');
+        if (!tabsWrap) return;
+        let saved = 'all';
+        try {
+            const v = localStorage.getItem('rankingDeptTab');
+            if (v) saved = v;
+        } catch (e) {}
+
+        // 若保存的科系不存在，就回到 all
+        const exists = !!tabsWrap.querySelector(`.ranking-dept-tab[data-dept=\"${CSS.escape(saved)}\"]`);
+        switchRankingDeptTab(exists ? saved : 'all');
     });
     <?php endif; ?>
 

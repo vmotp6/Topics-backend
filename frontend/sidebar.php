@@ -278,6 +278,12 @@ function hasPermission($permission_code, $user_role, $permissions_array) {
                     <i class="fas fa-user-plus"></i>
                     <span>續招</span>
                 </a>
+                <?php if ($is_admin || $is_staff): ?>
+                <a href="continued_admission_committee.php" class="menu-item <?php echo $current_page === 'continued_admission_committee' ? 'active' : ''; ?>">
+                    <i class="fas fa-clipboard-check"></i>
+                    <span>續招錄取公告/寄信</span>
+                </a>
+                <?php endif; ?>
             <?php endif; ?>
 
             <!-- 電子簽章 - 所有已登入用戶都可以使用 -->

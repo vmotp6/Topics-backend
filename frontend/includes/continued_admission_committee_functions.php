@@ -1,0 +1,320 @@
+<?php
+/**
+ * 續招：招生委員會確認錄取 / 公告 / 寄信（後台共用函式）
+ */
+require_once __DIR__ . '/../../../Topics-frontend/frontend/config.php';
+
+function caEnsureCommitteeTables(mysqli $conn): void {
+    // 1) 公告表（僅供續招用）
+    $conn->query("
+        CREATE TABLE IF NOT EXISTS continued_admission_result_announcements (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            scope VARCHAR(50) NOT NULL DEFAULT 'all' COMMENT 'all 或 department_code',
+            year INT NOT NULL COMMENT '年度（西元）',
+            title VARCHAR(255) NOT NULL,
+            content TEXT NOT NULL,
+            publish_at DATETIME NULL,
+            published_at DATETIME NULL,
+            created_by_user_id INT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            UNIQUE KEY uk_scope_year (scope, year),
+            INDEX idx_publish_at (publish_at),
+            INDEX idx_published_at (published_at)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    ");
+
+    // 2) 寄信佇列
+    $conn->query("
+        CREATE TABLE IF NOT EXISTS continued_admission_email_queue (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            application_id INT NOT NULL,
+            to_email VARCHAR(255) NOT NULL,
+            to_name VARCHAR(255) NULL,
+            department_code VARCHAR(50) NULL,
+            result_status VARCHAR(50) NOT NULL,
+            subject VARCHAR(255) NOT NULL,
+            body MEDIUMTEXT NOT NULL,
+            scheduled_at DATETIME NOT NULL,
+            sent_at DATETIME NULL,
+            status VARCHAR(20) NOT NULL DEFAULT 'pending' COMMENT 'pending/sent/failed',
+            error TEXT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            UNIQUE KEY uk_app_email_type (application_id, to_email, scheduled_at),
+            INDEX idx_status_scheduled (status, scheduled_at),
+            INDEX idx_application_id (application_id)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    ");
+}
+
+function caGetAnnounceTimeForDept(mysqli $conn, string $deptCode): ?string {
+    $stmt = $conn->prepare("SELECT announce_time FROM department_quotas WHERE department_code = ? AND is_active = 1 LIMIT 1");
+    if (!$stmt) return null;
+    $stmt->bind_param("s", $deptCode);
+    $stmt->execute();
+    $row = $stmt->get_result()->fetch_assoc();
+    $stmt->close();
+    $t = $row['announce_time'] ?? null;
+    return $t ? (string)$t : null;
+}
+
+function caGetGlobalAnnounceTime(mysqli $conn): ?string {
+    $res = $conn->query("
+        SELECT MAX(announce_time) AS max_announce_time
+        FROM department_quotas
+        WHERE is_active = 1 AND announce_time IS NOT NULL AND announce_time != ''
+    ");
+    if (!$res) return null;
+    $row = $res->fetch_assoc();
+    $t = $row['max_announce_time'] ?? null;
+    return $t ? (string)$t : null;
+}
+
+function caUpsertAnnouncement(mysqli $conn, int $year, string $title, string $content, ?string $publishAt, ?int $createdByUserId): void {
+    $scope = 'all';
+    $stmt = $conn->prepare("
+        INSERT INTO continued_admission_result_announcements (scope, year, title, content, publish_at, created_by_user_id)
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON DUPLICATE KEY UPDATE
+            title = VALUES(title),
+            content = VALUES(content),
+            publish_at = VALUES(publish_at),
+            created_by_user_id = VALUES(created_by_user_id),
+            updated_at = NOW()
+    ");
+    if (!$stmt) {
+        throw new Exception("無法準備公告 upsert SQL: " . $conn->error);
+    }
+    $stmt->bind_param("sisssi", $scope, $year, $title, $content, $publishAt, $createdByUserId);
+    $stmt->execute();
+    $stmt->close();
+}
+
+function caGetAnnouncement(mysqli $conn, int $year): ?array {
+    $scope = 'all';
+    $stmt = $conn->prepare("SELECT * FROM continued_admission_result_announcements WHERE scope = ? AND year = ? LIMIT 1");
+    if (!$stmt) return null;
+    $stmt->bind_param("si", $scope, $year);
+    $stmt->execute();
+    $row = $stmt->get_result()->fetch_assoc();
+    $stmt->close();
+    return $row ?: null;
+}
+
+function caMarkAnnouncementPublished(mysqli $conn, int $year): void {
+    $scope = 'all';
+    $stmt = $conn->prepare("UPDATE continued_admission_result_announcements SET published_at = NOW(), updated_at = NOW() WHERE scope = ? AND year = ?");
+    if (!$stmt) throw new Exception("無法更新公告 published_at: " . $conn->error);
+    $stmt->bind_param("si", $scope, $year);
+    $stmt->execute();
+    $stmt->close();
+}
+
+function caEnsureBulletinBaseTables(mysqli $conn): bool {
+    $need = ['bulletin_board', 'bulletin_types', 'bulletin_statuses'];
+    foreach ($need as $t) {
+        $r = $conn->query("SHOW TABLES LIKE '{$t}'");
+        if (!$r || $r->num_rows === 0) return false;
+    }
+    // 確保有預設 type/status（若已存在則略過）
+    $conn->query("INSERT IGNORE INTO bulletin_types (code, name, description, color, display_order) VALUES ('result','錄取結果','錄取結果、報到通知等結果公告','result',3)");
+    $conn->query("INSERT IGNORE INTO bulletin_statuses (code, name, description, display_order) VALUES ('published','已發布','已發布的公告',2)");
+    $conn->query("INSERT IGNORE INTO bulletin_statuses (code, name, description, display_order) VALUES ('draft','草稿','尚未發布的草稿',1)");
+    return true;
+}
+
+/**
+ * 將續招公告同步到前台公告欄 bulletin_board（type=result）
+ * - 以 source=continued_admission_{year} 作為唯一識別，避免重複發佈
+ */
+function caSyncAnnouncementToBulletin(mysqli $conn, int $year, int $userId, string $title, string $content, ?string $publishAt, string $statusCode = 'draft'): ?int {
+    if (!caEnsureBulletinBaseTables($conn)) return null;
+
+    $source = "continued_admission_{$year}";
+    $startDate = null;
+    if ($publishAt) {
+        $ts = strtotime($publishAt);
+        if ($ts !== false) $startDate = date('Y-m-d', $ts);
+    }
+    if (!$startDate) $startDate = date('Y-m-d');
+
+    // 注意：前台公告詳情頁會使用 nl2br(htmlspecialchars(content)) 渲染，
+    // 所以這裡必須存「純文字」，不要存 HTML，否則會顯示成 <br/> / <p> 的文字。
+    $link = "continued_admission_results.php?year={$year}";
+    $plainContent = rtrim((string)$content) . "\n\n👉 查看續招錄取名單：{$link}\n";
+
+    $sel = $conn->prepare("SELECT id FROM bulletin_board WHERE source = ? AND type_code = 'result' LIMIT 1");
+    if (!$sel) return null;
+    $sel->bind_param("s", $source);
+    $sel->execute();
+    $existing = $sel->get_result()->fetch_assoc();
+    $sel->close();
+
+    if ($existing && isset($existing['id'])) {
+        $bid = (int)$existing['id'];
+        $u = $conn->prepare("UPDATE bulletin_board SET title=?, content=?, status_code=?, start_date=?, end_date=NULL, updated_at=NOW() WHERE id=?");
+        if (!$u) return $bid;
+        $u->bind_param("ssssi", $title, $plainContent, $statusCode, $startDate, $bid);
+        $u->execute();
+        $u->close();
+        return $bid;
+    }
+
+    $ins = $conn->prepare("INSERT INTO bulletin_board (user_id, title, content, type_code, status_code, source, start_date, end_date, created_at) VALUES (?, ?, ?, 'result', ?, ?, ?, NULL, NOW())");
+    if (!$ins) return null;
+    $ins->bind_param("isssss", $userId, $title, $plainContent, $statusCode, $source, $startDate);
+    $ins->execute();
+    $newId = (int)$conn->insert_id;
+    $ins->close();
+    return $newId ?: null;
+}
+
+/**
+ * 發布公告：寫入 published_at，並可選同步到前台公告欄
+ */
+function caPublishAnnouncement(mysqli $conn, int $year, int $userId, bool $syncBulletin = true): array {
+    $ann = caGetAnnouncement($conn, $year);
+    if (!$ann) throw new Exception("找不到公告草稿，請先儲存公告內容");
+
+    caMarkAnnouncementPublished($conn, $year);
+    $bulletinId = null;
+    if ($syncBulletin) {
+        $bulletinId = caSyncAnnouncementToBulletin(
+            $conn,
+            $year,
+            $userId,
+            (string)($ann['title'] ?? "續招錄取名單公告（{$year}）"),
+            (string)($ann['content'] ?? ''),
+            isset($ann['publish_at']) ? (string)$ann['publish_at'] : null,
+            'published'
+        );
+    }
+    return ['bulletin_id' => $bulletinId];
+}
+
+/**
+ * 排程發布：同步到前台公告欄為「草稿」，不會立刻公開；
+ * 等 publish_at 到時由 publish_continued_admission_announcement.php 自動改成 published。
+ */
+function caScheduleAnnouncement(mysqli $conn, int $year, int $userId, bool $syncBulletin = true): array {
+    $ann = caGetAnnouncement($conn, $year);
+    if (!$ann) throw new Exception("找不到公告草稿，請先儲存公告內容");
+
+    $bulletinId = null;
+    if ($syncBulletin) {
+        $bulletinId = caSyncAnnouncementToBulletin(
+            $conn,
+            $year,
+            $userId,
+            (string)($ann['title'] ?? "續招錄取名單公告（{$year}）"),
+            (string)($ann['content'] ?? ''),
+            isset($ann['publish_at']) ? (string)$ann['publish_at'] : null,
+            'draft'
+        );
+    }
+    return ['bulletin_id' => $bulletinId];
+}
+
+function caBuildResultEmail(string $studentName, string $deptName, string $status, ?int $rank, string $announcementContent): array {
+    $statusLabel = $status;
+    if ($status === 'approved' || $status === 'AP') {
+        $statusLabel = '正取' . ($rank ? " {$rank} 號" : '');
+    } elseif ($status === 'waitlist' || $status === 'AD') {
+        $statusLabel = '備取' . ($rank ? " {$rank} 號" : '');
+    } elseif ($status === 'rejected' || $status === 'RE') {
+        $statusLabel = '不錄取';
+    }
+
+    $subject = "【康寧大學續招】錄取結果通知 - {$studentName}";
+    $safeContent = nl2br(htmlspecialchars($announcementContent, ENT_QUOTES, 'UTF-8'));
+    $body = "
+    <!DOCTYPE html>
+    <html><head><meta charset='UTF-8'></head>
+    <body style='font-family:Microsoft JhengHei, Arial, sans-serif; color:#333; line-height:1.7;'>
+      <div style='max-width:680px; margin:0 auto; padding:24px;'>
+        <div style='background:linear-gradient(90deg,#1890ff 0%,#096dd9 100%); color:#fff; padding:22px 24px; border-radius:10px 10px 0 0;'>
+          <div style='font-size:22px; font-weight:700;'>續招錄取結果通知</div>
+          <div style='opacity:.9; margin-top:6px;'>請依公告內容辦理報到</div>
+        </div>
+        <div style='background:#f8f9fa; padding:22px 24px; border-radius:0 0 10px 10px;'>
+          <p>親愛的 <strong>{$studentName}</strong> 您好：</p>
+          <div style='background:#fff; border-left:4px solid #1890ff; padding:14px 16px; border-radius:8px; margin:14px 0;'>
+            <div><strong>分配科系：</strong>{$deptName}</div>
+            <div><strong>錄取結果：</strong><span style='font-size:18px; font-weight:800; color:#096dd9;'>{$statusLabel}</span></div>
+          </div>
+          <div style='background:#fff; padding:14px 16px; border-radius:8px; border:1px solid #eee;'>
+            <div style='font-weight:700; margin-bottom:8px;'>公告內容</div>
+            <div>{$safeContent}</div>
+          </div>
+          <div style='margin-top:18px; font-size:13px; color:#666; text-align:center;'>
+            此郵件由系統自動寄出，請勿直接回覆。如有疑問請聯繫招生中心。
+          </div>
+        </div>
+      </div>
+    </body></html>";
+
+    $altBody = "續招錄取結果通知\n\n學生：{$studentName}\n分配科系：{$deptName}\n錄取結果：{$statusLabel}\n\n公告內容：\n{$announcementContent}\n";
+    return ['subject' => $subject, 'body' => $body, 'altBody' => $altBody, 'statusLabel' => $statusLabel];
+}
+
+function caQueueResultEmails(mysqli $conn, int $year, string $announcementContent): array {
+    // 取得 email 欄位是否存在（避免舊資料庫沒有 email）
+    $hasEmail = false;
+    $colRes = $conn->query("SHOW COLUMNS FROM continued_admission LIKE 'email'");
+    if ($colRes && $colRes->num_rows > 0) $hasEmail = true;
+
+    if (!$hasEmail) {
+        return ['queued' => 0, 'skipped' => 0, 'reason' => 'continued_admission 缺少 email 欄位'];
+    }
+
+    // 取得科系名稱
+    $deptNameMap = [];
+    $deptRes = $conn->query("SELECT code, name FROM departments");
+    if ($deptRes) {
+        while ($r = $deptRes->fetch_assoc()) $deptNameMap[$r['code']] = $r['name'];
+    }
+
+    // 撈出已決定結果者（含今年）
+    $stmt = $conn->prepare("
+        SELECT id, name, email, assigned_department, status, admission_rank, apply_no
+        FROM continued_admission
+        WHERE assigned_department IS NOT NULL AND assigned_department != ''
+          AND LEFT(apply_no, 4) = ?
+          AND status IN ('approved','AP','waitlist','AD','rejected','RE')
+    ");
+    if (!$stmt) throw new Exception("無法準備寄信名單查詢: " . $conn->error);
+    $stmt->bind_param("i", $year);
+    $stmt->execute();
+    $rs = $stmt->get_result();
+
+    $queued = 0;
+    $skipped = 0;
+    while ($row = $rs->fetch_assoc()) {
+        $to = trim((string)($row['email'] ?? ''));
+        if ($to === '') { $skipped++; continue; }
+
+        $deptCode = (string)($row['assigned_department'] ?? '');
+        $deptName = $deptNameMap[$deptCode] ?? $deptCode;
+        $announceAt = caGetAnnounceTimeForDept($conn, $deptCode) ?: caGetGlobalAnnounceTime($conn) ?: date('Y-m-d H:i:s');
+
+        $mail = caBuildResultEmail((string)($row['name'] ?? '同學'), $deptName, (string)$row['status'], isset($row['admission_rank']) ? (int)$row['admission_rank'] : null, $announcementContent);
+
+        $ins = $conn->prepare("
+            INSERT IGNORE INTO continued_admission_email_queue
+              (application_id, to_email, to_name, department_code, result_status, subject, body, scheduled_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ");
+        if (!$ins) { $skipped++; continue; }
+        $appId = (int)$row['id'];
+        $toName = (string)($row['name'] ?? '');
+        $status = (string)$row['status'];
+        $ins->bind_param("isssssss", $appId, $to, $toName, $deptCode, $status, $mail['subject'], $mail['body'], $announceAt);
+        if ($ins->execute() && $ins->affected_rows > 0) $queued++;
+        $ins->close();
+    }
+    $stmt->close();
+    return ['queued' => $queued, 'skipped' => $skipped];
+}
+
+
