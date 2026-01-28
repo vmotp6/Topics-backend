@@ -287,6 +287,39 @@ try {
             }
         }
     }
+
+    // 取得 admission_recommendations 的實際欄位（用於向後相容：有些資料可能仍存在主表而非 recommender/recommended）
+    $ar_columns = [];
+    try {
+        $cr = $conn->query("SHOW COLUMNS FROM admission_recommendations");
+        if ($cr) {
+            while ($row = $cr->fetch_assoc()) {
+                $ar_columns[] = $row['Field'];
+            }
+        }
+    } catch (Exception $e) {
+        $ar_columns = [];
+    }
+    $ar_has = function($col) use ($ar_columns) {
+        return in_array($col, $ar_columns, true);
+    };
+    $ar_has_recommender_name = $ar_has('recommender_name');
+    $ar_has_recommender_student_id = $ar_has('recommender_student_id');
+    $ar_has_recommender_grade_code = $ar_has('recommender_grade_code');
+    $ar_has_recommender_grade = $ar_has('recommender_grade');
+    $ar_has_recommender_department_code = $ar_has('recommender_department_code');
+    $ar_has_recommender_department = $ar_has('recommender_department');
+    $ar_has_recommender_phone = $ar_has('recommender_phone');
+    $ar_has_recommender_email = $ar_has('recommender_email');
+
+    $ar_has_student_name = $ar_has('student_name');
+    $ar_has_student_school_code = $ar_has('student_school_code');
+    $ar_has_student_school = $ar_has('student_school');
+    $ar_has_student_grade_code = $ar_has('student_grade_code');
+    $ar_has_student_grade = $ar_has('student_grade');
+    $ar_has_student_phone = $ar_has('student_phone');
+    $ar_has_student_email = $ar_has('student_email');
+    $ar_has_student_line_id = $ar_has('student_line_id');
     
     // 根據用戶角色過濾資料
     // 學校行政人員（ADM/STA）可以看到所有資料
@@ -336,27 +369,50 @@ try {
     $academic_year_field = $has_academic_year ? "ar.academic_year" : "NULL";
     
     if ($has_recommender_table && $has_recommended_table) {
+        // 向後相容：如果 recommender/recommended 沒有資料，fallback 到 admission_recommendations
+        $rec_name_expr = "COALESCE(rec.name, " . ($ar_has_recommender_name ? "ar.recommender_name" : "''") . ", '')";
+        $rec_sid_expr = "COALESCE(rec.id, " . ($ar_has_recommender_student_id ? "ar.recommender_student_id" : "''") . ", '')";
+        $rec_grade_code_expr = "COALESCE(rec.grade, " . ($ar_has_recommender_grade_code ? "ar.recommender_grade_code" : "''") . ", '')";
+        $rec_dept_code_expr = "COALESCE(rec.department, " . ($ar_has_recommender_department_code ? "ar.recommender_department_code" : "''") . ", '')";
+        $rec_phone_expr = "COALESCE(rec.phone, " . ($ar_has_recommender_phone ? "ar.recommender_phone" : "''") . ", '')";
+        $rec_email_expr = "COALESCE(rec.email, " . ($ar_has_recommender_email ? "ar.recommender_email" : "''") . ", '')";
+        $rec_grade_join_key = $ar_has_recommender_grade_code ? "COALESCE(rec.grade, ar.recommender_grade_code)" : "rec.grade";
+        $rec_dept_join_key = $ar_has_recommender_department_code ? "COALESCE(rec.department, ar.recommender_department_code)" : "rec.department";
+        $rec_grade_name_expr = "COALESCE(rec_grade.name, " . ($ar_has_recommender_grade ? "ar.recommender_grade" : "''") . ", '')";
+        $rec_dept_name_expr = "COALESCE(rec_dept.name, " . ($ar_has_recommender_department ? "ar.recommender_department" : "''") . ", '')";
+
+        $stu_name_expr = "COALESCE(red.name, " . ($ar_has_student_name ? "ar.student_name" : "''") . ", '')";
+        $stu_school_code_expr = "COALESCE(red.school, " . ($ar_has_student_school_code ? "ar.student_school_code" : "''") . ", '')";
+        $stu_grade_code_expr = "COALESCE(red.grade, " . ($ar_has_student_grade_code ? "ar.student_grade_code" : "''") . ", '')";
+        $stu_phone_expr = "COALESCE(red.phone, " . ($ar_has_student_phone ? "ar.student_phone" : "''") . ", '')";
+        $stu_email_expr = "COALESCE(red.email, " . ($ar_has_student_email ? "ar.student_email" : "''") . ", '')";
+        $stu_line_expr = "COALESCE(red.line_id, " . ($ar_has_student_line_id ? "ar.student_line_id" : "''") . ", '')";
+        $stu_school_join_key = $ar_has_student_school_code ? "COALESCE(red.school, ar.student_school_code)" : "red.school";
+        $stu_grade_join_key = $ar_has_student_grade_code ? "COALESCE(red.grade, ar.student_grade_code)" : "red.grade";
+        $stu_school_name_expr = "COALESCE(school.name, " . ($ar_has_student_school ? "ar.student_school" : "''") . ", '')";
+        $stu_grade_name_expr = "COALESCE(red_grade.name, " . ($ar_has_student_grade ? "ar.student_grade" : "''") . ", '')";
+
         // 使用新的表結構：recommender 和 recommended 表
         // 使用 LEFT JOIN 確保即使沒有對應的推薦人或被推薦人記錄，也能顯示主表記錄
         // 添加 JOIN 來獲取學校、年級、科系的名稱
         $sql = "SELECT 
             ar.id,
-            COALESCE(rec.name, '') as recommender_name,
-            COALESCE(rec.id, '') as recommender_student_id,
-            COALESCE(rec.grade, '') as recommender_grade_code,
-            COALESCE(rec_grade.name, '') as recommender_grade,
-            COALESCE(rec.department, '') as recommender_department_code,
-            COALESCE(rec_dept.name, '') as recommender_department,
-            COALESCE(rec.phone, '') as recommender_phone,
-            COALESCE(rec.email, '') as recommender_email,
-            COALESCE(red.name, '') as student_name,
-            COALESCE(red.school, '') as student_school_code,
-            COALESCE(school.name, '') as student_school,
-            COALESCE(red.grade, '') as student_grade_code,
-            COALESCE(red_grade.name, '') as student_grade,
-            COALESCE(red.phone, '') as student_phone,
-            COALESCE(red.email, '') as student_email,
-            COALESCE(red.line_id, '') as student_line_id,
+            $rec_name_expr as recommender_name,
+            $rec_sid_expr as recommender_student_id,
+            $rec_grade_code_expr as recommender_grade_code,
+            $rec_grade_name_expr as recommender_grade,
+            $rec_dept_code_expr as recommender_department_code,
+            $rec_dept_name_expr as recommender_department,
+            $rec_phone_expr as recommender_phone,
+            $rec_email_expr as recommender_email,
+            $stu_name_expr as student_name,
+            $stu_school_code_expr as student_school_code,
+            $stu_school_name_expr as student_school,
+            $stu_grade_code_expr as student_grade_code,
+            $stu_grade_name_expr as student_grade,
+            $stu_phone_expr as student_phone,
+            $stu_email_expr as student_email,
+            $stu_line_expr as student_line_id,
             ar.recommendation_reason,
             COALESCE(ar.student_interest, '') as student_interest_code,
             COALESCE(interest_dept.name, '') as student_interest,
@@ -374,10 +430,10 @@ try {
             FROM admission_recommendations ar
             LEFT JOIN recommender rec ON ar.id = rec.recommendations_id
             LEFT JOIN recommended red ON ar.id = red.recommendations_id
-            LEFT JOIN identity_options rec_grade ON rec.grade = rec_grade.code
-            LEFT JOIN departments rec_dept ON rec.department = rec_dept.code
-            LEFT JOIN identity_options red_grade ON red.grade = red_grade.code
-            LEFT JOIN school_data school ON red.school = school.school_code
+            LEFT JOIN identity_options rec_grade ON $rec_grade_join_key = rec_grade.code
+            LEFT JOIN departments rec_dept ON $rec_dept_join_key = rec_dept.code
+            LEFT JOIN identity_options red_grade ON $stu_grade_join_key = red_grade.code
+            LEFT JOIN school_data school ON $stu_school_join_key = school.school_code
             LEFT JOIN departments interest_dept ON ar.student_interest = interest_dept.code";
         
         if (!empty($where_clause)) {
@@ -1504,24 +1560,25 @@ try {
                             }
                         }
                         ?>
+                        <?php
+                            // view_mode：下拉選單顯示用（空字串視同 all，向後相容）
+                            $view_mode_ui = ($view_mode === '' || $view_mode === null) ? 'all' : (string)$view_mode;
+                        ?>
+                        <div style="display:flex; align-items:center; gap:12px; margin-bottom:12px; margin-left: 55px; margin-top: 15px;">
+                            <span class="search-label">審核狀態</span>
+                            <select id="viewModeSelect" class="search-select" title="審核狀態篩選">
+                                <option value="all" <?php echo ($view_mode_ui === 'all') ? 'selected' : ''; ?>>顯示全部</option>
+                                <option value="pass" <?php echo ($view_mode_ui === 'pass') ? 'selected' : ''; ?>>通過</option>
+                                <option value="manual" <?php echo ($view_mode_ui === 'manual') ? 'selected' : ''; ?>>需人工審核</option>
+                                <option value="fail" <?php echo ($view_mode_ui === 'fail') ? 'selected' : ''; ?>>不通過</option>
+                            </select>
+                        </div>
                         <?php if (empty($recommendations)): ?>
-                            <div style="display:flex; align-items:center; gap:12px; margin-bottom:12px; margin-left: 55px; margin-top: 15px;">
-                                <a class="btn-view<?php echo ($view_mode === '') ? ' active' : ''; ?>" href="?view=all">顯示全部</a>
-                                <a class="btn-view<?php echo ($view_mode === 'pass') ? ' active' : ''; ?>" href="?view=pass">通過</a>
-                                <a class="btn-view<?php echo ($view_mode === 'manual') ? ' active' : ''; ?>" href="?view=manual">需人工審核</a>
-                                <a class="btn-view<?php echo ($view_mode === 'fail') ? ' active' : ''; ?>" href="?view=fail">不通過</a>
-                            </div>
                             <div class="empty-state" style="margin-left:55px; margin-top:24px; text-align:center;">
                                 <i class="fas fa-inbox fa-3x" style="color:#8c8c8c; display:block; margin:0 auto 10px;"></i>
                                 <p style="color:#8c8c8c; font-size:14px;">目前尚無人工審核資料。</p>
                             </div>
                         <?php else: ?>
-                            <div style="display:flex; align-items:center; gap:12px; margin-bottom:12px; margin-left: 55px; margin-top: 15px;">
-                                <a class="btn-view<?php echo ($view_mode === '') ? ' active' : ''; ?>" href="?view=all">顯示全部</a>
-                                <a class="btn-view<?php echo ($view_mode === 'pass') ? ' active' : ''; ?>" href="?view=pass">通過</a>
-                                <a class="btn-view<?php echo ($view_mode === 'manual') ? ' active' : ''; ?>" href="?view=manual">需人工審核</a>
-                                <a class="btn-view<?php echo ($view_mode === 'fail') ? ' active' : ''; ?>" href="?view=fail">不通過</a>
-                            </div>
                             <table class="table" id="recommendationTable">
                                 <thead>
                                     <tr>
@@ -2111,6 +2168,7 @@ try {
         const reviewFilter = document.getElementById('reviewResultFilter');
         const interestFilter = document.getElementById('interestFilter');
         const academicYearFilter = document.getElementById('academicYearFilter');
+        const viewModeSelect = document.getElementById('viewModeSelect');
         const btnQuery = document.getElementById('btnQuery');
         const btnClear = document.getElementById('btnClear');
         const table = document.getElementById('recommendationTable');
@@ -2230,6 +2288,22 @@ try {
                     applyFilters();
                 });
             }
+        }
+
+        // 審核狀態（view=all/pass/manual/fail）：用 URL 參數切換（後端會依 view_mode 載入資料）
+        if (viewModeSelect) {
+            viewModeSelect.addEventListener('change', function() {
+                try {
+                    const v = (viewModeSelect.value || 'all');
+                    const url = new URL(window.location.href);
+                    url.searchParams.set('view', v);
+                    // 切換 view 後回到第一頁（若有 hash 或其他參數也會保留）
+                    window.location.href = url.toString();
+                } catch (e) {
+                    // 若瀏覽器不支援 URL 物件，退回最簡單導向
+                    window.location.href = '?view=' + encodeURIComponent(viewModeSelect.value || 'all');
+                }
+            });
         }
     });
     
