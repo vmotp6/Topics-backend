@@ -25,7 +25,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
         switch ($_POST['action']) {
             // 場次管理
             case 'add_session':
-                $sql = "INSERT INTO admission_sessions (session_name, session_date, session_end_date, session_type, session_link, session_location, max_participants, description, created_by, is_active) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)";
+                $sql = "INSERT INTO admission_sessions(session_name, description, session_date, session_end_date,session_type, session_link, session_location,
+                        max_participants, is_active, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
                 $stmt = $conn->prepare($sql);
                 // session_type: 1=線上, 2=實體
                 $session_type = ($_POST['session_type'] === '線上' || $_POST['session_type'] === '1') ? 1 : 2;
@@ -44,7 +45,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                 $created_by = isset($_SESSION['user_id']) ? intval($_SESSION['user_id']) : null;
                 // bind_param: session_name(s), session_date(s), session_end_date(s), session_type(i), session_link(s), session_location(s), max_participants(i), description(s), created_by(i)
                 $session_name = $_POST['session_name'];
-                $stmt->bind_param("sssississi", $session_name, $session_date, $session_end_date, $session_type, $session_link, $session_location, $max_participants, $description, $created_by);
+                $is_active = 1; // 新增時預設啟用
+
+                $stmt->bind_param(
+                    "sssisssiii", 
+                    $session_name, 
+                    $description,
+                    $session_date, 
+                    $session_end_date, 
+                    $session_type, 
+                    $session_link, 
+                    $session_location, 
+                    $max_participants, 
+                    $is_active, 
+                    $created_by
+                );                
                 if ($stmt->execute()) {
                     $message = "場次新增成功！"; $messageType = "success";
                 } else {
@@ -871,29 +886,53 @@ $conn->close();
             initPagination();
         });
 
-        function editSession(item) {
-            document.getElementById('edit_session_id').value = item.id;
-            document.getElementById('edit_session_name').value = item.session_name;
-            // 格式化日期以符合 datetime-local input
-            const date = new Date(item.session_date.replace(' ', 'T'));
-            const formattedDate = date.toISOString().slice(0, 16);
-            document.getElementById('edit_session_date').value = formattedDate;
-            // 處理結束時間
-            if (item.session_end_date) {
-                const endDate = new Date(item.session_end_date.replace(' ', 'T'));
-                const formattedEndDate = endDate.toISOString().slice(0, 16);
-                document.getElementById('edit_session_end_date').value = formattedEndDate;
-            } else {
-                document.getElementById('edit_session_end_date').value = '';
-            }
-            // session_type 在資料庫中是數字 (1=線上, 2=實體)，但表單需要顯示文字
-            const sessionTypeMap = {1: '線上', 2: '實體'};
-            document.getElementById('edit_session_type').value = sessionTypeMap[item.session_type] || item.session_type;
-            document.getElementById('edit_max_participants').value = item.max_participants || '';
-            document.getElementById('edit_description').value = item.description || '';
-            document.getElementById('edit_session_is_active').value = item.is_active;
-            showModal('editSessionModal');
+        function setInputValue(id, value) {
+    const el = document.getElementById(id);
+    if (el) el.value = value;
+}
+
+function editSession(item) {
+    setInputValue('edit_session_id', item.id);
+    setInputValue('edit_session_name', item.session_name || '');
+    
+    // 格式化日期
+    if (item.session_date) {
+        const date = new Date(item.session_date.replace(' ', 'T'));
+        if (!isNaN(date.getTime())) {
+            const formatted = date.toISOString().slice(0,16);
+            setInputValue('edit_session_date', formatted);
+        } else {
+            setInputValue('edit_session_date', '');
         }
+    } else {
+        setInputValue('edit_session_date', '');
+    }
+
+    if (item.session_end_date) {
+        const endDate = new Date(item.session_end_date.replace(' ', 'T'));
+        if (!isNaN(endDate.getTime())) {
+            const formattedEnd = endDate.toISOString().slice(0,16);
+            setInputValue('edit_session_end_date', formattedEnd);
+        } else {
+            setInputValue('edit_session_end_date', '');
+        }
+    } else {
+        setInputValue('edit_session_end_date', '');
+    }
+
+    const sessionTypeMap = {1: '線上', 2: '實體'};
+    setInputValue('edit_session_type', sessionTypeMap[item.session_type] || item.session_type);
+    setInputValue('edit_max_participants', item.max_participants || '');
+    setInputValue('edit_description', item.description || '');
+    setInputValue('edit_session_is_active', item.is_active);
+
+    setInputValue('edit_session_link', item.session_link || '');
+    setInputValue('edit_session_location', item.session_location || '');
+
+    toggleSessionTypeFields('edit');
+    showModal('editSessionModal');
+}
+
 
     </script>
 </body>
