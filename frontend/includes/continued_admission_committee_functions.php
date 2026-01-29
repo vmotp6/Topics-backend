@@ -121,14 +121,67 @@ function caEnsureBulletinBaseTables(mysqli $conn): bool {
     $conn->query("INSERT IGNORE INTO bulletin_types (code, name, description, color, display_order) VALUES ('result','錄取結果','錄取結果、報到通知等結果公告','result',3)");
     $conn->query("INSERT IGNORE INTO bulletin_statuses (code, name, description, display_order) VALUES ('published','已發布','已發布的公告',2)");
     $conn->query("INSERT IGNORE INTO bulletin_statuses (code, name, description, display_order) VALUES ('draft','草稿','尚未發布的草稿',1)");
+
+    // 確保 bulletin_urls / bulletin_files 存在（某些舊環境可能未執行擴充腳本）
+    // 1) URLs
+    $conn->query("
+        CREATE TABLE IF NOT EXISTS bulletin_urls (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            bulletin_id INT NOT NULL COMMENT '公告ID（外鍵關聯到 bulletin_board 表）',
+            url VARCHAR(500) NOT NULL COMMENT '連結URL',
+            title VARCHAR(255) NULL COMMENT '連結標題（可選）',
+            display_order INT DEFAULT 0 COMMENT '顯示順序',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT '建立時間',
+            INDEX idx_bulletin_id (bulletin_id),
+            INDEX idx_display_order (display_order),
+            FOREIGN KEY (bulletin_id) REFERENCES bulletin_board(id) ON DELETE CASCADE
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='公告相關連結表'
+    ");
+
+    // 2) Files
+    $conn->query("
+        CREATE TABLE IF NOT EXISTS bulletin_files (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            bulletin_id INT NOT NULL COMMENT '公告ID（外鍵關聯到 bulletin_board 表）',
+            file_path VARCHAR(500) NOT NULL COMMENT '檔案路徑',
+            original_filename VARCHAR(255) NOT NULL COMMENT '原始檔案名稱',
+            file_size INT NULL COMMENT '檔案大小（位元組）',
+            file_type VARCHAR(100) NULL COMMENT '檔案類型（MIME type）',
+            display_order INT DEFAULT 0 COMMENT '顯示順序',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT '建立時間',
+            INDEX idx_bulletin_id (bulletin_id),
+            INDEX idx_display_order (display_order),
+            FOREIGN KEY (bulletin_id) REFERENCES bulletin_board(id) ON DELETE CASCADE
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='公告檔案表'
+    ");
+
+    // 3) 補齊可能缺少的欄位（避免 INSERT 失敗導致前台看不到附件）
+    try {
+        $col = $conn->query("SHOW COLUMNS FROM bulletin_files LIKE 'file_type'");
+        if (!$col || $col->num_rows === 0) {
+            $conn->query("ALTER TABLE bulletin_files ADD COLUMN file_type VARCHAR(100) NULL COMMENT '檔案類型（MIME type）' AFTER file_size");
+        }
+        $col = $conn->query("SHOW COLUMNS FROM bulletin_files LIKE 'file_size'");
+        if (!$col || $col->num_rows === 0) {
+            $conn->query("ALTER TABLE bulletin_files ADD COLUMN file_size INT NULL COMMENT '檔案大小（位元組）' AFTER original_filename");
+        }
+        $col = $conn->query("SHOW COLUMNS FROM bulletin_files LIKE 'display_order'");
+        if (!$col || $col->num_rows === 0) {
+            $conn->query("ALTER TABLE bulletin_files ADD COLUMN display_order INT DEFAULT 0 COMMENT '顯示順序' AFTER file_type");
+        }
+    } catch (Throwable $e) {
+        // ignore
+    }
+
     return true;
 }
 
 /**
  * 將續招公告同步到前台公告欄 bulletin_board（type=result）
  * - 以 source=continued_admission_{year} 作為唯一識別，避免重複發佈
+ * @param array $files 附件列表，格式：[['file_path' => '...', 'original_filename' => '...', 'file_size' => ...], ...]
  */
-function caSyncAnnouncementToBulletin(mysqli $conn, int $year, int $userId, string $title, string $content, ?string $publishAt, string $statusCode = 'draft'): ?int {
+function caSyncAnnouncementToBulletin(mysqli $conn, int $year, int $userId, string $title, string $content, ?string $publishAt, string $statusCode = 'draft', array $files = []): ?int {
     if (!caEnsureBulletinBaseTables($conn)) return null;
 
     $source = "continued_admission_{$year}";
@@ -151,6 +204,7 @@ function caSyncAnnouncementToBulletin(mysqli $conn, int $year, int $userId, stri
     $existing = $sel->get_result()->fetch_assoc();
     $sel->close();
 
+    $bulletinId = null;
     if ($existing && isset($existing['id'])) {
         $bid = (int)$existing['id'];
         $u = $conn->prepare("UPDATE bulletin_board SET title=?, content=?, status_code=?, start_date=?, end_date=NULL, updated_at=NOW() WHERE id=?");
@@ -158,22 +212,56 @@ function caSyncAnnouncementToBulletin(mysqli $conn, int $year, int $userId, stri
         $u->bind_param("ssssi", $title, $plainContent, $statusCode, $startDate, $bid);
         $u->execute();
         $u->close();
-        return $bid;
+        $bulletinId = $bid;
+    } else {
+        $ins = $conn->prepare("INSERT INTO bulletin_board (user_id, title, content, type_code, status_code, source, start_date, end_date, created_at) VALUES (?, ?, ?, 'result', ?, ?, ?, NULL, NOW())");
+        if (!$ins) return null;
+        $ins->bind_param("isssss", $userId, $title, $plainContent, $statusCode, $source, $startDate);
+        $ins->execute();
+        $newId = (int)$conn->insert_id;
+        $ins->close();
+        $bulletinId = $newId ?: null;
     }
 
-    $ins = $conn->prepare("INSERT INTO bulletin_board (user_id, title, content, type_code, status_code, source, start_date, end_date, created_at) VALUES (?, ?, ?, 'result', ?, ?, ?, NULL, NOW())");
-    if (!$ins) return null;
-    $ins->bind_param("isssss", $userId, $title, $plainContent, $statusCode, $source, $startDate);
-    $ins->execute();
-    $newId = (int)$conn->insert_id;
-    $ins->close();
-    return $newId ?: null;
+    // 處理附件：先刪除舊附件，再插入新附件
+    if ($bulletinId && !empty($files)) {
+        // 刪除舊附件
+        $del_stmt = $conn->prepare("DELETE FROM bulletin_files WHERE bulletin_id = ?");
+        if ($del_stmt) {
+            $del_stmt->bind_param("i", $bulletinId);
+            $del_stmt->execute();
+            $del_stmt->close();
+        }
+
+        // 插入新附件
+        $ins_file_stmt = $conn->prepare("INSERT INTO bulletin_files (bulletin_id, file_path, original_filename, file_size, file_type, display_order) VALUES (?, ?, ?, ?, ?, ?)");
+        if ($ins_file_stmt) {
+            $order = 0;
+            foreach ($files as $file) {
+                $filePath = $file['file_path'] ?? '';
+                $originalName = $file['original_filename'] ?? '';
+                $fileSize = (int)($file['file_size'] ?? 0);
+                $fileType = $file['file_type'] ?? 'application/octet-stream';
+                
+                // 續招公告附件改存前台既有的 uploads/bulletin_files/
+                // 這裡不再做路徑轉換，直接照 file_path 寫入 bulletin_files
+                
+                $ins_file_stmt->bind_param("issisi", $bulletinId, $filePath, $originalName, $fileSize, $fileType, $order);
+                $ins_file_stmt->execute();
+                $order++;
+            }
+            $ins_file_stmt->close();
+        }
+    }
+
+    return $bulletinId;
 }
 
 /**
  * 發布公告：寫入 published_at，並可選同步到前台公告欄
+ * @param array $files 附件列表
  */
-function caPublishAnnouncement(mysqli $conn, int $year, int $userId, bool $syncBulletin = true): array {
+function caPublishAnnouncement(mysqli $conn, int $year, int $userId, bool $syncBulletin = true, array $files = []): array {
     $ann = caGetAnnouncement($conn, $year);
     if (!$ann) throw new Exception("找不到公告草稿，請先儲存公告內容");
 
@@ -187,7 +275,8 @@ function caPublishAnnouncement(mysqli $conn, int $year, int $userId, bool $syncB
             (string)($ann['title'] ?? "續招錄取名單公告（{$year}）"),
             (string)($ann['content'] ?? ''),
             isset($ann['publish_at']) ? (string)$ann['publish_at'] : null,
-            'published'
+            'published',
+            $files
         );
     }
     return ['bulletin_id' => $bulletinId];
@@ -196,8 +285,9 @@ function caPublishAnnouncement(mysqli $conn, int $year, int $userId, bool $syncB
 /**
  * 排程發布：同步到前台公告欄為「草稿」，不會立刻公開；
  * 等 publish_at 到時由 publish_continued_admission_announcement.php 自動改成 published。
+ * @param array $files 附件列表
  */
-function caScheduleAnnouncement(mysqli $conn, int $year, int $userId, bool $syncBulletin = true): array {
+function caScheduleAnnouncement(mysqli $conn, int $year, int $userId, bool $syncBulletin = true, array $files = []): array {
     $ann = caGetAnnouncement($conn, $year);
     if (!$ann) throw new Exception("找不到公告草稿，請先儲存公告內容");
 
@@ -210,7 +300,8 @@ function caScheduleAnnouncement(mysqli $conn, int $year, int $userId, bool $sync
             (string)($ann['title'] ?? "續招錄取名單公告（{$year}）"),
             (string)($ann['content'] ?? ''),
             isset($ann['publish_at']) ? (string)$ann['publish_at'] : null,
-            'draft'
+            'draft',
+            $files
         );
     }
     return ['bulletin_id' => $bulletinId];

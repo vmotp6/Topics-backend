@@ -1471,9 +1471,8 @@ function getStatusClass($status) {
                                                     </td>
                                                     <td>
                                                         <a href="continued_admission_ranking_detail.php?id=<?php echo $app['id']; ?>" 
-                                                           class="btn btn-sm btn-primary" 
-                                                           style="padding: 4px 12px; font-size: 13px; text-decoration: none; display: inline-flex; align-items: center; gap: 4px;">
-                                                            <i class="fas fa-eye"></i> 查看詳情
+                                                           style="display: inline-block; padding: 6px 16px; border: 1px solid #91d5ff; border-radius: 6px; background: white; color: #1890ff; text-decoration: underline; font-size: 14px; transition: all 0.3s;">
+                                                            查看詳情
                                                         </a>
                                                     </td>
                                                 </tr>
@@ -1612,9 +1611,8 @@ function getStatusClass($status) {
                                                             </td>
                                                             <td>
                                                                 <a href="continued_admission_ranking_detail.php?id=<?php echo $app['id']; ?>" 
-                                                                   class="btn btn-sm btn-primary" 
-                                                                   style="padding: 4px 12px; font-size: 13px; text-decoration: none; display: inline-flex; align-items: center; gap: 4px;">
-                                                                    <i class="fas fa-eye"></i> 查看詳情
+                                                                   style="display: inline-block; padding: 6px 16px; border: 1px solid #91d5ff; border-radius: 6px; background: white; color: #1890ff; text-decoration: underline; font-size: 14px; transition: all 0.3s;">
+                                                                    查看詳情
                                                                 </a>
                                                             </td>
                                                         </tr>
@@ -2284,6 +2282,21 @@ function getStatusClass($status) {
             });
     }
 
+    // 取得目前在「達到錄取標準名單」TAB 內選取的科系（招生中心的科系分頁）
+    // - 回傳 null：代表「全部科系」
+    // - 回傳 array：代表只匯出指定科系（目前分頁）
+    function getSelectedRankingDeptCodes() {
+        const tabsWrap = document.getElementById('rankingDeptTabs');
+        if (!tabsWrap) return null;
+
+        const active = tabsWrap.querySelector('.ranking-dept-tab.active');
+        if (!active) return null;
+
+        const dept = active.getAttribute('data-dept');
+        if (!dept || dept === 'all') return null;
+        return [dept];
+    }
+
     function exportAllRankingExcel() {
         // 從 API 獲取所有科系的排名數據
         fetch('get_all_department_ranking.php')
@@ -2302,7 +2315,7 @@ function getStatusClass($status) {
                 const deptCodes = Object.keys(data.departments).filter(code => selectedDeptCodes === null || selectedDeptCodes.includes(code));
 
                 if (deptCodes.length === 0) {
-                    showToast('請先勾選至少一個科系再匯出', false);
+                    showToast('目前沒有可匯出的科系資料', false);
                     return;
                 }
 
