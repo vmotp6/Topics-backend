@@ -337,15 +337,57 @@ foreach ($registrations as &$reg) {
     if ($score >= 6) {
         $reg['willingness_level'] = '高意願';
         $reg['willingness_score'] = $score;
+        $reg['willingness_order'] = 1; // 用於排序：1=高, 2=中, 3=低
     } elseif ($score >= 4) {
         $reg['willingness_level'] = '中意願';
         $reg['willingness_score'] = $score;
+        $reg['willingness_order'] = 2;
     } else {
         $reg['willingness_level'] = '低意願';
         $reg['willingness_score'] = $score;
+        $reg['willingness_order'] = 3;
+    }
+    
+    // 計算年級排序順序：國三優先
+    $grade_text = $reg['grade'] ?? '';
+    $grade_code = $reg['grade_code'] ?? '';
+    if (strpos($grade_text, '國三') !== false || 
+        preg_match('/\b3\b/', $grade_text) || 
+        strpos($grade_code, 'G3') !== false || 
+        $grade_code === '3' ||
+        preg_match('/\b3\b/', $grade_code)) {
+        $reg['grade_order'] = 1; // 國三
+    } elseif (strpos($grade_text, '國二') !== false || 
+              preg_match('/\b2\b/', $grade_text) || 
+              strpos($grade_code, 'G2') !== false || 
+              $grade_code === '2' ||
+              preg_match('/\b2\b/', $grade_code)) {
+        $reg['grade_order'] = 2; // 國二
+    } elseif (strpos($grade_text, '國一') !== false || 
+              preg_match('/\b1\b/', $grade_text) || 
+              strpos($grade_code, 'G1') !== false || 
+              $grade_code === '1' ||
+              preg_match('/\b1\b/', $grade_code)) {
+        $reg['grade_order'] = 3; // 國一
+    } else {
+        $reg['grade_order'] = 4; // 其他
     }
 }
 unset($reg); // 解除引用
+
+// 排序：先按年級（國三優先），再按意願度（高>中>低）
+usort($registrations, function($a, $b) {
+    // 先按年級排序
+    if ($a['grade_order'] != $b['grade_order']) {
+        return $a['grade_order'] - $b['grade_order'];
+    }
+    // 再按意願度排序
+    if ($a['willingness_order'] != $b['willingness_order']) {
+        return $a['willingness_order'] - $b['willingness_order'];
+    }
+    // 最後按姓名排序
+    return strcmp($a['student_name'], $b['student_name']);
+});
 
 // 判斷是否為歷史紀錄：以簽到時間作為基準，非今年份的區分到歷史資料
 $current_year = date('Y');
@@ -636,6 +678,7 @@ $page_title = '出席紀錄管理 - ' . htmlspecialchars($session['session_name'
                     </div>
                     <div class="table-search">
                         <input type="text" id="tableSearchInput" placeholder="搜尋姓名、Email..." onkeyup="filterTable()">
+                        
                         <a href="export_attendance.php?session_id=<?php echo $session_id; ?>" class="btn btn-secondary"><i class="fas fa-file-export"></i> 匯出出席紀錄</a>
                         <!--<a href="activity_records.php?view=attendance" class="btn btn-secondary" style="background: var(--primary-color); color: white; border-color: var(--primary-color);"><i class="fas fa-chart-bar"></i> 出席統計圖</a>-->
                         <?php if (!$is_history): ?>
@@ -679,6 +722,26 @@ $page_title = '出席紀錄管理 - ' . htmlspecialchars($session['session_name'
                         <div class="value"><?php echo $absent_count; ?></div>
                     </div>
                 </div>
+                <div class="filter-group" style="margin-bottom:15px; margin-left:1290px;">
+                        <select id="filterGrade" class="form-control" style="width: auto; padding: 8px 12px; margin: 0;" onchange="filterTable()">
+                            <option value="">全部年級</option>
+                            <option value="國三">國三</option>
+                            <option value="國二">國二</option>
+                            <option value="國一">國一</option>
+                            <option value="其他">其他</option>
+                        </select>
+                        <select id="filterWillingness" class="form-control" style="width: auto; padding: 8px 12px; margin: 0;" onchange="filterTable()">
+                            <option value="">全部意願度</option>
+                            <option value="高意願">高意願</option>
+                            <option value="中意願">中意願</option>
+                            <option value="低意願">低意願</option>
+                        </select>
+                        <select id="filterAttendance" class="form-control" style="width: auto; padding: 8px 12px; margin: 0;" onchange="filterTable()">
+                            <option value="">全部狀態</option>
+                            <option value="已到">已到</option>
+                            <option value="未到">未到</option>
+                        </select>
+                </div>
 
                 <div class="table-wrapper">
                     <div class="table-container">
@@ -700,7 +763,43 @@ $page_title = '出席紀錄管理 - ' . htmlspecialchars($session['session_name'
                                 </thead>
                                 <tbody>
                                     <?php foreach ($registrations as $reg): ?>
-                                    <tr>
+                                    <?php
+                                    // 判斷年級類別用於篩選
+                                    $grade_text = $reg['grade'] ?? '';
+                                    $grade_code = $reg['grade_code'] ?? '';
+                                    $grade_filter = '其他';
+                                    if (strpos($grade_text, '國三') !== false || 
+                                        preg_match('/\b3\b/', $grade_text) || 
+                                        strpos($grade_code, 'G3') !== false || 
+                                        $grade_code === '3' ||
+                                        preg_match('/\b3\b/', $grade_code)) {
+                                        $grade_filter = '國三';
+                                    } elseif (strpos($grade_text, '國二') !== false || 
+                                             preg_match('/\b2\b/', $grade_text) || 
+                                             strpos($grade_code, 'G2') !== false || 
+                                             $grade_code === '2' ||
+                                             preg_match('/\b2\b/', $grade_code)) {
+                                        $grade_filter = '國二';
+                                    } elseif (strpos($grade_text, '國一') !== false || 
+                                             preg_match('/\b1\b/', $grade_text) || 
+                                             strpos($grade_code, 'G1') !== false || 
+                                             $grade_code === '1' ||
+                                             preg_match('/\b1\b/', $grade_code)) {
+                                        $grade_filter = '國一';
+                                    }
+                                    
+                                    // 判斷出席狀態
+                                    $attendance_status_text = '未到';
+                                    if (isset($reg['attendance_status']) && $reg['attendance_status'] == 1) {
+                                        $attendance_status_text = '已到';
+                                    }
+                                    
+                                    // 意願度
+                                    $willingness_level = $reg['willingness_level'] ?? '低意願';
+                                    ?>
+                                    <tr data-grade="<?php echo htmlspecialchars($grade_filter); ?>" 
+                                        data-willingness="<?php echo htmlspecialchars($willingness_level); ?>" 
+                                        data-attendance="<?php echo htmlspecialchars($attendance_status_text); ?>">
                                         <td><?php echo htmlspecialchars($reg['student_name']); ?></td>
                                         <td><?php echo htmlspecialchars($reg['email']); ?></td>
                                         <td><?php echo htmlspecialchars($reg['contact_phone']); ?></td>
@@ -935,33 +1034,73 @@ $page_title = '出席紀錄管理 - ' . htmlspecialchars($session['session_name'
     <script>
         function filterTable() {
             const input = document.getElementById('tableSearchInput');
-            const filter = input.value.toLowerCase();
-            const table = document.getElementById('attendanceTable');
+            const searchFilter = input.value.toLowerCase();
+            const gradeFilter = document.getElementById('filterGrade').value;
+            const willingnessFilter = document.getElementById('filterWillingness').value;
+            const attendanceFilter = document.getElementById('filterAttendance').value;
             
+            const table = document.getElementById('attendanceTable');
             if (!table) return;
             
             const tbody = table.getElementsByTagName('tbody')[0];
             if (!tbody) return;
             
             const rows = tbody.getElementsByTagName('tr');
+            let visibleCount = 0;
             
             for (let i = 0; i < rows.length; i++) {
-                const cells = rows[i].getElementsByTagName('td');
-                let found = false;
+                const row = rows[i];
+                let show = true;
                 
-                for (let j = 0; j < cells.length - 1; j++) { // 排除最後一列（簽到時間）
-                    const cell = cells[j];
-                    if (cell) {
-                        const txtValue = cell.textContent || cell.innerText;
-                        if (txtValue.toLowerCase().indexOf(filter) > -1) {
-                            found = true;
-                            break;
+                // 文字搜尋篩選
+                if (searchFilter) {
+                    const cells = row.getElementsByTagName('td');
+                    let found = false;
+                    for (let j = 0; j < cells.length; j++) {
+                        const cell = cells[j];
+                        if (cell) {
+                            const txtValue = cell.textContent || cell.innerText;
+                            if (txtValue.toLowerCase().indexOf(searchFilter) > -1) {
+                                found = true;
+                                break;
+                            }
                         }
+                    }
+                    if (!found) {
+                        show = false;
                     }
                 }
                 
-                rows[i].style.display = found ? '' : 'none';
+                // 年級篩選
+                if (show && gradeFilter) {
+                    const rowGrade = row.getAttribute('data-grade');
+                    if (rowGrade !== gradeFilter) {
+                        show = false;
+                    }
+                }
+                
+                // 意願度篩選
+                if (show && willingnessFilter) {
+                    const rowWillingness = row.getAttribute('data-willingness');
+                    if (rowWillingness !== willingnessFilter) {
+                        show = false;
+                    }
+                }
+                
+                // 出席狀態篩選
+                if (show && attendanceFilter) {
+                    const rowAttendance = row.getAttribute('data-attendance');
+                    if (rowAttendance !== attendanceFilter) {
+                        show = false;
+                    }
+                }
+                
+                row.style.display = show ? '' : 'none';
+                if (show) visibleCount++;
             }
+            
+            // 更新顯示的記錄數（可選）
+            // console.log('顯示 ' + visibleCount + ' 筆記錄');
         }
 
         function saveAttendance() {
@@ -1022,6 +1161,32 @@ $page_title = '出席紀錄管理 - ' . htmlspecialchars($session['session_name'
                     alert('發生錯誤：' + error.message);
                 });
         }
+
+        // 自動發送：進入頁面即對「國三＋高意願」且尚未寄過者發送
+        document.addEventListener('DOMContentLoaded', function () {
+            const isHistory = <?php echo $is_history ? 'true' : 'false'; ?>;
+            if (isHistory) return;
+
+            const sessionId = <?php echo (int)$session_id; ?>;
+            fetch(`send_enrollment_invitation.php?session_id=${sessionId}`)
+                .then(response => response.json())
+                .then(data => {
+                    if (!data || !data.success) {
+                        // 不阻斷操作，只提示失敗
+                        const msg = (data && data.message) ? data.message : '未知錯誤';
+                        alert('自動發送就讀意願邀請失敗：' + msg);
+                        return;
+                    }
+                    // 僅在有失敗時提示（成功或 0 筆就靜默）
+                    if ((data.failed_count || 0) > 0) {
+                        const details = (data.errors && data.errors.length) ? ('\n\n錯誤詳情：\n' + data.errors.join('\n')) : '';
+                        alert(`自動發送完成（部分失敗）\n成功：${data.sent_count || 0} 筆\n失敗：${data.failed_count || 0} 筆${details}`);
+                    }
+                })
+                .catch(err => {
+                    alert('自動發送就讀意願邀請發生錯誤：' + (err && err.message ? err.message : String(err)));
+                });
+        });
         
         window.onclick = function(event) {
             if (event.target.classList.contains('modal')) {

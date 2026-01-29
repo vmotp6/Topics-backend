@@ -114,6 +114,54 @@ try {
             // 提交事務
             $conn->commit();
             
+            // 獲取報名資料用於發送郵件通知
+            $app_stmt = $conn->prepare("SELECT id, apply_no, name FROM continued_admission WHERE id = ?");
+            $app_stmt->bind_param("i", $application_id);
+            $app_stmt->execute();
+            $app_result = $app_stmt->get_result();
+            $application_data = $app_result->fetch_assoc();
+            $app_stmt->close();
+            
+            // 發送郵件通知給被分配的老師
+            if ($application_data) {
+                $student_data = [
+                    'name' => $application_data['name'] ?? '學生',
+                    'apply_no' => $application_data['apply_no'] ?? ''
+                ];
+                
+                // 發送郵件給第一位老師
+                if ($teacher_1_id !== null) {
+                    try {
+                        $notification_path = __DIR__ . '/../../Topics-frontend/frontend/includes/continued_admission_notification_functions.php';
+                        if (file_exists($notification_path)) {
+                            require_once $notification_path;
+                            sendContinuedAdmissionTeacherNotification($conn, $teacher_1_id, $student_data, $application_id);
+                        } else {
+                            error_log("找不到續招報名郵件通知函數文件: $notification_path");
+                        }
+                    } catch (Exception $e) {
+                        error_log("發送第一位老師通知郵件時發生錯誤: " . $e->getMessage());
+                        // 不影響主流程，繼續執行
+                    }
+                }
+                
+                // 發送郵件給第二位老師
+                if ($teacher_2_id !== null) {
+                    try {
+                        $notification_path = __DIR__ . '/../../Topics-frontend/frontend/includes/continued_admission_notification_functions.php';
+                        if (file_exists($notification_path)) {
+                            require_once $notification_path;
+                            sendContinuedAdmissionTeacherNotification($conn, $teacher_2_id, $student_data, $application_id);
+                        } else {
+                            error_log("找不到續招報名郵件通知函數文件: $notification_path");
+                        }
+                    } catch (Exception $e) {
+                        error_log("發送第二位老師通知郵件時發生錯誤: " . $e->getMessage());
+                        // 不影響主流程，繼續執行
+                    }
+                }
+            }
+            
             echo json_encode([
                 'success' => true,
                 'message' => '分配成功（已分配給' . 
@@ -161,6 +209,54 @@ try {
         $update_stmt->bind_param("iii", $teacher_1_id, $teacher_2_id, $application_id);
         
         if ($update_stmt->execute()) {
+            // 獲取報名資料用於發送郵件通知
+            $app_stmt = $conn->prepare("SELECT id, apply_no, name FROM continued_admission WHERE id = ?");
+            $app_stmt->bind_param("i", $application_id);
+            $app_stmt->execute();
+            $app_result = $app_stmt->get_result();
+            $application_data = $app_result->fetch_assoc();
+            $app_stmt->close();
+            
+            // 發送郵件通知給被分配的老師
+            if ($application_data) {
+                $student_data = [
+                    'name' => $application_data['name'] ?? '學生',
+                    'apply_no' => $application_data['apply_no'] ?? ''
+                ];
+                
+                // 發送郵件給第一位老師
+                if ($teacher_1_id !== null) {
+                    try {
+                        $notification_path = __DIR__ . '/../../Topics-frontend/frontend/includes/continued_admission_notification_functions.php';
+                        if (file_exists($notification_path)) {
+                            require_once $notification_path;
+                            sendContinuedAdmissionTeacherNotification($conn, $teacher_1_id, $student_data, $application_id);
+                        } else {
+                            error_log("找不到續招報名郵件通知函數文件: $notification_path");
+                        }
+                    } catch (Exception $e) {
+                        error_log("發送第一位老師通知郵件時發生錯誤: " . $e->getMessage());
+                        // 不影響主流程，繼續執行
+                    }
+                }
+                
+                // 發送郵件給第二位老師
+                if ($teacher_2_id !== null) {
+                    try {
+                        $notification_path = __DIR__ . '/../../Topics-frontend/frontend/includes/continued_admission_notification_functions.php';
+                        if (file_exists($notification_path)) {
+                            require_once $notification_path;
+                            sendContinuedAdmissionTeacherNotification($conn, $teacher_2_id, $student_data, $application_id);
+                        } else {
+                            error_log("找不到續招報名郵件通知函數文件: $notification_path");
+                        }
+                    } catch (Exception $e) {
+                        error_log("發送第二位老師通知郵件時發生錯誤: " . $e->getMessage());
+                        // 不影響主流程，繼續執行
+                    }
+                }
+            }
+            
             echo json_encode([
                 'success' => true,
                 'message' => '分配成功（已分配給' . 
