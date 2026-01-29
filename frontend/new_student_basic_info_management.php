@@ -65,6 +65,7 @@ function ensureNewStudentBasicInfoTable($conn) {
     is_indigenous TINYINT(1) DEFAULT 0,
     is_new_immigrant_child TINYINT(1) DEFAULT 0,
     is_overseas_chinese TINYINT(1) DEFAULT 0,
+    status VARCHAR(20) NOT NULL DEFAULT '在學',
 
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     is_graduated TINYINT(1) DEFAULT 0,
@@ -73,6 +74,14 @@ function ensureNewStudentBasicInfoTable($conn) {
     INDEX idx_created_at (created_at)
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4";
   $conn->query($sql);
+
+  // 若資料表已存在，補上狀態欄位（預設：在學），並回填既有資料
+  if (!hasColumn($conn, 'new_student_basic_info', 'status')) {
+    $conn->query("ALTER TABLE new_student_basic_info ADD COLUMN status VARCHAR(20) NOT NULL DEFAULT '在學' AFTER is_overseas_chinese");
+  }
+  if (hasColumn($conn, 'new_student_basic_info', 'status')) {
+    $conn->query("UPDATE new_student_basic_info SET status = '在學' WHERE status IS NULL OR status = ''");
+  }
 }
 
 function hasColumn($conn, $table, $column) {
@@ -81,12 +90,21 @@ function hasColumn($conn, $table, $column) {
   $column = trim((string)$column);
   if ($table === '' || $column === '') return false;
   try {
-    $stmt = $conn->prepare("SHOW COLUMNS FROM `$table` LIKE ?");
+    // 用 INFORMATION_SCHEMA 查欄位是否存在（不依賴 mysqlnd / get_result）
+    $stmt = $conn->prepare("
+      SELECT COUNT(*)
+      FROM INFORMATION_SCHEMA.COLUMNS
+      WHERE TABLE_SCHEMA = DATABASE()
+        AND TABLE_NAME = ?
+        AND COLUMN_NAME = ?
+    ");
     if (!$stmt) return false;
-    $stmt->bind_param('s', $column);
+    $stmt->bind_param('ss', $table, $column);
     $stmt->execute();
-    $res = $stmt->get_result();
-    $ok = ($res && $res->num_rows > 0);
+    $cnt = 0;
+    $stmt->bind_result($cnt);
+    $stmt->fetch();
+    $ok = ((int)$cnt > 0);
     $stmt->close();
     return $ok;
   } catch (Exception $e) {
@@ -198,7 +216,13 @@ try {
 
         if ($dept_key !== '' && hasColumn($conn, 'departments', 'name')) {
             $dept_select = "s.`$dept_col` AS department_code, COALESCE(d.name,'') AS department_name";
-            $dept_join = " LEFT JOIN departments d ON s.`$dept_col` = d.`$dept_key` ";
+            // 避免不同 collation 造成 Illegal mix of collations（多發生於 code 類字串欄位）
+            if ($dept_key === 'code') {
+                $dept_join = " LEFT JOIN departments d ON s.`$dept_col` COLLATE utf8mb4_unicode_ci = d.`$dept_key` COLLATE utf8mb4_unicode_ci ";
+            } else {
+                // 若 departments 使用數字主鍵（id），用原本等號比較即可
+                $dept_join = " LEFT JOIN departments d ON s.`$dept_col` = d.`$dept_key` ";
+            }
         } else {
             $dept_select = "s.`$dept_col` AS department_code, '' AS department_name";
             $dept_join = "";

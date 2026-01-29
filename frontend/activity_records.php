@@ -262,26 +262,209 @@ if ($teacher_id > 0) {
         error_log('查詢活動記錄失敗: ' . $conn->error);
     }
     
-    // 獲取出席記錄數據（用於出席統計圖表）- 按場次統計實到人數
+    // 獲取出席記錄數據（用於出席統計圖表）- 從 admission_sessions 表抓取所有入學說明會場次
     // 注意：只計算與場次年份相同的簽到記錄
-    $attendance_stats_sql = "
-        SELECT 
-            s.id as session_id,
-            s.session_name,
-            s.session_date,
-            COUNT(*) as attendance_count
-        FROM attendance_records ar
-        INNER JOIN admission_sessions s ON ar.session_id = s.id
-        WHERE ar.attendance_status = 1 
-        AND ar.check_in_time IS NOT NULL
-        AND YEAR(ar.check_in_time) = YEAR(s.session_date)
-        GROUP BY s.id, s.session_name, s.session_date
-        ORDER BY attendance_count DESC
-    ";
-    $attendance_stats_result = $conn->query($attendance_stats_sql);
+    // 同時獲取報名人數和科系資訊
+    // 重要：顯示所有場次，即使沒有出席記錄或報名記錄
+    // 這是聯動的，直接從 admission_sessions 表抓取，不需要手動設定
+    
+    // 初始化變數
     $attendance_stats_data = [];
-    if ($attendance_stats_result) {
-        $attendance_stats_data = $attendance_stats_result->fetch_all(MYSQLI_ASSOC);
+    $all_sessions_list = [];
+    
+    // 先檢查 admission_sessions 表是否有資料
+    $check_sessions = $conn->query("SELECT COUNT(*) as count FROM admission_sessions");
+    $session_count = 0;
+    if ($check_sessions) {
+        $count_row = $check_sessions->fetch_assoc();
+        $session_count = $count_row['count'];
+        error_log('admission_sessions 表中共有 ' . $session_count . ' 筆場次資料');
+    }
+    
+    // 檢查 admission_sessions 表是否有 department_id 欄位
+    $has_department_id = false;
+    $col_check = $conn->query("SHOW COLUMNS FROM admission_sessions LIKE 'department_id'");
+    if ($col_check && $col_check->num_rows > 0) {
+        $has_department_id = true;
+    }
+    
+    // 使用最簡單的查詢，確保能獲取所有場次
+    // 先獲取所有場次的基本資訊（不依賴子查詢）
+    // 統一使用 session_id 作為欄位名稱，確保與後續處理一致
+    if ($has_department_id) {
+        $simple_sql = "
+            SELECT 
+                s.id as session_id,
+                s.id,
+                s.session_name,
+                s.session_date,
+                s.session_end_date,
+                s.department_id,
+                COALESCE(d.name, '未指定') as department_name
+            FROM admission_sessions s
+            LEFT JOIN departments d ON s.department_id = d.code
+            ORDER BY s.session_date DESC
+        ";
+    } else {
+        $simple_sql = "
+            SELECT 
+                s.id as session_id,
+                s.id,
+                s.session_name,
+                s.session_date,
+                s.session_end_date,
+                NULL as department_id,
+                '未指定' as department_name
+            FROM admission_sessions s
+            ORDER BY s.session_date DESC
+        ";
+    }
+    
+    $simple_result = $conn->query($simple_sql);
+    if ($simple_result) {
+        $all_sessions_list = $simple_result->fetch_all(MYSQLI_ASSOC);
+        error_log('簡單查詢成功，獲取 ' . count($all_sessions_list) . ' 筆場次基本資料');
+        
+        // 為每個場次查詢出席和報名統計
+        foreach ($all_sessions_list as &$session) {
+            $session_id = $session['session_id'];
+            $session_date = $session['session_date'];
+            
+            // 查詢出席人數（使用年份比較）
+            $session_year = $session_date ? date('Y', strtotime($session_date)) : date('Y');
+            $attendance_sql = "
+                SELECT COUNT(*) as count 
+                FROM attendance_records 
+                WHERE session_id = ? 
+                AND attendance_status = 1 
+                AND check_in_time IS NOT NULL
+                AND YEAR(check_in_time) = ?
+            ";
+            $attendance_stmt = $conn->prepare($attendance_sql);
+            if ($attendance_stmt) {
+                $attendance_stmt->bind_param("ii", $session_id, $session_year);
+                $attendance_stmt->execute();
+                $attendance_result = $attendance_stmt->get_result();
+                if ($attendance_result) {
+                    $attendance_row = $attendance_result->fetch_assoc();
+                    $session['attendance_count'] = intval($attendance_row['count']);
+                } else {
+                    $session['attendance_count'] = 0;
+                }
+                $attendance_stmt->close();
+            } else {
+                $session['attendance_count'] = 0;
+                error_log('出席人數查詢準備失敗: ' . $conn->error);
+            }
+            
+            // 查詢報名人數（使用年份比較）
+            $registration_sql = "
+                SELECT COUNT(*) as count 
+                FROM admission_applications 
+                WHERE session_id = ?
+                AND YEAR(created_at) = ?
+            ";
+            $registration_stmt = $conn->prepare($registration_sql);
+            if ($registration_stmt) {
+                $registration_stmt->bind_param("ii", $session_id, $session_year);
+                $registration_stmt->execute();
+                $registration_result = $registration_stmt->get_result();
+                if ($registration_result) {
+                    $registration_row = $registration_result->fetch_assoc();
+                    $session['registration_count'] = intval($registration_row['count']);
+                } else {
+                    $session['registration_count'] = 0;
+                }
+                $registration_stmt->close();
+            } else {
+                $session['registration_count'] = 0;
+                error_log('報名人數查詢準備失敗: ' . $conn->error);
+            }
+        }
+        unset($session); // 釋放引用
+        
+        $attendance_stats_data = $all_sessions_list;
+        error_log('最終統計資料：' . count($attendance_stats_data) . ' 筆場次');
+    } else {
+        error_log('簡單查詢失敗: ' . $conn->error);
+        // 如果查詢失敗，至少嘗試獲取場次列表
+        $fallback_sql = "SELECT id as session_id, session_name, session_date, session_end_date FROM admission_sessions ORDER BY session_date DESC";
+        $fallback_result = $conn->query($fallback_sql);
+        if ($fallback_result) {
+            $all_sessions_list = $fallback_result->fetch_all(MYSQLI_ASSOC);
+            // 為每個場次添加預設值
+            foreach ($all_sessions_list as &$session) {
+                $session['department_id'] = null;
+                $session['department_name'] = '未指定';
+                $session['attendance_count'] = 0;
+                $session['registration_count'] = 0;
+            }
+            unset($session);
+            $attendance_stats_data = $all_sessions_list;
+            error_log('使用備用查詢，返回 ' . count($attendance_stats_data) . ' 筆場次資料');
+        } else {
+            error_log('備用查詢也失敗: ' . $conn->error);
+        }
+    }
+    
+    // 獲取當前年份的場次列表（用於篩選下拉選單）
+    // 只顯示當前年份的場次，不顯示以前年份的資料
+    // 如果上面已經查詢過，直接使用並過濾；否則重新查詢
+    $current_year = date('Y');
+    if (!isset($all_sessions_list) || empty($all_sessions_list)) {
+        if ($has_department_id) {
+            $all_sessions_sql = "
+                SELECT 
+                    s.id,
+                    s.id as session_id,
+                    s.session_name,
+                    s.session_date,
+                    s.department_id,
+                    COALESCE(d.name, '未指定') as department_name
+                FROM admission_sessions s
+                LEFT JOIN departments d ON s.department_id = d.code
+                WHERE YEAR(s.session_date) = ?
+                ORDER BY s.session_date DESC
+            ";
+        } else {
+            $all_sessions_sql = "
+                SELECT 
+                    s.id,
+                    s.id as session_id,
+                    s.session_name,
+                    s.session_date,
+                    NULL as department_id,
+                    '未指定' as department_name
+                FROM admission_sessions s
+                WHERE YEAR(s.session_date) = ?
+                ORDER BY s.session_date DESC
+            ";
+        }
+        $all_sessions_stmt = $conn->prepare($all_sessions_sql);
+        $all_sessions_list = [];
+        if ($all_sessions_stmt) {
+            $all_sessions_stmt->bind_param("i", $current_year);
+            $all_sessions_stmt->execute();
+            $all_sessions_result = $all_sessions_stmt->get_result();
+            if ($all_sessions_result) {
+                $all_sessions_list = $all_sessions_result->fetch_all(MYSQLI_ASSOC);
+                error_log('當前年份場次列表查詢成功，獲取 ' . count($all_sessions_list) . ' 筆場次');
+            } else {
+                error_log('場次列表查詢執行失敗: ' . $conn->error);
+            }
+            $all_sessions_stmt->close();
+        } else {
+            error_log('場次列表查詢準備失敗: ' . $conn->error);
+        }
+    } else {
+        // 如果已經有資料，過濾出當前年份的場次
+        $all_sessions_list = array_filter($all_sessions_list, function($session) use ($current_year) {
+            if (!$session['session_date']) return false;
+            $session_year = date('Y', strtotime($session['session_date']));
+            return $session_year == $current_year;
+        });
+        $all_sessions_list = array_values($all_sessions_list); // 重新索引陣列
+        error_log('從已有資料過濾出當前年份場次: ' . count($all_sessions_list) . ' 筆');
     }
     
     // 獲取新生基本資料統計（學校來源和科系分布）
@@ -1299,7 +1482,7 @@ $conn->close();
                         </div>
                         
                         <!-- 續招報名統計內容區域 -->
-                        <div id="continuedAdmissionAnalyticsContent" style="min-height: 200px;">
+                        <div id="continuedAdmissionAnalyticsContent" style="min-height: 200px; margin-left: 15px; margin-right: 15px;">
                             <div style="margin-bottom: 20px;">
                                 <h4 style="color: #667eea; margin-bottom: 15px;">
                                     <i class="fas fa-list-ol"></i> 志願選擇分析
@@ -1323,7 +1506,7 @@ $conn->close();
                         </div>
                         
                         <!-- 五專入學說明會統計按鈕組 -->
-                        <div id="admissionStatsSection" style="border-top: 1px solid #f0f0f0; padding-top: 20px; margin-top: 20px;">
+                        <div id="admissionStatsSection" style="border-top: 1px solid #f0f0f0; padding-top: 20px; margin-top: 20px; margin-left:15px;">
                             <h4 style="color: #667eea; margin-bottom: 15px; display: flex; align-items: center; gap: 10px;">
                                 <i class="fas fa-graduation-cap"></i> 五專入學說明會統計分析
                             </h4>
@@ -1353,7 +1536,7 @@ $conn->close();
                         </div>
                         
                         <!-- 五專入學說明會統計內容區域 -->
-                        <div id="admissionAnalyticsContent" style="min-height: 200px;">
+                        <div id="admissionAnalyticsContent" style="min-height: 200px; margin-left: 15px; margin-right: 15px;">
                             <div class="empty-state">
                                 <i class="fas fa-graduation-cap fa-3x" style="margin-bottom: 16px;"></i>
                                 <h4>選擇上方的統計類型來查看詳細分析</h4>
@@ -1387,7 +1570,16 @@ $conn->close();
     <script>
     // 將 PHP 數據傳遞給 JavaScript
     const activityRecords = <?php echo json_encode($all_activity_records ?? []); ?>;
-    const attendanceStatsData = <?php echo json_encode($attendance_stats_data ?? []); ?>;
+    const attendanceStatsData = <?php echo json_encode(isset($attendance_stats_data) ? $attendance_stats_data : []); ?>;
+    const allSessionsList = <?php echo json_encode(isset($all_sessions_list) ? $all_sessions_list : []); ?>;
+    
+    // 調試：輸出資料到控制台
+    console.log('=== 出席統計資料調試 ===');
+    console.log('attendanceStatsData 數量:', attendanceStatsData ? attendanceStatsData.length : 0);
+    console.log('allSessionsList 數量:', allSessionsList ? allSessionsList.length : 0);
+    if (attendanceStatsData && attendanceStatsData.length > 0) {
+        console.log('attendanceStatsData 第一筆:', attendanceStatsData[0]);
+    }
     const isTeacherListView = <?php echo $teacher_id > 0 ? 'false' : 'true'; ?>;
     const userDepartment = '<?php echo $user_department; ?>';
     const currentUser = '<?php echo $current_user; ?>';
@@ -1937,41 +2129,156 @@ $conn->close();
     
     function showAttendanceStats() {
         console.log('showAttendanceStats 被調用');
+        console.log('attendanceStatsData:', attendanceStatsData);
+        console.log('allSessionsList:', allSessionsList);
         
-        // 按場次統計實到人數（已經在後端按人數排序）
-        const sessionStats = attendanceStatsData.map(item => ({
-            sessionName: item.session_name,
+        // 檢查數據是否存在
+        if (!attendanceStatsData || attendanceStatsData.length === 0) {
+            const content = `
+                <div style="text-align: center; padding: 40px; color: #999;">
+                    <i class="fas fa-inbox fa-3x" style="margin-bottom: 16px;"></i>
+                    <h4>暫無場次資料</h4>
+                    <p>目前系統中還沒有場次資料，請先到「場次設定」頁面新增場次。</p>
+                    <a href="settings.php" style="display: inline-block; margin-top: 20px; padding: 10px 20px; background: #667eea; color: white; text-decoration: none; border-radius: 6px;">
+                        <i class="fas fa-plus"></i> 前往場次設定
+                    </a>
+                </div>
+            `;
+            const admissionContent = document.getElementById('admissionAnalyticsContent');
+            if (admissionContent) {
+                admissionContent.innerHTML = content;
+            }
+            return;
+        }
+        
+        // 處理原始數據，添加計算欄位
+        const processedData = attendanceStatsData.map(item => ({
+            sessionId: item.session_id,
+            sessionName: item.session_name || '未命名場次',
             sessionDate: item.session_date,
-            attendanceCount: parseInt(item.attendance_count) || 0
+            sessionEndDate: item.session_end_date,
+            departmentId: item.department_id,
+            departmentName: item.department_name || '未指定',
+            attendanceCount: parseInt(item.attendance_count) || 0,
+            registrationCount: parseInt(item.registration_count) || 0,
+            attendanceRate: item.registration_count > 0 
+                ? ((parseInt(item.attendance_count) || 0) / parseInt(item.registration_count) * 100).toFixed(1)
+                : 0
         }));
         
-        // 確保按人數從多到少排序
-        sessionStats.sort((a, b) => b.attendanceCount - a.attendanceCount);
+        console.log('processedData:', processedData);
+
+        
+        // 生成場次選項（只顯示當前年份的場次）
+        const currentYear = new Date().getFullYear();
+        const currentYearSessions = allSessionsList.filter(s => {
+            if (!s.session_date) return false;
+            const sessionYear = new Date(s.session_date).getFullYear();
+            return sessionYear === currentYear;
+        });
+        
+        // 調試：輸出場次列表
+        console.log('allSessionsList:', allSessionsList);
+        console.log('currentYearSessions:', currentYearSessions);
+        console.log('processedData:', processedData);
+        
+        const sessionOptions = currentYearSessions.map(s => {
+            // 確保使用正確的 ID 欄位
+            const sessionId = s.id || s.session_id;
+            console.log('生成場次選項:', s.session_name, 'ID:', sessionId, '原始資料:', s);
+            return `<option value="${sessionId}">${s.session_name} (${s.session_date ? new Date(s.session_date).toLocaleDateString('zh-TW') : '未設定日期'})</option>`;
+        }).join('');
+        
+        // 調試：檢查 ID 映射
+        console.log('=== 場次 ID 映射檢查 ===');
+        console.log('allSessionsList 中的 ID:', currentYearSessions.map(s => ({ name: s.session_name, id: s.id || s.session_id })));
+        console.log('processedData 中的 sessionId:', processedData.map(item => ({ name: item.sessionName, sessionId: item.sessionId })));
+        
+        // 獲取日期範圍
+        const dates = processedData.map(item => item.sessionDate).filter(d => d);
+        const minDate = dates.length > 0 ? new Date(Math.min(...dates.map(d => new Date(d)))).toISOString().split('T')[0] : '';
+        const maxDate = dates.length > 0 ? new Date(Math.max(...dates.map(d => new Date(d)))).toISOString().split('T')[0] : '';
         
         const content = `
             <div style="margin-bottom: 20px;">
                 <h4 style="color: #667eea; margin-bottom: 15px;">
                     <i class="fas fa-check-circle"></i> 出席統計圖表
                 </h4>
-                <p style="color: #666; margin-bottom: 20px;">顯示各場次的實到人數統計，讓您直觀了解哪些場次的實到人數比較多</p>
+                <p style="color: #666; margin-bottom: 20px;">顯示各場次的出席人數統計，支援依場次、日期、科系等條件篩選，方便分析招生活動效果</p>
                 
-                <div class="chart-card">
-                    <div class="chart-title">各場次實到人數統計</div>
-                    <div class="chart-container" style="height: ${Math.max(400, sessionStats.length * 40)}px;">
-                        <canvas id="attendanceSessionChart"></canvas>
+                <!-- 篩選器 -->
+                <div style="background: #f8f9fa; padding: 20px; border-radius: 10px; margin-bottom: 20px;">
+                    <h5 style="color: #333; margin-bottom: 15px;">
+                        <i class="fas fa-filter"></i> 篩選條件
+                    </h5>
+                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 15px;">
+                        <div>
+                            <label style="display: block; margin-bottom: 5px; color: #666; font-size: 14px; font-weight: 500;">場次選擇</label>
+                            <select id="filterSessionId" onchange="filterAttendanceStats()" style="width: 100%; padding: 8px 12px; border: 1px solid #d9d9d9; border-radius: 6px; background: #fff; color: #333; font-size: 14px; cursor: pointer;">
+                                <option value="">全部場次</option>
+                                ${sessionOptions}
+                            </select>
+                        </div>
+
+                        <div>
+                            <label style="display: block; margin-bottom: 5px; color: #666; font-size: 14px; font-weight: 500;">開始日期</label>
+                            <input type="date" id="filterStartDate" onchange="filterAttendanceStats()" value="${minDate}" style="width: 100%; padding: 8px 12px; border: 1px solid #d9d9d9; border-radius: 6px; background: #fff; color: #333; font-size: 14px;">
+                        </div>
+                        <div>
+                            <label style="display: block; margin-bottom: 5px; color: #666; font-size: 14px; font-weight: 500;">結束日期</label>
+                            <input type="date" id="filterEndDate" onchange="filterAttendanceStats()" value="${maxDate}" style="width: 100%; padding: 8px 12px; border: 1px solid #d9d9d9; border-radius: 6px; background: #fff; color: #333; font-size: 14px;">
+                        </div>
+                    </div>
+                    <div style="margin-top: 15px; display: flex; gap: 10px; align-items: center;">
+                        <button onclick="filterAttendanceStats()" style="padding: 8px 20px; background: #667eea; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 14px;">
+                            <i class="fas fa-search"></i> 套用篩選
+                        </button>
+                        <button onclick="resetAttendanceFilters()" style="padding: 8px 20px; background: #999; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 14px;">
+                            <i class="fas fa-redo"></i> 重置
+                        </button>
+                        <span id="filterResultCount" style="color: #666; font-size: 14px; margin-left: 10px;"></span>
                     </div>
                 </div>
                 
+                <!-- 統計摘要 -->
+                <div id="attendanceSummary" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin-bottom: 20px;"></div>
+                
+                <!-- 圖表區域 -->
+                <div style="display: grid; grid-template-columns: 1fr; gap: 20px;">
+                    <div class="chart-card">
+                        <div class="chart-title">各場次出席人數統計</div>
+                        <div class="chart-container" style="height: 500px;">
+                            <canvas id="attendanceSessionChart"></canvas>
+                        </div>
+                    </div>
+                    
+                    <div class="chart-card">
+                        <div class="chart-title">出席率統計</div>
+                        <div class="chart-container" style="height: 400px;">
+                            <canvas id="attendanceRateChart"></canvas>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- 詳細統計表格 -->
                 <div style="background: #f8f9fa; padding: 20px; border-radius: 10px; margin-top: 20px;">
-                    <h5 style="color: #333; margin-bottom: 15px;">場次詳細統計</h5>
-                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 15px;">
-                        ${sessionStats.map(stat => `
-                            <div style="background: white; padding: 15px; border-radius: 8px; border-left: 4px solid #52c41a;">
-                                <div style="font-weight: 600; color: #333; margin-bottom: 5px; font-size: 14px;">${stat.sessionName}</div>
-                                <div style="font-size: 12px; color: #999; margin-bottom: 8px;">${stat.sessionDate ? new Date(stat.sessionDate).toLocaleDateString('zh-TW') : ''}</div>
-                                <div style="font-size: 24px; color: #52c41a; font-weight: bold;">${stat.attendanceCount} 人</div>
-                            </div>
-                        `).join('')}
+                    <h5 style="color: #333; margin-bottom: 15px;">
+                        <i class="fas fa-table"></i> 場次詳細統計
+                    </h5>
+                    <div style="overflow-x: auto;">
+                        <table id="attendanceDetailTable" style="width: 100%; border-collapse: collapse; background: white; border-radius: 8px; overflow: hidden;">
+                            <thead>
+                                <tr style="background: #667eea; color: white;">
+                                    <th style="padding: 12px; text-align: left; font-weight: 600;">場次名稱</th>
+                                    <th style="padding: 12px; text-align: center; font-weight: 600;">場次日期</th>
+                                    <th style="padding: 12px; text-align: center; font-weight: 600;">報名人數</th>
+                                    <th style="padding: 12px; text-align: center; font-weight: 600;">實到人數</th>
+                                    <th style="padding: 12px; text-align: center; font-weight: 600;">出席率</th>
+                                </tr>
+                            </thead>
+                            <tbody id="attendanceDetailTableBody">
+                            </tbody>
+                        </table>
                     </div>
                 </div>
             </div>
@@ -1981,69 +2288,364 @@ $conn->close();
         if (admissionContent) {
             admissionContent.innerHTML = content;
             
-            // 創建橫條圖
-            setTimeout(() => {
-                const canvasElement = document.getElementById('attendanceSessionChart');
-                if (!canvasElement) return;
-                
-                const ctx = canvasElement.getContext('2d');
-                new Chart(ctx, {
-                    type: 'bar',
-                    data: {
-                        labels: sessionStats.map(stat => stat.sessionName),
-                        datasets: [{
-                            label: '實到人數',
-                            data: sessionStats.map(stat => stat.attendanceCount),
-                            backgroundColor: 'rgba(82, 196, 26, 0.8)',
-                            borderColor: '#52c41a',
-                            borderWidth: 2
-                        }]
-                    },
-                    options: {
-                        indexAxis: 'y', // 橫條圖
-                        responsive: true,
-                        maintainAspectRatio: false,
-                        plugins: {
-                            legend: {
-                                display: true,
-                                position: 'top'
-                            },
-                            tooltip: {
-                                callbacks: {
-                                    afterLabel: function(context) {
-                                        const index = context.dataIndex;
-                                        const stat = sessionStats[index];
-                                        return `場次日期: ${stat.sessionDate ? new Date(stat.sessionDate).toLocaleDateString('zh-TW') : '未設定'}`;
-                                    }
-                                }
-                            }
+            // 儲存原始數據供篩選使用
+            window.attendanceStatsRawData = processedData;
+            
+            // 初始化顯示
+            filterAttendanceStats();
+        }
+    }
+    
+    // 篩選出席統計
+    function filterAttendanceStats() {
+        if (!window.attendanceStatsRawData) {
+            console.error('attendanceStatsRawData 不存在');
+            return;
+        }
+        
+        const sessionId = document.getElementById('filterSessionId')?.value || '';
+        const department = document.getElementById('filterDepartment')?.value || '';
+        const startDate = document.getElementById('filterStartDate')?.value || '';
+        const endDate = document.getElementById('filterEndDate')?.value || '';
+        
+        let filteredData = [...window.attendanceStatsRawData];
+        
+        // 應用篩選
+        if (sessionId) {
+            // 確保類型一致進行比較
+            const sessionIdNum = parseInt(sessionId);
+            console.log('=== 篩選除錯資訊 ===');
+            console.log('選擇的場次 ID:', sessionIdNum);
+            console.log('原始資料數量:', window.attendanceStatsRawData.length);
+            console.log('原始資料前3筆:', window.attendanceStatsRawData.slice(0, 3).map(item => ({
+                sessionId: item.sessionId,
+                sessionName: item.sessionName,
+                sessionIdType: typeof item.sessionId
+            })));
+            
+            filteredData = filteredData.filter(item => {
+                // 處理可能的 ID 欄位名稱不一致問題
+                const itemSessionId = parseInt(item.sessionId || item.session_id || 0);
+                const match = itemSessionId === sessionIdNum;
+                if (match) {
+                    console.log('✓ 找到匹配的場次:', item.sessionName, 'ID:', itemSessionId);
+                }
+                return match;
+            });
+            
+            console.log('篩選後資料數量:', filteredData.length);
+            if (filteredData.length > 0) {
+                console.log('篩選後資料:', filteredData);
+            } else {
+                console.warn('⚠ 沒有找到匹配的資料！');
+                console.log('所有場次的 ID 列表:', window.attendanceStatsRawData.map(item => ({
+                    id: item.sessionId || item.session_id,
+                    name: item.sessionName
+                })));
+            }
+        }
+
+        if (startDate) {
+            filteredData = filteredData.filter(item => {
+                const itemDate = item.sessionDate ? new Date(item.sessionDate).toISOString().split('T')[0] : '';
+                return itemDate >= startDate;
+            });
+        }
+        if (endDate) {
+            filteredData = filteredData.filter(item => {
+                const itemDate = item.sessionDate ? new Date(item.sessionDate).toISOString().split('T')[0] : '';
+                return itemDate <= endDate;
+            });
+        }
+        
+        // 按日期排序
+        filteredData.sort((a, b) => {
+            const dateA = a.sessionDate ? new Date(a.sessionDate) : new Date(0);
+            const dateB = b.sessionDate ? new Date(b.sessionDate) : new Date(0);
+            return dateB - dateA;
+        });
+        
+        // 更新結果計數
+        const countElement = document.getElementById('filterResultCount');
+        if (countElement) {
+            countElement.textContent = `共找到 ${filteredData.length} 個場次`;
+        }
+        
+        // 更新統計摘要
+        updateAttendanceSummary(filteredData);
+        
+        // 更新圖表
+        updateAttendanceCharts(filteredData);
+        
+        // 更新詳細表格
+        updateAttendanceDetailTable(filteredData);
+    }
+    
+    // 重置篩選
+    function resetAttendanceFilters() {
+        const dates = window.attendanceStatsRawData.map(item => item.sessionDate).filter(d => d);
+        const minDate = dates.length > 0 ? new Date(Math.min(...dates.map(d => new Date(d)))).toISOString().split('T')[0] : '';
+        const maxDate = dates.length > 0 ? new Date(Math.max(...dates.map(d => new Date(d)))).toISOString().split('T')[0] : '';
+        
+        if (document.getElementById('filterSessionId')) document.getElementById('filterSessionId').value = '';
+        if (document.getElementById('filterDepartment')) document.getElementById('filterDepartment').value = '';
+        if (document.getElementById('filterStartDate')) document.getElementById('filterStartDate').value = minDate;
+        if (document.getElementById('filterEndDate')) document.getElementById('filterEndDate').value = maxDate;
+        
+        filterAttendanceStats();
+    }
+    
+    // 更新統計摘要
+    function updateAttendanceSummary(data) {
+        const totalSessions = data.length;
+        const totalRegistrations = data.reduce((sum, item) => sum + item.registrationCount, 0);
+        const totalAttendances = data.reduce((sum, item) => sum + item.attendanceCount, 0);
+        const avgAttendanceRate = totalRegistrations > 0 
+            ? ((totalAttendances / totalRegistrations) * 100).toFixed(1)
+            : 0;
+        
+        const summaryHtml = `
+            <div style="background: white; padding: 20px; border-radius: 8px; border-left: 4px solid #667eea; text-align: center;">
+                <div style="font-size: 14px; color: #999; margin-bottom: 5px;">場次總數</div>
+                <div style="font-size: 32px; color: #667eea; font-weight: bold;">${totalSessions}</div>
+            </div>
+            <div style="background: white; padding: 20px; border-radius: 8px; border-left: 4px solid #52c41a; text-align: center;">
+                <div style="font-size: 14px; color: #999; margin-bottom: 5px;">總報名人數</div>
+                <div style="font-size: 32px; color: #52c41a; font-weight: bold;">${totalRegistrations}</div>
+            </div>
+            <div style="background: white; padding: 20px; border-radius: 8px; border-left: 4px solid #1890ff; text-align: center;">
+                <div style="font-size: 14px; color: #999; margin-bottom: 5px;">總實到人數</div>
+                <div style="font-size: 32px; color: #1890ff; font-weight: bold;">${totalAttendances}</div>
+            </div>
+            <div style="background: white; padding: 20px; border-radius: 8px; border-left: 4px solid #faad14; text-align: center;">
+                <div style="font-size: 14px; color: #999; margin-bottom: 5px;">平均出席率</div>
+                <div style="font-size: 32px; color: #faad14; font-weight: bold;">${avgAttendanceRate}%</div>
+            </div>
+        `;
+        
+        const summaryElement = document.getElementById('attendanceSummary');
+        if (summaryElement) {
+            summaryElement.innerHTML = summaryHtml;
+        }
+    }
+    
+    // 更新圖表
+    function updateAttendanceCharts(data) {
+        // 銷毀舊圖表
+        if (window.attendanceSessionChartInstance) {
+            window.attendanceSessionChartInstance.destroy();
+            window.attendanceSessionChartInstance = null;
+        }
+        if (window.attendanceRateChartInstance) {
+            window.attendanceRateChartInstance.destroy();
+            window.attendanceRateChartInstance = null;
+        }
+        
+        // 如果沒有數據，顯示空狀態並恢復圖表容器
+        if (!data || data.length === 0) {
+            const sessionChartContainer = document.querySelector('#attendanceSessionChart')?.closest('.chart-container');
+            const rateChartContainer = document.querySelector('#attendanceRateChart')?.closest('.chart-container');
+            
+            if (sessionChartContainer) {
+                sessionChartContainer.innerHTML = '<div style="text-align: center; padding: 40px; color: #999;">沒有符合條件的資料</div>';
+            }
+            if (rateChartContainer) {
+                rateChartContainer.innerHTML = '<div style="text-align: center; padding: 40px; color: #999;">沒有符合條件的資料</div>';
+            }
+            return;
+        }
+        
+        // 恢復圖表容器（如果之前被替換了）
+        const sessionChartCard = document.querySelector('#attendanceSessionChart')?.closest('.chart-card');
+        const rateChartCard = document.querySelector('#attendanceRateChart')?.closest('.chart-card');
+        if (sessionChartCard) {
+            const sessionContainer = sessionChartCard.querySelector('.chart-container');
+            if (sessionContainer && !sessionContainer.querySelector('canvas')) {
+                sessionContainer.innerHTML = '<canvas id="attendanceSessionChart"></canvas>';
+            }
+        }
+        if (rateChartCard) {
+            const rateContainer = rateChartCard.querySelector('.chart-container');
+            if (rateContainer && !rateContainer.querySelector('canvas')) {
+                rateContainer.innerHTML = '<canvas id="attendanceRateChart"></canvas>';
+            }
+        }
+        
+        // 準備數據
+        const labels = data.map(item => item.sessionName.length > 20 ? item.sessionName.substring(0, 20) + '...' : item.sessionName);
+        const attendanceData = data.map(item => item.attendanceCount);
+        const registrationData = data.map(item => item.registrationCount);
+        const rateData = data.map(item => parseFloat(item.attendanceRate));
+        
+        // 創建出席人數橫條圖
+        setTimeout(() => {
+            const canvasElement = document.getElementById('attendanceSessionChart');
+            if (!canvasElement) return;
+            
+            const ctx = canvasElement.getContext('2d');
+            window.attendanceSessionChartInstance = new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: labels,
+                    datasets: [{
+                        label: '實到人數',
+                        data: attendanceData,
+                        backgroundColor: 'rgba(82, 196, 26, 0.8)',
+                        borderColor: '#52c41a',
+                        borderWidth: 2
+                    }, {
+                        label: '報名人數',
+                        data: registrationData,
+                        backgroundColor: 'rgba(24, 144, 255, 0.6)',
+                        borderColor: '#1890ff',
+                        borderWidth: 2
+                    }]
+                },
+                options: {
+                    indexAxis: 'y',
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: {
+                            display: true,
+                            position: 'top'
                         },
-                        scales: {
-                            x: {
-                                beginAtZero: true,
-                                ticks: {
-                                    stepSize: 1
-                                },
-                                title: {
-                                    display: true,
-                                    text: '實到人數'
-                                }
-                            },
-                            y: {
-                                ticks: {
-                                    maxRotation: 0,
-                                    minRotation: 0
-                                },
-                                title: {
-                                    display: true,
-                                    text: '場次名稱'
+                        tooltip: {
+                            callbacks: {
+                                afterLabel: function(context) {
+                                    const index = context.dataIndex;
+                                    const item = data[index];
+                                    return `場次日期: ${item.sessionDate ? new Date(item.sessionDate).toLocaleDateString('zh-TW') : '未設定'}\\n出席率: ${item.attendanceRate}%`;
                                 }
                             }
                         }
+                    },
+                    scales: {
+                        x: {
+                            beginAtZero: true,
+                            ticks: {
+                                stepSize: 1
+                            },
+                            title: {
+                                display: true,
+                                text: '人數'
+                            }
+                        },
+                        y: {
+                            ticks: {
+                                maxRotation: 45,
+                                minRotation: 0
+                            },
+                            title: {
+                                display: true,
+                                text: '場次名稱'
+                            }
+                        }
                     }
-                });
-            }, 100);
+                }
+            });
+        }, 100);
+        
+        // 創建出席率折線圖
+        setTimeout(() => {
+            const rateCanvas = document.getElementById('attendanceRateChart');
+            if (!rateCanvas) return;
+            
+            const rateCtx = rateCanvas.getContext('2d');
+            window.attendanceRateChartInstance = new Chart(rateCtx, {
+                type: 'line',
+                data: {
+                    labels: labels,
+                    datasets: [{
+                        label: '出席率 (%)',
+                        data: rateData,
+                        borderColor: '#faad14',
+                        backgroundColor: 'rgba(250, 173, 20, 0.1)',
+                        borderWidth: 3,
+                        fill: true,
+                        tension: 0.4,
+                        pointRadius: 5,
+                        pointHoverRadius: 7
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: {
+                            display: true,
+                            position: 'top'
+                        },
+                        tooltip: {
+                            callbacks: {
+                                label: function(context) {
+                                    const index = context.dataIndex;
+                                    const item = data[index];
+                                    return `出席率: ${item.attendanceRate}% (${item.attendanceCount}/${item.registrationCount})`;
+                                }
+                            }
+                        }
+                    },
+                    scales: {
+                        y: {
+                            beginAtZero: true,
+                            max: 100,
+                            ticks: {
+                                callback: function(value) {
+                                    return value + '%';
+                                }
+                            },
+                            title: {
+                                display: true,
+                                text: '出席率 (%)'
+                            }
+                        },
+                        x: {
+                            ticks: {
+                                maxRotation: 45,
+                                minRotation: 45
+                            },
+                            title: {
+                                display: true,
+                                text: '場次名稱'
+                            }
+                        }
+                    }
+                }
+            });
+        }, 200);
+    }
+    
+    // 更新詳細表格
+    function updateAttendanceDetailTable(data) {
+        const tbody = document.getElementById('attendanceDetailTableBody');
+        if (!tbody) return;
+        
+        if (data.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="6" style="padding: 20px; text-align: center; color: #999;">沒有符合條件的資料</td></tr>';
+            return;
         }
+        
+        tbody.innerHTML = data.map(item => {
+            const sessionDate = item.sessionDate ? new Date(item.sessionDate).toLocaleDateString('zh-TW', {
+                year: 'numeric',
+                month: '2-digit',
+                day: '2-digit'
+            }) : '未設定';
+            const rateColor = parseFloat(item.attendanceRate) >= 70 ? '#52c41a' : parseFloat(item.attendanceRate) >= 50 ? '#faad14' : '#ff4d4f';
+            
+            return `
+                <tr style="border-bottom: 1px solid #f0f0f0;">
+                    <td style="padding: 12px;">${item.sessionName}</td>
+                    <td style="padding: 12px; text-align: center;">${sessionDate}</td>
+                    <td style="padding: 12px; text-align: center;">${item.registrationCount}</td>
+                    <td style="padding: 12px; text-align: center; font-weight: 600; color: #52c41a;">${item.attendanceCount}</td>
+                    <td style="padding: 12px; text-align: center;">
+                        <span style="color: ${rateColor}; font-weight: 600;">${item.attendanceRate}%</span>
+                    </td>
+                </tr>
+            `;
+        }).join('');
     }
     
     // 顯示新生學校來源統計
@@ -5715,6 +6317,8 @@ function showContinuedAdmissionChoicesStats() {
             if (instance.canvas.id.includes('admissionGradeChart') || 
                 instance.canvas.id.includes('admissionSchoolChart') ||
                 instance.canvas.id.includes('admissionSessionChart') ||
+                instance.canvas.id.includes('attendanceSessionChart') ||
+                instance.canvas.id.includes('attendanceRateChart') ||
                 instance.canvas.id.includes('admissionCourseChart') ||
                 instance.canvas.id.includes('admissionMonthlyChart') ||
                 instance.canvas.id.includes('admissionReceiveInfoChart')) {
@@ -5722,11 +6326,24 @@ function showContinuedAdmissionChoicesStats() {
             }
         });
         
+        // 清除全局圖表實例
+        if (window.attendanceSessionChartInstance) {
+            window.attendanceSessionChartInstance.destroy();
+            window.attendanceSessionChartInstance = null;
+        }
+        if (window.attendanceRateChartInstance) {
+            window.attendanceRateChartInstance.destroy();
+            window.attendanceRateChartInstance = null;
+        }
+        
+        // 清除原始數據
+        window.attendanceStatsRawData = null;
+        
         document.getElementById('admissionAnalyticsContent').innerHTML = `
             <div class="empty-state">
                 <i class="fas fa-graduation-cap fa-3x" style="margin-bottom: 16px;"></i>
                 <h4>選擇上方的統計類型來查看詳細分析</h4>
-                <p>提供年級分布、學校分布、場次分布、課程選擇、月度趨勢、資訊接收等多維度統計</p>
+                <p>提供出席統計、年級分布、學校分布、場次分布、課程選擇、資訊接收等多維度統計</p>
             </div>
         `;
     }
