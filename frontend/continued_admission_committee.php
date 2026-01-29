@@ -33,6 +33,56 @@ $default_content = "【報到提醒】\n請依招生中心公告時間與規定�
 // 取得統一公告時間（若無則空）
 $global_announce_time = caGetGlobalAnnounceTime($conn);
 
+// 自動檢查並發布已到期的公告（如果時間到了但還沒發布）
+// 注意：這裡只檢查並發布，不重新讀取附件（因為附件已經在前台公告欄中）
+if ($announcement && !empty($announcement['publish_at']) && empty($announcement['published_at'])) {
+    $publish_ts = strtotime($announcement['publish_at']);
+    $now_ts = time();
+    if ($publish_ts <= $now_ts) {
+        // 時間已到，自動發布
+        // 檢查前台公告欄是否已有草稿（包含附件）
+        $source = "continued_admission_{$year}";
+        $check_bulletin_stmt = $conn->prepare("SELECT id FROM bulletin_board WHERE source = ? AND type_code = 'result' LIMIT 1");
+        $existing_files = [];
+        if ($check_bulletin_stmt) {
+            $check_bulletin_stmt->bind_param("s", $source);
+            $check_bulletin_stmt->execute();
+            $check_bulletin_res = $check_bulletin_stmt->get_result();
+            $existing_bulletin = $check_bulletin_res->fetch_assoc();
+            $check_bulletin_stmt->close();
+            
+            // 如果有現有公告，獲取其附件（避免丟失）
+            if ($existing_bulletin) {
+                $bulletin_id = (int)$existing_bulletin['id'];
+                $files_stmt = $conn->prepare("SELECT file_path, original_filename, file_size, file_type FROM bulletin_files WHERE bulletin_id = ?");
+                if ($files_stmt) {
+                    $files_stmt->bind_param("i", $bulletin_id);
+                    $files_stmt->execute();
+                    $files_result = $files_stmt->get_result();
+                    while ($file_row = $files_result->fetch_assoc()) {
+                        $existing_files[] = [
+                            'file_path' => $file_row['file_path'],
+                            'original_filename' => $file_row['original_filename'],
+                            'file_size' => (int)$file_row['file_size'],
+                            'file_type' => $file_row['file_type'] ?? 'application/octet-stream'
+                        ];
+                    }
+                    $files_stmt->close();
+                }
+            }
+        }
+        
+        try {
+            $res = caPublishAnnouncement($conn, $year, $user_id, true, $existing_files);
+            // 重新讀取公告資料
+            $announcement = caGetAnnouncement($conn, $year);
+        } catch (Throwable $e) {
+            // 發布失敗，記錄錯誤但不中斷頁面載入
+            error_log("自動發布公告失敗: " . $e->getMessage());
+        }
+    }
+}
+
 // 取得本年度「委員會確認錄取結果」簽章狀態（僅供畫面顯示）
 $committee_signature = null;
 try {
@@ -75,6 +125,92 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             caUpsertAnnouncement($conn, $year, $title, $content, $publish_at, $user_id);
             $announcement = caGetAnnouncement($conn, $year);
             $message = "已儲存公告草稿";
+        }
+
+        if ($action === 'save_and_schedule_announcement') {
+            $title = trim((string)($_POST['title'] ?? $default_title));
+            $content = trim((string)($_POST['content'] ?? $default_content));
+            // 使用統一公告時間，不允許用戶設定
+            $publish_at = $global_announce_time;
+
+            if ($title === '' || $content === '') {
+                throw new Exception("公告標題與內容不可為空");
+            }
+
+            if (!$publish_at) {
+                throw new Exception("請先在「科系名額管理」設定統一公告錄取時間");
+            }
+
+            // 儲存公告內容
+            caUpsertAnnouncement($conn, $year, $title, $content, $publish_at, $user_id);
+            $announcement = caGetAnnouncement($conn, $year);
+
+            // 處理附件上傳（存到前台公告既有的 uploads/bulletin_files，才能在前台詳情顯示/下載）
+            $uploaded_files = [];
+            $upload_dir = __DIR__ . '/../../Topics-frontend/frontend/uploads/bulletin_files/';
+            if (!is_dir($upload_dir)) {
+                mkdir($upload_dir, 0755, true);
+            }
+
+            if (isset($_FILES['files']) && !empty($_FILES['files']['tmp_name'][0])) {
+                $allowed_extensions = ['pdf', 'doc', 'docx', 'xls', 'xlsx', 'jpg', 'jpeg', 'png', 'gif'];
+                $max_file_size = 10 * 1024 * 1024; // 10MB
+
+                foreach ($_FILES['files']['tmp_name'] as $key => $tmp_name) {
+                    if ($_FILES['files']['error'][$key] === UPLOAD_ERR_OK && !empty($tmp_name)) {
+                        $original_name = $_FILES['files']['name'][$key];
+                        $file_size = $_FILES['files']['size'][$key];
+                        $file_extension = strtolower(pathinfo($original_name, PATHINFO_EXTENSION));
+
+                        if ($file_size > $max_file_size) {
+                            throw new Exception("檔案 {$original_name} 大小超過 10MB 限制");
+                        }
+
+                        if (!in_array($file_extension, $allowed_extensions)) {
+                            throw new Exception("檔案 {$original_name} 類型不允許");
+                        }
+
+                        $safe_filename = time() . '_' . uniqid() . '_' . preg_replace('/[^a-zA-Z0-9._-]/', '', $original_name);
+                        $target_file = $upload_dir . $safe_filename;
+
+                        if (move_uploaded_file($tmp_name, $target_file)) {
+                            // 獲取檔案 MIME 類型
+                            $file_type = $_FILES['files']['type'][$key] ?? 'application/octet-stream';
+                            
+                            $uploaded_files[] = [
+                                // 前台可讀的相對路徑（download_bulletin_file.php 也會用到）
+                                'file_path' => 'uploads/bulletin_files/' . $safe_filename,
+                                'original_filename' => $original_name,
+                                'file_size' => $file_size,
+                                'file_type' => $file_type
+                            ];
+                        }
+                    }
+                }
+            }
+
+            // 儲存附件資訊到資料庫（需要擴充 continued_admission_result_announcements 表或使用新表）
+            // 這裡先簡單處理，可以後續擴充
+
+            // 排程/立即發布公告：
+            // - 若已超過公告時間（publish_at <= now），則立即發布到前台公告欄（published）
+            // - 否則先同步為草稿（draft），等待排程執行 publish_continued_admission_announcement.php
+            $sync = isset($_POST['sync_bulletin']) && $_POST['sync_bulletin'] === '1';
+            $file_count = count($uploaded_files);
+            $now_ts = time();
+            $publish_ts = $publish_at ? strtotime($publish_at) : false;
+
+            if ($publish_ts !== false && $publish_ts <= $now_ts) {
+                $pub = caPublishAnnouncement($conn, $year, $user_id, $sync, $uploaded_files);
+                $message = "已儲存公告內容並立即發布"
+                    . ($file_count > 0 ? "（已上傳 {$file_count} 個附件）" : "")
+                    . ($sync ? ("，並同步到前台公告欄（公告ID: " . ($pub['bulletin_id'] ? $pub['bulletin_id'] : "未知") . "）") : "");
+            } else {
+                $sch = caScheduleAnnouncement($conn, $year, $user_id, $sync, $uploaded_files);
+                $message = "已儲存公告內容並排程發布"
+                    . ($file_count > 0 ? "（已上傳 {$file_count} 個附件）" : "")
+                    . ($sync ? ("，並同步到前台公告欄草稿" . ($sch['bulletin_id'] ? "（公告ID: {$sch['bulletin_id']}）" : "")) : "");
+            }
         }
 
         if ($action === 'confirm_ranking') {
@@ -607,28 +743,49 @@ $current_page = 'continued_admission_committee';
         <div class="card">
           <div class="step-title">
             <span class="step-index">2</span>
-            <span>公告內容（儲存草稿 / 設定公告時間）</span>
+            <span>公告內容與發布（儲存草稿 / 排程公告）</span>
           </div>
           <div class="hint">
-            - 公告時間預設使用「續招報名管理」的 <code>錄取公告時間(announce_time)</code>（取各科系最大值）。<br>
-            - 目前僅供續招系統與寄信內容使用；若要同步到「招生公告欄」，我也可以接續幫你串接。
+            - 公告時間將使用「科系名額管理」設定的統一公告錄取時間（<?php echo htmlspecialchars($global_announce_time ?? '未設定'); ?>）。<br>
+            - 此步驟會儲存公告內容並排程發布到前台公告欄。
           </div>
-          <form method="post" style="margin-top:12px;">
-            <input type="hidden" name="action" value="save_announcement" />
+          <form method="post" enctype="multipart/form-data" style="margin-top:12px;">
+            <input type="hidden" name="action" value="save_and_schedule_announcement" />
             <div class="field">
               <label>公告標題</label>
               <input type="text" name="title" value="<?php echo htmlspecialchars($announcement['title'] ?? $default_title); ?>" />
             </div>
             <div class="field">
-              <label>公告時間（publish_at）</label>
-              <input type="datetime-local" name="publish_at" value="<?php echo htmlspecialchars(isset($announcement['publish_at']) && $announcement['publish_at'] ? date('Y-m-d\TH:i', strtotime($announcement['publish_at'])) : ($global_announce_time ? date('Y-m-d\TH:i', strtotime($global_announce_time)) : '')); ?>" />
-              <div class="hint">目前系統統一公告時間（最大值）：<?php echo htmlspecialchars($global_announce_time ?? '未設定'); ?></div>
-            </div>
-            <div class="field">
               <label>公告內容（也會放入寄信內容）</label>
               <textarea name="content"><?php echo htmlspecialchars($announcement['content'] ?? $default_content); ?></textarea>
             </div>
-            <button class="btn btn-primary" type="submit"><i class="fas fa-save"></i> 儲存公告草稿</button>
+            <div class="field">
+              <label>相關附件 <span style="color:var(--muted); font-weight:normal; font-size:12px;">（可選，可上傳多個檔案）</span></label>
+              <div id="files-container" style="margin-bottom:8px;">
+                <div class="file-item" style="display:flex; gap:8px; margin-bottom:8px; align-items:center;">
+                  <input type="file" name="files[]" accept=".pdf,.doc,.docx,.xls,.xlsx,.jpg,.jpeg,.png,.gif" style="flex:1;" />
+                  <button type="button" class="btn btn-secondary btn-sm" onclick="removeFileItem(this)" style="white-space:nowrap;">刪除</button>
+                </div>
+              </div>
+              <button type="button" class="btn btn-secondary btn-sm" onclick="addFileItem()" style="margin-bottom:8px;">
+                <i class="fas fa-plus"></i> 新增檔案
+              </button>
+              <div class="hint">可上傳多個相關檔案（PDF、Word、Excel、圖片等），每個檔案最大 10MB</div>
+            </div>
+            <!-- 預設同步到前台公告欄，不需要顯示勾選框 -->
+            <input type="hidden" name="sync_bulletin" value="1" />
+            <div style="margin-top:12px; display:flex; gap:8px; flex-wrap:wrap;">
+              <button class="btn btn-primary" type="submit"><i class="fas fa-save"></i> 儲存並排程公告</button>
+              <a class="btn btn-secondary" href="publish_continued_admission_announcement.php" target="_blank" style="text-decoration:none;">
+                <i class="fas fa-play"></i> 手動觸發發布腳本（測試用）
+              </a>
+              <a class="btn btn-secondary" href="../../Topics-frontend/frontend/bulletin_board.php" target="_blank" style="text-decoration:none;">
+                <i class="fas fa-external-link-alt"></i> 前台公告欄預覽
+              </a>
+            </div>
+            <div class="hint" style="margin-top:12px; padding:10px; background:#fffbe6; border:1px solid #ffe58f; border-radius:8px;">
+              <strong>⚠️ 重要提醒：</strong>公告會在設定的時間自動發布，但需要設定定時任務執行 <code>publish_continued_admission_announcement.php</code>。如果時間到了但公告未發布，請點擊「手動觸發發布腳本」或檢查定時任務設定。
+            </div>
           </form>
         </div>
       </div>
@@ -653,31 +810,6 @@ $current_page = 'continued_admission_committee';
       </div>
     </div>
 
-    <div class="card">
-      <div class="step-title">
-        <span class="step-index">4</span>
-        <span>公告錄取名單（依公告時間自動發布到前台）</span>
-      </div>
-      <div class="hint">
-        - 此步驟只會「排程」公告：先同步到前台公告欄為草稿，不會立刻公開。<br>
-        - 到 <code>publish_at</code>（公告時間）後，請由排程執行 <code>publish_continued_admission_announcement.php</code> 自動發布。<br>
-        - 公告內容會自動附上「查看續招錄取名單」連結（`continued_admission_results.php`）。
-      </div>
-      <form method="post" style="margin-top:12px;">
-        <input type="hidden" name="action" value="schedule_announcement" />
-        <label style="display:flex; align-items:center; gap:8px; margin-bottom:10px; cursor:pointer;">
-          <input type="checkbox" name="sync_bulletin" value="1" checked />
-          <span>同步到前台公告欄草稿（建議勾選）</span>
-        </label>
-        <button class="btn btn-primary" type="submit"><i class="fas fa-calendar-check"></i> 排程公告</button>
-        <a class="btn btn-secondary" href="publish_continued_admission_announcement.php" target="_blank" style="text-decoration:none; margin-left:8px;">
-          <i class="fas fa-play"></i> 手動觸發發布腳本（測試用）
-        </a>
-        <a class="btn btn-secondary" href="../../Topics-frontend/frontend/bulletin_board.php" target="_blank" style="text-decoration:none; margin-left:8px;">
-          <i class="fas fa-external-link-alt"></i> 前台公告欄預覽
-        </a>
-      </form>
-    </div>
 
   </div>
 
@@ -701,9 +833,21 @@ $current_page = 'continued_admission_committee';
       );
     }
 
-    // 2) 點擊「確認錄取結果」時，先要求簽名
+    // 2) 點擊「確認錄取結果」時，檢查是否已簽名
     function confirmRankingWithSignature() {
-      openCommitteeSignatureWindow();
+      // 檢查是否已有簽名（從 PHP 傳入的變數）
+      const hasSignature = <?php echo $committee_signature ? 'true' : 'false'; ?>;
+      
+      if (hasSignature) {
+        // 如果已簽名，直接提交表單
+        const form = document.getElementById('confirmRankingForm');
+        if (form) {
+          form.submit();
+        }
+      } else {
+        // 如果未簽名，打開簽名視窗
+        openCommitteeSignatureWindow();
+      }
     }
 
     // 3) 接收簽名頁面回傳的訊息，簽完後自動送出表單
@@ -728,6 +872,28 @@ $current_page = 'continued_admission_committee';
         console.error('處理簽名回傳時發生錯誤:', e);
       }
     });
+
+    // 檔案上傳相關函數
+    function addFileItem() {
+      const container = document.getElementById('files-container');
+      const newItem = document.createElement('div');
+      newItem.className = 'file-item';
+      newItem.style.cssText = 'display:flex; gap:8px; margin-bottom:8px; align-items:center;';
+      newItem.innerHTML = `
+        <input type="file" name="files[]" accept=".pdf,.doc,.docx,.xls,.xlsx,.jpg,.jpeg,.png,.gif" style="flex:1;" />
+        <button type="button" class="btn btn-secondary btn-sm" onclick="removeFileItem(this)" style="white-space:nowrap;">刪除</button>
+      `;
+      container.appendChild(newItem);
+    }
+
+    function removeFileItem(btn) {
+      const container = document.getElementById('files-container');
+      if (container.children.length > 1) {
+        btn.closest('.file-item').remove();
+      } else {
+        alert('至少需要保留一個檔案欄位');
+      }
+    }
   </script>
 </body>
 </html>
