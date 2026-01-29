@@ -25,7 +25,7 @@ $recommendation_id = isset($_POST['recommendation_id']) ? intval($_POST['recomme
 $review_result = isset($_POST['review_result']) ? trim($_POST['review_result']) : '';
 
 // 驗證參數
-$allowed_results = ['通過', '不通過'];
+$allowed_results = ['通過', '不通過', '需人工審查'];
 if ($recommendation_id <= 0 || !in_array($review_result, $allowed_results, true)) {
     echo json_encode(['success' => false, 'message' => '無效的參數']);
     exit;
@@ -113,6 +113,7 @@ function ensure_application_status_codes($conn, $needed) {
 $review_status_map = [
     '通過' => ['code' => 'AP', 'name' => '通過', 'order' => 90],
     '不通過' => ['code' => 'RE', 'name' => '不通過', 'order' => 91],
+    '需人工審查' => ['code' => 'MC', 'name' => '需人工審查', 'order' => 92],
 ];
 
 $status_code = $review_status_map[$review_result]['code'];
