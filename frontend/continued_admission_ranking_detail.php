@@ -107,6 +107,47 @@ if ($quota_row = $quota_result->fetch_assoc()) {
 }
 $quota_stmt->close();
 
+// 獲取學校名稱
+$school_name = '';
+if (!empty($application['school'])) {
+    // 檢查 school_data 表是否存在
+    $school_table_check = $conn->query("SHOW TABLES LIKE 'school_data'");
+    $has_school_table = ($school_table_check && $school_table_check->num_rows > 0);
+    
+    if ($has_school_table) {
+        $school_stmt = $conn->prepare("SELECT name, city, district FROM school_data WHERE school_code = ? LIMIT 1");
+        $school_stmt->bind_param("s", $application['school']);
+        $school_stmt->execute();
+        $school_result = $school_stmt->get_result();
+        if ($school_row = $school_result->fetch_assoc()) {
+            $school_name = $school_row['name'];
+            if (!empty($school_row['city']) || !empty($school_row['district'])) {
+                $school_name .= ' (' . ($school_row['city'] ?? '') . ($school_row['district'] ?? '') . ')';
+            }
+        } else {
+            $school_name = $application['school']; // 如果找不到，顯示代碼
+        }
+        $school_stmt->close();
+    } else {
+        // 如果表不存在，直接使用 school 欄位的值
+        $school_name = $application['school'];
+    }
+}
+
+// 處理身分證字號顯示（如果是外籍生，顯示護照號碼）
+$id_display = $application['id_number'] ?? '未填寫';
+if (strpos($id_display, 'PASSPORT_') === 0) {
+    $id_display = '護照號碼：' . substr($id_display, 10);
+}
+
+// 處理外籍生標記
+$is_foreign = false;
+if (isset($application['foreign_student'])) {
+    $is_foreign = (int)$application['foreign_student'] === 1;
+} elseif (isset($application['is_foreign_student'])) {
+    $is_foreign = (int)$application['is_foreign_student'] === 1;
+}
+
 $conn->close();
 
 $page_title = "評分詳情 - " . htmlspecialchars($application['name']);
@@ -170,8 +211,11 @@ $current_page = 'continued_admission_list';
                     </div>
                     <div class="card-body">
                         <!-- 基本資訊 -->
-                        <div style="margin-bottom: 24px; padding: 16px; background: #fafafa; border-radius: 6px;">
-                            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px;">
+                        <div style="margin-bottom: 24px; padding: 20px; background: #fafafa; border-radius: 6px;">
+                            <h4 style="margin-bottom: 16px; color: var(--text-color); font-size: 16px; font-weight: 600;">
+                                <i class="fas fa-user"></i> 學生基本資料
+                            </h4>
+                            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; margin-bottom: 16px;">
                                 <div>
                                     <div style="font-size: 12px; color: var(--text-secondary-color); margin-bottom: 4px;">報名編號</div>
                                     <div style="font-size: 16px; font-weight: 500;"><?php echo htmlspecialchars($application['apply_no'] ?? $application['id']); ?></div>
@@ -179,6 +223,38 @@ $current_page = 'continued_admission_list';
                                 <div>
                                     <div style="font-size: 12px; color: var(--text-secondary-color); margin-bottom: 4px;">姓名</div>
                                     <div style="font-size: 16px; font-weight: 500;"><?php echo htmlspecialchars($application['name']); ?></div>
+                                </div>
+                                <div>
+                                    <div style="font-size: 12px; color: var(--text-secondary-color); margin-bottom: 4px;"><?php echo $is_foreign ? '護照號碼' : '身分證字號'; ?></div>
+                                    <div style="font-size: 16px; font-weight: 500;"><?php echo htmlspecialchars($id_display); ?></div>
+                                </div>
+                                <div>
+                                    <div style="font-size: 12px; color: var(--text-secondary-color); margin-bottom: 4px;">准考證號碼</div>
+                                    <div style="font-size: 16px; font-weight: 500;"><?php echo htmlspecialchars($application['exam_no'] ?: '未填寫'); ?></div>
+                                </div>
+                                <div>
+                                    <div style="font-size: 12px; color: var(--text-secondary-color); margin-bottom: 4px;">生日</div>
+                                    <div style="font-size: 16px; font-weight: 500;"><?php echo $application['birth_date'] ? date('Y/m/d', strtotime($application['birth_date'])) : '未填寫'; ?></div>
+                                </div>
+                                <div>
+                                    <div style="font-size: 12px; color: var(--text-secondary-color); margin-bottom: 4px;">性別</div>
+                                    <div style="font-size: 16px; font-weight: 500;"><?php echo (isset($application['gender']) && (int)$application['gender'] === 1) ? '男' : '女'; ?></div>
+                                </div>
+                                <div>
+                                    <div style="font-size: 12px; color: var(--text-secondary-color); margin-bottom: 4px;">外籍生</div>
+                                    <div style="font-size: 16px; font-weight: 500;"><?php echo $is_foreign ? '是' : '否'; ?></div>
+                                </div>
+                                <div>
+                                    <div style="font-size: 12px; color: var(--text-secondary-color); margin-bottom: 4px;">室內電話</div>
+                                    <div style="font-size: 16px; font-weight: 500;"><?php echo htmlspecialchars($application['phone'] ?: '未填寫'); ?></div>
+                                </div>
+                                <div>
+                                    <div style="font-size: 12px; color: var(--text-secondary-color); margin-bottom: 4px;">行動電話</div>
+                                    <div style="font-size: 16px; font-weight: 500;"><?php echo htmlspecialchars($application['mobile'] ?: '未填寫'); ?></div>
+                                </div>
+                                <div>
+                                    <div style="font-size: 12px; color: var(--text-secondary-color); margin-bottom: 4px;">就讀國中</div>
+                                    <div style="font-size: 16px; font-weight: 500;"><?php echo htmlspecialchars($school_name ?: ($application['school'] ?? '未填寫')); ?></div>
                                 </div>
                                 <div>
                                     <div style="font-size: 12px; color: var(--text-secondary-color); margin-bottom: 4px;">分配科系</div>
@@ -201,6 +277,52 @@ $current_page = 'continued_admission_list';
                                     </div>
                                 </div>
                             </div>
+                            
+                            <!-- 監護人資訊 -->
+                            <?php if (!empty($application['guardian_name']) || !empty($application['guardian_phone']) || !empty($application['guardian_mobile'])): ?>
+                            <div style="margin-top: 16px; padding-top: 16px; border-top: 1px solid #e8e8e8;">
+                                <h5 style="margin-bottom: 12px; color: var(--text-color); font-size: 14px; font-weight: 600;">監護人資訊</h5>
+                                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px;">
+                                    <?php if (!empty($application['guardian_name'])): ?>
+                                    <div>
+                                        <div style="font-size: 12px; color: var(--text-secondary-color); margin-bottom: 4px;">監護人姓名</div>
+                                        <div style="font-size: 16px; font-weight: 500;"><?php echo htmlspecialchars($application['guardian_name']); ?></div>
+                                    </div>
+                                    <?php endif; ?>
+                                    <?php if (!empty($application['guardian_phone'])): ?>
+                                    <div>
+                                        <div style="font-size: 12px; color: var(--text-secondary-color); margin-bottom: 4px;">監護人電話</div>
+                                        <div style="font-size: 16px; font-weight: 500;"><?php echo htmlspecialchars($application['guardian_phone']); ?></div>
+                                    </div>
+                                    <?php endif; ?>
+                                    <?php if (!empty($application['guardian_mobile'])): ?>
+                                    <div>
+                                        <div style="font-size: 12px; color: var(--text-secondary-color); margin-bottom: 4px;">監護人手機</div>
+                                        <div style="font-size: 16px; font-weight: 500;"><?php echo htmlspecialchars($application['guardian_mobile']); ?></div>
+                                    </div>
+                                    <?php endif; ?>
+                                </div>
+                            </div>
+                            <?php endif; ?>
+                            
+                            <!-- 自傳和專長 -->
+                            <?php if (!empty($application['self_intro']) || !empty($application['skills'])): ?>
+                            <div style="margin-top: 16px; padding-top: 16px; border-top: 1px solid #e8e8e8;">
+                                <h5 style="margin-bottom: 12px; color: var(--text-color); font-size: 14px; font-weight: 600;">學生自述</h5>
+                                <?php if (!empty($application['self_intro'])): ?>
+                                <div style="margin-bottom: 12px;">
+                                    <div style="font-size: 12px; color: var(--text-secondary-color); margin-bottom: 4px;">自傳/自我介紹</div>
+                                    <div style="font-size: 14px; line-height: 1.6; padding: 12px; background: white; border-radius: 4px; border: 1px solid #e8e8e8; white-space: pre-wrap; word-wrap: break-word;"><?php echo htmlspecialchars($application['self_intro']); ?></div>
+                                </div>
+                                <?php endif; ?>
+                                <?php if (!empty($application['skills'])): ?>
+                                <div>
+                                    <div style="font-size: 12px; color: var(--text-secondary-color); margin-bottom: 4px;">興趣/專長</div>
+                                    <div style="font-size: 14px; line-height: 1.6; padding: 12px; background: white; border-radius: 4px; border: 1px solid #e8e8e8; white-space: pre-wrap; word-wrap: break-word;"><?php echo htmlspecialchars($application['skills']); ?></div>
+                                </div>
+                                <?php endif; ?>
+                            </div>
+                            <?php endif; ?>
                         </div>
 
                         <!-- 老師1評分 -->

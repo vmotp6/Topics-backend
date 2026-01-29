@@ -1408,6 +1408,7 @@ function getStatusClass($status) {
                                                     <th>主任評分</th>
                                                     <th>平均分數</th>
                                                     <th>錄取狀態</th>
+                                                    <th>操作</th>
                                                 </tr>
                                             </thead>
                                             <tbody>
@@ -1467,6 +1468,13 @@ function getStatusClass($status) {
                                                         <?php else: ?>
                                                             <span class="status-badge status-rejected">不錄取</span>
                                                         <?php endif; ?>
+                                                    </td>
+                                                    <td>
+                                                        <a href="continued_admission_ranking_detail.php?id=<?php echo $app['id']; ?>" 
+                                                           class="btn btn-sm btn-primary" 
+                                                           style="padding: 4px 12px; font-size: 13px; text-decoration: none; display: inline-flex; align-items: center; gap: 4px;">
+                                                            <i class="fas fa-eye"></i> 查看詳情
+                                                        </a>
                                                     </td>
                                                 </tr>
                                                 <?php endforeach; ?>
@@ -1541,6 +1549,7 @@ function getStatusClass($status) {
                                                             <th>主任評分</th>
                                                             <th>平均分數</th>
                                                             <th>錄取狀態</th>
+                                                            <th>操作</th>
                                                         </tr>
                                                     </thead>
                                                     <tbody>
@@ -1600,6 +1609,13 @@ function getStatusClass($status) {
                                                                 <?php else: ?>
                                                                     <span class="status-badge status-rejected">不錄取</span>
                                                                 <?php endif; ?>
+                                                            </td>
+                                                            <td>
+                                                                <a href="continued_admission_ranking_detail.php?id=<?php echo $app['id']; ?>" 
+                                                                   class="btn btn-sm btn-primary" 
+                                                                   style="padding: 4px 12px; font-size: 13px; text-decoration: none; display: inline-flex; align-items: center; gap: 4px;">
+                                                                    <i class="fas fa-eye"></i> 查看詳情
+                                                                </a>
                                                             </td>
                                                         </tr>
                                                         <?php endforeach; ?>
