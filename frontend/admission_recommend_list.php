@@ -345,7 +345,7 @@ try {
     if ($view_mode === 'fail') {
         $status_condition_sql = "(ar.status = 'RE' OR ar.status = 'rejected')";
     } elseif ($view_mode === 'manual') {
-        $status_condition_sql = "(ar.status = 'MC' OR ar.status = '需人工確認')";
+        $status_condition_sql = "(ar.status = 'MC' OR ar.status = '需人工審查')";
     } elseif ($view_mode === 'pass') {
         $status_condition_sql = "(ar.status = 'AP' OR ar.status = 'approved')";
     } else {
@@ -557,17 +557,10 @@ try {
     }
 
     // -------------------------------------------------------------
-    // 審核結果寫回 admission_recommendations.status（status 有外鍵到 application_statuses）
-    // 這裡使用 application_statuses.code 的代碼風格（PE/AP/RE...）：
-    // 通過 => AP、不通過 => RE、需人工確認 => MC
+    // 2026-01 起：審核結果改由招生中心「手動」下拉選單設定（通過/不通過/需人工審查）
+    // 系統不再自動判斷、也不再自動寫回 admission_recommendations.status
     // -------------------------------------------------------------
-    $review_status_map = [
-        '通過' => ['code' => 'AP', 'name' => '通過', 'order' => 90],
-        '不通過' => ['code' => 'RE', 'name' => '不通過', 'order' => 91],
-        '需人工確認' => ['code' => 'MC', 'name' => '需人工確認', 'order' => 92],
-    ];
-    ensure_application_status_codes($conn, $review_status_map);
-    $stmt_update_status = $conn->prepare("UPDATE admission_recommendations SET status = ? WHERE id = ?");
+    $stmt_update_status = null;
 
     // -------------------------------------------------------------
     // 同名重複提示：若多人填寫相同「被推薦人姓名」
@@ -598,6 +591,39 @@ try {
             $earliest_by_name[$key] = ['ts' => $ts, 'id' => $idv];
         }
     }
+
+    // -------------------------------------------------------------
+    // 提示條件（不做自動判斷）：重複推薦 / 已填就讀意願 / 學生狀態(休學/退學)
+    // -------------------------------------------------------------
+    $has_enroll_table = false;
+    try {
+        $t3 = $conn->query("SHOW TABLES LIKE 'enrollment_intention'");
+        $has_enroll_table = ($t3 && $t3->num_rows > 0);
+    } catch (Exception $e) {
+        $has_enroll_table = false;
+    }
+
+    $stmt_enroll_by_phone = null;
+    $stmt_enroll_by_name = null;
+    if ($has_enroll_table) {
+        // enrollment_intention 常見欄位：name、phone1
+        $stmt_enroll_by_name = $conn->prepare("SELECT 1 FROM enrollment_intention WHERE name = ? LIMIT 1");
+        $stmt_enroll_by_phone = $conn->prepare("
+            SELECT 1 FROM enrollment_intention
+            WHERE REPLACE(REPLACE(REPLACE(REPLACE(phone1,'-',''),' ',''),'(',''),')','') LIKE ?
+            LIMIT 1
+        ");
+    }
+
+    $stmt_nsbi_status_by_phone = null;
+    $stmt_nsbi_status_by_name = null;
+    if ($has_nsbi_table) {
+        $stmt_nsbi_status_by_phone = $conn->prepare("SELECT COALESCE(status,'') AS status FROM new_student_basic_info WHERE mobile LIKE ? ORDER BY id DESC LIMIT 1");
+        $stmt_nsbi_status_by_name = $conn->prepare("SELECT COALESCE(status,'') AS status FROM new_student_basic_info WHERE student_name = ? ORDER BY id DESC LIMIT 1");
+    }
+
+    $cache_enroll = [];
+    $cache_nsbi_status = [];
 
     foreach ($recommendations as &$it) {
         // 沒有 recommended / 沒有 nsbi 表，就不做比對（留空由前端顯示未填寫）
@@ -718,62 +744,88 @@ try {
             $it['duplicate_count'] = (int)$dup_count_by_name[$key2];
         }
 
-        // 2026-01 起：同名重複填寫不再影響審核結果（僅做提示）
-        // 若有多筆「通過」將於獎金發送時依人數平分
-
-        // 將審核結果寫回 admission_recommendations.status（對應 application_statuses.code）
-        // 規則：若使用者已手動填寫 status（AP/RE），則以手動為準，不覆蓋
-        // 但如果三個都正確（auto_review_result = '通過'），則強制更新為通過
-        $auto_review = trim((string)($it['auto_review_result'] ?? ''));
-        if ($auto_review === '人工確認') $auto_review = '需人工確認';
-        $current_status_code = trim((string)($it['status'] ?? ''));
-        
-        // 如果三個都正確，強制更新為通過（不管之前是什麼狀態）
-        $is_three_correct = ($auto_review === '通過');
-        
-        // 如果 status 已經是手動修改的結果（AP 或 RE），且不是三個都正確的情況，則不覆蓋
-        $should_update = false;
-        if ($auto_review !== '' && isset($review_status_map[$auto_review])) {
-            if ($is_three_correct) {
-                // 三個都正確，強制更新
-                $should_update = true;
-            } elseif ($current_status_code !== 'AP' && $current_status_code !== 'RE') {
-                // 不是手動設置的狀態，可以更新
-                $should_update = true;
-            }
+        // --- 三項提示 ---
+        $it['review_hints'] = [];
+        if ((int)($it['duplicate_count'] ?? 1) > 1) {
+            $it['review_hints'][] = '此被推薦人已被人推薦';
         }
-        
-        if ($should_update) {
-            $desired_status_code = (string)$review_status_map[$auto_review]['code'];
-            $rid = (int)($it['id'] ?? 0);
 
-            $it['auto_review_status_code'] = $desired_status_code; // 方便除錯/前端需要時可用
-            if ($rid > 0 && $stmt_update_status && $desired_status_code !== '' && $current_status_code !== $desired_status_code) {
-                $stmt_update_status->bind_param('si', $desired_status_code, $rid);
-                // 若外鍵狀態不存在會更新失敗；上方已確保 application_statuses 有該 code
-                $ok = @$stmt_update_status->execute();
-                if ($ok) {
-                    $it['status'] = $desired_status_code; // 同步本次畫面資料
-                    // 審核結果 email 通知：通過(AP)/不通過(RE) 都寄信（每筆每狀態只寄一次）
-                    if (function_exists('send_review_result_email_once')) {
-                        @send_review_result_email_once($conn, $rid, $desired_status_code, $username);
+        // (2) 已填寫就讀意願表單
+        $has_enroll = false;
+        $nm3 = trim((string)($it['student_name'] ?? ''));
+        $ph3 = normalize_phone($it['student_phone'] ?? '');
+        $enroll_key = ($ph3 !== '') ? ('P:' . $ph3) : (($nm3 !== '') ? ('N:' . normalize_text($nm3)) : '');
+        if ($enroll_key !== '' && isset($cache_enroll[$enroll_key])) {
+            $has_enroll = (bool)$cache_enroll[$enroll_key];
+        } else {
+            if ($stmt_enroll_by_phone && $ph3 !== '') {
+                $like = '%' . $ph3 . '%';
+                $stmt_enroll_by_phone->bind_param('s', $like);
+                if (@$stmt_enroll_by_phone->execute()) {
+                    $r = $stmt_enroll_by_phone->get_result();
+                    $has_enroll = ($r && $r->num_rows > 0);
+                }
+            }
+            if (!$has_enroll && $stmt_enroll_by_name && $nm3 !== '') {
+                $stmt_enroll_by_name->bind_param('s', $nm3);
+                if (@$stmt_enroll_by_name->execute()) {
+                    $r2 = $stmt_enroll_by_name->get_result();
+                    $has_enroll = ($r2 && $r2->num_rows > 0);
+                }
+            }
+            if ($enroll_key !== '') $cache_enroll[$enroll_key] = $has_enroll ? 1 : 0;
+        }
+        $it['has_enrollment_intention'] = $has_enroll ? 1 : 0;
+        if ($has_enroll) {
+            $it['review_hints'][] = '此被推薦人已填寫過就讀意願表單';
+        }
+
+        // (3) 學生狀態：休學/退學 => 無獎金
+        $nsbi_status = '';
+        $nsbi_key = ($ph3 !== '') ? ('P:' . $ph3) : (($nm3 !== '') ? ('N:' . normalize_text($nm3)) : '');
+        if ($nsbi_key !== '' && isset($cache_nsbi_status[$nsbi_key])) {
+            $nsbi_status = (string)$cache_nsbi_status[$nsbi_key];
+        } else {
+            if ($stmt_nsbi_status_by_phone && $ph3 !== '') {
+                $like2 = '%' . $ph3 . '%';
+                $stmt_nsbi_status_by_phone->bind_param('s', $like2);
+                if (@$stmt_nsbi_status_by_phone->execute()) {
+                    $rr = $stmt_nsbi_status_by_phone->get_result();
+                    if ($rr && ($row = $rr->fetch_assoc())) {
+                        $nsbi_status = trim((string)($row['status'] ?? ''));
                     }
                 }
             }
+            if ($nsbi_status === '' && $stmt_nsbi_status_by_name && $nm3 !== '') {
+                $stmt_nsbi_status_by_name->bind_param('s', $nm3);
+                if (@$stmt_nsbi_status_by_name->execute()) {
+                    $rr2 = $stmt_nsbi_status_by_name->get_result();
+                    if ($rr2 && ($row2 = $rr2->fetch_assoc())) {
+                        $nsbi_status = trim((string)($row2['status'] ?? ''));
+                    }
+                }
+            }
+            if ($nsbi_key !== '') $cache_nsbi_status[$nsbi_key] = $nsbi_status;
+        }
+        $it['student_status'] = $nsbi_status;
+        $it['no_bonus'] = in_array($nsbi_status, ['休學', '退學'], true) ? 1 : 0;
+        if ((int)$it['no_bonus'] === 1) {
+            $it['review_hints'][] = '學生狀態為' . $nsbi_status . '，無獎金';
         }
 
-        // 若 status 已經是 AP/RE（可能先前就寫入過），但尚未寄過信，也在此補寄一次
-        $rid2 = (int)($it['id'] ?? 0);
-        $st2 = trim((string)($it['status'] ?? ''));
-        if ($rid2 > 0 && in_array($st2, ['AP', 'RE'], true) && function_exists('send_review_result_email_once')) {
-            @send_review_result_email_once($conn, $rid2, $st2, $username);
-        }
+        // 2026-01 起：審核結果不再由系統自動判斷或寫回，
+        // 僅由招生中心手動選擇（通過/不通過/需人工審查）。
     }
     unset($it);
 
     if ($stmt_nsbi_by_name) $stmt_nsbi_by_name->close();
     if ($stmt_nsbi_by_phone) $stmt_nsbi_by_phone->close();
     if (isset($stmt_update_status) && $stmt_update_status) $stmt_update_status->close();
+
+    if ($stmt_enroll_by_phone) $stmt_enroll_by_phone->close();
+    if ($stmt_enroll_by_name) $stmt_enroll_by_name->close();
+    if ($stmt_nsbi_status_by_phone) $stmt_nsbi_status_by_phone->close();
+    if ($stmt_nsbi_status_by_name) $stmt_nsbi_status_by_name->close();
     
     // 調試信息：記錄查詢結果數量
     error_log("招生推薦查詢結果: " . count($recommendations) . " 筆記錄");
@@ -800,8 +852,8 @@ try {
     }
     
     // --- 根據 view_mode 在 PHP 層級過濾資料（pass/manual/fail/all） ---
-    // 優先使用資料庫 status（若為代碼 AP/RE/MC），否則使用自動比對結果 auto_review_result
-    $status_code_to_label = [ 'AP' => '通過', 'RE' => '不通過', 'MC' => '需人工確認' ];
+    // 僅使用資料庫 status（由招生中心手動設定）
+    $status_code_to_label = [ 'AP' => '通過', 'RE' => '不通過', 'MC' => '需人工審查' ];
     if (isset($view_mode) && $view_mode !== 'all') {
         $filtered = [];
         foreach ($recommendations as $rec) {
@@ -809,14 +861,10 @@ try {
             $st = trim((string)($rec['status'] ?? ''));
             if ($st !== '' && isset($status_code_to_label[$st])) {
                 $label = $status_code_to_label[$st];
-            } elseif (!empty($rec['auto_review_result'])) {
-                $label = $rec['auto_review_result'];
             }
-            // 正規化可能的文字不同
-            if ($label === '人工確認') $label = '需人工確認';
 
             if ($view_mode === 'pass' && $label === '通過') $filtered[] = $rec;
-            if ($view_mode === 'manual' && $label === '需人工確認') $filtered[] = $rec;
+            if ($view_mode === 'manual' && $label === '需人工審查') $filtered[] = $rec;
             if ($view_mode === 'fail' && $label === '不通過') $filtered[] = $rec;
         }
         $recommendations = $filtered;
@@ -1326,6 +1374,22 @@ try {
             margin: 0;
             color: var(--text-color);
         }
+        /* 查看審核結果視窗：放大字型與尺寸、取消粗體 */
+        #reviewCriteriaModal .modal-content {
+            max-width: 640px;
+        }
+        #reviewCriteriaModal .modal-header h3 {
+            font-size: 20px;
+            font-weight: 400;
+        }
+        #reviewCriteriaModal .modal-body p {
+            font-size: 18px;
+            font-weight: 400;
+        }
+        #reviewCriteriaModal #reviewCriteriaList div {
+            font-size: 16px;
+            font-weight: 400;
+        }
         .close {
             font-size: 24px;
             font-weight: bold;
@@ -1606,8 +1670,11 @@ try {
                                 <tbody>
                                     <?php foreach ($recommendations as $item): ?>
                                     <?php
-                                        $row_review = isset($item['auto_review_result']) ? trim((string)$item['auto_review_result']) : '';
-                                        if ($row_review === '人工確認') $row_review = '需人工確認';
+                                        $status_code_to_label_ui = [ 'AP' => '通過', 'RE' => '不通過', 'MC' => '需人工審查' ];
+                                        $current_status_code = isset($item['status']) ? trim((string)$item['status']) : '';
+                                        $row_review = ($current_status_code !== '' && isset($status_code_to_label_ui[$current_status_code]))
+                                            ? $status_code_to_label_ui[$current_status_code]
+                                            : '未填寫';
                                     ?>
                                     <tr data-review-result="<?php echo htmlspecialchars($row_review); ?>"
                                         data-student-interest="<?php echo htmlspecialchars((string)($item['student_interest_code'] ?? '')); ?>"
@@ -1640,70 +1707,46 @@ try {
                                         <?php if ($can_view_review_result): ?>
                                             <td>
                                                 <?php
-                                                    // 優先使用 status 字段（如果已手動修改過）
+                                                    $status_code_to_label_ui = [ 'AP' => '通過', 'RE' => '不通過', 'MC' => '需人工審查' ];
                                                     $current_status = isset($item['status']) ? trim((string)$item['status']) : '';
-                                                    $auto_review = isset($item['auto_review_result']) ? trim((string)$item['auto_review_result']) : '';
-                                                    if ($auto_review === '人工確認') $auto_review = '需人工確認';
-                                                    
-                                                    // 根據 status 代碼確定顯示文本（優先）
-                                                    if ($current_status === 'AP') {
-                                                        $display_review = '通過';
-                                                    } elseif ($current_status === 'RE') {
-                                                        $display_review = '不通過';
-                                                    } elseif ($current_status === 'MC') {
-                                                        $display_review = '需人工確認';
-                                                    } else {
-                                                        // 如果 status 為空或不是已知代碼，使用 auto_review_result
-                                                        $display_review = ($auto_review === '') ? '未填寫' : $auto_review;
-                                                    }
+                                                    $display_review = ($current_status !== '' && isset($status_code_to_label_ui[$current_status]))
+                                                        ? $status_code_to_label_ui[$current_status]
+                                                        : '未填寫';
 
-                                                    $badge_class = 'review-badge';
-                                                    if ($display_review === '通過') {
-                                                        $badge_class .= ' pass';
-                                                    } elseif ($display_review === '不通過') {
-                                                        $badge_class .= ' fail';
-                                                    } elseif ($display_review === '需人工確認') {
-                                                        $badge_class .= ' manual';
-                                                    } else {
-                                                        $badge_class .= ' empty';
-                                                    }
-
-                                                    $m1 = (int)($item['auto_review_match_name'] ?? 0);
-                                                    $m2 = (int)($item['auto_review_match_school'] ?? 0);
-                                                    $m3 = (int)($item['auto_review_match_phone'] ?? 0);
-                                                    $debug_short = '姓名' . ($m1 ? '✓' : '✗') . ' / 學校' . ($m2 ? '✓' : '✗') . ' / 手機' . ($m3 ? '✓' : '✗');
-
-                                                    $dbg_nsbi_name = (string)($item['auto_review_nsbi_student_name'] ?? '');
-                                                    $dbg_nsbi_school = (string)($item['auto_review_nsbi_previous_school'] ?? '');
-                                                    $dbg_nsbi_mobile = (string)($item['auto_review_nsbi_mobile'] ?? '');
-                                                    $dbg_title = "比對：" . $debug_short
-                                                        . "\nrecommended："
-                                                        . "\n- name=" . ($item['student_name'] ?? '')
-                                                        . "\n- school_code=" . ($item['student_school_code'] ?? '')
-                                                        . "\n- school_name=" . ($item['student_school'] ?? '')
-                                                        . "\n- phone=" . ($item['student_phone'] ?? '')
-                                                        . "\nnew_student_basic_info（候選）："
-                                                        . "\n- student_name=" . $dbg_nsbi_name
-                                                        . "\n- previous_school=" . $dbg_nsbi_school
-                                                        . "\n- mobile=" . $dbg_nsbi_mobile;
+                                                    $dup_count = (int)($item['duplicate_count'] ?? 1);
+                                                    $has_enroll = (int)($item['has_enrollment_intention'] ?? 0);
+                                                    $student_status = (string)($item['student_status'] ?? '');
+                                                    $no_bonus = (int)($item['no_bonus'] ?? 0);
                                                 ?>
-                                                <span class="info-value" title="<?php echo htmlspecialchars($dbg_title); ?>">
-                                                    <span class="<?php echo htmlspecialchars($badge_class); ?>"><?php echo htmlspecialchars($display_review); ?></span>
-                                                    <span style="color:#8c8c8c; font-size:12px; margin-left:6px;">(<?php echo htmlspecialchars($debug_short); ?>)</span>
-                                                    <?php
-                                                        $dupCnt = (int)($item['duplicate_count'] ?? 1);
-                                                        $isDupGroup = ($dupCnt > 1);
-                                                    ?>
-                                                    <?php if ($isDupGroup): ?>
-                                                        <div style="margin-top:6px; color:#cf1322; font-size:12px; font-weight:900;">
-                                                            <?php if (!empty($item['duplicate_note'])): ?>
-                                                                此被推薦人先前已有人填寫故獎金平分
-                                                            <?php else: ?>
-                                                                此被推薦人先前已有人填寫故獎金平分
-                                                            <?php endif; ?>
-                                                        </div>
-                                                    <?php endif; ?>
-                                                </span>
+                                                <div class="info-value">
+                                                    <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+                                                        <select
+                                                            class="search-select"
+                                                            style="min-width: 150px;"
+                                                            onchange="updateReviewResultSelect(<?php echo (int)$item['id']; ?>, this.value)"
+                                                        >
+                                                            <option value="" <?php echo ($display_review === '未填寫') ? 'selected' : ''; ?>>未填寫</option>
+                                                            <option value="通過" <?php echo ($display_review === '通過') ? 'selected' : ''; ?>>通過</option>
+                                                            <option value="不通過" <?php echo ($display_review === '不通過') ? 'selected' : ''; ?>>不通過</option>
+                                                            <option value="需人工審查" <?php echo ($display_review === '需人工審查') ? 'selected' : ''; ?>>需人工審查</option>
+                                                        </select>
+                                                        <button
+                                                            type="button"
+                                                            class="btn-view"
+                                                            style="padding:6px 10px;"
+                                                            onclick="openReviewCriteriaModal(
+                                                                '<?php echo htmlspecialchars((string)$item['student_name']); ?>',
+                                                                <?php echo ($dup_count > 1) ? 'true' : 'false'; ?>,
+                                                                <?php echo ($has_enroll ? 'true' : 'false'); ?>,
+                                                                '<?php echo htmlspecialchars($student_status); ?>',
+                                                                <?php echo ($no_bonus ? 'true' : 'false'); ?>
+                                                            )"
+                                                        >
+                                                            查看審核結果
+                                                        </button>
+                                                    </div>
+
+                                                </div>
                                             </td>
                                         <?php endif; ?>
                                         <!-- <td>
@@ -1718,16 +1761,25 @@ try {
                                         </td> -->
                                         <?php if ($is_admission_center): ?>
                                         <td>
-                                            <?php if (!empty($item['assigned_department'])): ?>
-                                                <span style="color: #52c41a;">
-                                                    <i class="fas fa-check-circle"></i> 已分配 - 
-                                                    <?php echo htmlspecialchars($item['assigned_department']); ?>
-                                                </span>
-                                            <?php else: ?>
-                                                <span style="color: #8c8c8c;">
-                                                    <i class="fas fa-clock"></i> 未分配
-                                                </span>
-                                            <?php endif; ?>
+                                            <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+                                                <?php if (!empty($item['assigned_department'])): ?>
+                                                    <span style="color: #52c41a;">
+                                                        <i class="fas fa-check-circle"></i> 已分配 - 
+                                                        <?php echo htmlspecialchars($item['assigned_department']); ?>
+                                                    </span>
+                                                <?php else: ?>
+                                                    <span style="color: #8c8c8c;">
+                                                        <i class="fas fa-clock"></i> 未分配
+                                                    </span>
+                                                <?php endif; ?>
+                                                <button
+                                                    class="btn-view"
+                                                    style="background: #1890ff; color: white; border-color: #1890ff;"
+                                                    onclick="openAssignRecommendationDepartmentModal(<?php echo $item['id']; ?>, '<?php echo htmlspecialchars($item['student_name']); ?>', '<?php echo htmlspecialchars($item['assigned_department'] ?? ''); ?>')"
+                                                >
+                                                    <i class="fas fa-building"></i> <?php echo !empty($item['assigned_department']) ? '重新分配' : '分配'; ?>
+                                                </button>
+                                            </div>
                                         </td>
                                         <td>
                                             <div style="display: flex; gap: 8px; flex-wrap: wrap;">
@@ -1740,25 +1792,16 @@ try {
                                                 <?php
                                                     $rid = (int)($item['id'] ?? 0);
                                                     $current_status = isset($item['status']) ? trim((string)$item['status']) : '';
-                                                    $auto_review = isset($item['auto_review_result']) ? trim((string)$item['auto_review_result']) : '';
+                                                    $no_bonus = ((int)($item['no_bonus'] ?? 0) === 1);
                                                     $is_approved_for_bonus = in_array($current_status, ['AP', 'approved', 'APPROVED'], true);
                                                     $bonus_sent = ($rid > 0 && isset($bonus_sent_map[$rid]));
                                                     $bonus_sent_amount = $bonus_sent ? (int)($bonus_sent_map[$rid]['amount'] ?? 1500) : 0;
                                                     $bonus_sent_at = $bonus_sent ? (string)($bonus_sent_map[$rid]['sent_at'] ?? '') : '';
-
-                                                    // 統一人工確認名稱
-                                                    if ($auto_review === '人工確認') {
-                                                        $auto_review = '需人工確認';
-                                                    }
-
-                                                    // 只有「需人工確認」且尚未被人工改成通過/不通過，才顯示
-                                                    $show_update_btn =
-                                                        $can_view_review_result &&
-                                                        $auto_review === '需人工確認' &&
-                                                        !in_array($current_status, ['AP', 'RE'], true);
+                                                    // 審核結果改成下拉選單後，不再顯示「修改結果」按鈕（避免混淆）
+                                                    $show_update_btn = false;
                                                 ?>
 
-                                                <?php if (!empty($can_send_bonus) && $is_approved_for_bonus): ?>
+                                                <?php if (!empty($can_send_bonus) && $is_approved_for_bonus && !$no_bonus): ?>
                                                     <?php if ($bonus_sent): ?>
                                                         <span class="btn-view" style="background:#f6ffed; border-color:#b7eb8f; color:#389e0d; cursor: default;">
                                                             <i class="fas fa-check-circle"></i> 已發送 $<?php echo number_format((int)$bonus_sent_amount); ?>
@@ -1781,9 +1824,6 @@ try {
                                                     <i class="fas fa-edit"></i> 修改結果
                                                 </button>
                                                 <?php endif; ?>
-                                                <button class="btn-view" style="background: #1890ff; color: white; border-color: #1890ff;" onclick="openAssignRecommendationDepartmentModal(<?php echo $item['id']; ?>, '<?php echo htmlspecialchars($item['student_name']); ?>', '<?php echo htmlspecialchars($item['assigned_department'] ?? ''); ?>')">
-                                                    <i class="fas fa-building"></i> <?php echo !empty($item['assigned_department']) ? '重新分配' : '分配'; ?>
-                                                </button>
                                             </div>
                                         </td>
                                         <?php elseif ($is_department_user): ?>
@@ -1816,11 +1856,12 @@ try {
                                                     $is_approved_for_bonus = in_array($current_status, ['AP', 'approved', 'APPROVED'], true);
                                                     $bonus_sent = ($rid > 0 && isset($bonus_sent_map[$rid]));
                                                     $bonus_sent_amount = $bonus_sent ? (int)($bonus_sent_map[$rid]['amount'] ?? 1500) : 0;
-                                                    $show_update_btn = ($can_view_review_result && ($current_status === 'MC' || $auto_review === '需人工確認'));
-                                                    $show_update_btn = ($can_view_review_result && ($current_status === 'MC' || $auto_review === '需人工確認') && $current_status !== 'AP' && $current_status !== 'RE');
+                                                    $no_bonus = ((int)($item['no_bonus'] ?? 0) === 1);
+                                                    // 審核結果改成下拉選單後，不再顯示「修改結果」按鈕（避免混淆）
+                                                    $show_update_btn = false;
                                                 ?>
 
-                                                <?php if (!empty($can_send_bonus) && $is_approved_for_bonus): ?>
+                                                <?php if (!empty($can_send_bonus) && $is_approved_for_bonus && !$no_bonus): ?>
                                                     <?php if ($bonus_sent): ?>
                                                         <span class="btn-view" style="background:#f6ffed; border-color:#b7eb8f; color:#389e0d; cursor: default;">
                                                             <i class="fas fa-check-circle"></i> 已發送 $<?php echo number_format((int)$bonus_sent_amount); ?>
@@ -1866,11 +1907,12 @@ try {
                                                     $is_approved_for_bonus = in_array($current_status, ['AP', 'approved', 'APPROVED'], true);
                                                     $bonus_sent = ($rid > 0 && isset($bonus_sent_map[$rid]));
                                                     $bonus_sent_amount = $bonus_sent ? (int)($bonus_sent_map[$rid]['amount'] ?? 1500) : 0;
-                                                    $show_update_btn = ($can_view_review_result && ($current_status === 'MC' || $auto_review === '需人工確認'));
-                                                    $show_update_btn = ($can_view_review_result && ($current_status === 'MC' || $auto_review === '需人工確認') && $current_status !== 'AP' && $current_status !== 'RE');
+                                                    $no_bonus = ((int)($item['no_bonus'] ?? 0) === 1);
+                                                    // 審核結果改成下拉選單後，不再顯示「修改結果」按鈕（避免混淆）
+                                                    $show_update_btn = false;
                                                 ?>
 
-                                                <?php if (!empty($can_send_bonus) && $is_approved_for_bonus): ?>
+                                                <?php if (!empty($can_send_bonus) && $is_approved_for_bonus && !$no_bonus): ?>
                                                     <?php if ($bonus_sent): ?>
                                                         <span class="btn-view" style="background:#f6ffed; border-color:#b7eb8f; color:#389e0d; cursor: default;">
                                                             <i class="fas fa-check-circle"></i> 已發送 $<?php echo number_format((int)$bonus_sent_amount); ?>
@@ -2150,6 +2192,25 @@ try {
             <div class="modal-footer">
                 <button class="btn-cancel" onclick="closeUpdateReviewResultModal()">取消</button>
                 <button class="btn-confirm" onclick="updateReviewResult()">確認修改</button>
+            </div>
+        </div>
+    </div>
+    <?php endif; ?>
+
+    <!-- 查看審核結果彈出視窗 -->
+    <?php if ($can_view_review_result): ?>
+    <div id="reviewCriteriaModal" class="modal" style="display: none;">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>查看審核結果</h3>
+                <span class="close" onclick="closeReviewCriteriaModal()">&times;</span>
+            </div>
+            <div class="modal-body">
+                <p>被推薦人：<span id="reviewCriteriaStudentName"></span></p>
+                <div id="reviewCriteriaList" style="display:flex; flex-direction:column; gap:8px;"></div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn-confirm" onclick="closeReviewCriteriaModal()">關閉</button>
             </div>
         </div>
     </div>
@@ -2691,6 +2752,87 @@ try {
                  '&review_result=' + encodeURIComponent(reviewResult));
     }
 
+    // 下拉選單：直接更新審核結果（通過/不通過/需人工審查）
+    function updateReviewResultSelect(recommendationId, reviewResult) {
+        // 空值代表未填寫：不送出，避免把 status 清空
+        if (!reviewResult) return;
+
+        const xhr = new XMLHttpRequest();
+        xhr.open('POST', 'update_review_result.php', true);
+        xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
+
+        xhr.onreadystatechange = function() {
+            if (xhr.readyState === 4) {
+                if (xhr.status === 200) {
+                    try {
+                        const response = JSON.parse(xhr.responseText);
+                        if (!response.success) {
+                            alert('更新失敗：' + (response.message || '未知錯誤'));
+                        } else {
+                            location.reload();
+                        }
+                    } catch (e) {
+                        alert('回應格式錯誤：' + xhr.responseText);
+                    }
+                } else {
+                    alert('請求失敗，狀態碼：' + xhr.status);
+                }
+            }
+        };
+
+        xhr.send('recommendation_id=' + encodeURIComponent(recommendationId) +
+                 '&review_result=' + encodeURIComponent(reviewResult));
+    }
+
+    // 查看審核結果（彈出視窗顯示三項條件）
+    function openReviewCriteriaModal(studentName, hasDuplicate, hasEnrollment, studentStatus, noBonus) {
+        const modal = document.getElementById('reviewCriteriaModal');
+        const nameEl = document.getElementById('reviewCriteriaStudentName');
+        const listEl = document.getElementById('reviewCriteriaList');
+        if (!modal || !nameEl || !listEl) return;
+
+        nameEl.textContent = studentName || '';
+        listEl.innerHTML = '';
+
+        const addLine = (text, isFail) => {
+            const div = document.createElement('div');
+            div.textContent = text;
+            div.style.fontWeight = '400';
+            div.style.fontSize = '16px';
+            div.style.color = isFail ? '#cf1322' : '#389e0d';
+            listEl.appendChild(div);
+        };
+
+        // 1) 重複推薦
+        if (hasDuplicate) {
+            addLine('此被推薦人已被人推薦', true);
+        } else {
+            addLine('未發現重複推薦', false);
+        }
+
+        // 2) 已填寫就讀意願表單
+        if (hasEnrollment) {
+            addLine('此被推薦人已填寫過就讀意願表單', true);
+        } else {
+            addLine('未填寫就讀意願表單', false);
+        }
+
+        // 3) 學生狀態
+        if (noBonus) {
+            const statusText = studentStatus ? ('學生狀態為' + studentStatus + '，無獎金') : '學生狀態為休學/退學，無獎金';
+            addLine(statusText, true);
+        } else {
+            addLine('學生狀態正常（可發獎金）', false);
+        }
+
+        modal.style.display = 'flex';
+    }
+
+    function closeReviewCriteriaModal() {
+        const modal = document.getElementById('reviewCriteriaModal');
+        if (modal) modal.style.display = 'none';
+    }
+
     // 發送獎金（同名且通過者由後端自動平分）
     function sendBonus(recommendationId, btnEl) {
         const rid = parseInt(recommendationId || 0, 10) || 0;
@@ -2748,6 +2890,16 @@ try {
         updateReviewResultModal.addEventListener('click', function(e) {
             if (e.target === this) {
                 closeUpdateReviewResultModal();
+            }
+        });
+    }
+
+    // 點擊查看審核結果彈出視窗外部關閉
+    const reviewCriteriaModal = document.getElementById('reviewCriteriaModal');
+    if (reviewCriteriaModal) {
+        reviewCriteriaModal.addEventListener('click', function(e) {
+            if (e.target === this) {
+                closeReviewCriteriaModal();
             }
         });
     }

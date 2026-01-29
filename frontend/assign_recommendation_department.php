@@ -3,11 +3,12 @@ require_once __DIR__ . '/session_config.php';
 
 checkBackendLogin();
 
-// 檢查權限：admin1 可以分配推薦學生至主任
-$username = isset($_SESSION['username']) ? $_SESSION['username'] : '';
-if ($username !== 'admin1') {
+// 檢查權限：招生中心/管理員可分配推薦學生至主任
+$user_role = $_SESSION['role'] ?? '';
+$allowed_roles = ['STA', '行政人員', '學校行政人員', 'ADM', '管理員'];
+if (!in_array($user_role, $allowed_roles, true)) {
     http_response_code(403);
-    echo json_encode(['success' => false, 'message' => '權限不足，只有admin1可以進行此操作']);
+    echo json_encode(['success' => false, 'message' => '權限不足，只有招生中心/管理員可以進行此操作']);
     exit;
 }
 
@@ -29,6 +30,7 @@ if ($recommendation_id <= 0 || !in_array($department_account, $allowed_departmen
 }
 
 require_once '../../Topics-frontend/frontend/config.php';
+require_once __DIR__ . '/../../Topics-frontend/frontend/includes/email_functions.php';
 
 try {
     $conn = getDatabaseConnection();
@@ -41,8 +43,47 @@ try {
         $conn->query($alter_sql);
     }
 
-    // 檢查推薦記錄是否存在
-    $stmt = $conn->prepare("SELECT id, student_name FROM admission_recommendations WHERE id = ?");
+    // 檢查推薦記錄是否存在，並取得必要資訊
+    $has_recommended_table = false;
+    $table_check_rec = $conn->query("SHOW TABLES LIKE 'recommended'");
+    if ($table_check_rec && $table_check_rec->num_rows > 0) $has_recommended_table = true;
+
+    $ar_has = function($col) use ($conn) {
+        $r = $conn->query("SHOW COLUMNS FROM admission_recommendations LIKE '$col'");
+        return ($r && $r->num_rows > 0);
+    };
+
+    $ar_has_status = $ar_has('status');
+    $ar_has_student_name = $ar_has('student_name');
+    $ar_has_student_school = $ar_has('student_school');
+    $ar_has_student_school_code = $ar_has('student_school_code');
+    $ar_has_student_phone = $ar_has('student_phone');
+
+    $select = "SELECT ar.id,
+        " . ($ar_has_status ? "COALESCE(ar.status,'')" : "''") . " AS status,
+        " . ($ar_has_student_name ? "COALESCE(ar.student_name,'')" : "''") . " AS ar_student_name,
+        " . ($ar_has_student_school ? "COALESCE(ar.student_school,'')" : "''") . " AS ar_student_school,
+        " . ($ar_has_student_school_code ? "COALESCE(ar.student_school_code,'')" : "''") . " AS ar_student_school_code,
+        " . ($ar_has_student_phone ? "COALESCE(ar.student_phone,'')" : "''") . " AS ar_student_phone";
+
+    if ($has_recommended_table) {
+        $select .= ",
+        COALESCE(red.name,'') AS red_name,
+        COALESCE(red.school,'') AS red_school,
+        COALESCE(red.phone,'') AS red_phone";
+    } else {
+        $select .= ",
+        '' AS red_name,
+        '' AS red_school,
+        '' AS red_phone";
+    }
+
+    $from = " FROM admission_recommendations ar ";
+    if ($has_recommended_table) {
+        $from .= " LEFT JOIN recommended red ON ar.id = red.recommendations_id ";
+    }
+
+    $stmt = $conn->prepare($select . $from . " WHERE ar.id = ? LIMIT 1");
     $stmt->bind_param("i", $recommendation_id);
     $stmt->execute();
     $result = $stmt->get_result();
@@ -77,10 +118,47 @@ try {
         $log_stmt->bind_param("is", $recommendation_id, $assigned_by);
         $log_stmt->execute();
 
+        // 若分配給資管科(IMD)且審核結果為不通過，寄信通知
+        $status_code = trim((string)($recommendation['status'] ?? ''));
+        $status_code_norm = strtolower($status_code);
+        $is_rejected = in_array($status_code_norm, ['re', 'rejected', '不通過'], true);
+        if ($department_account === 'IMD' && $is_rejected) {
+            $student_name = trim((string)($recommendation['red_name'] ?? ''));
+            if ($student_name === '') $student_name = trim((string)($recommendation['ar_student_name'] ?? ''));
+
+            $student_school = trim((string)($recommendation['red_school'] ?? ''));
+            if ($student_school === '') {
+                $student_school = trim((string)($recommendation['ar_student_school'] ?? ''));
+            }
+            if ($student_school === '') {
+                $student_school = trim((string)($recommendation['ar_student_school_code'] ?? ''));
+            }
+
+            $student_phone = trim((string)($recommendation['red_phone'] ?? ''));
+            if ($student_phone === '') $student_phone = trim((string)($recommendation['ar_student_phone'] ?? ''));
+
+            $to_email = '110511114@stu.ukn.edu.tw';
+            $subject = '推薦學生重複推薦提醒';
+            $body = "
+                <div style='font-family: Arial, sans-serif; line-height: 1.6; color: #333;'>
+                    <p>此學生（被推薦學生姓名：{$student_name}、學校：{$student_school}、聯絡電話：{$student_phone}）已被其他人或其他科系老師/學生推薦，還請您確認後再告知我。</p>
+                    <br>
+                    <p>招生中心組長 高惠玲</p>
+                    <p>聯絡電話：0900123123</p>
+                    <p>分機：310</p>
+                    <p>shirly02@g.ukn.edu.tw</p>
+                </div>
+            ";
+            $altBody = "此學生（被推薦學生姓名：{$student_name}、學校：{$student_school}、聯絡電話：{$student_phone}）已被其他人或其他科系老師/學生推薦，還請您確認後再告知我。\n\n招生中心組長 高惠玲\n聯絡電話：0900123123\n分機：310\nshirly02@g.ukn.edu.tw";
+            if (function_exists('sendEmail')) {
+                @sendEmail($to_email, $subject, $body, $altBody);
+            }
+        }
+
         echo json_encode([
             'success' => true,
             'message' => '已分配推薦學生至主任帳號',
-            'student_name' => $recommendation['student_name'],
+            'student_name' => $recommendation['ar_student_name'] ?? '',
             'department' => $department_account
         ]);
     } else {
