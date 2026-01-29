@@ -261,7 +261,7 @@ function processAdmissionRanking($conn, $department_code = null) {
                         ");
                     } else {
                         $update_stmt = $conn->prepare("
-                        UPDATE continued_admission 
+                            UPDATE continued_admission 
                         SET status = 'RE'
                             WHERE id = ?
                         ");

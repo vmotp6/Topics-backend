@@ -36,6 +36,8 @@ $application_id = isset($data['application_id']) ? (int)$data['application_id'] 
 $teacher_slot = isset($data['teacher_slot']) ? $data['teacher_slot'] : '';
 $self_intro_score = isset($data['self_intro_score']) ? (int)$data['self_intro_score'] : null;
 $skills_score = isset($data['skills_score']) ? (int)$data['skills_score'] : null;
+$signature_data = isset($data['signature_data']) ? trim($data['signature_data']) : null;
+$signature_id = isset($data['signature_id']) && !empty($data['signature_id']) ? (int)$data['signature_id'] : null;
 
 if ($application_id === 0 || empty($teacher_slot)) {
     echo json_encode(['success' => false, 'message' => '參數錯誤'], JSON_UNESCAPED_UNICODE);
@@ -323,14 +325,109 @@ try {
     $delete_old_stmt->execute();
     $delete_old_stmt->close();
     
+    // 處理簽章
+    $final_signature_id = null;
+    $final_signature_path = null;
+    
+    if ($signature_id) {
+        // 如果已有簽章ID（從彈出視窗簽名），直接使用
+        $final_signature_id = $signature_id;
+        // 查詢簽章路徑
+        $sig_check = $conn->prepare("SELECT signature_path FROM signatures WHERE id = ? LIMIT 1");
+        $sig_check->bind_param("i", $signature_id);
+        $sig_check->execute();
+        $sig_result = $sig_check->get_result();
+        if ($sig_row = $sig_result->fetch_assoc()) {
+            $final_signature_path = $sig_row['signature_path'] ?? null;
+        }
+        $sig_check->close();
+    } elseif ($signature_data && strpos($signature_data, 'data:image') === 0) {
+        // 如果有簽章資料（Base64），儲存到 signatures 表
+        // 移除 data:image/png;base64, 前綴
+        $signatureData = preg_replace('/^data:image\/\w+;base64,/', '', $signature_data);
+        $imageData = base64_decode($signatureData);
+        
+        if ($imageData !== false && strlen($imageData) >= 100) {
+            // 建立儲存目錄
+            $upload_dir = __DIR__ . '/uploads/signatures/';
+            if (!is_dir($upload_dir)) {
+                mkdir($upload_dir, 0755, true);
+            }
+            
+            // 生成唯一檔名
+            $filename = 'signature_' . $user_id . '_' . time() . '_' . uniqid() . '.png';
+            $filepath = $upload_dir . $filename;
+            
+            // 儲存圖片
+            if (file_put_contents($filepath, $imageData) !== false) {
+                // 驗證圖片
+                $imageInfo = @getimagesize($filepath);
+                if ($imageInfo !== false) {
+                    $relative_path = 'uploads/signatures/' . $filename;
+                    $ip_address = $_SERVER['REMOTE_ADDR'] ?? null;
+                    $user_agent = $_SERVER['HTTP_USER_AGENT'] ?? null;
+                    
+                    // 確保 signatures 表存在
+                    $sig_table_check = $conn->query("SHOW TABLES LIKE 'signatures'");
+                    if (!$sig_table_check || $sig_table_check->num_rows == 0) {
+                        $conn->query("
+                            CREATE TABLE IF NOT EXISTS signatures (
+                                id INT AUTO_INCREMENT PRIMARY KEY,
+                                user_id INT NOT NULL,
+                                document_id INT NULL,
+                                document_type VARCHAR(50) DEFAULT 'general',
+                                signature_path VARCHAR(255) NOT NULL,
+                                signature_filename VARCHAR(255) NOT NULL,
+                                created_at DATETIME NOT NULL,
+                                ip_address VARCHAR(45),
+                                user_agent TEXT,
+                                INDEX idx_user_id (user_id),
+                                INDEX idx_document_id (document_id),
+                                INDEX idx_document_type (document_type),
+                                INDEX idx_created_at (created_at)
+                            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                        ");
+                    }
+                    
+                    // 插入到 signatures 表
+                    $sig_insert = $conn->prepare("
+                        INSERT INTO signatures (user_id, document_id, document_type, signature_path, signature_filename, created_at, ip_address, user_agent)
+                        VALUES (?, ?, 'continued_admission_score', ?, ?, NOW(), ?, ?)
+                    ");
+                    $sig_insert->bind_param("iissss", $user_id, $application_id, $relative_path, $filename, $ip_address, $user_agent);
+                    if ($sig_insert->execute()) {
+                        $final_signature_id = (int)$conn->insert_id;
+                        $final_signature_path = $relative_path;
+                    }
+                    $sig_insert->close();
+                } else {
+                    @unlink($filepath);
+                }
+            }
+        }
+    }
+    
+    // 檢查資料表是否有簽章欄位（僅使用 signature_id 做關聯，不在 scores 表重複存路徑）
+    $has_signature_id = false;
+    $column_check = $conn->query("SHOW COLUMNS FROM continued_admission_scores LIKE 'signature_id'");
+    if ($column_check && $column_check->num_rows > 0) {
+        $has_signature_id = true;
+    }
+    
     // 然後插入新記錄
-    $insert_stmt = $conn->prepare("INSERT INTO continued_admission_scores 
-        (application_id, reviewer_user_id, reviewer_type, assignment_order, self_intro_score, skills_score, scored_at)
-        VALUES (?, ?, ?, ?, ?, ?, NOW())");
+    if ($has_signature_id) {
+        $insert_stmt = $conn->prepare("INSERT INTO continued_admission_scores 
+            (application_id, reviewer_user_id, reviewer_type, assignment_order, self_intro_score, skills_score, scored_at, signature_id)
+            VALUES (?, ?, ?, ?, ?, ?, NOW(), ?)");
+        $insert_stmt->bind_param("iisiiii", $application_id, $user_id, $reviewer_type, $assignment_order, $self_intro_score, $skills_score, $final_signature_id);
+    } else {
+        $insert_stmt = $conn->prepare("INSERT INTO continued_admission_scores 
+            (application_id, reviewer_user_id, reviewer_type, assignment_order, self_intro_score, skills_score, scored_at)
+            VALUES (?, ?, ?, ?, ?, ?, NOW())");
+        $insert_stmt->bind_param("iisiii", $application_id, $user_id, $reviewer_type, $assignment_order, $self_intro_score, $skills_score);
+    }
     
-    $insert_stmt->bind_param("iisiii", $application_id, $user_id, $reviewer_type, $assignment_order, $self_intro_score, $skills_score);
-    
-    error_log("準備插入評分 - 報名ID: {$application_id}, 用戶ID: {$user_id}, slot: {$assignment_order}, 自傳: {$self_intro_score}, 專長: {$skills_score}");
+    error_log("準備插入評分 - 報名ID: {$application_id}, 用戶ID: {$user_id}, slot: {$assignment_order}, 自傳: {$self_intro_score}, 專長: {$skills_score}, 簽章ID: " . ($final_signature_id ?? '無'));
     
     if ($insert_stmt->execute()) {
         $affected_rows = $conn->affected_rows;
