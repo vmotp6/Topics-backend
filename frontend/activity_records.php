@@ -55,6 +55,29 @@ $is_admin = ($user_role === 'ADM' || $user_role === '管理員' || $user_role ==
 $is_school_admin = ($user_role === '學校行政人員' || $user_role === '行政人員' || $user_role === 'STA' || 
                     $current_user === 'IMD' || $is_admin);
 $is_director = ($user_role === 'DI');
+$is_stam = ($user_role === 'STAM');
+$is_staff = ($user_role === 'STA');
+
+// 學年度定義：8/1 ~ 隔年 7/31
+function getAcademicYearRangeAug1(): array {
+    $m = (int)date('m');
+    $y = (int)date('Y');
+    if ($m >= 8) {
+        $start_year = $y;
+        $end_year = $y + 1;
+    } else {
+        $start_year = $y - 1;
+        $end_year = $y;
+    }
+    return [
+        'start' => sprintf('%04d-08-01 00:00:00', $start_year),
+        'end' => sprintf('%04d-07-31 23:59:59', $end_year),
+    ];
+}
+
+$academic_year = getAcademicYearRangeAug1();
+$academic_year_start = $academic_year['start'];
+$academic_year_end = $academic_year['end'];
 
 // 檢查是否為資管科主任：role=DI 且部門代碼=IM
 $is_im = false;
@@ -167,6 +190,16 @@ $conn = getDatabaseConnection();
     if (!$conn) {
         die('資料庫連接失敗');
     }
+
+// 設定科系過濾條件（需要在 $conn 建立後才能使用 real_escape_string）
+// 1. 如果是主任（DI）且不是招生中心（STAM），只能查看自己科系的資料
+if ($is_director && !$is_stam && $user_department_code && empty($department_filter)) {
+    // 使用科系代碼過濾（例如：IM、CS、EE 等）
+    $dept_code_escaped = $conn->real_escape_string($user_department_code);
+    $department_filter = " AND (t.department = '$dept_code_escaped' OR d.code = '$dept_code_escaped')";
+}
+// 2. 如果是招生中心（STAM）、管理員（ADM）或行政人員（STA），可以查看全部科系
+//    $department_filter 保持為空字串或現有值，不進行額外過濾
     
     // 檢查 activity_records 表是否存在
     $table_check = $conn->query("SHOW TABLES LIKE 'activity_records'");
@@ -214,10 +247,13 @@ if ($teacher_id > 0) {
                     LEFT JOIN user u2 ON ar.teacher_id = u2.id
                     LEFT JOIN activity_types at ON ar.activity_type = at.ID
                     LEFT JOIN school_data sd ON ar.school = sd.school_code
-                    WHERE ar.teacher_id = ? $department_filter
+                    WHERE ar.teacher_id = ?
+                      AND ar.activity_date >= ?
+                      AND ar.activity_date <= ?
+                      $department_filter
                     ORDER BY ar.activity_date DESC, ar.id DESC";
     $stmt = $conn->prepare($records_sql);
-    $stmt->bind_param("i", $teacher_id);
+    $stmt->bind_param("iss", $teacher_id, $academic_year_start, $academic_year_end);
     $stmt->execute();
     $result = $stmt->get_result();
     if ($result) {
@@ -236,10 +272,20 @@ if ($teacher_id > 0) {
                      JOIN activity_records ar ON t.user_id = ar.teacher_id
                      LEFT JOIN user u ON t.user_id = u.id
                      LEFT JOIN departments d ON t.department = d.code
-                     WHERE 1=1 $department_filter
+                     WHERE 1=1
+                       AND ar.activity_date >= ?
+                       AND ar.activity_date <= ?
+                       $department_filter
                      GROUP BY t.user_id, u.name, t.department
                      ORDER BY record_count DESC, u.name ASC";
-    $result = $conn->query($teachers_sql);
+    $teachers_stmt = $conn->prepare($teachers_sql);
+    if ($teachers_stmt) {
+        $teachers_stmt->bind_param("ss", $academic_year_start, $academic_year_end);
+        $teachers_stmt->execute();
+        $result = $teachers_stmt->get_result();
+    } else {
+        $result = false;
+    }
 
     // 為了統計圖表，獲取所有活動記錄
     $all_activity_records = [];
@@ -251,9 +297,19 @@ if ($teacher_id > 0) {
                         LEFT JOIN user u2 ON ar.teacher_id = u2.id
                         LEFT JOIN activity_types at ON ar.activity_type = at.ID
                         LEFT JOIN school_data sd ON ar.school = sd.school_code
-                        WHERE 1=1 $department_filter
+                        WHERE 1=1
+                          AND ar.activity_date >= ?
+                          AND ar.activity_date <= ?
+                          $department_filter
                         ORDER BY ar.activity_date DESC, ar.id DESC";
-    $all_records_result = $conn->query($all_records_sql);
+    $all_records_stmt = $conn->prepare($all_records_sql);
+    if ($all_records_stmt) {
+        $all_records_stmt->bind_param("ss", $academic_year_start, $academic_year_end);
+        $all_records_stmt->execute();
+        $all_records_result = $all_records_stmt->get_result();
+    } else {
+        $all_records_result = false;
+    }
     if ($all_records_result) {
         $all_activity_records = $all_records_result->fetch_all(MYSQLI_ASSOC);
         // 調試信息
@@ -261,6 +317,260 @@ if ($teacher_id > 0) {
     } else {
         error_log('查詢活動記錄失敗: ' . $conn->error);
     }
+    
+    if (isset($teachers_stmt) && $teachers_stmt) { $teachers_stmt->close(); }
+    if (isset($all_records_stmt) && $all_records_stmt) { $all_records_stmt->close(); }
+
+    // ===== 依學校彙整活動紀錄 =====
+    $school_summary = [];
+    $school_summary_list = [];
+    
+    // 查詢所有活動紀錄，包含學校、回饋、參與對象等資訊
+    $school_summary_sql = "SELECT 
+                            ar.id,
+                            ar.school,
+                            COALESCE(sd.name, ar.school) AS school_name,
+                            ar.activity_date,
+                            ar.created_at,
+                            ar.teacher_id,
+                            t.department AS teacher_department,
+                            COALESCE(d.name, t.department) AS department_name,
+                            COALESCE(u.name, u2.name) AS teacher_name
+                        FROM activity_records ar
+                        LEFT JOIN school_data sd ON ar.school = sd.school_code
+                        LEFT JOIN teacher t ON ar.teacher_id = t.user_id
+                        LEFT JOIN departments d ON t.department = d.code
+                        LEFT JOIN user u ON t.user_id = u.id
+                        LEFT JOIN user u2 ON ar.teacher_id = u2.id
+                        WHERE 1=1
+                          AND ar.activity_date >= ?
+                          AND ar.activity_date <= ?
+                          $department_filter
+                        ORDER BY ar.activity_date DESC";
+    
+    $school_summary_stmt = $conn->prepare($school_summary_sql);
+    if ($school_summary_stmt) {
+        $school_summary_stmt->bind_param("ss", $academic_year_start, $academic_year_end);
+        $school_summary_stmt->execute();
+        $school_summary_result = $school_summary_stmt->get_result();
+    } else {
+        $school_summary_result = null;
+    }
+    
+    if ($school_summary_result) {
+        $all_school_records = $school_summary_result->fetch_all(MYSQLI_ASSOC);
+        
+        // 為每個活動紀錄讀取回饋和參與對象資訊
+        foreach ($all_school_records as $record) {
+            $activity_id = $record['id'];
+            $school_code = $record['school'];
+            $school_name = $record['school_name'] ?: $school_code ?: '未設定學校';
+            
+            // 初始化學校資料
+            if (!isset($school_summary[$school_code])) {
+                $school_summary[$school_code] = [
+                    'school_code' => $school_code,
+                    'school_name' => $school_name,
+                    'total_activities' => 0,
+                    'feedback_score_sum' => 0,
+                    'feedback_count' => [
+                        '冷淡' => 0,
+                        '普通' => 0,
+                        '熱烈' => 0,
+                        '其他' => 0
+                    ],
+                    'grade_semester' => [
+                        '國二上' => ['count' => 0, 'feedback' => ['冷淡' => 0, '普通' => 0, '熱烈' => 0, '其他' => 0]],
+                        '國二下' => ['count' => 0, 'feedback' => ['冷淡' => 0, '普通' => 0, '熱烈' => 0, '其他' => 0]],
+                        '國三上' => ['count' => 0, 'feedback' => ['冷淡' => 0, '普通' => 0, '熱烈' => 0, '其他' => 0]],
+                        '其他' => ['count' => 0, 'feedback' => ['冷淡' => 0, '普通' => 0, '熱烈' => 0, '其他' => 0]]
+                    ],
+                    'departments' => [], // 記錄該學校有哪些科系參與
+                    'dept_counts' => [], // 參與科系 × 學校矩陣用
+                    'last_teacher_name' => '',
+                    'last_created_at' => '',
+                    'records' => [] // 主任用：教師/填寫日期明細
+                ];
+            }
+            
+            $school_summary[$school_code]['total_activities']++;
+            
+            // 記錄科系資訊（同時建立「參與科系 × 學校」矩陣）
+            $dept_name = trim((string)($record['department_name'] ?? ''));
+            if ($dept_name === '') {
+                $dept_name = trim((string)($record['teacher_department'] ?? ''));
+            }
+            if ($dept_name === '') {
+                $dept_name = '未指定';
+            }
+
+            if (!in_array($dept_name, $school_summary[$school_code]['departments'], true)) {
+                $school_summary[$school_code]['departments'][] = $dept_name;
+            }
+
+            if (!isset($school_summary[$school_code]['dept_counts'][$dept_name])) {
+                $school_summary[$school_code]['dept_counts'][$dept_name] = 0;
+            }
+            $school_summary[$school_code]['dept_counts'][$dept_name]++;
+            
+            // 讀取活動回饋
+            $feedback_sql = "SELECT afo.option 
+                            FROM activity_feedback af
+                            LEFT JOIN activity_feedback_options afo ON af.option_id = afo.id
+                            WHERE af.activity_id = ?
+                            ORDER BY af.option_id";
+            $feedback_stmt = $conn->prepare($feedback_sql);
+            $current_activity_feedback = '其他'; // 預設值
+            if ($feedback_stmt) {
+                $feedback_stmt->bind_param("i", $activity_id);
+                $feedback_stmt->execute();
+                $feedback_result = $feedback_stmt->get_result();
+                $has_feedback = false;
+                while ($f_row = $feedback_result->fetch_assoc()) {
+                    if (!empty($f_row['option'])) {
+                        $has_feedback = true;
+                        $feedback_option = $f_row['option'];
+                        
+                        // 判斷回饋類型（優先順序：熱烈 > 冷淡 > 普通）
+                        if (strpos($feedback_option, '熱烈') !== false || strpos($feedback_option, '熱') !== false || strpos($feedback_option, '積極') !== false) {
+                            $current_activity_feedback = '熱烈';
+                            break; // 找到熱烈就停止
+                        } elseif (strpos($feedback_option, '冷淡') !== false || strpos($feedback_option, '冷') !== false) {
+                            $current_activity_feedback = '冷淡';
+                            // 繼續檢查是否有熱烈
+                        } elseif (strpos($feedback_option, '普通') !== false || strpos($feedback_option, '一般') !== false) {
+                            if ($current_activity_feedback == '其他') {
+                                $current_activity_feedback = '普通';
+                            }
+                        }
+                    }
+                }
+                $feedback_stmt->close();
+            }
+            
+            // 累加該活動的回饋
+            $school_summary[$school_code]['feedback_count'][$current_activity_feedback]++;
+            $score_map = ['熱烈' => 3, '普通' => 2, '冷淡' => 1, '其他' => 0];
+            $school_summary[$school_code]['feedback_score_sum'] += $score_map[$current_activity_feedback] ?? 0;
+            
+            // 讀取參與對象（判斷年級和學期）
+            $participants_sql = "SELECT io.name, io.code
+                                FROM activity_participants ap
+                                LEFT JOIN identity_options io ON ap.participants = io.code
+                                WHERE ap.activity_id = ?
+                                ORDER BY ap.participants";
+            $grade_semester_key = '其他';
+            $participants_stmt = $conn->prepare($participants_sql);
+            if ($participants_stmt) {
+                $participants_stmt->bind_param("i", $activity_id);
+                $participants_stmt->execute();
+                $participants_result = $participants_stmt->get_result();
+                $activity_month = (int)date('m', strtotime($record['activity_date']));
+                
+                while ($p_row = $participants_result->fetch_assoc()) {
+                    if (!empty($p_row['name'])) {
+                        $participant_name = $p_row['name'];
+                        
+                        // 判斷年級和學期
+                        // 學期判斷：9-1月為上學期，2-6月為下學期
+                        if (strpos($participant_name, '國二') !== false || strpos($participant_name, '二年級') !== false) {
+                            if ($activity_month >= 9 || $activity_month <= 1) {
+                                $grade_semester_key = '國二上';
+                            } elseif ($activity_month >= 2 && $activity_month <= 6) {
+                                $grade_semester_key = '國二下';
+                            }
+                        } elseif (strpos($participant_name, '國三') !== false || strpos($participant_name, '三年級') !== false) {
+                            if ($activity_month >= 9 || $activity_month <= 1) {
+                                $grade_semester_key = '國三上';
+                            }
+                        }
+                        
+                        // 如果找到年級資訊，跳出迴圈
+                        if ($grade_semester_key !== '其他') {
+                            break;
+                        }
+                    }
+                }
+                $participants_stmt->close();
+                
+                // 更新年級學期統計
+                $school_summary[$school_code]['grade_semester'][$grade_semester_key]['count']++;
+                
+                // 更新該年級學期的回饋統計（使用當前活動的回饋）
+                // 確保回饋類型存在於陣列中
+                if (isset($school_summary[$school_code]['grade_semester'][$grade_semester_key]['feedback'][$current_activity_feedback])) {
+                    $school_summary[$school_code]['grade_semester'][$grade_semester_key]['feedback'][$current_activity_feedback]++;
+                } else {
+                    // 如果回饋類型不存在，使用 '其他'
+                    $school_summary[$school_code]['grade_semester'][$grade_semester_key]['feedback']['其他']++;
+                }
+            }
+
+            // 主任視圖：保留教師姓名、填寫日期明細（可展開）
+            if ($is_director) {
+                $teacher_name = trim((string)($record['teacher_name'] ?? ''));
+                if ($teacher_name === '') { $teacher_name = '未填寫'; }
+                $created_at = (string)($record['created_at'] ?? '');
+                $activity_date = (string)($record['activity_date'] ?? '');
+
+                $school_summary[$school_code]['records'][] = [
+                    'teacher_name' => $teacher_name,
+                    'activity_date' => $activity_date,
+                    'created_at' => $created_at,
+                    'feedback' => $current_activity_feedback,
+                    'grade_semester' => $grade_semester_key,
+                    'department' => $dept_name,
+                ];
+
+                if ($created_at !== '' && ($school_summary[$school_code]['last_created_at'] === '' || strtotime($created_at) > strtotime($school_summary[$school_code]['last_created_at']))) {
+                    $school_summary[$school_code]['last_created_at'] = $created_at;
+                    $school_summary[$school_code]['last_teacher_name'] = $teacher_name;
+                }
+            }
+        }
+        
+        if (isset($school_summary_stmt)) {
+            $school_summary_stmt->close();
+        }
+        
+        // 計算每個學校的評級（A/B/C級）
+        foreach ($school_summary as &$school) {
+            $total_feedback = array_sum($school['feedback_count']);
+            if ($total_feedback > 0) {
+                $hot_ratio = $school['feedback_count']['熱烈'] / $total_feedback;
+                $cold_ratio = $school['feedback_count']['冷淡'] / $total_feedback;
+                
+                // A級：熱烈回饋 >= 50% 或 熱烈 > 冷淡
+                // B級：普通回饋為主 或 熱烈和冷淡比例相近
+                // C級：冷淡回饋 >= 50% 或 冷淡 > 熱烈
+                if ($hot_ratio >= 0.5 || ($school['feedback_count']['熱烈'] > $school['feedback_count']['冷淡'] && $school['feedback_count']['熱烈'] > 0)) {
+                    $school['rating'] = 'A';
+                    $school['rating_text'] = '互動好、值得每年固定經營';
+                } elseif ($cold_ratio >= 0.5 || ($school['feedback_count']['冷淡'] > $school['feedback_count']['熱烈'] && $school['feedback_count']['冷淡'] > 0)) {
+                    $school['rating'] = 'C';
+                    $school['rating_text'] = '可以降低投入或更換策略';
+                } else {
+                    $school['rating'] = 'B';
+                    $school['rating_text'] = '要調整活動方式';
+                }
+            } else {
+                $school['rating'] = 'B';
+                $school['rating_text'] = '要調整活動方式';
+            }
+        }
+        unset($school);
+    }
+    // ===== 依學校彙整活動紀錄結束 =====
+
+    // 轉成排序後的列表（給表格與圖表用）
+    $school_summary_list = array_values($school_summary);
+    usort($school_summary_list, function($a, $b) {
+        $rating_order = ['A' => 1, 'B' => 2, 'C' => 3];
+        $a_rating = $rating_order[$a['rating'] ?? ''] ?? 4;
+        $b_rating = $rating_order[$b['rating'] ?? ''] ?? 4;
+        if ($a_rating !== $b_rating) return $a_rating - $b_rating;
+        return ($b['total_activities'] ?? 0) <=> ($a['total_activities'] ?? 0);
+    });
     
     // 獲取出席記錄數據（用於出席統計圖表）- 從 admission_sessions 表抓取所有入學說明會場次
     // 注意：只計算與場次年份相同的簽到記錄
@@ -1344,6 +1654,409 @@ $conn->close();
                     </div>
 
 
+
+                    <!-- 依學校彙整活動紀錄 -->
+                    <div class="card" style="margin-bottom: 24px;">
+                        <div class="card-body">
+                        <h4 style="color: #667eea; margin-bottom: 15px; display: flex; align-items: center; gap: 10px;">
+                            <i class="fas fa-school"></i> 依學校彙整活動紀錄
+                            <span style="font-size: 12px; color: #999; margin-left: 10px;">
+                                (<?php echo date('Y年m月d日', strtotime($academic_year_start)); ?> ~ <?php echo date('Y年m月d日', strtotime($academic_year_end)); ?>)
+                            </span>
+                        </h4>
+                        <?php if ($is_staff): ?>
+                        <p style="color: #666; font-size: 14px; margin-bottom: 15px;">
+                            <i class="fas fa-info-circle"></i> 招生中心視圖：顯示各科基本統計資料
+                        </p>
+                        <?php elseif ($is_director): ?>
+                        <p style="color: #666; font-size: 14px; margin-bottom: 15px;">
+                            <i class="fas fa-info-circle"></i> 主任視圖：顯示本科詳細統計資料
+                        </p>
+                        <?php endif; ?>
+                        
+                        <?php if (!empty($school_summary_list)): ?>
+                            <div style="display:flex; gap:10px; flex-wrap:wrap; margin-bottom: 14px;">
+                                <button type="button" class="btn-view" id="btnSchoolViewHeatmap" onclick="showSchoolView('heatmap')">
+                                    1️⃣ 學校 × 評級（色階表格）
+                                </button>
+                                <button type="button" class="btn-view" id="btnSchoolViewFeedback" onclick="showSchoolView('feedback')">
+                                    2️⃣ 學校別活動回饋（長條圖）
+                                </button>
+                                <button type="button" class="btn-view" id="btnSchoolViewGrade" onclick="showSchoolView('grade')">
+                                    3️⃣ 學校 × 年級學期（堆疊長條圖）
+                                </button>
+                                <?php if ($is_staff): ?>
+                                <button type="button" class="btn-view" id="btnSchoolViewMatrix" onclick="showSchoolView('matrix')">
+                                    4️⃣ 參與科系 × 學校（矩陣表）
+                                </button>
+                                <?php endif; ?>
+                            </div>
+
+                            <!-- 1️⃣ Heatmap Table -->
+                            <div class="school-view" id="schoolView-heatmap" style="display:block;">
+                            <div class="table-wrapper">
+                                <div class="table-container">
+                                    <table class="table" style="font-size: 14px;">
+                                        <thead>
+                                            <tr>
+                                                <th>學校名稱</th>
+                                                <th style="text-align: center;">活動次數</th>
+                                                <th style="text-align: center;">活動回饋</th>
+                                                <th style="text-align: center;">評級</th>
+                                                <?php if ($is_director): // 主任顯示詳細資訊 ?>
+                                                <th style="text-align: center;">總結</th>
+                                                <th style="text-align: center;">年級學期分析</th>
+                                                <th style="text-align: center;">老師</th>
+                                                <th style="text-align: center;">填寫日期</th>
+                                                <th style="text-align: center;">明細</th>
+                                                <?php endif; ?>
+                                                <th style="text-align: center;">參與科系</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            <?php foreach ($school_summary_list as $school):
+                                                $feedback_display = [];
+                                                if ($school['feedback_count']['熱烈'] > 0) {
+                                                    $feedback_display[] = '熱烈: ' . $school['feedback_count']['熱烈'];
+                                                }
+                                                if ($school['feedback_count']['普通'] > 0) {
+                                                    $feedback_display[] = '普通: ' . $school['feedback_count']['普通'];
+                                                }
+                                                if ($school['feedback_count']['冷淡'] > 0) {
+                                                    $feedback_display[] = '冷淡: ' . $school['feedback_count']['冷淡'];
+                                                }
+                                                if (empty($feedback_display)) {
+                                                    $feedback_display[] = '無回饋資料';
+                                                }
+                                                
+                                                $rating_class = '';
+                                                $rating_color = '';
+                                                if ($school['rating'] == 'A') {
+                                                    $rating_class = 'badge-success';
+                                                    $rating_color = '#28a745';
+                                                } elseif ($school['rating'] == 'B') {
+                                                    $rating_class = 'badge-secondary';
+                                                    $rating_color = '#ffc107';
+                                                } else {
+                                                    $rating_class = 'badge-secondary';
+                                                    $rating_color = '#dc3545';
+                                                }
+                                            ?>
+                                            <?php
+                                                $__schoolRowKey = preg_replace('/[^a-zA-Z0-9_-]/', '_', (string)($school['school_code'] ?? $school['school_name'] ?? 'school'));
+                                                $__schoolDetailId = 'school-detail-' . $__schoolRowKey;
+                                                $__rowBg = ($school['rating'] == 'A')
+                                                    ? 'rgba(40,167,69,0.08)'
+                                                    : (($school['rating'] == 'B') ? 'rgba(255,193,7,0.12)' : 'rgba(220,53,69,0.08)');
+                                            ?>
+                                            <tr style="background: <?php echo $__rowBg; ?>;">
+                                                <td><strong><?php echo htmlspecialchars($school['school_name']); ?></strong></td>
+                                                <td style="text-align: center;">
+                                                    <span class="badge badge-success"><?php echo $school['total_activities']; ?></span>
+                                                </td>
+                                                <td style="text-align: center;">
+                                                    <?php echo implode(' / ', $feedback_display); ?>
+                                                </td>
+                                                <td style="text-align: center;">
+                                                    <span class="badge <?php echo $rating_class; ?>" style="background-color: <?php echo $rating_color; ?>;">
+                                                        <?php echo $school['rating']; ?> 級
+                                                    </span>
+                                                </td>
+                                                <?php if ($is_director): // 主任顯示詳細資訊 ?>
+                                                <td style="text-align: center; max-width: 200px;">
+                                                    <small><?php echo htmlspecialchars($school['rating_text']); ?></small>
+                                                </td>
+                                                <td style="text-align: center;">
+                                                    <div style="font-size: 12px;">
+                                                        <?php if ($school['grade_semester']['國二上']['count'] > 0): ?>
+                                                            <div>國二上: <?php echo $school['grade_semester']['國二上']['count']; ?> 次
+                                                                <?php 
+                                                                $g2u_feedback = [];
+                                                                if ($school['grade_semester']['國二上']['feedback']['熱烈'] > 0) $g2u_feedback[] = '熱烈';
+                                                                if ($school['grade_semester']['國二上']['feedback']['普通'] > 0) $g2u_feedback[] = '普通';
+                                                                if ($school['grade_semester']['國二上']['feedback']['冷淡'] > 0) $g2u_feedback[] = '冷淡';
+                                                                if (!empty($g2u_feedback)) echo ' (' . implode('/', $g2u_feedback) . ')';
+                                                                ?>
+                                                            </div>
+                                                        <?php endif; ?>
+                                                        <?php if ($school['grade_semester']['國二下']['count'] > 0): ?>
+                                                            <div>國二下: <?php echo $school['grade_semester']['國二下']['count']; ?> 次
+                                                                <?php 
+                                                                $g2d_feedback = [];
+                                                                if ($school['grade_semester']['國二下']['feedback']['熱烈'] > 0) $g2d_feedback[] = '熱烈';
+                                                                if ($school['grade_semester']['國二下']['feedback']['普通'] > 0) $g2d_feedback[] = '普通';
+                                                                if ($school['grade_semester']['國二下']['feedback']['冷淡'] > 0) $g2d_feedback[] = '冷淡';
+                                                                if (!empty($g2d_feedback)) echo ' (' . implode('/', $g2d_feedback) . ')';
+                                                                ?>
+                                                            </div>
+                                                        <?php endif; ?>
+                                                        <?php if ($school['grade_semester']['國三上']['count'] > 0): ?>
+                                                            <div>國三上: <?php echo $school['grade_semester']['國三上']['count']; ?> 次
+                                                                <?php 
+                                                                $g3u_feedback = [];
+                                                                if ($school['grade_semester']['國三上']['feedback']['熱烈'] > 0) $g3u_feedback[] = '熱烈';
+                                                                if ($school['grade_semester']['國三上']['feedback']['普通'] > 0) $g3u_feedback[] = '普通';
+                                                                if ($school['grade_semester']['國三上']['feedback']['冷淡'] > 0) $g3u_feedback[] = '冷淡';
+                                                                if (!empty($g3u_feedback)) echo ' (' . implode('/', $g3u_feedback) . ')';
+                                                                ?>
+                                                            </div>
+                                                        <?php endif; ?>
+                                                        <?php if ($school['grade_semester']['其他']['count'] > 0): ?>
+                                                            <div>其他: <?php echo $school['grade_semester']['其他']['count']; ?> 次</div>
+                                                        <?php endif; ?>
+                                                    </div>
+                                                </td>
+                                                <td style="text-align: center; white-space: nowrap;">
+                                                    <?php echo htmlspecialchars($school['last_teacher_name'] ?? ''); ?>
+                                                </td>
+                                                <td style="text-align: center; white-space: nowrap;">
+                                                    <?php echo !empty($school['last_created_at']) ? date('Y/m/d', strtotime($school['last_created_at'])) : ''; ?>
+                                                </td>
+                                                <td style="text-align: center; white-space: nowrap;">
+                                                    <button type="button" class="btn-view" style="padding: 4px 10px; font-size: 12px;" onclick="toggleSchoolDetail('<?php echo htmlspecialchars($__schoolDetailId, ENT_QUOTES, 'UTF-8'); ?>')">
+                                                        <i class="fas fa-list"></i> 明細
+                                                    </button>
+                                                </td>
+                                                <?php endif; ?>
+                                                <td style="text-align: center;">
+                                                    <?php if (!empty($school['departments'])): ?>
+                                                        <div style="font-size: 12px;">
+                                                            <?php echo implode('<br>', array_map('htmlspecialchars', $school['departments'])); ?>
+                                                        </div>
+                                                    <?php else: ?>
+                                                        <span style="color: #999;">未記錄</span>
+                                                    <?php endif; ?>
+                                                </td>
+                                            </tr>
+                                            <?php if ($is_director): ?>
+                                            <tr id="<?php echo htmlspecialchars($__schoolDetailId, ENT_QUOTES, 'UTF-8'); ?>" style="display: none;">
+                                                <td colspan="10" style="padding: 16px; background: #fafafa; border-top: 1px solid #eee;">
+                                                    <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:10px;">
+                                                        <div style="font-weight: 600; color: #333;">
+                                                            <?php echo htmlspecialchars($school['school_name']); ?>：教師填寫明細
+                                                        </div>
+                                                        <button type="button" class="btn-view" style="padding: 4px 10px; font-size: 12px; background:#dc3545;" onclick="toggleSchoolDetail('<?php echo htmlspecialchars($__schoolDetailId, ENT_QUOTES, 'UTF-8'); ?>')">
+                                                            <i class="fas fa-times"></i> 收起
+                                                        </button>
+                                                    </div>
+                                                    <div style="overflow-x:auto;">
+                                                        <table style="width: 100%; border-collapse: collapse; font-size: 13px;">
+                                                            <thead>
+                                                                <tr>
+                                                                    <th style="text-align:left; padding:8px; border-bottom:1px solid #e6e6e6;">老師</th>
+                                                                    <th style="text-align:left; padding:8px; border-bottom:1px solid #e6e6e6;">活動日期</th>
+                                                                    <th style="text-align:left; padding:8px; border-bottom:1px solid #e6e6e6;">填寫日期</th>
+                                                                    <th style="text-align:left; padding:8px; border-bottom:1px solid #e6e6e6;">回饋</th>
+                                                                    <th style="text-align:left; padding:8px; border-bottom:1px solid #e6e6e6;">年級/學期</th>
+                                                                </tr>
+                                                            </thead>
+                                                            <tbody>
+                                                                <?php
+                                                                    $records = $school['records'] ?? [];
+                                                                    usort($records, function($a, $b) {
+                                                                        return strtotime((string)($b['created_at'] ?? '')) <=> strtotime((string)($a['created_at'] ?? ''));
+                                                                    });
+                                                                    foreach ($records as $r):
+                                                                ?>
+                                                                    <tr>
+                                                                        <td style="padding:8px; border-bottom:1px solid #f0f0f0;"><?php echo htmlspecialchars($r['teacher_name'] ?? ''); ?></td>
+                                                                        <td style="padding:8px; border-bottom:1px solid #f0f0f0;"><?php echo htmlspecialchars($r['activity_date'] ?? ''); ?></td>
+                                                                        <td style="padding:8px; border-bottom:1px solid #f0f0f0;"><?php echo !empty($r['created_at']) ? date('Y/m/d', strtotime($r['created_at'])) : ''; ?></td>
+                                                                        <td style="padding:8px; border-bottom:1px solid #f0f0f0;"><?php echo htmlspecialchars($r['feedback'] ?? ''); ?></td>
+                                                                        <td style="padding:8px; border-bottom:1px solid #f0f0f0;"><?php echo htmlspecialchars($r['grade_semester'] ?? ''); ?></td>
+                                                                    </tr>
+                                                                <?php endforeach; ?>
+                                                            </tbody>
+                                                        </table>
+                                                    </div>
+                                                </td>
+                                            </tr>
+                                            <?php endif; ?>
+                                            <?php endforeach; ?>
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+                            </div>
+
+                            <!-- 2️⃣ 學校別活動回饋（長條圖） -->
+                            <div class="school-view" id="schoolView-feedback" style="display:none; margin-top: 12px;">
+                                <div class="table-wrapper" style="padding: 16px;">
+                                    <div style="font-weight: 600; margin-bottom: 8px;">2️⃣ 學校別活動回饋（分數）— 長條圖</div>
+                                    <canvas id="schoolFeedbackScoreChart" height="140"></canvas>
+                                </div>
+                            </div>
+
+                            <!-- 3️⃣ 學校 × 年級學期（堆疊長條圖） -->
+                            <div class="school-view" id="schoolView-grade" style="display:none; margin-top: 12px;">
+                                <div class="table-wrapper" style="padding: 16px;">
+                                    <div style="font-weight: 600; margin-bottom: 8px;">3️⃣ 學校 × 年級學期 — 堆疊長條圖</div>
+                                    <canvas id="schoolGradeSemesterChart" height="140"></canvas>
+                                </div>
+                            </div>
+
+                            <?php if ($is_staff): ?>
+                            <!-- 4️⃣ 參與科系 × 學校（矩陣表）— 僅招生中心顯示 -->
+                            <div class="school-view" id="schoolView-matrix" style="display:none; margin-top: 12px;">
+                                <div class="table-wrapper" style="padding: 16px;">
+                                    <div style="font-weight: 600; margin-bottom: 8px;">4️⃣ 參與科系 × 學校 — 矩陣表（交叉分析）</div>
+                                    <div id="deptSchoolMatrixTable" style="overflow-x: auto;"></div>
+                                </div>
+                            </div>
+                            <?php endif; ?>
+
+                            <script>
+                                // 依學校彙整資料（給圖表使用）
+                                window.__schoolSummaryList = <?php echo json_encode($school_summary_list ?? [], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES); ?>;
+                                window.__schoolSummaryRole = { 
+                                    isDirector: <?php echo $is_director ? 'true' : 'false'; ?>, 
+                                    isStaff: <?php echo $is_staff ? 'true' : 'false'; ?> 
+                                };
+
+                                window.__schoolCharts = window.__schoolCharts || {};
+                                window.__schoolChartsRendered = window.__schoolChartsRendered || { feedback:false, grade:false, matrix:false };
+
+                                function toggleSchoolDetail(id) {
+                                    const el = document.getElementById(id);
+                                    if (!el) return;
+                                    el.style.display = (el.style.display === 'none' || el.style.display === '') ? 'table-row' : 'none';
+                                }
+
+                                function buildDeptSchoolMatrixTable(data) {
+                                    const container = document.getElementById('deptSchoolMatrixTable');
+                                    if (!container) return;
+
+                                    const deptSet = new Set();
+                                    data.forEach(s => {
+                                        const counts = s.dept_counts || {};
+                                        Object.keys(counts).forEach(d => deptSet.add(d));
+                                    });
+                                    const deptList = Array.from(deptSet).sort((a, b) => a.localeCompare(b, 'zh-Hant'));
+
+                                    let html = '<table class="table" style="font-size: 13px; white-space: nowrap;">';
+                                    html += '<thead><tr><th>學校</th>';
+                                    deptList.forEach(d => { html += '<th style="text-align:center;">' + escapeHtml(d) + '</th>'; });
+                                    html += '</tr></thead><tbody>';
+                                    data.forEach(s => {
+                                        html += '<tr><td><strong>' + escapeHtml(s.school_name || '') + '</strong></td>';
+                                        deptList.forEach(d => {
+                                            const v = (s.dept_counts && s.dept_counts[d]) ? s.dept_counts[d] : 0;
+                                            html += '<td style="text-align:center;">' + v + '</td>';
+                                        });
+                                        html += '</tr>';
+                                    });
+                                    html += '</tbody></table>';
+                                    container.innerHTML = html;
+                                }
+
+                                function escapeHtml(str) {
+                                    return String(str)
+                                        .replaceAll('&', '&amp;')
+                                        .replaceAll('<', '&lt;')
+                                        .replaceAll('>', '&gt;')
+                                        .replaceAll('"', '&quot;')
+                                        .replaceAll("'", '&#039;');
+                                }
+
+                                function renderFeedbackChart() {
+                                    const data = Array.isArray(window.__schoolSummaryList) ? window.__schoolSummaryList : [];
+                                    if (!data.length) return;
+                                    const labels = data.map(s => s.school_name);
+                                    const feedbackScore = data.map(s => {
+                                        const fc = s.feedback_count || {};
+                                        return (fc['熱烈'] || 0) * 3 + (fc['普通'] || 0) * 2 + (fc['冷淡'] || 0) * 1;
+                                    });
+                                    if (window.__schoolCharts.feedbackScore) window.__schoolCharts.feedbackScore.destroy();
+                                    const ctx = document.getElementById('schoolFeedbackScoreChart')?.getContext('2d');
+                                    if (!ctx) return;
+                                    window.__schoolCharts.feedbackScore = new Chart(ctx, {
+                                        type: 'bar',
+                                        data: { labels, datasets: [{ label: '回饋分數（熱烈=3、普通=2、冷淡=1、其他=0）', data: feedbackScore, backgroundColor: '#667eea' }] },
+                                        options: { responsive: true, plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true } } }
+                                    });
+                                }
+
+                                function renderGradeChart() {
+                                    const data = Array.isArray(window.__schoolSummaryList) ? window.__schoolSummaryList : [];
+                                    if (!data.length) return;
+                                    const labels = data.map(s => s.school_name);
+                                    const gsKeys = ['國二上', '國二下', '國三上', '其他'];
+                                    const gsDatasets = gsKeys.map((k, idx) => ({
+                                        label: k,
+                                        data: data.map(s => ((s.grade_semester && s.grade_semester[k] && s.grade_semester[k].count) ? s.grade_semester[k].count : 0)),
+                                        backgroundColor: ['#1890ff', '#13c2c2', '#faad14', '#bfbfbf'][idx]
+                                    }));
+                                    if (window.__schoolCharts.gradeSemester) window.__schoolCharts.gradeSemester.destroy();
+                                    const ctx = document.getElementById('schoolGradeSemesterChart')?.getContext('2d');
+                                    if (!ctx) return;
+                                    window.__schoolCharts.gradeSemester = new Chart(ctx, {
+                                        type: 'bar',
+                                        data: { labels, datasets: gsDatasets },
+                                        options: { responsive: true, plugins: { legend: { position: 'top' } }, scales: { x: { stacked: true }, y: { stacked: true, beginAtZero: true } } }
+                                    });
+                                }
+
+                                function collapseAllSchoolDetails() {
+                                    // 只在 heatmap 展開時需要；切走時全部收起，避免佔版面
+                                    document.querySelectorAll('tr[id^="school-detail-"]').forEach(tr => {
+                                        tr.style.display = 'none';
+                                    });
+                                }
+
+                                function setActiveSchoolViewButton(view) {
+                                    const ids = window.__schoolSummaryRole && window.__schoolSummaryRole.isStaff
+                                        ? ['heatmap','feedback','grade','matrix']
+                                        : ['heatmap','feedback','grade'];
+                                    ids.forEach(v => {
+                                        const btn = document.getElementById('btnSchoolView' + v.charAt(0).toUpperCase() + v.slice(1));
+                                        if (!btn) return;
+                                        btn.style.background = (v === view) ? '#1890ff' : '';
+                                        btn.style.color = (v === view) ? '#fff' : '';
+                                    });
+                                }
+
+                                function showSchoolView(view) {
+                                    const views = window.__schoolSummaryRole && window.__schoolSummaryRole.isStaff
+                                        ? ['heatmap','feedback','grade','matrix']
+                                        : ['heatmap','feedback','grade'];
+                                    views.forEach(v => {
+                                        const el = document.getElementById('schoolView-' + v);
+                                        if (el) el.style.display = (v === view) ? 'block' : 'none';
+                                    });
+
+                                    if (view !== 'heatmap') collapseAllSchoolDetails();
+                                    setActiveSchoolViewButton(view);
+
+                                    // lazy render
+                                    if (view === 'feedback' && !window.__schoolChartsRendered.feedback) {
+                                        renderFeedbackChart();
+                                        window.__schoolChartsRendered.feedback = true;
+                                    }
+                                    if (view === 'grade' && !window.__schoolChartsRendered.grade) {
+                                        renderGradeChart();
+                                        window.__schoolChartsRendered.grade = true;
+                                    }
+                                    if (view === 'matrix' && window.__schoolSummaryRole && window.__schoolSummaryRole.isStaff && !window.__schoolChartsRendered.matrix) {
+                                        const data = Array.isArray(window.__schoolSummaryList) ? window.__schoolSummaryList : [];
+                                        buildDeptSchoolMatrixTable(data);
+                                        window.__schoolChartsRendered.matrix = true;
+                                    }
+                                }
+
+                                document.addEventListener('DOMContentLoaded', function() {
+                                    // 預設顯示最推薦的 1️⃣
+                                    showSchoolView('heatmap');
+                                });
+                            </script>
+                        <?php else: ?>
+                            <div class="empty-state">
+                                <i class="fas fa-school fa-3x" style="margin-bottom: 16px;"></i>
+                                <h4>目前沒有學校活動紀錄</h4>
+                                <p>系統中尚未有依學校彙整的活動紀錄資料</p>
+                            </div>
+                        <?php endif; ?>
+                        </div>
+                    </div>
 
                     <!-- 統計分析區塊 -->
                     <div class="card">

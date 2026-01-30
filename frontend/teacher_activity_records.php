@@ -414,6 +414,7 @@ $conn->close();
                                 </thead>
                                 <tbody>
                                     <?php foreach ($departments_with_records as $dept): ?>
+                                        <?php if($dept['code']=='AA'){ continue; }?>
                                         <tr data-dept-code="<?php echo htmlspecialchars($dept['code']); ?>">
                                             <td><?php echo htmlspecialchars($dept['name']); ?></td>
                                             <td style="text-align: center;">
