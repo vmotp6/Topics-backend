@@ -400,7 +400,8 @@ $page_title = $is_admission_center ? '編輯簽到表單 - ' . htmlspecialchars(
             width: auto;
         }
     </style>
-    <script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js"></script>
+    <!-- QR Code 套件：先試 jsdelivr，失敗時由 JS 動態載入 unpkg 備援 -->
+    <script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js" id="qrcode-script" onerror="window.__qrcodeCdnFailed=1"></script>
 </head>
 <body>
     <div class="check-in-container">
@@ -472,6 +473,9 @@ $page_title = $is_admission_center ? '編輯簽到表單 - ' . htmlspecialchars(
                         <div style="margin-top: 24px; padding: 16px; background: #f0f2f5; border-radius: 6px; text-align: center;">
                             <p style="margin: 0; color: var(--text-secondary-color); font-size: 14px;">
                                 <i class="fas fa-info-circle"></i> 請將此 QR code 或連結提供給參與者進行簽到
+                            </p>
+                            <p style="margin: 8px 0 0; color: var(--text-secondary-color); font-size: 12px;">
+                                （QR 圖由簽到連結即時產生，不需資料庫儲存圖檔）
                             </p>
                         </div>
                     </div>
@@ -739,43 +743,13 @@ $page_title = $is_admission_center ? '編輯簽到表單 - ' . htmlspecialchars(
                     if (btnGroup) btnGroup.style.display = 'none';
                     if (backToEditBtn) backToEditBtn.style.display = 'inline-flex';
                     
-                    // 立即顯示 QR code 區域（即使 QRCode 庫還沒載入，連結也要顯示）
+                    // 立即顯示 QR code 區域
                     if (qrcodeSection) {
                         qrcodeSection.style.display = 'block';
-                        // 滾動到 QR code 區域
-                        setTimeout(() => {
-                            qrcodeSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
-                        }, 100);
+                        setTimeout(() => { qrcodeSection.scrollIntoView({ behavior: 'smooth', block: 'start' }); }, 100);
                     }
-                    
-                    // 等待 QRCode 庫載入後再生成 QR code
-                    let retryCount = 0;
-                    const maxRetries = 50; // 最多等待 5 秒
-                    function waitAndGenerate() {
-                        if (typeof QRCode !== 'undefined') {
-                            try {
-                                generateQRCode();
-                            } catch (error) {
-                                console.error('生成 QR Code 失敗:', error);
-                                const qrcodeDiv = document.getElementById('qrcode');
-                                if (qrcodeDiv) {
-                                    qrcodeDiv.innerHTML = '<p style="color: var(--warning-color); padding: 20px;">QR Code 生成失敗，請使用下方連結進行簽到</p>';
-                                }
-                            }
-                        } else {
-                            retryCount++;
-                            if (retryCount < maxRetries) {
-                                setTimeout(waitAndGenerate, 100);
-                            } else {
-                                console.warn('QRCode 庫載入超時');
-                                const qrcodeDiv = document.getElementById('qrcode');
-                                if (qrcodeDiv) {
-                                    qrcodeDiv.innerHTML = '<p style="color: var(--warning-color); padding: 20px;">QR Code 載入失敗，請使用下方連結進行簽到</p>';
-                                }
-                            }
-                        }
-                    }
-                    waitAndGenerate();
+                    // 優先使用公開 QR API 顯示圖片（不需 CDN、不需資料庫），失敗再 fallback 到 JS 庫
+                    showQRCodeByApi(window.checkInUrl || data.check_in_url);
                 } else {
                     showMessage(data.message || '儲存失敗', 'error');
                 }
@@ -983,7 +957,33 @@ $page_title = $is_admission_center ? '編輯簽到表單 - ' . htmlspecialchars(
             return html;
         }
         
-        // 生成 QR Code
+        // 使用公開 QR API 顯示圖片（不需 CDN、不需資料庫），失敗時 fallback 到 JS 庫
+        function showQRCodeByApi(url) {
+            const qrcodeContainer = document.getElementById('qrcode');
+            if (!qrcodeContainer) return;
+            const urlToEncode = url || window.checkInUrl || checkInUrl;
+            if (!urlToEncode) {
+                qrcodeContainer.innerHTML = '<p style="padding: 20px; color: var(--danger-color);">缺少簽到連結</p>';
+                return;
+            }
+            qrcodeContainer.innerHTML = '<p style="padding: 20px; color: var(--text-secondary-color);">正在生成 QR Code...</p>';
+            var apiUrl = 'https://api.qrserver.com/v1/create-qr-code/?size=256x256&margin=2&data=' + encodeURIComponent(urlToEncode);
+            var img = document.createElement('img');
+            img.alt = '簽到 QR Code';
+            img.style.display = 'block';
+            img.style.margin = '0 auto';
+            img.onload = function() {
+                qrcodeContainer.innerHTML = '';
+                qrcodeContainer.appendChild(img);
+            };
+            img.onerror = function() {
+                // API 無法載入時，改用瀏覽器內 JS 庫生成（需 CDN）
+                generateQRCode();
+            };
+            img.src = apiUrl;
+        }
+        
+        // 生成 QR Code（依賴 qrcode.js CDN，僅在 showQRCodeByApi 失敗時使用）
         function generateQRCode() {
             const qrcodeContainer = document.getElementById('qrcode');
             if (!qrcodeContainer) {
@@ -1013,33 +1013,43 @@ $page_title = $is_admission_center ? '編輯簽到表單 - ' . htmlspecialchars(
                 try {
                     // 清空容器
                     qrcodeContainer.innerHTML = '';
-                    
-                    // 使用 QRCode.toCanvas 生成 QR code
-                    QRCode.toCanvas(qrcodeContainer, urlToEncode, {
+                    // 使用 toDataURL（Promise）產生 QR 圖並以 img 顯示，較穩定且不依賴 canvas callback
+                    var opts = {
                         width: 256,
                         margin: 2,
-                        color: {
-                            dark: '#000000',
-                            light: '#FFFFFF'
-                        },
+                        color: { dark: '#000000', light: '#FFFFFF' },
                         errorCorrectionLevel: 'M'
-                    }, function (error) {
-                        if (error) {
-                            console.error('QR Code 生成失敗:', error);
-                            qrcodeContainer.innerHTML = '<p style="padding: 20px; color: var(--warning-color);">QR Code 生成失敗：' + error.message + '<br>請使用下方連結進行簽到</p>';
-                        } else {
+                    };
+                    if (typeof QRCode.toDataURL === 'function') {
+                        QRCode.toDataURL(urlToEncode, opts).then(function (dataUrl) {
+                            var img = document.createElement('img');
+                            img.src = dataUrl;
+                            img.alt = '簽到 QR Code';
+                            img.style.display = 'block';
+                            img.style.margin = '0 auto';
+                            qrcodeContainer.appendChild(img);
                             console.log('QR Code 生成成功');
-                            // 確保 canvas 居中顯示
-                            const canvas = qrcodeContainer.querySelector('canvas');
-                            if (canvas) {
+                        }).catch(function (err) {
+                            console.error('QR Code 生成失敗:', err);
+                            qrcodeContainer.innerHTML = '<p style="padding: 20px; color: var(--warning-color);">QR Code 生成失敗，請使用下方連結進行簽到</p>';
+                        });
+                    } else {
+                        // 降級：使用 toCanvas(text, options, callback)
+                        QRCode.toCanvas(urlToEncode, opts, function (error, canvas) {
+                            if (error) {
+                                console.error('QR Code 生成失敗:', error);
+                                qrcodeContainer.innerHTML = '<p style="padding: 20px; color: var(--warning-color);">QR Code 生成失敗，請使用下方連結進行簽到</p>';
+                            } else if (canvas) {
+                                qrcodeContainer.appendChild(canvas);
                                 canvas.style.display = 'block';
                                 canvas.style.margin = '0 auto';
+                                console.log('QR Code 生成成功');
                             }
-                        }
-                    });
+                        });
+                    }
                 } catch (error) {
                     console.error('QR Code 生成異常:', error);
-                    qrcodeContainer.innerHTML = '<p style="padding: 20px; color: var(--warning-color);">QR Code 生成異常：' + error.message + '<br>請使用下方連結進行簽到</p>';
+                    qrcodeContainer.innerHTML = '<p style="padding: 20px; color: var(--warning-color);">QR Code 生成異常，請使用下方連結進行簽到</p>';
                 }
             }
             
@@ -1053,8 +1063,19 @@ $page_title = $is_admission_center ? '編輯簽到表單 - ' . htmlspecialchars(
                     retryCount++;
                     if (retryCount < maxRetries) {
                         setTimeout(tryGenerateWithRetry, 200);
+                    } else if (!window.__qrcodeFallbackLoading && !window.__qrcodeFallbackTried) {
+                        // 嘗試備援 CDN（unpkg）
+                        window.__qrcodeFallbackTried = true;
+                        window.__qrcodeFallbackLoading = true;
+                        var s = document.createElement('script');
+                        s.src = 'https://unpkg.com/qrcode@1.5.3/build/qrcode.min.js';
+                        s.onload = function() { window.__qrcodeFallbackLoading = false; setTimeout(tryGenerateWithRetry, 100); };
+                        s.onerror = function() {
+                            window.__qrcodeFallbackLoading = false;
+                            qrcodeContainer.innerHTML = '<p style="padding: 20px; color: var(--warning-color);">QR Code 庫載入超時，請使用下方連結進行簽到</p>';
+                        };
+                        document.head.appendChild(s);
                     } else {
-                        console.error('QRCode 庫載入超時');
                         qrcodeContainer.innerHTML = '<p style="padding: 20px; color: var(--warning-color);">QR Code 庫載入超時，請使用下方連結進行簽到</p>';
                     }
                 }
