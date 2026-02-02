@@ -297,9 +297,11 @@ function checkScoreTimeByChoice($conn, $application_id) {
  */
 function calculateAverageScore($conn, $application_id) {
     $score_stmt = $conn->prepare("
-        SELECT self_intro_score, skills_score, reviewer_type, assignment_order
-        FROM continued_admission_scores
-        WHERE application_id = ?
+        SELECT cas.self_intro_score, cas.skills_score, cas.reviewer_type, cas.assignment_order, cas.reviewer_user_id,
+               u.name as reviewer_name
+        FROM continued_admission_scores cas
+        LEFT JOIN user u ON cas.reviewer_user_id = u.id
+        WHERE cas.application_id = ?
     ");
     $score_stmt->bind_param("i", $application_id);
     $score_stmt->execute();
@@ -318,6 +320,8 @@ function calculateAverageScore($conn, $application_id) {
             $scores[] = [
                 'reviewer_type' => $row['reviewer_type'],
                 'assignment_order' => $row['assignment_order'],
+                'reviewer_user_id' => $row['reviewer_user_id'],
+                'reviewer_name' => $row['reviewer_name'] ?? '',
                 'self_intro_score' => $self_intro,
                 'skills_score' => $skills,
                 'total_score' => $individual_total
