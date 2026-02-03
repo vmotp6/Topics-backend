@@ -350,8 +350,6 @@ try {
         $status_condition_sql = "(ar.status = 'AP' OR ar.status = 'approved')";
     } elseif ($view_mode === 'empty') {
         $status_condition_sql = "(ar.status IS NULL OR ar.status = '' OR ar.status = 'pending')";
-    } elseif ($view_mode === 'director_pending') {
-        $status_condition_sql = "(ar.status = 'AP' OR ar.status = 'RE')";
     } else {
         // 'all' -> 不加入狀態過濾
         $status_condition_sql = '';
@@ -862,7 +860,7 @@ try {
     
     // --- 根據 view_mode 在 PHP 層級過濾資料（pass/manual/fail/empty/all） ---
     // 僅使用資料庫 status（由招生中心手動設定）
-    $status_code_to_label = [ 'AP' => '通過(主任尚未審核)', 'RE' => '不通過(主任尚未審核)', 'MC' => '需人工審查' ];
+    $status_code_to_label = [ 'AP' => '通過', 'RE' => '不通過', 'MC' => '需人工審查' ];
     if (isset($view_mode) && $view_mode !== 'all') {
         $filtered = [];
         foreach ($recommendations as $rec) {
@@ -874,11 +872,10 @@ try {
                 $label = '未填寫';
             }
 
-            if ($view_mode === 'pass' && strpos($label, '通過') === 0) $filtered[] = $rec;
+            if ($view_mode === 'pass' && $label === '通過') $filtered[] = $rec;
             if ($view_mode === 'manual' && $label === '需人工審查') $filtered[] = $rec;
-            if ($view_mode === 'fail' && strpos($label, '不通過') === 0) $filtered[] = $rec;
+            if ($view_mode === 'fail' && $label === '不通過') $filtered[] = $rec;
             if ($view_mode === 'empty' && $label === '未填寫') $filtered[] = $rec;
-            if ($view_mode === 'director_pending' && in_array($st, ['AP', 'RE'], true)) $filtered[] = $rec;
         }
         $recommendations = $filtered;
     }
@@ -1442,6 +1439,67 @@ try {
             margin-bottom: 16px;
             font-size: 16px;
         }
+        .gmail-preview-item {
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 14px;
+            margin-bottom: 16px;
+            background: #fafafa;
+        }
+        .gmail-preview-title {
+            font-weight: 700;
+            margin-bottom: 10px;
+            color: var(--text-color);
+        }
+        .gmail-preview-field {
+            margin-bottom: 10px;
+        }
+        .gmail-preview-field label {
+            display: block;
+            font-size: 13px;
+            color: #666;
+            margin-bottom: 6px;
+        }
+        .gmail-preview-field input[type="text"],
+        .gmail-preview-field textarea {
+            width: 100%;
+            padding: 8px 10px;
+            border: 1px solid #d9d9d9;
+            border-radius: 6px;
+            font-size: 14px;
+            box-sizing: border-box;
+        }
+        .gmail-preview-field textarea {
+            min-height: 160px;
+            resize: vertical;
+        }
+        .gmail-attachments {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            font-size: 14px;
+            color: #595959;
+        }
+        .gmail-file-list {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+            margin-top: 6px;
+        }
+        .gmail-file-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .gmail-file-remove {
+            border: none;
+            background: #ff4d4f;
+            color: #fff;
+            border-radius: 4px;
+            padding: 2px 6px;
+            cursor: pointer;
+            font-size: 12px;
+        }
         .teacher-list h4 {
             margin-bottom: 12px;
             color: var(--text-color);
@@ -1672,7 +1730,6 @@ try {
                                 <option value="pass" <?php echo ($view_mode_ui === 'pass') ? 'selected' : ''; ?>>通過</option>
                                 <option value="manual" <?php echo ($view_mode_ui === 'manual') ? 'selected' : ''; ?>>需人工審核</option>
                                 <option value="fail" <?php echo ($view_mode_ui === 'fail') ? 'selected' : ''; ?>>不通過</option>
-                                <option value="director_pending" <?php echo ($view_mode_ui === 'director_pending') ? 'selected' : ''; ?>>主任尚未審核</option>
                             </select>
                             <button type="button" class="btn-view" id="recommenderFilterToggle">找尋相同推薦人</button>
                             <button type="button" class="btn-view" id="gmailSendToggle">寄送gmail</button>
@@ -1725,7 +1782,7 @@ try {
                                 <tbody>
                                     <?php foreach ($recommendations as $item): ?>
                                     <?php
-                                        $status_code_to_label_ui = [ 'AP' => '通過(主任尚未審核)', 'RE' => '不通過(主任尚未審核)', 'MC' => '需人工審查' ];
+                                        $status_code_to_label_ui = [ 'AP' => '通過', 'RE' => '不通過', 'MC' => '需人工審查' ];
                                         $current_status_code = isset($item['status']) ? trim((string)$item['status']) : '';
                                         $row_review = ($current_status_code !== '' && isset($status_code_to_label_ui[$current_status_code]))
                                             ? $status_code_to_label_ui[$current_status_code]
@@ -1774,7 +1831,7 @@ try {
                                         <?php if ($can_view_review_result): ?>
                                             <td>
                                                 <?php
-                                                    $status_code_to_label_ui = [ 'AP' => '通過(主任尚未審核)', 'RE' => '不通過(主任尚未審核)', 'MC' => '需人工審查' ];
+                                                    $status_code_to_label_ui = [ 'AP' => '通過', 'RE' => '不通過', 'MC' => '需人工審查' ];
                                                     $current_status = isset($item['status']) ? trim((string)$item['status']) : '';
                                                     $display_review = ($current_status !== '' && isset($status_code_to_label_ui[$current_status]))
                                                         ? $status_code_to_label_ui[$current_status]
@@ -1790,8 +1847,8 @@ try {
                                                     <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
                                                         <?php
                                                             $badge_class = 'review-badge';
-                                                            if (strpos($display_review, '通過') === 0) $badge_class .= ' pass';
-                                                            elseif (strpos($display_review, '不通過') === 0) $badge_class .= ' fail';
+                                                            if ($display_review === '通過') $badge_class .= ' pass';
+                                                            elseif ($display_review === '不通過') $badge_class .= ' fail';
                                                             elseif ($display_review === '需人工審查') $badge_class .= ' manual';
                                                             else $badge_class .= ' empty';
                                                         ?>
@@ -1811,7 +1868,8 @@ try {
                                                                 <?php echo (int)($item['nsbi_found'] ?? 0); ?>,
                                                                 <?php echo (int)($item['auto_review_match_name'] ?? 0); ?>,
                                                                 <?php echo (int)($item['auto_review_match_school'] ?? 0); ?>,
-                                                                <?php echo (int)($item['auto_review_match_phone'] ?? 0); ?>
+                                                                <?php echo (int)($item['auto_review_match_phone'] ?? 0); ?>,
+                                                                '<?php echo htmlspecialchars((string)($item['proof_evidence'] ?? '')); ?>'
                                                             )"
                                                         >
                                                             查看審核結果
@@ -2302,6 +2360,23 @@ try {
     </div>
     <?php endif; ?>
 
+    <!-- Gmail 預覽彈出視窗 -->
+    <div id="gmailPreviewModal" class="modal" style="display: none;">
+        <div class="modal-content" style="max-width: 900px;">
+            <div class="modal-header">
+                <h3>寄送 Gmail 預覽</h3>
+                <span class="close" onclick="closeGmailPreviewModal()">&times;</span>
+            </div>
+            <div class="modal-body">
+                <div id="gmailPreviewList"></div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn-cancel" onclick="closeGmailPreviewModal()">取消</button>
+                <button class="btn-confirm" id="gmailPreviewSend">確認發送</button>
+            </div>
+        </div>
+    </div>
+
     <script>
     // 分頁相關變數
     let currentPage = 1;
@@ -2536,27 +2611,219 @@ try {
                     alert('請先勾選要寄送的資料');
                     return;
                 }
-                if (!confirm('確認要寄送 Gmail 嗎？')) return;
-
-                fetch('send_recommendation_gmail.php', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-                    body: 'ids=' + encodeURIComponent(ids.join(',')),
-                    credentials: 'same-origin'
-                })
-                .then(r => r.json())
-                .then(data => {
-                    if (!data || !data.success) {
-                        throw new Error((data && data.message) ? data.message : '寄送失敗');
-                    }
-                    alert(data.message || '寄送完成');
-                })
-                .catch(err => {
-                    alert('寄送失敗：' + (err && err.message ? err.message : '未知錯誤'));
-                });
+                openGmailPreviewModal(ids);
             });
         }
     });
+
+    let gmailPreviewIds = [];
+    let gmailPreviewFiles = {};
+
+    function htmlToText(html) {
+        const div = document.createElement('div');
+        div.innerHTML = html || '';
+        return (div.textContent || div.innerText || '').trim();
+    }
+
+    function renderGmailPreviewItem(container, email, index) {
+        const item = document.createElement('div');
+        item.className = 'gmail-preview-item';
+        item.dataset.index = String(index);
+        item.dataset.recKey = email.rec_key || '';
+
+        const title = document.createElement('div');
+        title.className = 'gmail-preview-title';
+        const recName = email.rec_name || '';
+        const recSid = email.rec_sid ? `（${email.rec_sid}）` : '';
+        title.textContent = `推薦人：${recName}${recSid}`;
+        item.appendChild(title);
+
+        const subjectWrap = document.createElement('div');
+        subjectWrap.className = 'gmail-preview-field';
+        subjectWrap.innerHTML = '<label>主旨</label>';
+        const subjectInput = document.createElement('input');
+        subjectInput.type = 'text';
+        subjectInput.className = 'gmail-subject';
+        subjectInput.value = email.subject || '';
+        subjectWrap.appendChild(subjectInput);
+        item.appendChild(subjectWrap);
+
+        const bodyWrap = document.createElement('div');
+        bodyWrap.className = 'gmail-preview-field';
+        bodyWrap.innerHTML = '<label>信件內容（HTML）</label>';
+        const bodyInput = document.createElement('textarea');
+        bodyInput.className = 'gmail-body';
+        bodyInput.value = email.body || '';
+        bodyWrap.appendChild(bodyInput);
+        item.appendChild(bodyWrap);
+
+        const attachWrap = document.createElement('div');
+        attachWrap.className = 'gmail-attachments';
+        const includeLabel = document.createElement('label');
+        const includeCheckbox = document.createElement('input');
+        includeCheckbox.type = 'checkbox';
+        includeCheckbox.className = 'gmail-include-generated';
+        includeCheckbox.checked = !!email.include_generated;
+        includeLabel.appendChild(includeCheckbox);
+        includeLabel.appendChild(document.createTextNode(' 附加系統 Excel：' + (email.attachment_name || '推薦內容.xlsx')));
+        attachWrap.appendChild(includeLabel);
+
+        const fileInput = document.createElement('input');
+        fileInput.type = 'file';
+        fileInput.multiple = true;
+        fileInput.className = 'gmail-file-input';
+        attachWrap.appendChild(fileInput);
+
+        const fileList = document.createElement('div');
+        fileList.className = 'gmail-file-list';
+        attachWrap.appendChild(fileList);
+
+        if (!gmailPreviewFiles[index]) gmailPreviewFiles[index] = [];
+
+        const renderFileList = () => {
+            fileList.innerHTML = '';
+            (gmailPreviewFiles[index] || []).forEach((file, i) => {
+                const row = document.createElement('div');
+                row.className = 'gmail-file-item';
+                const nameSpan = document.createElement('span');
+                nameSpan.textContent = file.name;
+                const rm = document.createElement('button');
+                rm.type = 'button';
+                rm.className = 'gmail-file-remove';
+                rm.textContent = '移除';
+                rm.addEventListener('click', () => {
+                    gmailPreviewFiles[index].splice(i, 1);
+                    renderFileList();
+                });
+                row.appendChild(nameSpan);
+                row.appendChild(rm);
+                fileList.appendChild(row);
+            });
+        };
+
+        fileInput.addEventListener('change', (e) => {
+            const files = Array.from(e.target.files || []);
+            if (files.length > 0) {
+                gmailPreviewFiles[index] = gmailPreviewFiles[index].concat(files);
+                renderFileList();
+            }
+            fileInput.value = '';
+        });
+
+        item.appendChild(attachWrap);
+        container.appendChild(item);
+    }
+
+    function openGmailPreviewModal(ids) {
+        const modal = document.getElementById('gmailPreviewModal');
+        const list = document.getElementById('gmailPreviewList');
+        if (!modal || !list) return;
+
+        gmailPreviewIds = ids || [];
+        gmailPreviewFiles = {};
+        list.innerHTML = '<div style="color:#666;">載入中...</div>';
+        modal.style.display = 'flex';
+
+        fetch('send_recommendation_gmail.php', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: 'action=preview&ids=' + encodeURIComponent(gmailPreviewIds.join(',')),
+            credentials: 'same-origin'
+        })
+        .then(r => r.json())
+        .then(data => {
+            if (!data || !data.success) {
+                throw new Error((data && data.message) ? data.message : '載入預覽失敗');
+            }
+            list.innerHTML = '';
+            const emails = data.emails || [];
+            if (emails.length === 0) {
+                list.innerHTML = '<div style="color:#666;">沒有可寄送的資料（僅通過/不通過會寄送）。</div>';
+                return;
+            }
+            emails.forEach((email, idx) => {
+                renderGmailPreviewItem(list, email, idx);
+            });
+        })
+        .catch(err => {
+            list.innerHTML = '<div style="color:#cf1322;">載入失敗：' + (err && err.message ? err.message : '未知錯誤') + '</div>';
+        });
+    }
+
+    function closeGmailPreviewModal() {
+        const modal = document.getElementById('gmailPreviewModal');
+        if (modal) modal.style.display = 'none';
+        const list = document.getElementById('gmailPreviewList');
+        if (list) list.innerHTML = '';
+        gmailPreviewIds = [];
+        gmailPreviewFiles = {};
+    }
+
+    const gmailPreviewSend = document.getElementById('gmailPreviewSend');
+    if (gmailPreviewSend) {
+        gmailPreviewSend.addEventListener('click', function() {
+            const list = document.getElementById('gmailPreviewList');
+            if (!list) return;
+            const items = Array.from(list.querySelectorAll('.gmail-preview-item'));
+            if (items.length === 0) {
+                alert('沒有可寄送的內容');
+                return;
+            }
+
+            const emails = items.map(item => {
+                const idx = parseInt(item.dataset.index, 10);
+                const recKey = item.dataset.recKey || '';
+                const subject = (item.querySelector('.gmail-subject') || {}).value || '';
+                const body = (item.querySelector('.gmail-body') || {}).value || '';
+                const includeGenerated = (item.querySelector('.gmail-include-generated') || {}).checked;
+                const altBody = htmlToText(body);
+                return {
+                    rec_key: recKey,
+                    subject,
+                    body,
+                    alt_body: altBody,
+                    include_generated: !!includeGenerated
+                };
+            });
+
+            const fd = new FormData();
+            fd.append('action', 'send_custom');
+            fd.append('ids', (gmailPreviewIds || []).join(','));
+            fd.append('emails', JSON.stringify(emails));
+
+            Object.keys(gmailPreviewFiles).forEach(idx => {
+                (gmailPreviewFiles[idx] || []).forEach(file => {
+                    fd.append(`custom_files[${idx}][]`, file, file.name);
+                });
+            });
+
+            fetch('send_recommendation_gmail.php', {
+                method: 'POST',
+                body: fd,
+                credentials: 'same-origin'
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (!data || !data.success) {
+                    throw new Error((data && data.message) ? data.message : '寄送失敗');
+                }
+                alert(data.message || '寄送完成');
+                closeGmailPreviewModal();
+            })
+            .catch(err => {
+                alert('寄送失敗：' + (err && err.message ? err.message : '未知錯誤'));
+            });
+        });
+    }
+
+    const gmailPreviewModal = document.getElementById('gmailPreviewModal');
+    if (gmailPreviewModal) {
+        gmailPreviewModal.addEventListener('click', function(e) {
+            if (e.target === this) {
+                closeGmailPreviewModal();
+            }
+        });
+    }
     
     function changeItemsPerPage() {
         const selectValue = document.getElementById('itemsPerPage').value;
@@ -2945,7 +3212,7 @@ try {
     // 查看審核結果（彈出視窗顯示三項條件 + 審核結果下拉）
     let currentReviewCriteriaId = null;
     let currentReviewCriteriaValue = '';
-    function openReviewCriteriaModal(recommendationId, studentName, currentReview, hasDuplicate, hasEnrollment, studentStatus, noBonus, nsbiFound, matchName, matchSchool, matchPhone) {
+    function openReviewCriteriaModal(recommendationId, studentName, currentReview, hasDuplicate, hasEnrollment, studentStatus, noBonus, nsbiFound, matchName, matchSchool, matchPhone, proofEvidence) {
         const modal = document.getElementById('reviewCriteriaModal');
         const nameEl = document.getElementById('reviewCriteriaStudentName');
         const listEl = document.getElementById('reviewCriteriaList');
@@ -2970,6 +3237,14 @@ try {
             } else {
                 div.style.color = isFail ? '#cf1322' : '#389e0d';
             }
+            listEl.appendChild(div);
+        };
+        const addHtmlLine = (html, colorOverride) => {
+            const div = document.createElement('div');
+            div.innerHTML = html;
+            div.style.fontWeight = '400';
+            div.style.fontSize = '16px';
+            div.style.color = colorOverride || '#595959';
             listEl.appendChild(div);
         };
 
@@ -3006,22 +3281,25 @@ try {
             addLine('電話比對：' + (matchPhone ? '一致' : '不一致'), !matchPhone);
         }
 
-        const normalized = (currentReview || '').trim();
-        let normalizedBase = normalized;
-        if (normalized.indexOf('通過') === 0) {
-            normalizedBase = '通過';
-        } else if (normalized.indexOf('不通過') === 0) {
-            normalizedBase = '不通過';
+        // 5) 證明文件
+        if (proofEvidence) {
+            const filePath = String(proofEvidence).replace(/\\/g, '/');
+            const fileUrl = '/Topics-frontend/frontend/' + filePath;
+            addHtmlLine('證明文件：<a href="' + fileUrl + '" target="_blank" rel="noopener">查看文件</a>');
+        } else {
+            addLine('證明文件：無', false, '#595959');
         }
-        if (normalizedBase === '通過' || normalizedBase === '不通過' || normalizedBase === '需人工審查') {
-            currentReviewCriteriaValue = normalizedBase;
-            selectEl.value = normalizedBase;
+
+        const normalized = (currentReview || '').trim();
+        if (normalized === '通過' || normalized === '不通過' || normalized === '需人工審查') {
+            currentReviewCriteriaValue = normalized;
+            selectEl.value = normalized;
             selectWrap.style.display = 'none';
             selectedWrap.style.display = 'block';
             let badgeClass = 'review-badge';
-            if (normalizedBase === '通過') badgeClass += ' pass';
-            else if (normalizedBase === '不通過') badgeClass += ' fail';
-            else if (normalizedBase === '需人工審查') badgeClass += ' manual';
+            if (normalized === '通過') badgeClass += ' pass';
+            else if (normalized === '不通過') badgeClass += ' fail';
+            else if (normalized === '需人工審查') badgeClass += ' manual';
             selectedBadge.className = badgeClass;
             selectedBadge.textContent = normalized;
         } else {
