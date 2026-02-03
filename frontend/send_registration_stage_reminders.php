@@ -71,9 +71,9 @@ require_once $email_functions_path;
  */
 function getCurrentRegistrationStage() {
     $current_month = (int)date('m');
-    if ($current_month >= 5 && $current_month < 6) {
+    if ($current_month >= 2 && $current_month < 3) {
         return 'priority_exam'; // 5月：優先免試
-    } elseif ($current_month >= 6 && $current_month < 8) {
+    } elseif ($current_month >= 6 && $current_month < 7) {
         return 'joint_exam'; // 6-7月：聯合免試
     } elseif ($current_month >= 8) {
         return 'continued_recruitment'; // 8月以後：續招
@@ -89,10 +89,13 @@ function ensureRegistrationColumns($conn) {
         'registration_stage' => "VARCHAR(20) DEFAULT NULL COMMENT 'priority_exam/joint_exam/continued_recruitment 當前報名階段'",
         'priority_exam_reminded' => "TINYINT(1) NOT NULL DEFAULT 0 COMMENT '優先免試是否已提醒'",
         'priority_exam_registered' => "TINYINT(1) NOT NULL DEFAULT 0 COMMENT '優先免試是否已報名'",
+        'priority_exam_declined' => "TINYINT(1) NOT NULL DEFAULT 0 COMMENT '優先免試本階段不報'",
         'joint_exam_reminded' => "TINYINT(1) NOT NULL DEFAULT 0 COMMENT '聯合免試是否已提醒'",
         'joint_exam_registered' => "TINYINT(1) NOT NULL DEFAULT 0 COMMENT '聯合免試是否已報名'",
+        'joint_exam_declined' => "TINYINT(1) NOT NULL DEFAULT 0 COMMENT '聯合免試本階段不報'",
         'continued_recruitment_reminded' => "TINYINT(1) NOT NULL DEFAULT 0 COMMENT '續招是否已提醒'",
         'continued_recruitment_registered' => "TINYINT(1) NOT NULL DEFAULT 0 COMMENT '續招是否已報名'",
+        'continued_recruitment_declined' => "TINYINT(1) NOT NULL DEFAULT 0 COMMENT '續招本階段不報'",
         'is_registered' => "TINYINT(1) NOT NULL DEFAULT 0 COMMENT '是否已報名（任一階段）'"
     ];
     foreach ($cols as $name => $def) {
@@ -255,9 +258,11 @@ try {
     // 4. 當年度國三（graduation_year = this_year_grad）
     // 5. 未結案（case_closed = 0）
     $reminded_col = $current_stage . '_reminded';
+    $declined_col = $current_stage . '_declined';
     
     // 使用反引號包圍動態欄位名稱，確保 SQL 語句正確
     $reminded_col_escaped = "`{$reminded_col}`";
+    $declined_col_escaped = "`{$declined_col}`";
     
     $sql = "SELECT id, name, email 
             FROM enrollment_intention 
@@ -265,6 +270,7 @@ try {
             AND email != '' 
             AND (IFNULL(is_registered, 0) = 0)
             AND (IFNULL({$reminded_col_escaped}, 0) = 0)
+            AND (IFNULL({$declined_col_escaped}, 0) = 0)
             AND graduation_year = ?
             AND (IFNULL(case_closed, 0) = 0)";
     
