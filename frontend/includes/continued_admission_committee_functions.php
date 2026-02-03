@@ -214,12 +214,12 @@ function caSyncAnnouncementToBulletin(mysqli $conn, int $year, int $userId, stri
         $u->close();
         $bulletinId = $bid;
     } else {
-        $ins = $conn->prepare("INSERT INTO bulletin_board (user_id, title, content, type_code, status_code, source, start_date, end_date, created_at) VALUES (?, ?, ?, 'result', ?, ?, ?, NULL, NOW())");
-        if (!$ins) return null;
-        $ins->bind_param("isssss", $userId, $title, $plainContent, $statusCode, $source, $startDate);
-        $ins->execute();
-        $newId = (int)$conn->insert_id;
-        $ins->close();
+    $ins = $conn->prepare("INSERT INTO bulletin_board (user_id, title, content, type_code, status_code, source, start_date, end_date, created_at) VALUES (?, ?, ?, 'result', ?, ?, ?, NULL, NOW())");
+    if (!$ins) return null;
+    $ins->bind_param("isssss", $userId, $title, $plainContent, $statusCode, $source, $startDate);
+    $ins->execute();
+    $newId = (int)$conn->insert_id;
+    $ins->close();
         $bulletinId = $newId ?: null;
     }
 

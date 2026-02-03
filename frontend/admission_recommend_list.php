@@ -335,7 +335,7 @@ try {
         }
     }
 
-    // 顯示模式：預設顯示全部（'all'），若使用 view 參數則過濾為通過/需人工審核/不通過
+    // 顯示模式：預設顯示全部（'all'），若使用 view 參數則過濾為通過/需人工審核/不通過/尚未填寫
     $view_mode = $_GET['view'] ?? 'all';
     $status_condition_sql = '';
     
@@ -348,6 +348,10 @@ try {
         $status_condition_sql = "(ar.status = 'MC' OR ar.status = '需人工審查')";
     } elseif ($view_mode === 'pass') {
         $status_condition_sql = "(ar.status = 'AP' OR ar.status = 'approved')";
+    } elseif ($view_mode === 'empty') {
+        $status_condition_sql = "(ar.status IS NULL OR ar.status = '' OR ar.status = 'pending')";
+    } elseif ($view_mode === 'director_pending') {
+        $status_condition_sql = "(ar.status = 'AP' OR ar.status = 'RE')";
     } else {
         // 'all' -> 不加入狀態過濾
         $status_condition_sql = '';
@@ -676,49 +680,54 @@ try {
             }
         }
 
-        foreach ($candidates as $cand) {
-            $score = 0;
+        $it['nsbi_found'] = !empty($candidates) ? 1 : 0;
+        if (!empty($candidates)) {
+            foreach ($candidates as $cand) {
+                $score = 0;
 
-            $cand_name = trim((string)($cand['student_name'] ?? ''));
-            $cand_school = trim((string)($cand['previous_school'] ?? '')); // 可能是學校代碼或學校名稱（依前台儲存方式）
-            $cand_phone = normalize_phone($cand['mobile'] ?? '');
+                $cand_name = trim((string)($cand['student_name'] ?? ''));
+                $cand_school = trim((string)($cand['previous_school'] ?? '')); // 可能是學校代碼或學校名稱（依前台儲存方式）
+                $cand_phone = normalize_phone($cand['mobile'] ?? '');
 
-            $m_name = ($name !== '' && normalize_text($cand_name) === normalize_text($name));
-            // 學校比對：
-            // 1) 若雙方都有 code，直接比 code（最準）
-            // 2) 否則用名稱（包含/相等）比對（向後相容）
-            $m_school = false;
-            if ($school_code !== '' && $cand_school !== '' && $cand_school === $school_code) {
-                $m_school = true;
-            } elseif ($school_name !== '' && $cand_school !== '' && school_matches($cand_school, $school_name)) {
-                $m_school = true;
+                $m_name = ($name !== '' && normalize_text($cand_name) === normalize_text($name));
+                // 學校比對：
+                // 1) 若雙方都有 code，直接比 code（最準）
+                // 2) 否則用名稱（包含/相等）比對（向後相容）
+                $m_school = false;
+                if ($school_code !== '' && $cand_school !== '' && $cand_school === $school_code) {
+                    $m_school = true;
+                } elseif ($school_name !== '' && $cand_school !== '' && school_matches($cand_school, $school_name)) {
+                    $m_school = true;
+                }
+                $m_phone = ($phoneDigits !== '' && $cand_phone !== '' && $cand_phone === $phoneDigits);
+
+                if ($m_name) $score++;
+                if ($m_school) $score++;
+                if ($m_phone) $score++;
+
+                if ($score > $bestScore) {
+                    $bestScore = $score;
+                    $bestMatch = [
+                        'name' => $m_name,
+                        'school' => $m_school,
+                        'phone' => $m_phone,
+                        'nsbi_student_name' => $cand_name,
+                        'nsbi_previous_school' => $cand_school,
+                        'nsbi_mobile' => $cand['mobile'] ?? ''
+                    ];
+                }
+                if ($bestScore === 3) break;
             }
-            $m_phone = ($phoneDigits !== '' && $cand_phone !== '' && $cand_phone === $phoneDigits);
 
-            if ($m_name) $score++;
-            if ($m_school) $score++;
-            if ($m_phone) $score++;
-
-            if ($score > $bestScore) {
-                $bestScore = $score;
-                $bestMatch = [
-                    'name' => $m_name,
-                    'school' => $m_school,
-                    'phone' => $m_phone,
-                    'nsbi_student_name' => $cand_name,
-                    'nsbi_previous_school' => $cand_school,
-                    'nsbi_mobile' => $cand['mobile'] ?? ''
-                ];
+            if ($bestScore === 3) {
+                $it['auto_review_result'] = '通過';
+            } elseif ($bestScore === 2) {
+                $it['auto_review_result'] = '需人工確認';
+            } else {
+                $it['auto_review_result'] = '不通過';
             }
-            if ($bestScore === 3) break;
-        }
-
-        if ($bestScore === 3) {
-            $it['auto_review_result'] = '通過';
-        } elseif ($bestScore === 2) {
-            $it['auto_review_result'] = '需人工確認';
         } else {
-            $it['auto_review_result'] = '不通過';
+            $it['auto_review_result'] = '';
         }
 
         // debug：告訴你是哪個欄位沒對上（用於畫面提示）
@@ -851,9 +860,9 @@ try {
         }
     }
     
-    // --- 根據 view_mode 在 PHP 層級過濾資料（pass/manual/fail/all） ---
+    // --- 根據 view_mode 在 PHP 層級過濾資料（pass/manual/fail/empty/all） ---
     // 僅使用資料庫 status（由招生中心手動設定）
-    $status_code_to_label = [ 'AP' => '通過', 'RE' => '不通過', 'MC' => '需人工審查' ];
+    $status_code_to_label = [ 'AP' => '通過(主任尚未審核)', 'RE' => '不通過(主任尚未審核)', 'MC' => '需人工審查' ];
     if (isset($view_mode) && $view_mode !== 'all') {
         $filtered = [];
         foreach ($recommendations as $rec) {
@@ -861,13 +870,40 @@ try {
             $st = trim((string)($rec['status'] ?? ''));
             if ($st !== '' && isset($status_code_to_label[$st])) {
                 $label = $status_code_to_label[$st];
+            } elseif ($st === '' || $st === 'pending') {
+                $label = '未填寫';
             }
 
-            if ($view_mode === 'pass' && $label === '通過') $filtered[] = $rec;
+            if ($view_mode === 'pass' && strpos($label, '通過') === 0) $filtered[] = $rec;
             if ($view_mode === 'manual' && $label === '需人工審查') $filtered[] = $rec;
-            if ($view_mode === 'fail' && $label === '不通過') $filtered[] = $rec;
+            if ($view_mode === 'fail' && strpos($label, '不通過') === 0) $filtered[] = $rec;
+            if ($view_mode === 'empty' && $label === '未填寫') $filtered[] = $rec;
+            if ($view_mode === 'director_pending' && in_array($st, ['AP', 'RE'], true)) $filtered[] = $rec;
         }
         $recommendations = $filtered;
+    }
+
+    // --- 相同推薦人清單（姓名 + 學號/教師編號 都一致才算） ---
+    $dup_recommenders = []; // key => ['name'=>..., 'id'=>..., 'count'=>int]
+    foreach ($recommendations as $rec) {
+        $rname = trim((string)($rec['recommender_name'] ?? ''));
+        $rid = trim((string)($rec['recommender_student_id'] ?? ''));
+        if ($rname === '' || $rid === '') continue;
+        $key = normalize_text($rname) . '|' . $rid;
+        if (!isset($dup_recommenders[$key])) {
+            $dup_recommenders[$key] = ['name' => $rname, 'id' => $rid, 'count' => 0];
+        }
+        $dup_recommenders[$key]['count'] += 1;
+    }
+    // 只保留重複（>=2）
+    $dup_recommenders = array_filter($dup_recommenders, function($v) {
+        return isset($v['count']) && (int)$v['count'] >= 2;
+    });
+    // 依名稱排序
+    if (!empty($dup_recommenders)) {
+        uasort($dup_recommenders, function($a, $b) {
+            return strcmp((string)$a['name'], (string)$b['name']);
+        });
     }
 
     // 調試信息：檢查總數（僅在開發環境顯示）
@@ -1237,8 +1273,8 @@ try {
             line-height: 1;
             white-space: nowrap;
         }
-        .review-badge.pass { background: #52c41a; }
-        .review-badge.fail { background: #cf1322; }
+        .review-badge.pass { background: #73d13d; }
+        .review-badge.fail { background: #ff7875; }
         .review-badge.manual { background: #1677ff; }
         .review-badge.empty { background: #8c8c8c; }
         .status-pending {
@@ -1628,14 +1664,30 @@ try {
                             // view_mode：下拉選單顯示用（空字串視同 all，向後相容）
                             $view_mode_ui = ($view_mode === '' || $view_mode === null) ? 'all' : (string)$view_mode;
                         ?>
-                        <div style="display:flex; align-items:center; gap:12px; margin-bottom:12px; margin-left: 55px; margin-top: 15px;">
+                        <div style="display:flex; align-items:center; gap:12px; margin-bottom:12px; margin-left: 55px; margin-top: 15px; flex-wrap: wrap;">
                             <span class="search-label">審核狀態</span>
                             <select id="viewModeSelect" class="search-select" title="審核狀態篩選">
                                 <option value="all" <?php echo ($view_mode_ui === 'all') ? 'selected' : ''; ?>>顯示全部</option>
+                                <option value="empty" <?php echo ($view_mode_ui === 'empty') ? 'selected' : ''; ?>>尚未填寫</option>
                                 <option value="pass" <?php echo ($view_mode_ui === 'pass') ? 'selected' : ''; ?>>通過</option>
                                 <option value="manual" <?php echo ($view_mode_ui === 'manual') ? 'selected' : ''; ?>>需人工審核</option>
                                 <option value="fail" <?php echo ($view_mode_ui === 'fail') ? 'selected' : ''; ?>>不通過</option>
+                                <option value="director_pending" <?php echo ($view_mode_ui === 'director_pending') ? 'selected' : ''; ?>>主任尚未審核</option>
                             </select>
+                            <button type="button" class="btn-view" id="recommenderFilterToggle">找尋相同推薦人</button>
+                            <button type="button" class="btn-view" id="gmailSendToggle">寄送gmail</button>
+                            <button type="button" class="btn-view" id="gmailSendConfirm" style="display:none;">發送gmail</button>
+                            <button type="button" class="btn-view" id="gmailSendCancel" style="display:none;">取消</button>
+                            <select id="recommenderFilterSelect" class="search-select" style="display:none; min-width: 200px;" title="相同推薦人">
+                                <option value="">請選擇推薦人</option>
+                                <?php foreach ($dup_recommenders as $key => $info): ?>
+                                    <option value="<?php echo htmlspecialchars($key); ?>">
+                                        <?php echo htmlspecialchars($info['name'] . '（' . $info['id'] . '）'); ?>
+                                    </option>
+                                <?php endforeach; ?>
+                            </select>
+                            <button type="button" class="btn-view" id="recommenderFilterApply" style="display:none;">查詢</button>
+                            <button type="button" class="btn-view" id="recommenderFilterCancel" style="display:none;">取消</button>
                         </div>
                         <?php if (empty($recommendations)): ?>
                             <div class="empty-state" style="margin-left:55px; margin-top:24px; text-align:center;">
@@ -1646,6 +1698,9 @@ try {
                             <table class="table" id="recommendationTable">
                                 <thead>
                                     <tr>
+                                        <th class="gmail-select-cell" style="display:none; width:48px;">
+                                            <input type="checkbox" id="gmailSelectAll" title="全選">
+                                        </th>
                                         <th>ID</th>
                                         <th>被推薦人姓名</th>
                                         <th>學校</th>
@@ -1670,15 +1725,27 @@ try {
                                 <tbody>
                                     <?php foreach ($recommendations as $item): ?>
                                     <?php
-                                        $status_code_to_label_ui = [ 'AP' => '通過', 'RE' => '不通過', 'MC' => '需人工審查' ];
+                                        $status_code_to_label_ui = [ 'AP' => '通過(主任尚未審核)', 'RE' => '不通過(主任尚未審核)', 'MC' => '需人工審查' ];
                                         $current_status_code = isset($item['status']) ? trim((string)$item['status']) : '';
                                         $row_review = ($current_status_code !== '' && isset($status_code_to_label_ui[$current_status_code]))
                                             ? $status_code_to_label_ui[$current_status_code]
                                             : '未填寫';
                                     ?>
+                                    <?php
+                                        $row_recommender_key = '';
+                                        $rname = trim((string)($item['recommender_name'] ?? ''));
+                                        $rid = trim((string)($item['recommender_student_id'] ?? ''));
+                                        if ($rname !== '' && $rid !== '') {
+                                            $row_recommender_key = normalize_text($rname) . '|' . $rid;
+                                        }
+                                    ?>
                                     <tr data-review-result="<?php echo htmlspecialchars($row_review); ?>"
                                         data-student-interest="<?php echo htmlspecialchars((string)($item['student_interest_code'] ?? '')); ?>"
-                                        data-academic-year="<?php echo htmlspecialchars((string)($item['academic_year'] ?? '')); ?>">
+                                        data-academic-year="<?php echo htmlspecialchars((string)($item['academic_year'] ?? '')); ?>"
+                                        data-recommender-key="<?php echo htmlspecialchars($row_recommender_key); ?>">
+                                        <td class="gmail-select-cell" style="display:none;">
+                                            <input type="checkbox" class="gmail-select-row" value="<?php echo (int)$item['id']; ?>">
+                                        </td>
                                         <td><?php echo htmlspecialchars($item['id']); ?></td>
                                         <td>
                                             <div class="info-row">
@@ -1707,11 +1774,12 @@ try {
                                         <?php if ($can_view_review_result): ?>
                                             <td>
                                                 <?php
-                                                    $status_code_to_label_ui = [ 'AP' => '通過', 'RE' => '不通過', 'MC' => '需人工審查' ];
+                                                    $status_code_to_label_ui = [ 'AP' => '通過(主任尚未審核)', 'RE' => '不通過(主任尚未審核)', 'MC' => '需人工審查' ];
                                                     $current_status = isset($item['status']) ? trim((string)$item['status']) : '';
                                                     $display_review = ($current_status !== '' && isset($status_code_to_label_ui[$current_status]))
                                                         ? $status_code_to_label_ui[$current_status]
                                                         : '未填寫';
+                                                    $is_unset_status = ($current_status === '' || $current_status === 'pending');
 
                                                     $dup_count = (int)($item['duplicate_count'] ?? 1);
                                                     $has_enroll = (int)($item['has_enrollment_intention'] ?? 0);
@@ -1720,26 +1788,30 @@ try {
                                                 ?>
                                                 <div class="info-value">
                                                     <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
-                                                        <select
-                                                            class="search-select"
-                                                            style="min-width: 150px;"
-                                                            onchange="updateReviewResultSelect(<?php echo (int)$item['id']; ?>, this.value)"
-                                                        >
-                                                            <option value="" <?php echo ($display_review === '未填寫') ? 'selected' : ''; ?>>未填寫</option>
-                                                            <option value="通過" <?php echo ($display_review === '通過') ? 'selected' : ''; ?>>通過</option>
-                                                            <option value="不通過" <?php echo ($display_review === '不通過') ? 'selected' : ''; ?>>不通過</option>
-                                                            <option value="需人工審查" <?php echo ($display_review === '需人工審查') ? 'selected' : ''; ?>>需人工審查</option>
-                                                        </select>
+                                                        <?php
+                                                            $badge_class = 'review-badge';
+                                                            if (strpos($display_review, '通過') === 0) $badge_class .= ' pass';
+                                                            elseif (strpos($display_review, '不通過') === 0) $badge_class .= ' fail';
+                                                            elseif ($display_review === '需人工審查') $badge_class .= ' manual';
+                                                            else $badge_class .= ' empty';
+                                                        ?>
+                                                        <span class="<?php echo htmlspecialchars($badge_class); ?>"><?php echo htmlspecialchars($display_review); ?></span>
                                                         <button
                                                             type="button"
                                                             class="btn-view"
                                                             style="padding:6px 10px;"
                                                             onclick="openReviewCriteriaModal(
+                                                                <?php echo (int)$item['id']; ?>,
                                                                 '<?php echo htmlspecialchars((string)$item['student_name']); ?>',
+                                                                '<?php echo htmlspecialchars($display_review); ?>',
                                                                 <?php echo ($dup_count > 1) ? 'true' : 'false'; ?>,
                                                                 <?php echo ($has_enroll ? 'true' : 'false'); ?>,
                                                                 '<?php echo htmlspecialchars($student_status); ?>',
-                                                                <?php echo ($no_bonus ? 'true' : 'false'); ?>
+                                                                <?php echo ($no_bonus ? 'true' : 'false'); ?>,
+                                                                <?php echo (int)($item['nsbi_found'] ?? 0); ?>,
+                                                                <?php echo (int)($item['auto_review_match_name'] ?? 0); ?>,
+                                                                <?php echo (int)($item['auto_review_match_school'] ?? 0); ?>,
+                                                                <?php echo (int)($item['auto_review_match_phone'] ?? 0); ?>
                                                             )"
                                                         >
                                                             查看審核結果
@@ -1941,7 +2013,7 @@ try {
                                     </tr>
                                     <tr id="detail-<?php echo $item['id']; ?>" class="detail-row" style="display: none;">
                                         <?php
-                                            $detail_colspan = ($is_admission_center || $is_department_user) ? 8 : 7;
+                                            $detail_colspan = ($is_admission_center || $is_department_user) ? 9 : 8;
                                             if (!$can_view_review_result) $detail_colspan -= 1;
                                         ?>
                                         <td colspan="<?php echo (int)$detail_colspan; ?>" style="padding: 20px; background: #f9f9f9; border: 2px solid #b3d9ff; border-radius: 4px;">
@@ -2208,9 +2280,23 @@ try {
             <div class="modal-body">
                 <p>被推薦人：<span id="reviewCriteriaStudentName"></span></p>
                 <div id="reviewCriteriaList" style="display:flex; flex-direction:column; gap:8px;"></div>
+                <div id="reviewCriteriaSelectWrap" style="margin-top:16px;">
+                    <label for="reviewCriteriaSelect" style="display:block; margin-bottom:6px;">請選擇審核結果</label>
+                    <select id="reviewCriteriaSelect" class="search-select" style="min-width: 200px;">
+                        <option value="" selected>請選擇</option>
+                        <option value="通過">通過</option>
+                        <option value="不通過">不通過</option>
+                        <option value="需人工審查">需人工審查</option>
+                    </select>
+                </div>
+                <div id="reviewCriteriaSelectedWrap" style="margin-top:16px; display:none;">
+                    <span>審核結果為：</span>
+                    <span class="review-badge" id="reviewCriteriaSelectedBadge"></span>
+                </div>
             </div>
             <div class="modal-footer">
-                <button class="btn-confirm" onclick="closeReviewCriteriaModal()">關閉</button>
+                <button class="btn-cancel" onclick="closeReviewCriteriaModal()">取消</button>
+                <button class="btn-confirm" onclick="confirmReviewCriteriaUpdate()">確定</button>
             </div>
         </div>
     </div>
@@ -2230,6 +2316,14 @@ try {
         const interestFilter = document.getElementById('interestFilter');
         const academicYearFilter = document.getElementById('academicYearFilter');
         const viewModeSelect = document.getElementById('viewModeSelect');
+        const recommenderFilterToggle = document.getElementById('recommenderFilterToggle');
+        const recommenderFilterSelect = document.getElementById('recommenderFilterSelect');
+        const recommenderFilterApply = document.getElementById('recommenderFilterApply');
+        const recommenderFilterCancel = document.getElementById('recommenderFilterCancel');
+        const gmailSendToggle = document.getElementById('gmailSendToggle');
+        const gmailSendConfirm = document.getElementById('gmailSendConfirm');
+        const gmailSendCancel = document.getElementById('gmailSendCancel');
+        const gmailSelectAll = document.getElementById('gmailSelectAll');
         const btnQuery = document.getElementById('btnQuery');
         const btnClear = document.getElementById('btnClear');
         const table = document.getElementById('recommendationTable');
@@ -2288,6 +2382,7 @@ try {
                 const reviewVal = (reviewFilter && reviewFilter.value) ? reviewFilter.value : '';
                 const interestVal = (interestFilter && interestFilter.value) ? interestFilter.value : '';
                 const yearVal = (academicYearFilter && academicYearFilter.value) ? academicYearFilter.value : '';
+                const recommenderVal = (recommenderFilterSelect && recommenderFilterSelect.value) ? recommenderFilterSelect.value : '';
 
                 if (!tbody) return;
 
@@ -2309,6 +2404,12 @@ try {
                     if (yearVal) {
                         const yy = row.dataset ? (row.dataset.academicYear || '') : '';
                         if (String(yy) !== String(yearVal)) return false;
+                    }
+
+                    // 3.5) 相同推薦人篩選（用 data-recommender-key）
+                    if (recommenderVal) {
+                        const rk = row.dataset ? (row.dataset.recommenderKey || '') : '';
+                        if (rk !== recommenderVal) return false;
                     }
 
                     // 4) 關鍵字搜尋（全欄位文字）
@@ -2346,6 +2447,7 @@ try {
                     if (reviewFilter) reviewFilter.value = '';
                     if (interestFilter) interestFilter.value = '';
                     if (academicYearFilter) academicYearFilter.value = '';
+                    if (recommenderFilterSelect) recommenderFilterSelect.value = '';
                     applyFilters();
                 });
             }
@@ -2364,6 +2466,94 @@ try {
                     // 若瀏覽器不支援 URL 物件，退回最簡單導向
                     window.location.href = '?view=' + encodeURIComponent(viewModeSelect.value || 'all');
                 }
+            });
+        }
+
+        if (recommenderFilterToggle && recommenderFilterSelect && recommenderFilterApply && recommenderFilterCancel) {
+            recommenderFilterToggle.addEventListener('click', function() {
+                const isHidden = recommenderFilterSelect.style.display === 'none' || recommenderFilterSelect.style.display === '';
+                recommenderFilterSelect.style.display = isHidden ? 'inline-block' : 'none';
+                recommenderFilterApply.style.display = isHidden ? 'inline-block' : 'none';
+                recommenderFilterCancel.style.display = isHidden ? 'inline-block' : 'none';
+            });
+        }
+
+        if (recommenderFilterApply) {
+            recommenderFilterApply.addEventListener('click', function() {
+                applyFilters();
+            });
+        }
+
+        if (recommenderFilterCancel && recommenderFilterSelect) {
+            recommenderFilterCancel.addEventListener('click', function() {
+                recommenderFilterSelect.value = '';
+                applyFilters();
+            });
+        }
+
+        const setGmailMode = (enabled) => {
+            const cells = document.querySelectorAll('.gmail-select-cell');
+            cells.forEach(cell => {
+                cell.style.display = enabled ? 'table-cell' : 'none';
+            });
+            if (gmailSendConfirm) gmailSendConfirm.style.display = enabled ? 'inline-block' : 'none';
+            if (gmailSendCancel) gmailSendCancel.style.display = enabled ? 'inline-block' : 'none';
+            if (!enabled) {
+                const rowChecks = document.querySelectorAll('.gmail-select-row');
+                rowChecks.forEach(chk => { chk.checked = false; });
+                if (gmailSelectAll) gmailSelectAll.checked = false;
+            }
+        };
+
+        if (gmailSendToggle) {
+            gmailSendToggle.addEventListener('click', function() {
+                const isEnabled = gmailSendConfirm && gmailSendConfirm.style.display !== 'none';
+                setGmailMode(!isEnabled);
+            });
+        }
+
+        if (gmailSendCancel) {
+            gmailSendCancel.addEventListener('click', function() {
+                setGmailMode(false);
+            });
+        }
+
+        if (gmailSelectAll) {
+            gmailSelectAll.addEventListener('change', function() {
+                const rows = allRows.filter(r => r.style.display !== 'none');
+                rows.forEach(row => {
+                    const chk = row.querySelector('.gmail-select-row');
+                    if (chk) chk.checked = gmailSelectAll.checked;
+                });
+            });
+        }
+
+        if (gmailSendConfirm) {
+            gmailSendConfirm.addEventListener('click', function() {
+                const checked = Array.from(document.querySelectorAll('.gmail-select-row:checked'));
+                const ids = checked.map(chk => String(chk.value)).filter(Boolean);
+                if (ids.length === 0) {
+                    alert('請先勾選要寄送的資料');
+                    return;
+                }
+                if (!confirm('確認要寄送 Gmail 嗎？')) return;
+
+                fetch('send_recommendation_gmail.php', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                    body: 'ids=' + encodeURIComponent(ids.join(',')),
+                    credentials: 'same-origin'
+                })
+                .then(r => r.json())
+                .then(data => {
+                    if (!data || !data.success) {
+                        throw new Error((data && data.message) ? data.message : '寄送失敗');
+                    }
+                    alert(data.message || '寄送完成');
+                })
+                .catch(err => {
+                    alert('寄送失敗：' + (err && err.message ? err.message : '未知錯誤'));
+                });
             });
         }
     });
@@ -2752,54 +2942,34 @@ try {
                  '&review_result=' + encodeURIComponent(reviewResult));
     }
 
-    // 下拉選單：直接更新審核結果（通過/不通過/需人工審查）
-    function updateReviewResultSelect(recommendationId, reviewResult) {
-        // 空值代表未填寫：不送出，避免把 status 清空
-        if (!reviewResult) return;
-
-        const xhr = new XMLHttpRequest();
-        xhr.open('POST', 'update_review_result.php', true);
-        xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
-
-        xhr.onreadystatechange = function() {
-            if (xhr.readyState === 4) {
-                if (xhr.status === 200) {
-                    try {
-                        const response = JSON.parse(xhr.responseText);
-                        if (!response.success) {
-                            alert('更新失敗：' + (response.message || '未知錯誤'));
-                        } else {
-                            location.reload();
-                        }
-                    } catch (e) {
-                        alert('回應格式錯誤：' + xhr.responseText);
-                    }
-                } else {
-                    alert('請求失敗，狀態碼：' + xhr.status);
-                }
-            }
-        };
-
-        xhr.send('recommendation_id=' + encodeURIComponent(recommendationId) +
-                 '&review_result=' + encodeURIComponent(reviewResult));
-    }
-
-    // 查看審核結果（彈出視窗顯示三項條件）
-    function openReviewCriteriaModal(studentName, hasDuplicate, hasEnrollment, studentStatus, noBonus) {
+    // 查看審核結果（彈出視窗顯示三項條件 + 審核結果下拉）
+    let currentReviewCriteriaId = null;
+    let currentReviewCriteriaValue = '';
+    function openReviewCriteriaModal(recommendationId, studentName, currentReview, hasDuplicate, hasEnrollment, studentStatus, noBonus, nsbiFound, matchName, matchSchool, matchPhone) {
         const modal = document.getElementById('reviewCriteriaModal');
         const nameEl = document.getElementById('reviewCriteriaStudentName');
         const listEl = document.getElementById('reviewCriteriaList');
-        if (!modal || !nameEl || !listEl) return;
+        const selectEl = document.getElementById('reviewCriteriaSelect');
+        const selectWrap = document.getElementById('reviewCriteriaSelectWrap');
+        const selectedWrap = document.getElementById('reviewCriteriaSelectedWrap');
+        const selectedBadge = document.getElementById('reviewCriteriaSelectedBadge');
+        if (!modal || !nameEl || !listEl || !selectEl || !selectWrap || !selectedWrap || !selectedBadge) return;
 
+        currentReviewCriteriaId = recommendationId;
+        currentReviewCriteriaValue = '';
         nameEl.textContent = studentName || '';
         listEl.innerHTML = '';
 
-        const addLine = (text, isFail) => {
+        const addLine = (text, isFail, colorOverride) => {
             const div = document.createElement('div');
             div.textContent = text;
             div.style.fontWeight = '400';
             div.style.fontSize = '16px';
-            div.style.color = isFail ? '#cf1322' : '#389e0d';
+            if (colorOverride) {
+                div.style.color = colorOverride;
+            } else {
+                div.style.color = isFail ? '#cf1322' : '#389e0d';
+            }
             listEl.appendChild(div);
         };
 
@@ -2821,8 +2991,45 @@ try {
         if (noBonus) {
             const statusText = studentStatus ? ('學生狀態為' + studentStatus + '，無獎金') : '學生狀態為休學/退學，無獎金';
             addLine(statusText, true);
+        } else if (!studentStatus) {
+            addLine('學生狀態：學生尚未入學', true);
         } else {
             addLine('學生狀態正常（可發獎金）', false);
+        }
+
+        // 4) 新生基本資料比對（姓名/學校/電話）
+        if (!nsbiFound) {
+            addLine('新生基本資料未建立，未進行姓名/學校/電話比對', false, '#595959');
+        } else {
+            addLine('姓名比對：' + (matchName ? '一致' : '不一致'), !matchName);
+            addLine('學校比對：' + (matchSchool ? '一致' : '不一致'), !matchSchool);
+            addLine('電話比對：' + (matchPhone ? '一致' : '不一致'), !matchPhone);
+        }
+
+        const normalized = (currentReview || '').trim();
+        let normalizedBase = normalized;
+        if (normalized.indexOf('通過') === 0) {
+            normalizedBase = '通過';
+        } else if (normalized.indexOf('不通過') === 0) {
+            normalizedBase = '不通過';
+        }
+        if (normalizedBase === '通過' || normalizedBase === '不通過' || normalizedBase === '需人工審查') {
+            currentReviewCriteriaValue = normalizedBase;
+            selectEl.value = normalizedBase;
+            selectWrap.style.display = 'none';
+            selectedWrap.style.display = 'block';
+            let badgeClass = 'review-badge';
+            if (normalizedBase === '通過') badgeClass += ' pass';
+            else if (normalizedBase === '不通過') badgeClass += ' fail';
+            else if (normalizedBase === '需人工審查') badgeClass += ' manual';
+            selectedBadge.className = badgeClass;
+            selectedBadge.textContent = normalized;
+        } else {
+            selectEl.value = '';
+            selectWrap.style.display = 'block';
+            selectedWrap.style.display = 'none';
+            selectedBadge.className = 'review-badge';
+            selectedBadge.textContent = '';
         }
 
         modal.style.display = 'flex';
@@ -2831,6 +3038,58 @@ try {
     function closeReviewCriteriaModal() {
         const modal = document.getElementById('reviewCriteriaModal');
         if (modal) modal.style.display = 'none';
+        currentReviewCriteriaId = null;
+        currentReviewCriteriaValue = '';
+    }
+
+    function confirmReviewCriteriaUpdate() {
+        const selectEl = document.getElementById('reviewCriteriaSelect');
+        if (!selectEl) return;
+        const reviewResult = selectEl.value;
+        if (!reviewResult) {
+            alert('請選擇審核結果');
+            return;
+        }
+        if (!currentReviewCriteriaId) return;
+        if (reviewResult === currentReviewCriteriaValue) {
+            alert('目前已是該審核結果，如需修改請選擇其他選項');
+            return;
+        }
+        if (!confirm('確認要設定為「' + reviewResult + '」？')) return;
+
+        const xhr = new XMLHttpRequest();
+        xhr.open('POST', 'update_review_result.php', true);
+        xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
+
+        xhr.onreadystatechange = function() {
+            if (xhr.readyState === 4) {
+                if (xhr.status === 200) {
+                    try {
+                        const response = JSON.parse(xhr.responseText);
+                        if (response.success) {
+                            alert('審核結果更新成功！');
+                            closeReviewCriteriaModal();
+                            location.reload();
+                        } else {
+                            const msg = (response.message || '').trim();
+                            if (msg.indexOf('沒有記錄被更新') > -1) {
+                                closeReviewCriteriaModal();
+                                location.reload();
+                            } else {
+                                alert('更新失敗：' + (response.message || '未知錯誤'));
+                            }
+                        }
+                    } catch (e) {
+                        alert('回應格式錯誤：' + xhr.responseText);
+                    }
+                } else {
+                    alert('請求失敗，狀態碼：' + xhr.status);
+                }
+            }
+        };
+
+        xhr.send('recommendation_id=' + encodeURIComponent(currentReviewCriteriaId) +
+                 '&review_result=' + encodeURIComponent(reviewResult));
     }
 
     // 發送獎金（同名且通過者由後端自動平分）

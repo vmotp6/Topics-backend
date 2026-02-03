@@ -909,17 +909,40 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_status'])) {
                                         <label style="display: block; margin-bottom: 12px; font-weight: 500; text-align: left;">
                                             <i class="fas fa-file-signature"></i> 電子簽章 <span style="color: #8c8c8c; font-size: 12px;">(必填)</span>
                                         </label>
-                                        <div style="background: #fafafa; padding: 16px; border-radius: 6px; border: 1px solid #e8e8e8; margin-bottom: 12px;">
-                                            <canvas id="signatureCanvas" width="700" height="250" style="border: 2px solid #d9d9d9; border-radius: 6px; cursor: crosshair; background: white; display: block; width: 100%; max-width: 700px; touch-action: none;"></canvas>
+                                        
+                                        <!-- WebAuthn 生物驗證選項 -->
+                                        <div id="webauthnOption" style="margin-bottom: 16px; padding: 16px; background: #f0f7ff; border: 1px solid #91d5ff; border-radius: 6px;">
+                                            <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 12px;">
+                                                <i class="fas fa-fingerprint" style="font-size: 24px; color: #1890ff;"></i>
+                                                <div style="flex: 1;">
+                                                    <div style="font-weight: 500; margin-bottom: 4px;">使用生物驗證簽名</div>
+                                                    <div style="font-size: 12px; color: #666;">支援手機指紋/臉部辨識，或 USB 安全性金鑰</div>
+                                                </div>
+                                                <button type="button" onclick="useWebAuthnSignature()" class="btn-primary" style="padding: 8px 16px; font-size: 14px; white-space: nowrap;" id="webauthnBtn">
+                                                    <i class="fas fa-fingerprint"></i> 使用生物驗證
+                                                </button>
+                                            </div>
+                                            <div id="webauthnDeviceHint" style="display: none; margin-top: 8px; padding: 8px; background: #fff3cd; border: 1px solid #ffc107; border-radius: 4px; font-size: 12px; color: #856404; text-align: left;">
+                                                <!-- 內容由 JavaScript 動態填充 -->
+                                            </div>
+                                            <div id="webauthnStatus" style="display: none; margin-top: 8px; padding: 8px; background: #fff; border-radius: 4px; font-size: 12px;"></div>
                                         </div>
-                                        <div style="display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap;">
-                                            <button type="button" onclick="clearSignature()" class="btn-secondary" style="padding: 8px 16px; font-size: 14px;">
-                                                <i class="fas fa-eraser"></i> 清除簽名
-                                            </button>
-                                            <button type="button" onclick="openSignatureModal()" class="btn-secondary" style="padding: 8px 16px; font-size: 14px;">
-                                                <i class="fas fa-expand"></i> 全螢幕簽名
-                                            </button>
+                                        
+                                        <!-- Canvas 傳統簽名區域 -->
+                                        <div id="canvasSignatureArea">
+                                            <div style="background: #fafafa; padding: 16px; border-radius: 6px; border: 1px solid #e8e8e8; margin-bottom: 12px;">
+                                                <canvas id="signatureCanvas" width="700" height="250" style="border: 2px solid #d9d9d9; border-radius: 6px; cursor: crosshair; background: white; display: block; width: 100%; max-width: 700px; touch-action: none;"></canvas>
+                                            </div>
+                                            <div style="display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap;">
+                                                <button type="button" onclick="clearSignature()" class="btn-secondary" style="padding: 8px 16px; font-size: 14px;">
+                                                    <i class="fas fa-eraser"></i> 清除簽名
+                                                </button>
+                                                <button type="button" onclick="openSignatureModal()" class="btn-secondary" style="padding: 8px 16px; font-size: 14px;">
+                                                    <i class="fas fa-expand"></i> 全螢幕簽名
+                                                </button>
+                                            </div>
                                         </div>
+                                        
                                         <div id="signaturePreview" style="display: none; margin-top: 12px; padding: 12px; background: #f6ffed; border: 1px solid #b7eb8f; border-radius: 6px;">
                                             <div style="font-size: 12px; color: #52c41a; margin-bottom: 8px;">
                                                 <i class="fas fa-check-circle"></i> 簽名預覽
@@ -928,6 +951,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_status'])) {
                                         </div>
                                         <input type="hidden" id="signatureData" name="signature_data" value="">
                                         <input type="hidden" id="signatureId" name="signature_id" value="">
+                                        <input type="hidden" id="signatureMethod" name="signature_method" value="canvas">
                                     </div>
                                     <?php else: ?>
                                     <!-- 已評分時顯示簽章 -->
@@ -1372,7 +1396,123 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_status'])) {
     }
 
     <?php if ($action === 'score' && $teacher_slot): ?>
-    // 電子簽章功能
+    // WebAuthn 簽名功能
+    let webauthnSignature = null;
+    
+    // 檢測設備類型
+    function detectDeviceType() {
+        const ua = navigator.userAgent;
+        return /Mobile|Android|iPhone|iPad/i.test(ua) ? 'mobile' : 'desktop';
+    }
+    
+    // 檢測是否支援平台認證器（Windows Hello 等）
+    async function checkPlatformAuthenticator() {
+        if (!window.PublicKeyCredential) {
+            return false;
+        }
+        try {
+            return await PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable();
+        } catch (e) {
+            return false;
+        }
+    }
+    
+    // 檢查 WebAuthn 支援並初始化
+    if (window.PublicKeyCredential) {
+        // 檢查平台認證器並顯示適當提示
+        (async function() {
+            const deviceType = detectDeviceType();
+            const hasPlatformAuth = await checkPlatformAuthenticator();
+            
+            if (deviceType === 'desktop') {
+                const hintDiv = document.getElementById('webauthnDeviceHint');
+                if (!hasPlatformAuth) {
+                    hintDiv.style.display = 'block';
+                    hintDiv.innerHTML = `
+                        <i class="fas fa-info-circle"></i> 
+                        <strong>桌面電腦提示：</strong>您的電腦沒有內建生物驗證功能。
+                        <br><strong>建議：</strong>使用手機瀏覽器進行生物驗證簽名，或使用 USB 安全性金鑰。
+                    `;
+                } else {
+                    hintDiv.style.display = 'block';
+                    hintDiv.style.background = '#d4edda';
+                    hintDiv.style.borderColor = '#28a745';
+                    hintDiv.style.color = '#155724';
+                    hintDiv.innerHTML = `
+                        <i class="fas fa-check-circle"></i> 
+                        <strong>檢測到生物驗證支援：</strong>您可以使用 Windows Hello 進行簽名。
+                    `;
+                }
+            }
+        })();
+        
+        // 載入 WebAuthn 簽名組件
+        const script = document.createElement('script');
+        script.src = 'js/webauthn-signature.js';
+        script.onload = function() {
+            webauthnSignature = new WebAuthnSignature({
+                userId: <?php echo $user_id; ?>,
+                documentId: <?php echo $application_id; ?>,
+                documentType: 'continued_admission_score',
+                onSuccess: function(data) {
+                    if (data.type === 'register') {
+                        showWebAuthnStatus('設備註冊成功！', 'success');
+                    } else {
+                        // 簽名成功
+                        document.getElementById('signatureId').value = data.signature_id || '';
+                        document.getElementById('signatureMethod').value = 'webauthn';
+                        showWebAuthnStatus('生物驗證簽名成功！', 'success');
+                        // 顯示簽名預覽
+                        if (data.signature_url) {
+                            document.getElementById('signaturePreviewImg').src = data.signature_url;
+                            document.getElementById('signaturePreview').style.display = 'block';
+                        }
+                    }
+                },
+                onError: function(error) {
+                    showWebAuthnStatus('錯誤：' + error, 'error');
+                }
+            });
+        };
+        document.head.appendChild(script);
+    } else {
+        // 不支援 WebAuthn，隱藏選項
+        document.getElementById('webauthnOption').style.display = 'none';
+    }
+    
+    // 使用 WebAuthn 簽名
+    async function useWebAuthnSignature() {
+        if (!webauthnSignature) {
+            showWebAuthnStatus('WebAuthn 功能未初始化，請重新整理頁面', 'error');
+            return;
+        }
+        
+        const btn = document.getElementById('webauthnBtn');
+        const statusDiv = document.getElementById('webauthnStatus');
+        
+        btn.disabled = true;
+        btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 驗證中...';
+        statusDiv.style.display = 'block';
+        statusDiv.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 請使用您的生物驗證設備進行驗證...';
+        statusDiv.style.color = '#666';
+        
+        const success = await webauthnSignature.authenticate();
+        
+        if (!success) {
+            btn.disabled = false;
+            btn.innerHTML = '<i class="fas fa-fingerprint"></i> 使用生物驗證';
+        }
+    }
+    
+    // 顯示 WebAuthn 狀態
+    function showWebAuthnStatus(message, type) {
+        const statusDiv = document.getElementById('webauthnStatus');
+        statusDiv.style.display = 'block';
+        statusDiv.style.color = type === 'success' ? '#52c41a' : '#f5222d';
+        statusDiv.innerHTML = '<i class="fas fa-' + (type === 'success' ? 'check-circle' : 'exclamation-circle') + '"></i> ' + message;
+    }
+    
+    // 電子簽章功能（Canvas）
     let signatureCanvas = null;
     let signatureCtx = null;
     let isDrawing = false;
@@ -1493,6 +1633,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_status'])) {
         if (!signatureCanvas) return;
         const dataURL = signatureCanvas.toDataURL('image/png');
         document.getElementById('signatureData').value = dataURL;
+        document.getElementById('signatureMethod').value = 'canvas';
         const previewImg = document.getElementById('signaturePreviewImg');
         const previewDiv = document.getElementById('signaturePreview');
         if (previewImg) previewImg.src = dataURL;
