@@ -407,6 +407,10 @@ function getCaseClosedBadgeHtml($case_closed) {
 
 function getYesNoIntentionBadge($intention_level) {
     $level = $intention_level ?? '';
+    if (empty($level) || !in_array($level, ['high', 'medium', 'low', 'none'], true)) {
+        // 預設／未填寫意願：顯示「待確認」
+        return '<span style="display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:6px;font-size:12px;font-weight:500;background:#f0f0f022;color:#8c8c8c;border:1px solid #d9d9d9;"><i class="fas fa-question-circle" style="font-size:10px;"></i>待確認</span>';
+    }
     $has = in_array($level, ['high', 'medium', 'low'], true);
     if ($has) {
         return '<span style="display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:6px;font-size:12px;font-weight:600;background:#52c41a22;color:#52c41a;border:1px solid #52c41a44;"><i class="fas fa-check" style="font-size:10px;"></i>有意願</span>';
@@ -1180,7 +1184,7 @@ try {
                                                     $assignment_html = '<span style="color:#8c8c8c;"><i class="fas fa-clock"></i> 未分配</span>';
                                                 }
                                             } elseif ($is_director) {
-                                                // 主任：顯示分配狀態（已分配/待分配）
+                                                // 主任：顯示分配狀態（已分配/待分配）；操作欄僅待分配時顯示「分配」；改派請點詳情內負責老師旁的「改派」
                                                 if ($is_assigned) {
                                                     $assignment_html = '<span style="color:#52c41a;font-weight:bold;"><i class="fas fa-check-circle"></i> 已分配 - ' . ($is_assigned_to_me ? '自行聯絡' : htmlspecialchars($assigned_teacher_name)) . '</span>';
                                                 } else {
@@ -1219,15 +1223,32 @@ try {
                                                         onclick="event.stopPropagation(); toggleDetail(<?php echo $item['id']; ?>)">
                                                         <i class="fas fa-eye"></i> <span class="btn-text">查看詳情</span>
                                                     </button>
-                                                    <?php if (!$is_admission_center && ($is_assigned_to_me || !$is_director)): ?>
-                                                        <button type="button"
-                                                            class="btn-view"
-                                                            style="border-color: #52c41a; color: #52c41a;"
+                                                    <?php if ($is_director && !$is_admission_center): ?>
+                                                        <?php if (!$is_assigned): ?>
+                                                            <button type="button" class="btn-view"
+                                                                data-student-id="<?php echo (int)$item['id']; ?>"
+                                                                data-student-name="<?php echo htmlspecialchars($item['name'] ?? '', ENT_QUOTES, 'UTF-8'); ?>"
+                                                                data-current-teacher-id="<?php echo (int)($item['assigned_teacher_id'] ?? 0); ?>"
+                                                                onclick="event.stopPropagation(); openAssignModalFromButton(this)">
+                                                                <i class="fas fa-user-plus"></i> 分配
+                                                            </button>
+                                                        <?php endif; ?>
+                                                        <button type="button" class="btn-view" style="border-color: #17a2b8; color: #17a2b8;"
                                                             data-student-id="<?php echo (int)$item['id']; ?>"
                                                             data-student-name="<?php echo htmlspecialchars($item['name'] ?? '', ENT_QUOTES, 'UTF-8'); ?>"
                                                             data-assigned-teacher-id="<?php echo (int)($item['assigned_teacher_id'] ?? 0); ?>"
-                                                            onmouseover="this.style.background='#52c41a'; this.style.color='white';"
-                                                            onmouseout="this.style.background='#fff'; this.style.color='#52c41a';"
+                                                            onmouseover="this.style.background='#17a2b8'; this.style.color='white';"
+                                                            onmouseout="this.style.background='#fff'; this.style.color='#17a2b8';"
+                                                            onclick="event.stopPropagation(); openContactLogsModal(this.dataset.studentId, this.dataset.studentName, this.dataset.assignedTeacherId)">
+                                                            <i class="fas fa-address-book"></i> <?php echo $is_assigned_to_me ? '新增聯絡紀錄' : '查看聯絡紀錄'; ?>
+                                                        </button>
+                                                    <?php elseif (!$is_admission_center && ($is_assigned_to_me || !$is_director)): ?>
+                                                        <button type="button" class="btn-view" style="border-color: #17a2b8; color: #17a2b8;"
+                                                            data-student-id="<?php echo (int)$item['id']; ?>"
+                                                            data-student-name="<?php echo htmlspecialchars($item['name'] ?? '', ENT_QUOTES, 'UTF-8'); ?>"
+                                                            data-assigned-teacher-id="<?php echo (int)($item['assigned_teacher_id'] ?? 0); ?>"
+                                                            onmouseover="this.style.background='#17a2b8'; this.style.color='white';"
+                                                            onmouseout="this.style.background='#fff'; this.style.color='#17a2b8';"
                                                             onclick="event.stopPropagation(); openContactLogsModal(this.dataset.studentId, this.dataset.studentName, this.dataset.assignedTeacherId)">
                                                             <i class="fas fa-address-book"></i> 新增聯絡紀錄
                                                         </button>
@@ -1307,15 +1328,32 @@ try {
                                                         onclick="event.stopPropagation(); toggleDetail(<?php echo $item['id']; ?>)">
                                                         <i class="fas fa-eye"></i> <span class="btn-text">查看詳情</span>
                                                     </button>
-                                                    <?php if (!$is_admission_center && ($is_assigned_to_me || !$is_director)): ?>
-                                                        <button type="button"
-                                                            class="btn-view"
-                                                            style="border-color: #52c41a; color: #52c41a;"
+                                                    <?php if ($is_director && !$is_admission_center): ?>
+                                                        <?php if (!$is_assigned): ?>
+                                                            <button type="button" class="btn-view"
+                                                                data-student-id="<?php echo (int)$item['id']; ?>"
+                                                                data-student-name="<?php echo htmlspecialchars($item['name'] ?? '', ENT_QUOTES, 'UTF-8'); ?>"
+                                                                data-current-teacher-id="<?php echo (int)($item['assigned_teacher_id'] ?? 0); ?>"
+                                                                onclick="event.stopPropagation(); openAssignModalFromButton(this)">
+                                                                <i class="fas fa-user-plus"></i> 分配
+                                                            </button>
+                                                        <?php endif; ?>
+                                                        <button type="button" class="btn-view" style="border-color: #17a2b8; color: #17a2b8;"
                                                             data-student-id="<?php echo (int)$item['id']; ?>"
                                                             data-student-name="<?php echo htmlspecialchars($item['name'] ?? '', ENT_QUOTES, 'UTF-8'); ?>"
                                                             data-assigned-teacher-id="<?php echo (int)($item['assigned_teacher_id'] ?? 0); ?>"
-                                                            onmouseover="this.style.background='#52c41a'; this.style.color='white';"
-                                                            onmouseout="this.style.background='#fff'; this.style.color='#52c41a';"
+                                                            onmouseover="this.style.background='#17a2b8'; this.style.color='white';"
+                                                            onmouseout="this.style.background='#fff'; this.style.color='#17a2b8';"
+                                                            onclick="event.stopPropagation(); openContactLogsModal(this.dataset.studentId, this.dataset.studentName, this.dataset.assignedTeacherId)">
+                                                            <i class="fas fa-address-book"></i> <?php echo $is_assigned_to_me ? '新增聯絡紀錄' : '查看聯絡紀錄'; ?>
+                                                        </button>
+                                                    <?php elseif (!$is_admission_center && ($is_assigned_to_me || !$is_director)): ?>
+                                                        <button type="button" class="btn-view" style="border-color: #17a2b8; color: #17a2b8;"
+                                                            data-student-id="<?php echo (int)$item['id']; ?>"
+                                                            data-student-name="<?php echo htmlspecialchars($item['name'] ?? '', ENT_QUOTES, 'UTF-8'); ?>"
+                                                            data-assigned-teacher-id="<?php echo (int)($item['assigned_teacher_id'] ?? 0); ?>"
+                                                            onmouseover="this.style.background='#17a2b8'; this.style.color='white';"
+                                                            onmouseout="this.style.background='#fff'; this.style.color='#17a2b8';"
                                                             onclick="event.stopPropagation(); openContactLogsModal(this.dataset.studentId, this.dataset.studentName, this.dataset.assignedTeacherId)">
                                                             <i class="fas fa-address-book"></i> 新增聯絡紀錄
                                                         </button>
@@ -2042,8 +2080,12 @@ try {
                 intentionSectionHtml = '';
             }
             
+            const isDirector = <?php echo (isset($is_director) && $is_director && isset($is_admission_center) && !$is_admission_center) ? 'true' : 'false'; ?>;
+            const teacherNameDisplay = escapeHtml(student.assigned_teacher_name || student.teacher_name || student.teacher_username || '尚未指派');
+            const reassignBtnHtml = isDirector ? ' <button type="button" class="btn-view" style="margin-left:8px;padding:4px 10px;font-size:13px;" data-student-id="' + (parseInt(student.id)||0) + '" data-student-name="' + escapeHtml(String(student.name||'')) + '" data-current-teacher-id="' + (parseInt(student.assigned_teacher_id)||0) + '" onclick="event.stopPropagation(); openAssignModalFromButton(this)"><i class="fas fa-user-edit"></i> 改派</button>' : '';
+            
             // 構建完整 HTML（使用表格格式，類似 admission_recommend_list.php）
-            const html = '<table style="width: 100%; border-collapse: collapse;"><tr><td style="width: 50%; vertical-align: top; padding-right: 20px;"><h4 style="margin: 0 0 10px 0; font-size: 16px;">基本資料</h4><table style="width: 100%; border-collapse: collapse; font-size: 14px;"><tr><td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5; width: 120px;">姓名</td><td style="padding: 5px; border: 1px solid #ddd;">' + escapeHtml(student.name) + '</td></tr><tr><td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">身分別</td><td style="padding: 5px; border: 1px solid #ddd;">' + escapeHtml(student.identity_text) + '</td></tr><tr><td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">性別</td><td style="padding: 5px; border: 1px solid #ddd;">' + escapeHtml(student.gender_text) + '</td></tr><tr><td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">電話1</td><td style="padding: 5px; border: 1px solid #ddd;">' + escapeHtml(student.phone1) + '</td></tr><tr><td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">電話2</td><td style="padding: 5px; border: 1px solid #ddd;">' + escapeHtml(student.phone2) + '</td></tr><tr><td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">Email</td><td style="padding: 5px; border: 1px solid #ddd;">' + escapeHtml(student.email) + '</td></tr><tr><td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">Line ID</td><td style="padding: 5px; border: 1px solid #ddd;">' + escapeHtml(student.line_id) + '</td></tr><tr><td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">Facebook</td><td style="padding: 5px; border: 1px solid #ddd;">' + escapeHtml(student.facebook) + '</td></tr><tr><td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">就讀國中</td><td style="padding: 5px; border: 1px solid #ddd;">' + escapeHtml(student.junior_high_name || student.junior_high) + '</td></tr><tr><td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">目前年級</td><td style="padding: 5px; border: 1px solid #ddd;">' + escapeHtml(student.current_grade_name || student.current_grade)  + '</td></tr><tr><td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">建立時間</td><td style="padding: 5px; border: 1px solid #ddd;">' + formatDate(student.created_at) + '</td></tr>' + (student.remarks ? '<tr><td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">備註</td><td style="padding: 5px; border: 1px solid #ddd; white-space: pre-wrap;">' + escapeHtml(student.remarks) + '</td></tr>' : '') + '</table></td><td style="width: 50%; vertical-align: top; padding-left: 20px;">' + intentionSectionHtml + '<h4 style="margin: 10px 0 10px 0; font-size: 16px;">分配資訊</h4><table style="width: 100%; border-collapse: collapse; font-size: 14px;"><tr><td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5; width: 120px;">分配科系</td><td style="padding: 5px; border: 1px solid #ddd;">' + escapeHtml(student.assigned_department_name || student.assigned_department || '尚未分配') + '</td></tr><tr><td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">負責老師</td><td style="padding: 5px; border: 1px solid #ddd;">' + escapeHtml(student.assigned_teacher_name || student.teacher_name || student.teacher_username || '尚未指派') + '</td></tr>' + (student.recommended_teacher_name ? '<tr><td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">推薦老師</td><td style="padding: 5px; border: 1px solid #ddd;">' + escapeHtml(student.recommended_teacher_name) + '</td></tr>' : '') + '</table><h4 style="margin: 10px 0 10px 0; font-size: 16px;">聯絡紀錄</h4><p>共有 <strong>' + contactLogsCount + '</strong> 筆聯絡紀錄</p><button class="btn-view" style="margin-top: 8px;" data-student-id="' + (parseInt(student.id) || 0) + '" data-student-name="' + escapeHtml(String(student.name || '')) + '" data-assigned-teacher-id="' + (parseInt(student.assigned_teacher_id || 0) || 0) + '" data-view-only="true" onclick="const btn = this; openContactLogsModal(parseInt(btn.dataset.studentId) || 0, btn.dataset.studentName || \'\', btn.dataset.assignedTeacherId || \'0\', btn.dataset.viewOnly === \'true\')"><i class="fas fa-eye"></i> 查看聯絡紀錄</button></td></tr></table>';
+            const html = '<table style="width: 100%; border-collapse: collapse;"><tr><td style="width: 50%; vertical-align: top; padding-right: 20px;"><h4 style="margin: 0 0 10px 0; font-size: 16px;">基本資料</h4><table style="width: 100%; border-collapse: collapse; font-size: 14px;"><tr><td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5; width: 120px;">姓名</td><td style="padding: 5px; border: 1px solid #ddd;">' + escapeHtml(student.name) + '</td></tr><tr><td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">身分別</td><td style="padding: 5px; border: 1px solid #ddd;">' + escapeHtml(student.identity_text) + '</td></tr><tr><td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">性別</td><td style="padding: 5px; border: 1px solid #ddd;">' + escapeHtml(student.gender_text) + '</td></tr><tr><td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">電話1</td><td style="padding: 5px; border: 1px solid #ddd;">' + escapeHtml(student.phone1) + '</td></tr><tr><td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">電話2</td><td style="padding: 5px; border: 1px solid #ddd;">' + escapeHtml(student.phone2) + '</td></tr><tr><td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">Email</td><td style="padding: 5px; border: 1px solid #ddd;">' + escapeHtml(student.email) + '</td></tr><tr><td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">Line ID</td><td style="padding: 5px; border: 1px solid #ddd;">' + escapeHtml(student.line_id) + '</td></tr><tr><td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">Facebook</td><td style="padding: 5px; border: 1px solid #ddd;">' + escapeHtml(student.facebook) + '</td></tr><tr><td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">就讀國中</td><td style="padding: 5px; border: 1px solid #ddd;">' + escapeHtml(student.junior_high_name || student.junior_high) + '</td></tr><tr><td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">目前年級</td><td style="padding: 5px; border: 1px solid #ddd;">' + escapeHtml(student.current_grade_name || student.current_grade)  + '</td></tr><tr><td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">建立時間</td><td style="padding: 5px; border: 1px solid #ddd;">' + formatDate(student.created_at) + '</td></tr>' + (student.remarks ? '<tr><td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">備註</td><td style="padding: 5px; border: 1px solid #ddd; white-space: pre-wrap;">' + escapeHtml(student.remarks) + '</td></tr>' : '') + '</table></td><td style="width: 50%; vertical-align: top; padding-left: 20px;">' + intentionSectionHtml + '<h4 style="margin: 10px 0 10px 0; font-size: 16px;">分配資訊</h4><table style="width: 100%; border-collapse: collapse; font-size: 14px;"><tr><td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5; width: 120px;">分配科系</td><td style="padding: 5px; border: 1px solid #ddd;">' + escapeHtml(student.assigned_department_name || student.assigned_department || '尚未分配') + '</td></tr><tr><td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">負責老師</td><td style="padding: 5px; border: 1px solid #ddd;">' + teacherNameDisplay + reassignBtnHtml + '</td></tr>' + (student.recommended_teacher_name ? '<tr><td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">推薦老師</td><td style="padding: 5px; border: 1px solid #ddd;">' + escapeHtml(student.recommended_teacher_name) + '</td></tr>' : '') + '</table><h4 style="margin: 10px 0 10px 0; font-size: 16px;">聯絡紀錄</h4><p>共有 <strong>' + contactLogsCount + '</strong> 筆聯絡紀錄</p><button class="btn-view" style="margin-top: 8px; border-color: #17a2b8; color: #17a2b8;" data-student-id="' + (parseInt(student.id) || 0) + '" data-student-name="' + escapeHtml(String(student.name || '')) + '" data-assigned-teacher-id="' + (parseInt(student.assigned_teacher_id || 0) || 0) + '" data-view-only="true" onclick="const btn = this; openContactLogsModal(parseInt(btn.dataset.studentId) || 0, btn.dataset.studentName || \'\', btn.dataset.assignedTeacherId || \'0\', btn.dataset.viewOnly === \'true\')"><i class="fas fa-eye"></i> 查看聯絡紀錄</button></td></tr></table>';
             
             detailContent.innerHTML = html;
         }
