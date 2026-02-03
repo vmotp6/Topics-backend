@@ -846,7 +846,7 @@ $current_page = 'continued_admission_committee';
         }
       } else {
         // 如果未簽名，打開簽名視窗
-        openCommitteeSignatureWindow();
+      openCommitteeSignatureWindow();
       }
     }
 

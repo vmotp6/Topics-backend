@@ -26,26 +26,92 @@ try {
 // 檢查簽名表是否存在
 $table_check = $conn->query("SHOW TABLES LIKE 'signatures'");
 if ($table_check && $table_check->num_rows > 0) {
+    // 檢查用戶表是否存在（可能是 'user' 或 'users'）
+    $user_table_check = $conn->query("SHOW TABLES LIKE 'user'");
+    $users_table_check = $conn->query("SHOW TABLES LIKE 'users'");
+    $has_user_table = $user_table_check && $user_table_check->num_rows > 0;
+    $has_users_table = $users_table_check && $users_table_check->num_rows > 0;
+    
+    // 確定用戶表名稱（優先使用 'user'）
+    $user_table_name = null;
+    if ($has_user_table) {
+        $user_table_name = 'user';
+    } else if ($has_users_table) {
+        $user_table_name = 'users';
+    }
+    
     // 獲取簽名記錄
     if ($is_admin) {
         // 管理員可以看到所有簽名
-        $stmt = $conn->prepare("
-            SELECT s.*, u.name as user_name, u.username
-            FROM signatures s
-            LEFT JOIN users u ON s.user_id = u.id
-            ORDER BY s.created_at DESC
-            LIMIT 100
-        ");
+        if ($user_table_name) {
+            // 使用安全的表名（只允許 'user' 或 'users'）
+            if ($user_table_name === 'user' || $user_table_name === 'users') {
+                $sql = "
+                    SELECT s.*, u.name as user_name, u.username
+                    FROM signatures s
+                    LEFT JOIN `{$user_table_name}` u ON s.user_id = u.id
+                    ORDER BY s.created_at DESC
+                    LIMIT 100
+                ";
+            } else {
+                // 如果表名不符合預期，只查詢 signatures 表
+                $sql = "
+                    SELECT s.*, 
+                           NULL as user_name, 
+                           NULL as username
+                    FROM signatures s
+                    ORDER BY s.created_at DESC
+                    LIMIT 100
+                ";
+            }
+            $stmt = $conn->prepare($sql);
+        } else {
+            // 如果用戶表不存在，只查詢 signatures 表
+            $stmt = $conn->prepare("
+                SELECT s.*, 
+                       NULL as user_name, 
+                       NULL as username
+                FROM signatures s
+                ORDER BY s.created_at DESC
+                LIMIT 100
+            ");
+        }
         $stmt->execute();
     } else {
         // 一般用戶只能看到自己的簽名
-        $stmt = $conn->prepare("
-            SELECT s.*, u.name as user_name, u.username
-            FROM signatures s
-            LEFT JOIN users u ON s.user_id = u.id
-            WHERE s.user_id = ?
-            ORDER BY s.created_at DESC
-        ");
+        if ($user_table_name) {
+            // 使用安全的表名（只允許 'user' 或 'users'）
+            if ($user_table_name === 'user' || $user_table_name === 'users') {
+                $sql = "
+                    SELECT s.*, u.name as user_name, u.username
+                    FROM signatures s
+                    LEFT JOIN `{$user_table_name}` u ON s.user_id = u.id
+                    WHERE s.user_id = ?
+                    ORDER BY s.created_at DESC
+                ";
+            } else {
+                // 如果表名不符合預期，只查詢 signatures 表
+                $sql = "
+                    SELECT s.*, 
+                           NULL as user_name, 
+                           NULL as username
+                    FROM signatures s
+                    WHERE s.user_id = ?
+                    ORDER BY s.created_at DESC
+                ";
+            }
+            $stmt = $conn->prepare($sql);
+        } else {
+            // 如果用戶表不存在，只查詢 signatures 表
+            $stmt = $conn->prepare("
+                SELECT s.*, 
+                       NULL as user_name, 
+                       NULL as username
+                FROM signatures s
+                WHERE s.user_id = ?
+                ORDER BY s.created_at DESC
+            ");
+        }
         $stmt->bind_param("i", $user_id);
         $stmt->execute();
     }
@@ -319,6 +385,9 @@ $conn->close();
     </script>
 </body>
 </html>
+
+
+
 
 
 
