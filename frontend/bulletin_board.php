@@ -47,12 +47,51 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
     $stmt->execute();
     $res = $stmt->get_result();
     while ($file = $res->fetch_assoc()) {
-        if (file_exists($file['file_path'])) {
-            unlink($file['file_path']);
+        $fp = (string)($file['file_path'] ?? '');
+        if ($fp === '') continue;
+
+        // bulletin_files.file_path 可能是前台相對路徑（例如 uploads/bulletin_files/xxx.pdf）
+        // 也可能是舊資料寫入的相對/跨目錄路徑。這裡統一轉成可刪除的實體路徑。
+        $candidatePaths = [];
+        if (strpos($fp, 'http') === 0) {
+            $candidatePaths = [];
+        } else {
+            // 1) 以「前台根目錄」為基準（最常見）
+            $candidatePaths[] = $frontend_base . ltrim($fp, '/');
+            // 2) 直接當成目前工作目錄的相對路徑（兼容舊資料）
+            $candidatePaths[] = __DIR__ . '/' . $fp;
+        }
+
+        foreach ($candidatePaths as $p) {
+            $real = realpath($p);
+            if ($real && file_exists($real)) {
+                @unlink($real);
+                break;
+            }
         }
     }
     $stmt->close();
 
+    // 檢查是否為續招公告，如果是則同時清理 continued_admission_result_announcements 表的記錄
+    $check_stmt = $conn->prepare("SELECT source FROM bulletin_board WHERE id = ?");
+    $check_stmt->bind_param("i", $id);
+    $check_stmt->execute();
+    $check_res = $check_stmt->get_result();
+    $bulletin = $check_res->fetch_assoc();
+    $check_stmt->close();
+    
+    // 如果是續招公告（source 格式為 continued_admission_{year}），清理相關記錄
+    if ($bulletin && !empty($bulletin['source']) && strpos($bulletin['source'], 'continued_admission_') === 0) {
+        $year = (int)substr($bulletin['source'], 20); // 提取年份
+        if ($year > 2000) {
+            // 清理 continued_admission_result_announcements 表的記錄
+            $cleanup_stmt = $conn->prepare("DELETE FROM continued_admission_result_announcements WHERE scope = 'all' AND year = ?");
+            $cleanup_stmt->bind_param("i", $year);
+            $cleanup_stmt->execute();
+            $cleanup_stmt->close();
+        }
+    }
+    
     $stmt = $conn->prepare("DELETE FROM bulletin_board WHERE id = ?");
     $stmt->bind_param("i", $id);
     $stmt->execute();

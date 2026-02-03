@@ -186,28 +186,64 @@ $is_admission_center = $is_admin_or_staff && !$is_department_user;
 // ==========================================
 // 處理分頁與歷史資料邏輯
 // ==========================================
-$view_mode = $_GET['view'] ?? 'active';
-if (!in_array($view_mode, ['active', 'history', 'closed'], true)) {
-    $view_mode = 'active';
+$view_mode_raw = $_GET['view'] ?? 'recruit';
+// 相容舊連結
+if ($view_mode_raw === 'active') $view_mode_raw = 'recruit';
+if ($view_mode_raw === 'closed') $view_mode_raw = 'recruit';
+$view_mode = in_array($view_mode_raw, ['recruit', 'potential', 'history', 'registered'], true) ? $view_mode_raw : 'recruit';
+
+// 判斷當前報名階段
+function getCurrentRegistrationStage() {
+    $current_month = (int)date('m');
+    if ($current_month >= 2 && $current_month < 3) {
+        return 'priority_exam'; // 5月：優先免試
+    } elseif ($current_month >= 6 && $current_month < 7) {
+        return 'joint_exam'; // 6-7月：聯合免試
+    } elseif ($current_month >= 8) {
+        return 'continued_recruitment'; // 8月以後：續招
+    }
+    return null; // 非報名期間
 }
-$selected_year = isset($_GET['year']) ? (int)$_GET['year'] : 0;
+$current_registration_stage = getCurrentRegistrationStage();
+$stage_display_names = [
+    'priority_exam' => '優先免試',
+    'joint_exam' => '聯合免試',
+    'continued_recruitment' => '續招'
+];
+$current_stage_display = $current_registration_stage ? ($stage_display_names[$current_registration_stage] ?? '') : null;
+$selected_academic_year = isset($_GET['year']) ? (int)$_GET['year'] : 0;
+
+// 國三分類下的「已提醒/未提醒」篩選（僅在有報名階段時有效）
+$reminder_filter = isset($_GET['reminder']) ? trim((string)$_GET['reminder']) : '';
+if (!in_array($reminder_filter, ['', 'reminded', 'not_reminded'], true)) {
+    $reminder_filter = '';
+}
+
+// 已報名名單的「報名階段」篩選：預設只顯示目前階段，可選全部或其他階段
+$registered_stage_filter = isset($_GET['registered_stage']) ? trim((string)$_GET['registered_stage']) : '';
+$valid_registered_stages = ['', 'all', 'priority_exam', 'joint_exam', 'continued_recruitment'];
+if (!in_array($registered_stage_filter, $valid_registered_stages, true)) {
+    $registered_stage_filter = '';
+}
 
 $current_month = (int)date('m');
 $current_year = (int)date('Y');
 $grad_threshold_year = ($current_month >= 8) ? $current_year : $current_year - 1;
+$this_year_grad = ($current_month >= 8) ? $current_year + 1 : $current_year;
 
 // 設置頁面標題
 if ($is_department_user) {
-    $page_title = '系科就讀意願名單 (' . htmlspecialchars($user_department_code ?? '未知') . ')';
+    $page_title = '就讀意願名單';
 } else {
     $page_title = '就讀意願名單';
 }
 
-if ($view_mode === 'history') {
-    $page_title .= ' (歷史資料)';
-} elseif ($view_mode === 'closed') {
-    $page_title .= ' (已結案)';
-}
+$view_title_suffix = [
+    'recruit' => ' (當年度招生名單 - 國三)',
+    'potential' => ' (潛在追蹤名單 - 國一、國二)',
+    'history' => ' (歷史資料 - 已過招生年度)',
+];
+$page_title .= $view_title_suffix[$view_mode] ?? '';
 
 
 // 排序參數
@@ -270,6 +306,12 @@ if ($sortBy === 'grade') {
     $order_by = " ORDER BY $case_order $sortOrder, ei.created_at DESC";
 }
 
+// 已報名名單：最上面優先顯示「目前報名階段」註冊的學生
+if ($view_mode === 'registered' && $current_registration_stage) {
+    $reg_col = $current_registration_stage . '_registered';
+    $order_by = " ORDER BY IFNULL(ei.`$reg_col`,0) DESC," . substr($order_by, 9);
+}
+
 function getDynamicGradeText($grad_year, $static_grade_code, $options) {
     if (empty($grad_year)) {
         if (empty($static_grade_code)) return '未提供';
@@ -287,6 +329,34 @@ function getDynamicGradeText($grad_year, $static_grade_code, $options) {
     if ($diff == 2) return '國一';
     if ($diff < 0) return '<span style="color:#ff4d4f; font-weight:bold;">已畢業</span>';
     return '國小或其他';
+}
+
+function formatAcademicYearLabel($startYear, $with_gregorian = true) {
+    $startYear = (int)$startYear;
+    if ($startYear <= 0) return '未提供';
+    $minguo = $startYear - 1911;
+    $endYear = $startYear + 1;
+    if ($with_gregorian) {
+        return $minguo . " 學年 (" . $startYear . "-" . $endYear . ")";
+    }
+    return $minguo . " 學年";
+}
+
+/**
+ * 以 graduation_year 推算「國三所在學年」的起始西元年。
+ * graduation_year（畢業年）= 國三學年結束的那一年。
+ * 例如：graduation_year=2026 => 國三學年為 2025-2026（114學年），起始年=2025
+ */
+function getAcademicYearStartFromGraduationYear($graduation_year) {
+    if (empty($graduation_year)) return 0;
+    $gy = (int)$graduation_year;
+    if ($gy <= 0) return 0;
+    return $gy - 1;
+}
+
+function getAcademicYearLabelFromGraduationYear($graduation_year) {
+    $start = getAcademicYearStartFromGraduationYear($graduation_year);
+    return $start > 0 ? formatAcademicYearLabel($start, false) : '未提供';
 }
 
 function getSchoolName($code, $schools) {
@@ -330,12 +400,83 @@ function getIntentionLevelBadge($intention_level) {
     return '<span style="display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:6px;font-size:12px;font-weight:500;background:'.($t[1]).'22;color:'.$t[1].';border:1px solid '.($t[1]).'44;"><i class="fas '.$t[2].'" style="font-size:10px;"></i>'.htmlspecialchars($t[0]).'</span>';
 }
 
-function getRemindRegistrationBadge($done, $date) {
-    if ((int)($done ?? 0) !== 1) return '';
-    $d = trim((string)($date ?? ''));
-    $label = '已提醒報名';
-    if ($d !== '') $label .= '（' . htmlspecialchars($d, ENT_QUOTES, 'UTF-8') . '）';
-    return '<div style="margin-top:6px;"><span style="display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:6px;font-size:12px;font-weight:500;background:#e6fffb;color:#13c2c2;border:1px solid #87e8de;"><i class="fas fa-bell" style="font-size:10px;"></i>'. $label .'</span></div>';
+function getCaseClosedBadgeHtml($case_closed) {
+    if ((int)($case_closed ?? 0) !== 1) return '';
+    return ' <span style="display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:6px;font-size:12px;font-weight:600;background:#59595922;color:#595959;border:1px solid #59595944;"><i class="fas fa-archive" style="font-size:10px;"></i>已結案</span>';
+}
+
+function getYesNoIntentionBadge($intention_level) {
+    $level = $intention_level ?? '';
+    $has = in_array($level, ['high', 'medium', 'low'], true);
+    if ($has) {
+        return '<span style="display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:6px;font-size:12px;font-weight:600;background:#52c41a22;color:#52c41a;border:1px solid #52c41a44;"><i class="fas fa-check" style="font-size:10px;"></i>有意願</span>';
+    }
+    return '<span style="display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:6px;font-size:12px;font-weight:600;background:#ff4d4f22;color:#ff4d4f;border:1px solid #ff4d4f44;"><i class="fas fa-times" style="font-size:10px;"></i>無意願</span>';
+}
+
+/**
+ * 取得「報名階段｜狀態」顯示 HTML（用於意願狀態欄下方）
+ * @param array $item 學生一筆資料
+ * @param string|null $current_registration_stage 當前報名階段 key
+ * @param array $stage_display_names 階段顯示名稱
+ * @param string $view_mode recruit | registered
+ * @return string HTML 或空字串
+ */
+function getRegistrationStageStatusHtml($item, $current_registration_stage, $stage_display_names, $view_mode) {
+    if (!$current_registration_stage) return '';
+    $stage_name = $stage_display_names[$current_registration_stage] ?? $current_registration_stage;
+    if ($view_mode === 'registered') {
+        return '<div style="margin-top:6px;font-size:12px;color:#666;"><span style="color:#8c8c8c;">報名階段：</span>' . htmlspecialchars($stage_name) . '　<span style="color:#8c8c8c;">狀態：</span><span style="color:#52c41a;font-weight:500;">已報名</span></div>';
+    }
+    $reminded_col = $current_registration_stage . '_reminded';
+    $registered_col = $current_registration_stage . '_registered';
+    $declined_col = $current_registration_stage . '_declined';
+    $is_reminded = ((int)($item[$reminded_col] ?? 0) === 1);
+    $is_registered = ((int)($item[$registered_col] ?? 0) === 1);
+    $is_declined = ((int)($item[$declined_col] ?? 0) === 1);
+    if ($is_registered) {
+        $status_text = '已報名';
+        $status_style = 'color:#52c41a;font-weight:500;';
+    } elseif ($is_declined) {
+        $status_text = '本階段不報';
+        $status_style = 'color:#8c8c8c;font-weight:500;';
+    } elseif ($is_reminded) {
+        $status_text = '已提醒';
+        $status_style = 'color:#1890ff;font-weight:500;';
+    } else {
+        $status_text = '未提醒';
+        $status_style = 'color:#faad14;font-weight:500;';
+    }
+    return '<div style="margin-top:6px;font-size:12px;color:#666;"><span style="color:#8c8c8c;">報名階段：</span>' . htmlspecialchars($stage_name) . '　<span style="color:#8c8c8c;">狀態：</span><span style="' . $status_style . '">' . htmlspecialchars($status_text) . '</span></div>';
+}
+
+/**
+ * 取得學生「報名階段」顯示（已報名學生是在哪一階段報名）
+ * @param array $item 學生一筆資料
+ * @return string 優先免試 / 聯合免試 / 續招
+ */
+function getRegisteredStageDisplay($item) {
+    if ((int)($item['priority_exam_registered'] ?? 0) === 1) return '優先免試';
+    if ((int)($item['joint_exam_registered'] ?? 0) === 1) return '聯合免試';
+    if ((int)($item['continued_recruitment_registered'] ?? 0) === 1) return '續招';
+    return '—';
+}
+
+/**
+ * 取得報到狀態徽章 HTML
+ * @param string $check_in_status pending|reminded|completed|declined
+ * @return string
+ */
+function getCheckInStatusBadgeHtml($check_in_status) {
+    $status = $check_in_status ?? 'pending';
+    $map = [
+        'pending' => ['待報到', '#faad14', 'fa-clock'],
+        'reminded' => ['已提醒報到', '#1890ff', 'fa-bell'],
+        'completed' => ['已完成報到', '#52c41a', 'fa-check-circle'],
+        'declined' => ['放棄報到', '#8c8c8c', 'fa-times-circle']
+    ];
+    $t = $map[$status] ?? $map['pending'];
+    return '<span style="display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:6px;font-size:12px;font-weight:500;background:'.($t[1]).'22;color:'.$t[1].';border:1px solid '.($t[1]).'44;"><i class="fas '.$t[2].'" style="font-size:10px;"></i>'.htmlspecialchars($t[0]).'</span>';
 }
 
 try {
@@ -346,9 +487,31 @@ try {
     if (!$ec || $ec->num_rows === 0) {
         @$conn->query("ALTER TABLE enrollment_intention ADD COLUMN case_closed TINYINT(1) NOT NULL DEFAULT 0 COMMENT '0=否,1=是(結案後顯示於歷史紀錄)'");
     }
-    foreach (['intention_level' => "VARCHAR(20) DEFAULT NULL", 'follow_up_status' => "VARCHAR(30) DEFAULT 'tracking'", 'remind_registration_date' => "DATE DEFAULT NULL", 'remind_registration_done' => "TINYINT(1) NOT NULL DEFAULT 0", 'decline_reason_final' => "VARCHAR(100) DEFAULT NULL"] as $col => $def) {
+    foreach (['intention_level' => "VARCHAR(20) DEFAULT NULL", 'follow_up_status' => "VARCHAR(30) DEFAULT 'tracking'", 'decline_reason_final' => "VARCHAR(100) DEFAULT NULL"] as $col => $def) {
         $r = @$conn->query("SHOW COLUMNS FROM enrollment_intention LIKE '$col'");
         if (!$r || $r->num_rows === 0) { @$conn->query("ALTER TABLE enrollment_intention ADD COLUMN $col $def"); }
+    }
+    
+    // 確保報名提醒相關欄位存在
+    $registration_cols = [
+        'registration_stage' => "VARCHAR(20) DEFAULT NULL COMMENT 'priority_exam/joint_exam/continued_recruitment 當前報名階段'",
+        'priority_exam_reminded' => "TINYINT(1) NOT NULL DEFAULT 0 COMMENT '優先免試是否已提醒'",
+        'priority_exam_registered' => "TINYINT(1) NOT NULL DEFAULT 0 COMMENT '優先免試是否已報名'",
+        'priority_exam_declined' => "TINYINT(1) NOT NULL DEFAULT 0 COMMENT '優先免試本階段不報'",
+        'joint_exam_reminded' => "TINYINT(1) NOT NULL DEFAULT 0 COMMENT '聯合免試是否已提醒'",
+        'joint_exam_registered' => "TINYINT(1) NOT NULL DEFAULT 0 COMMENT '聯合免試是否已報名'",
+        'joint_exam_declined' => "TINYINT(1) NOT NULL DEFAULT 0 COMMENT '聯合免試本階段不報'",
+        'continued_recruitment_reminded' => "TINYINT(1) NOT NULL DEFAULT 0 COMMENT '續招是否已提醒'",
+        'continued_recruitment_registered' => "TINYINT(1) NOT NULL DEFAULT 0 COMMENT '續招是否已報名'",
+        'continued_recruitment_declined' => "TINYINT(1) NOT NULL DEFAULT 0 COMMENT '續招本階段不報'",
+        'is_registered' => "TINYINT(1) NOT NULL DEFAULT 0 COMMENT '是否已報名（任一階段）'",
+        'check_in_status' => "VARCHAR(20) NOT NULL DEFAULT 'pending' COMMENT '報到流程: pending=待報到, reminded=已提醒報到, completed=已完成報到, declined=放棄報到'"
+    ];
+    foreach ($registration_cols as $name => $def) {
+        $r = @$conn->query("SHOW COLUMNS FROM enrollment_intention LIKE '$name'");
+        if (!$r || $r->num_rows === 0) {
+            @$conn->query("ALTER TABLE enrollment_intention ADD COLUMN $name $def");
+        }
     }
 
     // 載入身分別與學校
@@ -372,18 +535,6 @@ try {
         while ($row = $dept_result->fetch_assoc()) {
             $department_data[$row['code']] = $row['name'];
         }
-    }
-    
-    $years_sql = "SELECT DISTINCT graduation_year FROM enrollment_intention WHERE graduation_year <= ? AND graduation_year IS NOT NULL ORDER BY graduation_year DESC";
-    $stmt_years = $conn->prepare($years_sql);
-    if ($stmt_years) {
-        $stmt_years->bind_param("i", $grad_threshold_year);
-        $stmt_years->execute();
-        $res_years = $stmt_years->get_result();
-        while($y_row = $res_years->fetch_assoc()) {
-            $history_years[] = $y_row['graduation_year'];
-        }
-        $stmt_years->close();
     }
 
     // ==========================================
@@ -426,27 +577,94 @@ try {
         }
     }
     
-    // 狀態 WHERE 條件
-    // 目前學年：未結案 且 畢業年份為當學年以後
-    // 歷史資料：畢業年份已過（包含結案和未結案）
-    // 已結案：case_closed = 1
-    $status_where = "";
+    // 歷史資料「學年」屆列表：已過招生年度 或 有結案學生的學年（結案名單也進歷史）
     if ($view_mode === 'history') {
-        $grad_cond = $selected_year > 0
-            ? "ei.graduation_year = " . intval($selected_year)
-            : "ei.graduation_year <= $grad_threshold_year";
-        // 歷史資料包含所有已畢業的學生（不管是否結案）
-        $status_where = " AND ({$grad_cond})";
-    } elseif ($view_mode === 'closed') {
-        $status_where = " AND (IFNULL(ei.case_closed,0) = 1)";
-    } else {
-        $status_where = " AND (ei.graduation_year > $grad_threshold_year OR ei.graduation_year IS NULL) AND (IFNULL(ei.case_closed,0) = 0)";
+        $years_sql = "
+            SELECT DISTINCT
+                (ei.graduation_year - 1) AS academic_year_start
+            " . $base_from_join . $perm_where . "
+                AND (ei.graduation_year IS NOT NULL AND (ei.graduation_year < ? OR IFNULL(ei.case_closed,0) = 1))
+            ORDER BY academic_year_start DESC
+        ";
+        $stmt_years = $conn->prepare($years_sql);
+        if ($stmt_years) {
+            $years_bind_params = $bind_params;
+            $years_bind_types = $bind_types;
+            $years_bind_params[] = $this_year_grad;
+            $years_bind_types .= "i";
+            if (!empty($years_bind_params)) {
+                $stmt_years->bind_param($years_bind_types, ...$years_bind_params);
+            }
+            if ($stmt_years->execute()) {
+                $res_years = $stmt_years->get_result();
+                while ($y_row = $res_years->fetch_assoc()) {
+                    if (!empty($y_row['academic_year_start'])) {
+                        $history_years[] = (int)$y_row['academic_year_start'];
+                    }
+                }
+            }
+            $stmt_years->close();
+        }
     }
 
-    // 意願等級篩選（目前學年）
+    // 四大分類：
+    // 1) 當年度招生名單（國三）：graduation_year = $this_year_grad，且未報名，且未結案
+    // 2) 潛在追蹤名單（國一、國二）：graduation_year = $this_year_grad+1 / +2，且未結案
+    // 3) 歷史資料（已過招生年度 或 已結案）：graduation_year < $this_year_grad 或 case_closed = 1
+    // 4) 已報名學生：is_registered = 1，且未結案
+    $status_where = "";
+    if ($view_mode === 'history') {
+        // 歷史資料：先選屆才查名單；未選屆時不查資料
+        $status_where = " AND ((ei.graduation_year IS NOT NULL AND ei.graduation_year < $this_year_grad) OR IFNULL(ei.case_closed,0) = 1)";
+        if ($selected_academic_year > 0) {
+            $status_where .= " AND (ei.graduation_year = " . intval($selected_academic_year + 1) . ")";
+        } else {
+            $status_where .= " AND 1=0"; // 未選屆不載入名單
+        }
+    } elseif ($view_mode === 'registered') {
+        // 已報名學生：只顯示國三且已報名、且未結案的
+        $status_where = " AND (ei.graduation_year = $this_year_grad) AND (IFNULL(ei.is_registered,0) = 1) AND (IFNULL(ei.case_closed,0) = 0)";
+        // 預設只顯示「目前報名階段」註冊的名單；篩選可選全部或其他階段
+        if ($registered_stage_filter === 'all') {
+            // 全部：不另加條件
+        } elseif ($registered_stage_filter !== '' && in_array($registered_stage_filter, ['priority_exam', 'joint_exam', 'continued_recruitment'], true)) {
+            $reg_col = $registered_stage_filter . '_registered';
+            $status_where .= " AND (IFNULL(ei.`$reg_col`,0) = 1)";
+        } else {
+            // 預設（空字串）：只顯示目前報名階段
+            if ($current_registration_stage) {
+                $reg_col = $current_registration_stage . '_registered';
+                $status_where .= " AND (IFNULL(ei.`$reg_col`,0) = 1)";
+            }
+        }
+    } elseif ($view_mode === 'recruit') {
+        // 當年度招生名單：國三且未結案，報名期間再排除已報名
+        $status_where = " AND (ei.graduation_year = $this_year_grad) AND (IFNULL(ei.case_closed,0) = 0)";
+        if ($current_registration_stage) {
+            // 報名期間：排除已報名學生
+            $status_where .= " AND (IFNULL(ei.is_registered,0) = 0)";
+            // 國三＋有報名階段時：依「已提醒/未提醒」篩選
+            if (in_array($reminder_filter, ['reminded', 'not_reminded'], true)) {
+                $reminded_col = $current_registration_stage . '_reminded';
+                $reminded_col_escaped = '`' . $reminded_col . '`';
+                if ($reminder_filter === 'reminded') {
+                    $status_where .= " AND (IFNULL(ei.{$reminded_col_escaped}, 0) = 1)";
+                } else {
+                    $status_where .= " AND (IFNULL(ei.{$reminded_col_escaped}, 0) = 0)";
+                }
+            }
+        }
+    } else { // potential
+        $gy1 = $this_year_grad + 1;
+        $gy2 = $this_year_grad + 2;
+        // 潛在追蹤名單：國一/國二，且未結案
+        $status_where = " AND (ei.graduation_year IN ($gy1, $gy2)) AND (IFNULL(ei.case_closed,0) = 0)";
+    }
+
+    // 意願等級篩選（相容舊參數；三分類頁面預設不使用）
     $intention_filter = isset($_GET['intention']) ? trim((string)$_GET['intention']) : '';
     $intention_where = '';
-    if ($view_mode === 'active' && !empty($intention_filter)) {
+    if (in_array($view_mode, ['recruit', 'potential'], true) && !empty($intention_filter)) {
         if ($intention_filter === 'high') {
             // 有意願：high、medium、low（這些都算有意願）
             $intention_where = " AND (ei.intention_level IN ('high', 'medium', 'low')) ";
@@ -456,45 +674,40 @@ try {
         }
     }
     
-    // 主任的「自己的名單」篩選（僅顯示分配給主任自己的學生）
-    $my_list_filter = isset($_GET['my_list']) ? trim((string)$_GET['my_list']) : '';
-    $my_list_where = '';
-    if ($is_director && $my_list_filter === '1' && $user_id > 0) {
-        // 只顯示 assigned_teacher_id = 主任的ID 或 NULL 的學生
-        $my_list_where = " AND (ei.assigned_teacher_id = ? OR ei.assigned_teacher_id IS NULL) ";
-        $bind_params[] = $user_id;
-        $bind_types .= "i";
-        $debug_log[] = "應用主任自己的名單過濾條件: assigned_teacher_id = $user_id OR NULL";
-    }
-
-    // 歷史資料狀態篩選（結案/已畢業）
-    $history_status_filter = isset($_GET['status']) ? trim((string)$_GET['status']) : '';
-    $history_status_where = '';
-    if ($view_mode === 'history' && !empty($history_status_filter)) {
-        if ($history_status_filter === 'closed') {
-            // 結案
-            $history_status_where = " AND (IFNULL(ei.case_closed,0) = 1) ";
-        } elseif ($history_status_filter === 'graduated') {
-            // 已畢業（未結案）
-            $history_status_where = " AND (IFNULL(ei.case_closed,0) = 0) ";
+    // 主任的分配狀態篩選（自行聯絡/各教師/尚未分配）
+    $assignee_filter = isset($_GET['assignee']) ? trim((string)$_GET['assignee']) : '';
+    $assignee_where = ''; // 初始化為空字串
+    if ($is_director && $view_mode === 'recruit' && !empty($assignee_filter)) {
+        if ($assignee_filter === 'self') {
+            // 自行聯絡：assigned_teacher_id = 主任自己的ID
+            $assignee_where = " AND (ei.assigned_teacher_id = ?) ";
+            $bind_params[] = $user_id;
+            $bind_types .= "i";
+            $debug_log[] = "應用主任篩選：自行聯絡 (assigned_teacher_id = $user_id)";
+        } elseif ($assignee_filter === 'unassigned') {
+            // 尚未分配：assigned_teacher_id IS NULL
+            $assignee_where = " AND (ei.assigned_teacher_id IS NULL) ";
+            $debug_log[] = "應用主任篩選：尚未分配";
+        } elseif (is_numeric($assignee_filter) && (int)$assignee_filter > 0) {
+            // 特定教師：assigned_teacher_id = 該教師ID
+            $assignee_where = " AND (ei.assigned_teacher_id = ?) ";
+            $bind_params[] = (int)$assignee_filter;
+            $bind_types .= "i";
+            $debug_log[] = "應用主任篩選：教師 ID = " . (int)$assignee_filter;
         }
     }
 
-    // 追蹤狀態篩選
+    // 追蹤狀態篩選（相容舊參數；三分類頁面預設不使用）
     $follow_up = isset($_GET['follow_up']) ? trim((string)$_GET['follow_up']) : '';
     $follow_up_where = '';
-    if ($view_mode === 'active' && in_array($follow_up, ['decline_follow_up'], true)) {
+    if (in_array($view_mode, ['recruit', 'potential'], true) && in_array($follow_up, ['decline_follow_up'], true)) {
         $follow_up_where = " AND IFNULL(ei.follow_up_status,'tracking') = ? ";
-        $bind_params[] = $follow_up;
-        $bind_types .= 's';
-    } elseif ($view_mode === 'closed' && in_array($follow_up, ['closed_unreachable', 'closed_declined'], true)) {
-        $follow_up_where = " AND IFNULL(ei.follow_up_status,'') = ? ";
         $bind_params[] = $follow_up;
         $bind_types .= 's';
     }
     
     // 組合最終 SQL
-    $sql = $base_select . $base_from_join . $perm_where . $status_where . $intention_where . $my_list_where . $history_status_where . $follow_up_where . $order_by;
+    $sql = $base_select . $base_from_join . $perm_where . $status_where . $intention_where . $assignee_where . $follow_up_where . $order_by;
     
     // 記錄 SQL 供診斷
     $debug_sql = $sql;
@@ -521,7 +734,7 @@ try {
     }
 
     $new_enrollments = [];
-    if ($view_mode === 'active' && !empty($enrollments)) {
+    if (in_array($view_mode, ['recruit', 'potential'], true) && !empty($enrollments)) {
         $one_hour_ago_timestamp = strtotime('-1 hour');
         foreach ($enrollments as $enrollment) {
             if (isset($enrollment['created_at']) && !empty($enrollment['created_at'])) {
@@ -541,6 +754,7 @@ try {
             $table_check = $conn->query("SHOW TABLES LIKE 'director'");
             $director_join = $table_check && $table_check->num_rows > 0 ? "LEFT JOIN director dir ON u.id = dir.user_id" : "";
             
+            // 主任：載入自己科系的所有教師（排除主任自己，因為「自行聯絡」已代表主任）
             $teacher_stmt = $conn->prepare(
                 "SELECT DISTINCT u.id, u.username, u.name, 
                     COALESCE(dir.department, t.department) AS department_code, 
@@ -741,84 +955,117 @@ try {
                     <div class="tabs-container">
                         <div class="tabs-nav">
                             <div class="tabs-nav-left">
-                                <div class="tab-item <?php echo $view_mode === 'active' ? 'active' : ''; ?>" onclick="window.location.href='enrollment_list.php?view=active'">
-                                    目前學年
+                                <div class="tab-item <?php echo $view_mode === 'recruit' ? 'active' : ''; ?>" onclick="window.location.href='enrollment_list.php?view=recruit'">
+                                    當年度招生名單（國三）
+                                </div>
+                                <div class="tab-item <?php echo $view_mode === 'potential' ? 'active' : ''; ?>" onclick="window.location.href='enrollment_list.php?view=potential'">
+                                    潛在追蹤名單（國一、國二）
+                                </div>
+                                <div class="tab-item <?php echo $view_mode === 'registered' ? 'active' : ''; ?>" onclick="window.location.href='enrollment_list.php?view=registered'">
+                                    已報名
                                 </div>
                                 <div class="tab-item <?php echo $view_mode === 'history' ? 'active' : ''; ?>" onclick="window.location.href='enrollment_list.php?view=history'">
-                                    歷史資料
-                                </div>
-                                <div class="tab-item <?php echo $view_mode === 'closed' ? 'active' : ''; ?>" onclick="window.location.href='enrollment_list.php?view=closed'">
-                                    已結案
+                                    歷史資料（已過招生年度）
                                 </div>
                             </div>
                             <div class="tabs-nav-right">
-                                <?php if ($view_mode === 'active'): ?>
-                                <?php if ($is_director): ?>
-                                <select id="myListFilter" class="history-select" onchange="var p=new URLSearchParams(location.search); if(this.value==='1'){p.set('my_list','1');}else{p.delete('my_list');} location.search=p.toString();" style="margin-right:8px;">
-                                    <option value="0" <?php echo (!isset($_GET['my_list']) || $_GET['my_list']!=='1')?'selected':''; ?>>全部學生</option>
-                                    <option value="1" <?php echo (isset($_GET['my_list']) && $_GET['my_list']==='1')?'selected':''; ?>>自己的名單</option>
-                                </select>
+                                <?php if (in_array($view_mode, ['recruit', 'registered']) && $current_stage_display): ?>
+                                    <div style="display: flex; align-items: center; gap: 12px; margin-right: 12px;">
+                                        <div style="display: flex; align-items: center; gap: 8px; padding: 8px 16px; background: #e6f7ff; border: 1px solid #91d5ff; border-radius: 6px;">
+                                            <i class="fas fa-calendar-alt" style="color: #1890ff;"></i>
+                                            <span style="font-size: 14px; font-weight: 600; color: #1890ff;">
+                                                當前報名階段：<?php echo htmlspecialchars($current_stage_display); ?>
+                                            </span>
+                                        </div>
+                                        <?php if ($view_mode === 'recruit'): ?>
+                                            <?php
+                                            $recruit_base = array_merge($_GET, ['view' => 'recruit']);
+                                            $params_all = $recruit_base;
+                                            unset($params_all['reminder']);
+                                            $url_all = 'enrollment_list.php?' . http_build_query($params_all);
+                                            $url_reminded = 'enrollment_list.php?' . http_build_query(array_merge($recruit_base, ['reminder' => 'reminded']));
+                                            $url_not_reminded = 'enrollment_list.php?' . http_build_query(array_merge($recruit_base, ['reminder' => 'not_reminded']));
+                                            ?>
+                                            <div style="display: flex; align-items: center; gap: 4px; padding: 4px 0;">
+                                                <span style="font-size: 13px; color: #666; margin-right: 4px;">提醒狀態：</span>
+                                                <a href="<?php echo htmlspecialchars($url_all); ?>" class="tab-item <?php echo $reminder_filter === '' ? 'active' : ''; ?>" style="padding: 6px 12px; border-radius: 6px; font-size: 13px; text-decoration: none; <?php echo $reminder_filter === '' ? 'background: #1890ff; color: #fff;' : 'background: #f0f0f0; color: #333;'; ?>">全部</a>
+                                                <a href="<?php echo htmlspecialchars($url_reminded); ?>" class="tab-item <?php echo $reminder_filter === 'reminded' ? 'active' : ''; ?>" style="padding: 6px 12px; border-radius: 6px; font-size: 13px; text-decoration: none; <?php echo $reminder_filter === 'reminded' ? 'background: #1890ff; color: #fff;' : 'background: #f0f0f0; color: #333;'; ?>">已提醒</a>
+                                                <a href="<?php echo htmlspecialchars($url_not_reminded); ?>" class="tab-item <?php echo $reminder_filter === 'not_reminded' ? 'active' : ''; ?>" style="padding: 6px 12px; border-radius: 6px; font-size: 13px; text-decoration: none; <?php echo $reminder_filter === 'not_reminded' ? 'background: #1890ff; color: #fff;' : 'background: #f0f0f0; color: #333;'; ?>">未提醒</a>
+                                            </div>
+                                        <?php endif; ?>
+                                    </div>
                                 <?php endif; ?>
-                                <select id="intentionFilter" class="history-select" onchange="var p=new URLSearchParams(location.search); p.set('intention', this.value); location.search=p.toString();" style="margin-right:8px;">
-                                    <option value="" <?php echo (!isset($_GET['intention']) || $_GET['intention']==='')?'selected':''; ?>>全部意願</option>
-                                    <option value="high" <?php echo (isset($_GET['intention']) && $_GET['intention']==='high')?'selected':''; ?>>有意願</option>
-                                    <option value="none" <?php echo (isset($_GET['intention']) && $_GET['intention']==='none')?'selected':''; ?>>無意願</option>
-                                </select>
-                                <?php elseif ($view_mode === 'history'): ?>
-                                <select id="statusFilter" class="history-select" onchange="var p=new URLSearchParams(location.search); p.set('status', this.value); location.search=p.toString();" style="margin-right:8px;">
-                                    <option value="" <?php echo (!isset($_GET['status']) || $_GET['status']==='')?'selected':''; ?>>全部狀態</option>
-                                    <option value="graduated" <?php echo (isset($_GET['status']) && $_GET['status']==='graduated')?'selected':''; ?>>已畢業</option>
-                                    <option value="closed" <?php echo (isset($_GET['status']) && $_GET['status']==='closed')?'selected':''; ?>>結案</option>
-                                </select>
-                                <?php elseif ($view_mode === 'closed'): ?>
-                                <select id="followUpFilter" class="history-select" onchange="var p=new URLSearchParams(location.search); p.set('follow_up', this.value); location.search=p.toString();" style="margin-right:8px;">
-                                    <option value="" <?php echo ($follow_up==='')?'selected':''; ?>>全部追蹤狀態</option>
-                                    <option value="closed_unreachable" <?php echo $follow_up==='closed_unreachable'?'selected':''; ?>>聯絡不到</option>
-                                    <option value="closed_declined" <?php echo $follow_up==='closed_declined'?'selected':''; ?>>無意願</option>
-                                </select>
+                                <?php if ($is_director && $view_mode === 'recruit'): ?>
+                                    <form action="enrollment_list.php" method="GET" style="margin:0; display: flex; align-items: center; gap: 8px;">
+                                        <input type="hidden" name="view" value="recruit">
+                                        <select name="assignee" class="history-select" onchange="this.form.submit()" style="padding: 6px 12px; border: 1px solid #d9d9d9; border-radius: 6px; font-size: 14px; background: #fff; cursor: pointer; min-width: 150px;">
+                                            <option value="" <?php echo empty($assignee_filter) ? 'selected' : ''; ?>>全部學生</option>
+                                            <option value="unassigned" <?php echo $assignee_filter === 'unassigned' ? 'selected' : ''; ?>>尚未分配</option>
+                                            <option value="self" <?php echo $assignee_filter === 'self' ? 'selected' : ''; ?>>自行聯絡</option>
+                                            <?php if (!empty($teachers)): ?>
+                                                <?php foreach ($teachers as $teacher): ?>
+                                                    <option value="<?php echo (int)$teacher['id']; ?>" <?php echo $assignee_filter == (string)$teacher['id'] ? 'selected' : ''; ?>>
+                                                        <?php echo htmlspecialchars($teacher['name'] ?? $teacher['username'] ?? '未知'); ?>
+                                                    </option>
+                                                <?php endforeach; ?>
+                                            <?php endif; ?>
+                                        </select>
+                                    </form>
                                 <?php endif; ?>
-                                <select id="gradeFilter" class="history-select" onchange="filterTable()" style="margin-right:8px;">
-                                    <option value="">全部年級</option>
-                                    <option value="國三">國三 (應屆)</option>
-                                    <option value="國二">國二</option>
-                                    <option value="國一">國一</option>
-                                </select>
-
-                                <input type="text" id="schoolFilter" class="history-select" list="schoolList" placeholder="輸入學校名稱或關鍵字..." oninput="filterTable()" style="margin-right:8px; padding:6px 12px; border:1px solid #d9d9d9; border-radius:6px; font-size:14px;">
-                                <datalist id="schoolList">
-                                    <?php foreach ($school_data as $sc_code => $sc_name): ?>
-                                        <option value="<?php echo htmlspecialchars($sc_name, ENT_QUOTES, 'UTF-8'); ?>"></option>
-                                    <?php endforeach; ?>
-                                </datalist>
-
-                                <input type="text" id="searchInput" class="search-input" placeholder="搜尋姓名或電話..." onkeyup="filterTable()">
+                                <?php if ($view_mode === 'registered'): ?>
+                                    <form action="enrollment_list.php" method="GET" style="margin:0; display: flex; align-items: center; gap: 8px;">
+                                        <input type="hidden" name="view" value="registered">
+                                        <span style="font-size: 13px; color: #666;">報名階段：</span>
+                                        <select name="registered_stage" class="history-select" onchange="this.form.submit()" style="padding: 6px 12px; border: 1px solid #d9d9d9; border-radius: 6px; font-size: 14px; background: #fff; cursor: pointer; min-width: 140px;">
+                                            <option value="" <?php echo $registered_stage_filter === '' ? 'selected' : ''; ?>><?php echo $current_registration_stage ? '目前階段（' . htmlspecialchars($current_stage_display) . '）' : '目前階段'; ?></option>
+                                            <option value="all" <?php echo $registered_stage_filter === 'all' ? 'selected' : ''; ?>>全部</option>
+                                            <option value="priority_exam" <?php echo $registered_stage_filter === 'priority_exam' ? 'selected' : ''; ?>>優先免試</option>
+                                            <option value="joint_exam" <?php echo $registered_stage_filter === 'joint_exam' ? 'selected' : ''; ?>>聯合免試</option>
+                                            <option value="continued_recruitment" <?php echo $registered_stage_filter === 'continued_recruitment' ? 'selected' : ''; ?>>續招</option>
+                                        </select>
+                                    </form>
+                                <?php endif; ?>
                                 <?php if ($view_mode === 'history'): ?>
-                                <form action="enrollment_list.php" method="GET" style="margin:0; display: flex; align-items: center;">
-                                    <input type="hidden" name="view" value="history">
-                                    <select name="year" class="history-select" onchange="this.form.submit()" style="padding: 6px 12px; border: 1px solid #d9d9d9; border-radius: 6px; font-size: 14px; background: #fff; cursor: pointer;">
-                                        <option value="0">顯示全部歷史資料</option>
-                                        <?php foreach ($history_years as $year): ?>
-                                            <option value="<?php echo $year; ?>" <?php echo $selected_year == $year ? 'selected' : ''; ?>>
-                                                <?php echo $year; ?> 年畢業
-                                            </option>
-                                        <?php endforeach; ?>
-                                    </select>
-                                </form>
+                                    <?php if ($selected_academic_year > 0): ?>
+                                        <a href="enrollment_list.php?view=history" style="display: inline-flex; align-items: center; gap: 6px; padding: 6px 14px; background: #f0f0f0; color: #333; border-radius: 6px; text-decoration: none; font-size: 14px;">
+                                            <i class="fas fa-arrow-left"></i> 返回
+                                        </a>
+                                        <span style="margin-left: 12px; font-size: 14px; font-weight: 600; color: #1890ff;">
+                                            <?php echo htmlspecialchars(formatAcademicYearLabel($selected_academic_year, true)); ?>
+                                        </span>
+                                    <?php endif; ?>
                                 <?php endif; ?>
                             </div>
                         </div>
                     </div>
 
                     <div class="card-body table-container">
-                        <?php if (empty($enrollments)): ?>
+                        <?php if ($view_mode === 'history' && $selected_academic_year <= 0): ?>
+                            <div style="padding: 24px 24px;">
+                                <?php if (empty($history_years)): ?>
+                                    <div class="empty-state">
+                                        <i class="fas fa-inbox fa-3x" style="margin-bottom: 16px;"></i>
+                                        <p>查無歷史資料。</p>
+                                    </div>
+                                <?php else: ?>
+                                    <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 16px;">
+                                        <?php foreach ($history_years as $year): ?>
+                                            <a href="enrollment_list.php?view=history&amp;year=<?php echo (int)$year; ?>" style="display: block; padding: 20px; background: #f9f9f9; border: 1px solid #e8e8e8; border-radius: 8px; text-align: center; text-decoration: none; color: #1890ff; font-size: 16px; font-weight: 600; transition: background 0.2s, border-color 0.2s;" onmouseover="this.style.background='#e6f7ff'; this.style.borderColor='#91d5ff';" onmouseout="this.style.background='#f9f9f9'; this.style.borderColor='#e8e8e8';">
+                                                <?php echo htmlspecialchars(formatAcademicYearLabel((int)$year, true)); ?>
+                                            </a>
+                                        <?php endforeach; ?>
+                                    </div>
+                                <?php endif; ?>
+                            </div>
+                        <?php elseif (empty($enrollments)): ?>
                             <div class="empty-state">
                                 <i class="fas fa-inbox fa-3x" style="margin-bottom: 16px;"></i>
                                 <p>
                                     <?php if ($view_mode === 'history'): ?>
-                                        查無歷史資料<?php echo $selected_year > 0 ? " (畢業年份: $selected_year)" : ""; ?>。
+                                        查無歷史資料<?php echo $selected_academic_year > 0 ? " (學年: " . htmlspecialchars(formatAcademicYearLabel($selected_academic_year, true)) . ")" : ""; ?>。
                                     <?php else: ?>
                                         目前尚無就讀意願資料。
-                                        <?php if(empty($user_department_code) && ($is_director || $is_department_user)): ?>
+                                        <?php if (empty($user_department_code) && $is_director): ?>
                                             <br><span style="color:red;">(警告：系統無法識別您的科系，請參考上方診斷資訊)</span>
                                         <?php endif; ?>
                                     <?php endif; ?>
@@ -845,52 +1092,42 @@ try {
                                     }
                                 }
                             ?>
-                            <?php 
-                            // 顯示批量提醒功能：非招生中心，且（非主任 或 主任選擇了「自己的名單」）
-                            $show_batch_remind = !$is_admission_center && (!$is_director || (isset($_GET['my_list']) && $_GET['my_list'] === '1'));
-                            ?>
-                            <?php if ($show_batch_remind): ?>
-                            <div style="margin-bottom: 12px; display: flex; align-items: center; justify-content: space-between;">
-                                <div>
-                                    <button type="button" class="assign-btn" id="batchRemindBtn" onclick="batchRemindRegistration()" style="background: #52c41a; border-color: #52c41a; display: none;">
-                                        <i class="fas fa-bell"></i> 批量提醒報名 (<span id="selectedCount">0</span>)
-                                    </button>
-                                </div>
-                                <div style="font-size: 13px; color: #666;">
-                                    <label style="cursor: pointer; user-select: none;">
-                                        <input type="checkbox" id="selectAllCheckbox" onchange="toggleSelectAll()" style="margin-right: 6px;">
-                                        全選
-                                    </label>
-                                </div>
-                            </div>
-                            <?php endif; ?>
                             <table class="table enrollment-table" id="enrollmentTable">
                                 <thead>
                                     <tr>
-                                        <?php if ($show_batch_remind): ?>
-                                        <th style="width: 40px;">
-                                            <input type="checkbox" id="selectAllHeader" onchange="toggleSelectAll()">
-                                        </th>
+                                        <?php if ($view_mode === 'history'): ?>
+                                            <th>學年</th>
+                                            <th onclick="sortTable('name')">姓名 <span class="sort-icon" id="sort-name"></span></th>
+                                            <th onclick="sortTable('junior_high')">國中 <span class="sort-icon" id="sort-junior_high"></span></th>
+                                            <th>狀態</th>
+                                            <th>操作</th>
+                                        <?php elseif ($view_mode === 'potential'): ?>
+                                            <th onclick="sortTable('name')">姓名 <span class="sort-icon" id="sort-name"></span></th>
+                                            <th onclick="sortTable('junior_high')">國中 <span class="sort-icon" id="sort-junior_high"></span></th>
+                                            <th>年級</th>
+                                            <?php if ($user_role !== 'TEA'): ?>
+                                                <th><?php echo $is_admission_center ? '分配科系 / 負責老師' : '分配狀態'; ?></th>
+                                            <?php endif; ?>
+                                            <th>意願狀態</th>
+                                            <th>操作</th>
+                                        <?php elseif ($view_mode === 'registered'): ?>
+                                            <th onclick="sortTable('name')">姓名 <span class="sort-icon" id="sort-name"></span></th>
+                                            <th onclick="sortTable('junior_high')">國中 <span class="sort-icon" id="sort-junior_high"></span></th>
+                                            <?php if ($user_role !== 'TEA'): ?>
+                                                <th><?php echo $is_admission_center ? '分配科系 / 負責老師' : '分配狀態'; ?></th>
+                                            <?php endif; ?>
+                                            <th>報名階段</th>
+                                            <th>報到狀態</th>
+                                            <th>操作</th>
+                                        <?php else: /* recruit */ ?>
+                                            <th onclick="sortTable('name')">姓名 <span class="sort-icon" id="sort-name"></span></th>
+                                            <th onclick="sortTable('junior_high')">國中 <span class="sort-icon" id="sort-junior_high"></span></th>
+                                            <?php if ($user_role !== 'TEA'): ?>
+                                                <th><?php echo $is_admission_center ? '分配科系 / 負責老師' : '分配狀態'; ?></th>
+                                            <?php endif; ?>
+                                            <th>意願狀態</th>
+                                            <th>操作</th>
                                         <?php endif; ?>
-                                        <th onclick="sortTable('name')">姓名 <span class="sort-icon" id="sort-name"></span></th>
-                                        
-                                        <?php if ($is_admission_center): ?>
-                                            <th class="choice1-column">意願1</th>
-                                            <th class="choice2-column">意願2</th>
-                                            <th class="choice3-column">意願3</th>
-                                        <?php endif; ?>
-                                        
-                                        <th onclick="sortTable('junior_high')">就讀國中 <span class="sort-icon" id="sort-junior_high"></span></th>
-                                        <th onclick="sortTable('grade')">目前年級 <span class="sort-icon" id="sort-grade"></span></th>
-                                        
-                                        <?php if ($is_admission_center): ?>
-                                            <th onclick="sortTable('assigned_department')">分配部門 / 負責老師 <span class="sort-icon" id="sort-assigned_department"></span></th>
-                                        <?php elseif ($is_director || $is_admin_or_staff): ?>
-                                            <th>分配狀態</th>
-                                        <?php endif; ?>
-                                        
-                                        <th>意願狀態</th>
-                                        <th>操作</th>
                                     </tr>
                                 </thead>
                                 <tbody>
@@ -921,150 +1158,70 @@ try {
                                     $chosen_codes_json = json_encode(array_unique($chosen_codes));
                                     ?>
                                     <tr class="table-row-clickable" data-enrollment-id="<?php echo $item['id']; ?>" onclick="toggleDetail(<?php echo $item['id']; ?>)">
-                                        <?php if ($show_batch_remind): ?>
-                                        <td onclick="event.stopPropagation();">
-                                            <input type="checkbox" class="student-checkbox" value="<?php echo $item['id']; ?>" onchange="updateSelectedCount()" onclick="event.stopPropagation();">
-                                        </td>
-                                        <?php endif; ?>
-                                        <td><?php echo htmlspecialchars($item['name']); ?></td>
-                                        
-                                        <?php if ($is_admission_center): ?>
-                                            <td class="choice1-column"><?php echo $display_text1; ?></td>
-                                            <td class="choice2-column"><?php echo $display_text2; ?></td>
-                                            <td class="choice3-column"><?php echo $display_text3; ?></td>
-                                        <?php endif; ?>
+                                        <?php
+                                            $assigned_teacher_id = (int)($item['assigned_teacher_id'] ?? 0);
+                                            $is_assigned_to_me = ($assigned_teacher_id > 0 && $assigned_teacher_id === (int)$user_id);
+                                            $assigned_teacher_name = $item['teacher_name'] ?? $item['teacher_username'] ?? '未知老師';
+                                            $is_assigned = ($assigned_teacher_id > 0);
+                                            
+                                            // 分配狀態顯示（依角色不同）
+                                            $assignment_html = '';
+                                            if ($is_admission_center) {
+                                                // 招生中心/行政：顯示分配科系 + 分配的老師姓名
+                                                if (!empty($item['assigned_department'])) {
+                                                    $dept_name = getDepartmentName($item['assigned_department'], $department_data);
+                                                    if ($is_assigned) {
+                                                        // 已分配：顯示科系 + 老師姓名（如果是主任自行聯絡，顯示主任姓名）
+                                                        $assignment_html = '<div style="line-height: 1.4;"><span style="color:#52c41a;font-weight:bold;display:block;margin-bottom:4px;"><i class="fas fa-check-circle"></i> ' . htmlspecialchars($dept_name) . '</span><span style="font-size:13px;color:#1890ff;background:#e6f7ff;padding:2px 6px;border-radius:4px;border:1px solid #91d5ff;"><i class="fas fa-chalkboard-teacher"></i> ' . htmlspecialchars($assigned_teacher_name) . '</span></div>';
+                                                    } else {
+                                                        $assignment_html = '<span style="color:#52c41a;font-weight:bold;"><i class="fas fa-check-circle"></i> ' . htmlspecialchars($dept_name) . '</span>';
+                                                    }
+                                                } else {
+                                                    $assignment_html = '<span style="color:#8c8c8c;"><i class="fas fa-clock"></i> 未分配</span>';
+                                                }
+                                            } elseif ($is_director) {
+                                                // 主任：顯示分配狀態（已分配/待分配）
+                                                if ($is_assigned) {
+                                                    $assignment_html = '<span style="color:#52c41a;font-weight:bold;"><i class="fas fa-check-circle"></i> 已分配 - ' . ($is_assigned_to_me ? '自行聯絡' : htmlspecialchars($assigned_teacher_name)) . '</span>';
+                                                } else {
+                                                    $assignment_html = '<span style="color:#ff9800;font-weight:bold;"><i class="fas fa-exclamation-circle"></i> 待分配</span>';
+                                                }
+                                            }
+                                            // 老師：不顯示分配狀態（因為看到的就是自己的學生）
+                                            
+                                            $case_badge = getCaseClosedBadgeHtml($item['case_closed'] ?? 0);
+                                        ?>
 
-                                        <td><?php echo getSchoolName($item['junior_high'] ?? '', $school_data); ?></td>
-                                        
-                                        <td><?php echo getDynamicGradeText($item['graduation_year'] ?? '', $item['current_grade'] ?? '', $identity_options); ?></td>
-
-                                        <?php if ($is_admission_center): ?>
-                                        <td>
-                                            <?php if (!empty($item['assigned_department'])): ?>
-                                                <div style="line-height: 1.4;">
-                                                    <span style="color: #52c41a; font-weight: bold; display: block; margin-bottom: 4px;">
-                                                        <i class="fas fa-check-circle"></i> 
-                                                        <?php echo getDepartmentName($item['assigned_department'], $department_data); ?>
-                                                    </span>
-                                                    
-                                                    <?php if (!empty($item['assigned_teacher_id'])): ?>
-                                                        <span style="font-size: 13px; color: #1890ff; background: #e6f7ff; padding: 2px 6px; border-radius: 4px; border: 1px solid #91d5ff;">
-                                                            <i class="fas fa-chalkboard-teacher"></i> 
-                                                            <?php echo htmlspecialchars($item['teacher_name'] ?? $item['teacher_username'] ?? '未知老師'); ?>
-                                                        </span>
-                                                    <?php else: ?>
-                                                        <span style="font-size: 12px; color: #999;">
-                                                            (主任尚未指派)
-                                                        </span>
-                                                    <?php endif; ?>
-                                                </div>
-                                            <?php else: ?>
-                                                <span style="color: #8c8c8c;">
-                                                    <i class="fas fa-clock"></i> 未分配
-                                                </span>
-                                            <?php endif; ?>
-                                        </td>
-                                        <td>
-                                            <?php echo getIntentionLevelBadge($item['intention_level'] ?? null); ?>
-                                            <?php echo getRemindRegistrationBadge($item['remind_registration_done'] ?? 0, $item['remind_registration_date'] ?? null); ?>
-                                        </td>
-                                        <td onclick="event.stopPropagation();">
-                                            <button type="button" 
-                                                class="btn-view" 
-                                                id="detail-btn-<?php echo $item['id']; ?>"
-                                                onclick="event.stopPropagation(); toggleDetail(<?php echo $item['id']; ?>)">
-                                                <i class="fas fa-eye"></i> <span class="btn-text">查看詳情</span>
-                                            </button>
-                                        </td>
-                                        <?php elseif ($user_role === 'TEA'): ?>
-                                        <!-- 老師：只顯示意願狀態和操作，不顯示分配狀態 -->
-                                        <td>
-                                            <?php echo getIntentionLevelBadge($item['intention_level'] ?? null); ?>
-                                            <?php echo getRemindRegistrationBadge($item['remind_registration_done'] ?? 0, $item['remind_registration_date'] ?? null); ?>
-                                        </td>
-                                        <td onclick="event.stopPropagation();">
-                                            <div style="display: flex; gap: 8px; flex-wrap: wrap;">
-                                                <?php if ($view_mode === 'history' || $view_mode === 'closed'): ?>
-                                                    <button type="button" 
-                                                        class="btn-view" 
+                                        <?php if ($view_mode === 'history'): ?>
+                                            <td><?php echo htmlspecialchars(getAcademicYearLabelFromGraduationYear($item['graduation_year'] ?? null)); ?></td>
+                                            <td><?php echo htmlspecialchars($item['name']); ?></td>
+                                            <td><?php echo getSchoolName($item['junior_high'] ?? '', $school_data); ?></td>
+                                            <td><?php echo $case_badge ?: '<span style="color:#999;">—</span>'; ?></td>
+                                            <td onclick="event.stopPropagation();">
+                                                <button type="button"
+                                                    class="btn-view"
+                                                    id="detail-btn-<?php echo $item['id']; ?>"
+                                                    onclick="event.stopPropagation(); toggleDetail(<?php echo $item['id']; ?>)">
+                                                    <i class="fas fa-eye"></i> <span class="btn-text">查看詳情</span>
+                                                </button>
+                                            </td>
+                                        <?php elseif ($view_mode === 'potential'): ?>
+                                            <td><?php echo htmlspecialchars($item['name']); ?></td>
+                                            <td><?php echo getSchoolName($item['junior_high'] ?? '', $school_data); ?></td>
+                                            <td><?php echo getDynamicGradeText($item['graduation_year'] ?? '', $item['current_grade'] ?? '', $identity_options); ?></td>
+                                            <td><?php echo $assignment_html; ?></td>
+                                            <td><?php echo getYesNoIntentionBadge($item['intention_level'] ?? null) . $case_badge; ?></td>
+                                            <td onclick="event.stopPropagation();">
+                                                <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+                                                    <button type="button"
+                                                        class="btn-view"
                                                         id="detail-btn-<?php echo $item['id']; ?>"
                                                         onclick="event.stopPropagation(); toggleDetail(<?php echo $item['id']; ?>)">
                                                         <i class="fas fa-eye"></i> <span class="btn-text">查看詳情</span>
                                                     </button>
-                                                <?php else: ?>
-                                                    <!-- 老師看到的學生都是分配給自己的，所以直接顯示操作按鈕 -->
-                                                    <button type="button" 
-                                                        class="btn-view" 
-                                                        id="detail-btn-<?php echo $item['id']; ?>"
-                                                        onclick="event.stopPropagation(); toggleDetail(<?php echo $item['id']; ?>)">
-                                                        <i class="fas fa-eye"></i> <span class="btn-text">查看詳情</span>
-                                                    </button>
-                                                    <button type="button" 
-                                                        class="btn-view" 
-                                                        style="border-color: #52c41a; color: #52c41a;"
-                                                        data-student-id="<?php echo (int)$item['id']; ?>"
-                                                        data-student-name="<?php echo htmlspecialchars($item['name'] ?? '', ENT_QUOTES, 'UTF-8'); ?>"
-                                                        data-assigned-teacher-id="<?php echo (int)($item['assigned_teacher_id'] ?? 0); ?>"
-                                                        onmouseover="this.style.background='#52c41a'; this.style.color='white';"
-                                                        onmouseout="this.style.background='#fff'; this.style.color='#52c41a';"
-                                                        onclick="event.stopPropagation(); openContactLogsModal(this.dataset.studentId, this.dataset.studentName, this.dataset.assignedTeacherId)">
-                                                        <i class="fas fa-address-book"></i> 新增聯絡紀錄
-                                                    </button>
-                                                <?php endif; ?>
-                                            </div>
-                                        </td>
-                                        <?php elseif ($is_director || $is_admin_or_staff): ?>
-                                        <td>
-                                            <span style="display: none;" class="chosen-codes-data"><?php echo $chosen_codes_json; ?></span>
-                                            <?php 
-                                            $assigned_teacher_id = $item['assigned_teacher_id'];
-                                            $is_assigned_to_me = ($assigned_teacher_id == $user_id);
-                                            $is_assigned_to_others = (!empty($assigned_teacher_id) && !$is_assigned_to_me);
-                                            ?>
-                                            <?php if ($is_assigned_to_me): ?>
-                                                <div style="line-height: 1.4;">
-                                                    <span style="color: #52c41a; font-weight: bold;">
-                                                        <i class="fas fa-check-circle"></i> 已分配 - 自行聯絡
-                                                    </span>
-                                                </div>
-                                            <?php elseif ($is_assigned_to_others): ?>
-                                                <div style="line-height: 1.4;">
-                                                    <span style="color: #52c41a; font-weight: bold;">
-                                                        <i class="fas fa-check-circle"></i> 已分配 - 
-                                                        <?php echo htmlspecialchars($item['teacher_name'] ?? $item['teacher_username'] ?? '未知老師'); ?>
-                                                    </span>
-                                                </div>
-                                                    <?php else: ?>
-                                                <div style="line-height: 1.4;">
-                                                    <span style="color: #ff9800; font-weight: bold;">
-                                                        <i class="fas fa-exclamation-circle"></i> 待分配
-                                                    </span>
-                                                </div>
-                                            <?php endif; ?>
-                                        </td>
-                                        <td>
-                                            <?php echo getIntentionLevelBadge($item['intention_level'] ?? null); ?>
-                                            <?php echo getRemindRegistrationBadge($item['remind_registration_done'] ?? 0, $item['remind_registration_date'] ?? null); ?>
-                                        </td>
-                                        <td onclick="event.stopPropagation();">
-                                            <div style="display: flex; gap: 8px; flex-wrap: wrap;">
-                                                <?php if ($view_mode === 'history' || $view_mode === 'closed'): ?>
-                                                    <button type="button" 
-                                                        class="btn-view" 
-                                                        id="detail-btn-<?php echo $item['id']; ?>"
-                                                        onclick="event.stopPropagation(); toggleDetail(<?php echo $item['id']; ?>)">
-                                                        <i class="fas fa-eye"></i> <span class="btn-text">查看詳情</span>
-                                                    </button>
-                                                <?php else: ?>
-                                                    <?php if ($is_assigned_to_me): ?>
-                                                        <button type="button" 
-                                                            class="btn-view" 
-                                                            id="detail-btn-<?php echo $item['id']; ?>"
-                                                            onclick="event.stopPropagation(); toggleDetail(<?php echo $item['id']; ?>)">
-                                                            <i class="fas fa-eye"></i> <span class="btn-text">查看詳情</span>
-                                                        </button>
-                                                        <button type="button" 
-                                                            class="btn-view" 
+                                                    <?php if (!$is_admission_center && ($is_assigned_to_me || !$is_director)): ?>
+                                                        <button type="button"
+                                                            class="btn-view"
                                                             style="border-color: #52c41a; color: #52c41a;"
                                                             data-student-id="<?php echo (int)$item['id']; ?>"
                                                             data-student-name="<?php echo htmlspecialchars($item['name'] ?? '', ENT_QUOTES, 'UTF-8'); ?>"
@@ -1074,52 +1231,154 @@ try {
                                                             onclick="event.stopPropagation(); openContactLogsModal(this.dataset.studentId, this.dataset.studentName, this.dataset.assignedTeacherId)">
                                                             <i class="fas fa-address-book"></i> 新增聯絡紀錄
                                                         </button>
-                                                    <?php elseif ($is_assigned_to_others): ?>
-                                                        <button type="button" 
-                                                            class="btn-view" 
-                                                            id="detail-btn-<?php echo $item['id']; ?>"
-                                                            onclick="event.stopPropagation(); toggleDetail(<?php echo $item['id']; ?>)">
-                                                            <i class="fas fa-eye"></i> <span class="btn-text">查看詳情</span>
-                                                        </button>
-                                                    <?php else: ?>
-                                                        <button type="button" 
-                                                            class="btn-view" 
-                                                            style="border-color: #fa8c16; color: #fa8c16;"
-                                                            data-student-id="<?php echo $item['id']; ?>"
-                                                            data-student-name="<?php echo htmlspecialchars($item['name'], ENT_QUOTES, 'UTF-8'); ?>"
-                                                            data-current-teacher-id="<?php echo $item['assigned_teacher_id']; ?>"
-                                                            data-chosen-codes="<?php echo htmlspecialchars($chosen_codes_json, ENT_QUOTES, 'UTF-8'); ?>"
-                                                            onmouseover="this.style.background='#fa8c16'; this.style.color='white';"
-                                                            onmouseout="this.style.background='#fff'; this.style.color='#fa8c16';"
-                                                            onclick="event.stopPropagation(); openAssignModalFromButton(this)">
-                                                            <i class="fas fa-user-plus"></i> 分配
-                                                        </button>
-                                                        <button type="button" 
-                                                            class="btn-view" 
-                                                            id="detail-btn-<?php echo $item['id']; ?>"
-                                                            onclick="event.stopPropagation(); toggleDetail(<?php echo $item['id']; ?>)">
-                                                            <i class="fas fa-eye"></i> <span class="btn-text">查看詳情</span>
+                                                    <?php endif; ?>
+                                                </div>
+                                            </td>
+                                        <?php elseif ($view_mode === 'registered'): ?>
+                                            <?php
+                                                $check_in_status = $item['check_in_status'] ?? 'pending';
+                                                $can_check_in = !$is_admission_center ? ($is_assigned_to_me || !$is_director) : true;
+                                            ?>
+                                            <td><?php echo htmlspecialchars($item['name']); ?></td>
+                                            <td><?php echo getSchoolName($item['junior_high'] ?? '', $school_data); ?></td>
+                                            <?php if ($user_role !== 'TEA'): ?>
+                                                <td><?php echo $assignment_html; ?></td>
+                                            <?php endif; ?>
+                                            <td><?php echo htmlspecialchars(getRegisteredStageDisplay($item)); ?></td>
+                                            <td><?php echo getCheckInStatusBadgeHtml($check_in_status); ?></td>
+                                            <td onclick="event.stopPropagation();">
+                                                <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+                                                    <button type="button"
+                                                        class="btn-view"
+                                                        id="detail-btn-<?php echo $item['id']; ?>"
+                                                        onclick="event.stopPropagation(); toggleDetail(<?php echo $item['id']; ?>)">
+                                                        <i class="fas fa-eye"></i> <span class="btn-text">查看詳情</span>
+                                                    </button>
+                                                    <?php if ($can_check_in): ?>
+                                                        <?php if ($check_in_status === 'pending'): ?>
+                                                            <button type="button" class="btn-view" style="border-color:#1890ff;color:#1890ff;" onclick="event.stopPropagation(); handleCheckInAction(<?php echo (int)$item['id']; ?>, 'check_in_remind', '已提醒報到')"><i class="fas fa-bell"></i> 已提醒報到</button>
+                                                        <?php elseif ($check_in_status === 'reminded'): ?>
+                                                            <button type="button" class="btn-view" style="border-color:#52c41a;color:#52c41a;" onclick="event.stopPropagation(); handleCheckInAction(<?php echo (int)$item['id']; ?>, 'check_in_complete', '已完成報到')"><i class="fas fa-check-circle"></i> 已完成報到</button>
+                                                            <button type="button" class="btn-view" style="border-color:#8c8c8c;color:#8c8c8c;" onclick="event.stopPropagation(); handleCheckInAction(<?php echo (int)$item['id']; ?>, 'check_in_decline', '放棄報到')"><i class="fas fa-times-circle"></i> 放棄報到</button>
+                                                        <?php endif; ?>
+                                                    <?php endif; ?>
+                                                </div>
+                                            </td>
+                                        <?php else: /* recruit */ ?>
+                                            <?php
+                                                // 判斷報名提醒狀態
+                                                $reminded_col = $current_registration_stage ? $current_registration_stage . '_reminded' : null;
+                                                $registered_col = $current_registration_stage ? $current_registration_stage . '_registered' : null;
+                                                $declined_col = $current_registration_stage ? $current_registration_stage . '_declined' : null;
+                                                $is_reminded = $reminded_col ? ((int)($item[$reminded_col] ?? 0) === 1) : false;
+                                                $is_registered = $registered_col ? ((int)($item[$registered_col] ?? 0) === 1) : false;
+                                                $is_declined = $declined_col ? ((int)($item[$declined_col] ?? 0) === 1) : false;
+                                                $stage_names = [
+                                                    'priority_exam' => '優先免試',
+                                                    'joint_exam' => '聯合免試',
+                                                    'continued_recruitment' => '續招'
+                                                ];
+                                                $stage_name = $current_registration_stage ? ($stage_names[$current_registration_stage] ?? '') : '';
+
+                                                // 是否允許此使用者對該學生做報名提醒動作：
+                                                // - 招生中心：一律不能提醒
+                                                // - 老師：只能對自己名單（assigned_teacher_id = 自己）提醒
+                                                // - 主任：只能對「自行聯絡」＝ assigned_teacher_id = 主任自己的學生提醒
+                                                $can_registration_remind = false;
+                                                if ($current_registration_stage && !$is_registered && !$is_admission_center) {
+                                                    if ($user_role === 'TEA' && $is_assigned_to_me) {
+                                                        $can_registration_remind = true;
+                                                    } elseif ($is_director && $is_assigned_to_me) {
+                                                        $can_registration_remind = true;
+                                                    }
+                                                }
+                                            ?>
+                                            <td><?php echo htmlspecialchars($item['name']); ?></td>
+                                            <td><?php echo getSchoolName($item['junior_high'] ?? '', $school_data); ?></td>
+                                            <?php if ($user_role !== 'TEA'): ?>
+                                                <td><?php echo $assignment_html; ?></td>
+                                            <?php endif; ?>
+                                            <td><?php echo getIntentionLevelBadge($item['intention_level'] ?? null) . $case_badge; echo getRegistrationStageStatusHtml($item, $current_registration_stage, $stage_display_names, 'recruit'); ?></td>
+                                            <td onclick="event.stopPropagation();">
+                                                <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+                                                    <button type="button"
+                                                        class="btn-view"
+                                                        id="detail-btn-<?php echo $item['id']; ?>"
+                                                        onclick="event.stopPropagation(); toggleDetail(<?php echo $item['id']; ?>)">
+                                                        <i class="fas fa-eye"></i> <span class="btn-text">查看詳情</span>
+                                                    </button>
+                                                    <?php if (!$is_admission_center && ($is_assigned_to_me || !$is_director)): ?>
+                                                        <button type="button"
+                                                            class="btn-view"
+                                                            style="border-color: #52c41a; color: #52c41a;"
+                                                            data-student-id="<?php echo (int)$item['id']; ?>"
+                                                            data-student-name="<?php echo htmlspecialchars($item['name'] ?? '', ENT_QUOTES, 'UTF-8'); ?>"
+                                                            data-assigned-teacher-id="<?php echo (int)($item['assigned_teacher_id'] ?? 0); ?>"
+                                                            onmouseover="this.style.background='#52c41a'; this.style.color='white';"
+                                                            onmouseout="this.style.background='#fff'; this.style.color='#52c41a';"
+                                                            onclick="event.stopPropagation(); openContactLogsModal(this.dataset.studentId, this.dataset.studentName, this.dataset.assignedTeacherId)">
+                                                            <i class="fas fa-address-book"></i> 新增聯絡紀錄
                                                         </button>
                                                     <?php endif; ?>
-                                                <?php endif; ?>
-                                            </div>
-                                        </td>
+                                                    <?php if ($can_registration_remind): ?>
+                                                        <?php if (!$is_reminded): ?>
+                                                            <button type="button"
+                                                                class="btn-view"
+                                                                style="border-color: #1890ff; color: #1890ff;"
+                                                                id="remind-btn-<?php echo $item['id']; ?>"
+                                                                data-enrollment-id="<?php echo (int)$item['id']; ?>"
+                                                                onclick="event.stopPropagation(); handleRegistrationRemind(<?php echo (int)$item['id']; ?>, '<?php echo htmlspecialchars($stage_name, ENT_QUOTES, 'UTF-8'); ?>')">
+                                                                <i class="fas fa-bell"></i> 已提醒
+                                                            </button>
+                                                        <?php else: ?>
+                                                            <?php if ($is_declined): ?>
+                                                                <span class="btn-view" style="border-color: #d9d9d9; color: #8c8c8c; cursor: default; background: #f5f5f5;">
+                                                                    <i class="fas fa-minus-circle"></i> 本階段不報（已記錄）
+                                                                </span>
+                                                            <?php else: ?>
+                                                                <button type="button"
+                                                                    class="btn-view"
+                                                                    style="border-color: #52c41a; color: #52c41a; background: #f6ffed;"
+                                                                    id="register-btn-<?php echo $item['id']; ?>"
+                                                                    data-enrollment-id="<?php echo (int)$item['id']; ?>"
+                                                                    onclick="event.stopPropagation(); handleRegistrationRegister(<?php echo (int)$item['id']; ?>, '<?php echo htmlspecialchars($stage_name, ENT_QUOTES, 'UTF-8'); ?>')">
+                                                                    <i class="fas fa-check-circle"></i> 是否已報名
+                                                                </button>
+                                                                <button type="button"
+                                                                    class="btn-view"
+                                                                    style="border-color: #faad14; color: #faad14; background: #fffbe6;"
+                                                                    id="decline-btn-<?php echo $item['id']; ?>"
+                                                                    data-enrollment-id="<?php echo (int)$item['id']; ?>"
+                                                                    onclick="event.stopPropagation(); handleRegistrationDeclineStage(<?php echo (int)$item['id']; ?>, '<?php echo htmlspecialchars($stage_name, ENT_QUOTES, 'UTF-8'); ?>')">
+                                                                    <i class="fas fa-user-times"></i> 本階段不報
+                                                                </button>
+                                                            <?php endif; ?>
+                                                        <?php endif; ?>
+                                                    <?php endif; ?>
+                                                </div>
+                                            </td>
                                         <?php endif; ?>
                                     </tr>
                                     <tr id="detail-<?php echo $item['id']; ?>" class="detail-row" style="display: none;">
                                         <?php 
-                                        // 計算欄位數：
-                                        // 招生中心：姓名(1) + 意願1-3(3) + 就讀國中(1) + 年級(1) + 分配部門/老師(1) + 意願狀態(1) + 操作(1) = 9
-                                        // 招生中心：姓名(1) + 意願1(1) + 意願2(1) + 意願3(1) + 就讀國中(1) + 年級(1) + 分配部門(1) + 意願狀態(1) + 操作(1) = 9
-                                        // 主任/行政（有批量提醒）：checkbox(1) + 姓名(1) + 就讀國中(1) + 年級(1) + 分配狀態(1) + 意願狀態(1) + 操作(1) = 7
-                                        // 主任/行政（無批量提醒）：姓名(1) + 就讀國中(1) + 年級(1) + 分配狀態(1) + 意願狀態(1) + 操作(1) = 6
-                                        // 老師：checkbox(1) + 姓名(1) + 就讀國中(1) + 年級(1) + 意願狀態(1) + 操作(1) = 6
-                                        if ($is_admission_center) {
-                                            $colspan = 9;
-                                        } elseif ($show_batch_remind) {
-                                            $colspan = ($is_director || $is_admin_or_staff) ? 7 : 6;
-                                        } else {
-                                            $colspan = ($is_director || $is_admin_or_staff) ? 6 : 5;
+                                        // 四大分類欄位數（依角色不同）：
+                                        // 老師：不顯示分配狀態欄
+                                        //   1) recruit：姓名、國中、意願狀態、操作 = 4
+                                        //   2) potential：姓名、國中、年級、意願狀態、操作 = 5
+                                        //   3) registered：姓名、國中、意願狀態、操作 = 4
+                                        // 主任/行政：顯示分配狀態欄
+                                        //   1) recruit：姓名、國中、分配狀態、意願狀態、操作 = 5
+                                        //   2) potential：姓名、國中、年級、分配狀態、意願狀態、操作 = 6
+                                        //   3) registered：姓名、國中、分配狀態、意願狀態、操作 = 5
+                                        // 4) history：學年、姓名、國中、狀態、操作 = 5（所有角色相同）
+                                        if ($view_mode === 'history') {
+                                            $colspan = 4;
+                                        } elseif ($view_mode === 'potential') {
+                                            $colspan = ($user_role === 'TEA') ? 5 : 6;
+                                        } elseif ($view_mode === 'registered') {
+                                            $colspan = ($user_role === 'TEA') ? 5 : 6;
+                                        } else { // recruit
+                                            $colspan = ($user_role === 'TEA') ? 4 : 5;
                                         }
                                         ?>
                                         <td colspan="<?php echo $colspan; ?>" style="padding: 20px; background: #f9f9f9; border: 2px solid #b3d9ff; border-radius: 4px;">
@@ -2181,6 +2440,105 @@ try {
             });
         }
 
+        // 報名提醒處理函數
+        function handleRegistrationRemind(enrollmentId, stageName) {
+            if (!confirm('確定已提醒學生報名' + stageName + '嗎？')) return;
+            
+            var formData = new FormData();
+            formData.append('action', 'remind');
+            formData.append('enrollment_id', enrollmentId);
+            
+            fetch('../../Topics-frontend/frontend/api/registration_reminder_api.php', {
+                method: 'POST',
+                body: formData
+            })
+            .then(function(response) { return response.json(); })
+            .then(function(data) {
+                if (data.success) {
+                    location.reload();
+                } else {
+                    alert(data.message || '操作失敗');
+                }
+            })
+            .catch(function(e) {
+                console.error(e);
+                alert('操作失敗，請稍後再試');
+            });
+        }
+        
+        function handleRegistrationRegister(enrollmentId, stageName) {
+            if (!confirm('確定學生已完成' + stageName + '報名嗎？標記後將移入「已報名」分類。')) return;
+            
+            var formData = new FormData();
+            formData.append('action', 'register');
+            formData.append('enrollment_id', enrollmentId);
+            
+            fetch('../../Topics-frontend/frontend/api/registration_reminder_api.php', {
+                method: 'POST',
+                body: formData
+            })
+            .then(function(response) { return response.json(); })
+            .then(function(data) {
+                if (data.success) {
+                    location.reload();
+                } else {
+                    alert(data.message || '操作失敗');
+                }
+            })
+            .catch(function(e) {
+                console.error(e);
+                alert('操作失敗，請稍後再試');
+            });
+        }
+
+        function handleRegistrationDeclineStage(enrollmentId, stageName) {
+            if (!confirm('確定學生本招生階段不報名嗎？\n\n學生將回復為「持續聯絡追蹤」，仍留在當年度招生名單中，下一招生階段可再次提醒報名。')) return;
+            
+            var formData = new FormData();
+            formData.append('action', 'decline_stage');
+            formData.append('enrollment_id', enrollmentId);
+            
+            fetch('../../Topics-frontend/frontend/api/registration_reminder_api.php', {
+                method: 'POST',
+                body: formData
+            })
+            .then(function(response) { return response.json(); })
+            .then(function(data) {
+                if (data.success) {
+                    location.reload();
+                } else {
+                    alert(data.message || '操作失敗');
+                }
+            })
+            .catch(function(e) {
+                console.error(e);
+                alert('操作失敗，請稍後再試');
+            });
+        }
+
+        function handleCheckInAction(enrollmentId, action, label) {
+            if (!confirm('確定要標記為「' + label + '」嗎？')) return;
+            var formData = new FormData();
+            formData.append('action', action);
+            formData.append('enrollment_id', enrollmentId);
+            fetch('../../Topics-frontend/frontend/api/registration_reminder_api.php', {
+                method: 'POST',
+                body: formData
+            })
+            .then(function(response) { return response.json(); })
+            .then(function(data) {
+                if (data.success) {
+                    location.reload();
+                } else {
+                    alert(data.message || '操作失敗');
+                }
+            })
+            .catch(function(e) {
+                console.error(e);
+                alert('操作失敗，請稍後再試');
+            });
+        }
+
         function submitCloseCase() {
             if (!currentStudentId) return;
             if (!confirm('確定要將此學生結案嗎？結案後將顯示於歷史紀錄。')) return;
@@ -2336,100 +2694,6 @@ try {
             if (event.target.classList.contains('modal')) {
                 event.target.style.display = "none";
             }
-        }
-        
-        // 批量選擇功能
-        function toggleSelectAll() {
-            var selectAll = document.getElementById('selectAllCheckbox') || document.getElementById('selectAllHeader');
-            var checkboxes = document.querySelectorAll('.student-checkbox');
-            var isChecked = selectAll ? selectAll.checked : false;
-            
-            checkboxes.forEach(function(cb) {
-                cb.checked = isChecked;
-            });
-            
-            // 同步兩個全選 checkbox
-            var selectAllCheckbox = document.getElementById('selectAllCheckbox');
-            var selectAllHeader = document.getElementById('selectAllHeader');
-            if (selectAllCheckbox && selectAllHeader) {
-                selectAllCheckbox.checked = isChecked;
-                selectAllHeader.checked = isChecked;
-            }
-            
-            updateSelectedCount();
-        }
-        
-        function updateSelectedCount() {
-            var checkboxes = document.querySelectorAll('.student-checkbox:checked');
-            var count = checkboxes.length;
-            var countSpan = document.getElementById('selectedCount');
-            var batchBtn = document.getElementById('batchRemindBtn');
-            
-            if (countSpan) countSpan.textContent = count;
-            if (batchBtn) batchBtn.style.display = count > 0 ? 'inline-flex' : 'none';
-            
-            // 更新全選 checkbox 狀態
-            var allCheckboxes = document.querySelectorAll('.student-checkbox');
-            var allChecked = allCheckboxes.length > 0 && checkboxes.length === allCheckboxes.length;
-            var selectAllCheckbox = document.getElementById('selectAllCheckbox');
-            var selectAllHeader = document.getElementById('selectAllHeader');
-            if (selectAllCheckbox) selectAllCheckbox.checked = allChecked;
-            if (selectAllHeader) selectAllHeader.checked = allChecked;
-        }
-        
-        function batchRemindRegistration() {
-            var checkboxes = document.querySelectorAll('.student-checkbox:checked');
-            if (checkboxes.length === 0) {
-                alert('請至少選擇一位學生');
-                return;
-            }
-            
-            var enrollmentIds = [];
-            checkboxes.forEach(function(cb) {
-                enrollmentIds.push(parseInt(cb.value));
-            });
-            
-            if (!confirm('確定要提醒 ' + enrollmentIds.length + ' 位學生去報名入學嗎？')) {
-                return;
-            }
-            
-            var batchBtn = document.getElementById('batchRemindBtn');
-            if (batchBtn) {
-                batchBtn.disabled = true;
-                batchBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 處理中...';
-            }
-            
-            var fd = new FormData();
-            fd.append('enrollment_ids', JSON.stringify(enrollmentIds));
-            
-            fetch('../../Topics-frontend/frontend/api/batch_remind_registration_api.php', { 
-                method: 'POST', 
-                body: fd 
-            })
-                .then(function(r) { return r.json(); })
-                .then(function(data) {
-                    if (data.success) {
-                        alert('已成功提醒 ' + (data.success_count || enrollmentIds.length) + ' 位學生');
-                        // 取消所有選擇
-                        document.querySelectorAll('.student-checkbox').forEach(function(cb) {
-                            cb.checked = false;
-                        });
-                        updateSelectedCount();
-                        location.reload();
-                    } else {
-                        alert(data.message || '批量提醒失敗');
-                    }
-                })
-                .catch(function(e) {
-                    console.error(e);
-                    alert('批量提醒失敗，請稍後再試');
-                })
-                .finally(function() {
-                    if (batchBtn) {
-                        batchBtn.disabled = false;
-                        batchBtn.innerHTML = '<i class="fas fa-bell"></i> 批量提醒報名 (<span id="selectedCount">0</span>)';
-                    }
-                });
         }
         
     </script>

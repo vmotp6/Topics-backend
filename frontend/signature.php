@@ -204,6 +204,10 @@ $current_page = 'signature';
         .toast.error {
             background-color: #f5222d;
         }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
         @media (max-width: 768px) {
             #signatureCanvas {
                 width: 100%;
@@ -241,26 +245,103 @@ $current_page = 'signature';
                         <div class="signature-container">
                             <div class="signature-info">
                                 <p><strong>簽名者：</strong><?php echo htmlspecialchars($user_name); ?> (<?php echo htmlspecialchars($username); ?>)</p>
-                                <p style="margin-top: 8px; font-size: 14px;">請在下方區域使用滑鼠或觸控筆進行簽名</p>
+                                <p style="margin-top: 8px; font-size: 14px;">請使用手機生物驗證（指紋/臉部辨識）或傳統簽名方式</p>
                             </div>
                             
-                            <canvas id="signatureCanvas" width="800" height="350"></canvas>
-                            
-                            <div class="controls">
-                                <button class="btn btn-danger" onclick="clearSignature()">
-                                    <i class="fas fa-eraser"></i> 清除
-                                </button>
-                                <button class="btn btn-secondary" onclick="saveAsImage()">
-                                    <i class="fas fa-download"></i> 下載圖片
-                                </button>
-                                <button class="btn btn-primary" onclick="submitSignature()" id="submitBtn">
-                                    <i class="fas fa-check"></i> 確認簽名
-                                </button>
+                            <!-- WebAuthn 生物驗證區域 -->
+                            <div id="webauthnSection" style="text-align: center; padding: 40px 20px; background: #f5f5f5; border-radius: 8px; margin-bottom: 20px;">
+                                <div id="webauthnStatus" style="margin-bottom: 20px;">
+                                    <i class="fas fa-fingerprint" style="font-size: 48px; color: #1890ff; margin-bottom: 16px;"></i>
+                                    <p style="font-size: 16px; color: #666; margin-bottom: 8px;">使用生物驗證進行簽名</p>
+                                    <p style="font-size: 14px; color: #999; margin-bottom: 12px;" id="webauthnDescription">
+                                        支援手機指紋辨識、臉部辨識，或 USB 安全性金鑰
+                                    </p>
+                                    <div id="deviceHint" style="display: none; padding: 12px; background: #fff3cd; border: 1px solid #ffc107; border-radius: 4px; margin-top: 12px; font-size: 13px; color: #856404; text-align: left;">
+                                        <!-- 內容由 JavaScript 動態填充 -->
+                                    </div>
+                                </div>
+                                <div id="webauthnButtons" style="display: flex; gap: 12px; justify-content: center; flex-wrap: wrap;">
+                                    <button class="btn btn-primary" onclick="startWebAuthnAuth()" id="webauthnAuthBtn">
+                                        <i class="fas fa-fingerprint"></i> 使用生物驗證簽名
+                                    </button>
+                                    <button class="btn btn-secondary" onclick="startCrossDeviceAuth()" id="crossDeviceBtn" style="display: none; visibility: hidden;">
+                                        <i class="fas fa-qrcode"></i> 使用手機掃描驗證
+                                    </button>
+                                    <button class="btn btn-secondary" onclick="showRegisterModal()" id="registerDeviceBtn">
+                                        <i class="fas fa-mobile-alt"></i> 註冊新設備
+                                    </button>
+                                    <button class="btn btn-secondary" onclick="switchToCanvas()" id="switchToCanvasBtn">
+                                        <i class="fas fa-pen"></i> 使用傳統簽名
+                                    </button>
+                                </div>
+                                <!-- 跨設備認證 QR 碼區域 -->
+                                <div id="crossDeviceSection" style="display: none; margin-top: 20px; padding: 20px; background: white; border-radius: 8px; border: 2px solid #1890ff;">
+                                    <h4 style="margin-bottom: 15px; color: #1890ff;">
+                                        <i class="fas fa-qrcode"></i> 使用手機生物驗證
+                                    </h4>
+                                    <div id="qrCodeContainer" style="text-align: center; margin-bottom: 15px;">
+                                        <div class="spinner" style="margin: 20px auto;"></div>
+                                    </div>
+                                    <p style="font-size: 13px; color: #666; margin-bottom: 15px;">
+                                        1. 使用手機掃描上方 QR 碼<br>
+                                        2. 在手機上使用指紋或臉部辨識完成驗證<br>
+                                        3. 驗證成功後，此頁面會自動完成簽名
+                                    </p>
+                                    <div id="crossDeviceStatus" style="padding: 10px; background: #f5f5f5; border-radius: 4px; font-size: 12px; color: #666; margin-bottom: 10px;">
+                                        等待手機驗證...
+                                    </div>
+                                    <button class="btn btn-secondary" onclick="cancelCrossDeviceAuth()" style="width: 100%;">
+                                        取消
+                                    </button>
+                                </div>
+                                <div id="webauthnError" style="display: none; margin-top: 16px; padding: 12px; background: #fff2f0; border: 1px solid #ffccc7; border-radius: 4px; color: #a8071a;"></div>
                             </div>
                             
-                            <div class="signature-preview" id="preview">
-                                <h4>簽名預覽</h4>
-                                <img id="previewImage" src="" alt="簽名預覽">
+                            <!-- Canvas 傳統簽名區域（預設隱藏） -->
+                            <div id="canvasSection" style="display: none;">
+                                <canvas id="signatureCanvas" width="800" height="350"></canvas>
+                                
+                                <div class="controls">
+                                    <button class="btn btn-danger" onclick="clearSignature()">
+                                        <i class="fas fa-eraser"></i> 清除
+                                    </button>
+                                    <button class="btn btn-secondary" onclick="saveAsImage()">
+                                        <i class="fas fa-download"></i> 下載圖片
+                                    </button>
+                                    <button class="btn btn-secondary" onclick="switchToWebAuthn()">
+                                        <i class="fas fa-fingerprint"></i> 改用生物驗證
+                                    </button>
+                                    <button class="btn btn-primary" onclick="submitCanvasSignature()" id="submitCanvasBtn">
+                                        <i class="fas fa-check"></i> 確認簽名
+                                    </button>
+                                </div>
+                                
+                                <div class="signature-preview" id="preview">
+                                    <h4>簽名預覽</h4>
+                                    <img id="previewImage" src="" alt="簽名預覽">
+                                </div>
+                            </div>
+                            
+                            <!-- 簽名狀態顯示 -->
+                            <div id="signatureStatus" style="display: none; margin-top: 20px; padding: 16px; background: #f6ffed; border: 1px solid #b7eb8f; border-radius: 6px;">
+                                <p style="color: #52c41a; margin: 0;">
+                                    <i class="fas fa-check-circle"></i> <span id="statusMessage">簽名已完成</span>
+                                </p>
+                            </div>
+                        </div>
+                        
+                        <!-- 註冊設備模態框 -->
+                        <div id="registerModal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 10000; align-items: center; justify-content: center;">
+                            <div style="background: white; padding: 30px; border-radius: 8px; max-width: 500px; width: 90%;">
+                                <h3 style="margin-top: 0;">註冊生物驗證設備</h3>
+                                <p style="color: #666; margin-bottom: 20px;">請按照提示完成設備註冊，之後即可使用生物驗證進行簽名。</p>
+                                <div id="registerStatus" style="margin-bottom: 20px;"></div>
+                                <div style="display: flex; gap: 12px; justify-content: flex-end;">
+                                    <button class="btn btn-secondary" onclick="closeRegisterModal()">取消</button>
+                                    <button class="btn btn-primary" onclick="startWebAuthnRegister()" id="startRegisterBtn">
+                                        <i class="fas fa-fingerprint"></i> 開始註冊
+                                    </button>
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -273,28 +354,656 @@ $current_page = 'signature';
     <div id="toast" class="toast"></div>
 
     <script>
+        // WebAuthn 相關變數
+        let webauthnAuthResult = null;
+        let currentSignatureMethod = 'webauthn'; // 'webauthn' 或 'canvas'
+        
+        // Canvas 相關變數
         const canvas = document.getElementById('signatureCanvas');
-        const ctx = canvas.getContext('2d');
+        let ctx = null;
         let isDrawing = false;
         let lastX = 0;
         let lastY = 0;
-
-        // 設定畫筆樣式
-        ctx.strokeStyle = '#000000';
-        ctx.lineWidth = 2.5;
-        ctx.lineCap = 'round';
-        ctx.lineJoin = 'round';
-
-        // 調整 Canvas 大小以適應螢幕
-        function resizeCanvas() {
-            const container = canvas.parentElement;
-            const maxWidth = Math.min(800, container.clientWidth - 48);
-            canvas.style.width = maxWidth + 'px';
-            canvas.style.height = (maxWidth * 350 / 800) + 'px';
+        
+        // 檢查 WebAuthn 支援
+        function checkWebAuthnSupport() {
+            if (!window.PublicKeyCredential) {
+                showToast('您的瀏覽器不支援 WebAuthn，將使用傳統簽名方式', 'error');
+                switchToCanvas();
+                return false;
+            }
+            return true;
         }
+        
+        // 檢測設備類型
+        function detectDeviceType() {
+            const ua = navigator.userAgent;
+            const isMobile = /Mobile|Android|iPhone|iPad/i.test(ua);
+            return isMobile ? 'mobile' : 'desktop';
+        }
+        
+        // 檢測是否支援平台認證器（Windows Hello 等）
+        async function checkPlatformAuthenticator() {
+            if (!window.PublicKeyCredential) {
+                return false;
+            }
+            
+            try {
+                // 嘗試檢查平台認證器是否可用
+                const available = await PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable();
+                return available;
+            } catch (e) {
+                // 如果 API 不支援，返回 false
+                return false;
+            }
+        }
+        
+        // 初始化
+        document.addEventListener('DOMContentLoaded', async function() {
+            if (checkWebAuthnSupport()) {
+                const deviceType = detectDeviceType();
+                const hasPlatformAuth = await checkPlatformAuthenticator();
+                
+                // 預設顯示 WebAuthn
+                showWebAuthnSection();
+                
+                // 如果是桌面設備
+                if (deviceType === 'desktop') {
+                    // 在桌面環境，總是顯示跨設備認證按鈕（推薦使用）
+                    const crossDeviceBtn = document.getElementById('crossDeviceBtn');
+                    if (crossDeviceBtn) {
+                        crossDeviceBtn.style.display = 'inline-flex';
+                        crossDeviceBtn.style.visibility = 'visible';
+                        console.log('已顯示跨設備認證按鈕');
+                    } else {
+                        console.error('找不到跨設備認證按鈕元素');
+                    }
+                    
+                    // 檢查是否有手機憑證
+                    try {
+                        const checkResponse = await fetch('check_credentials.php');
+                        const checkData = await checkResponse.json();
+                        
+                        console.log('憑證檢查結果:', checkData);
+                        
+                        if (checkData.success && checkData.credentials && checkData.credentials.length > 0) {
+                            const hasMobileCredential = checkData.credentials.some(c => 
+                                c.device_type === 'phone' || c.device_type === 'tablet' ||
+                                (c.device_name && (
+                                    c.device_name.includes('手機') || 
+                                    c.device_name.includes('iPhone') || 
+                                    c.device_name.includes('Android') || 
+                                    c.device_name.includes('iPad')
+                                ))
+                            );
+                            
+                            if (hasMobileCredential) {
+                                // 有手機憑證，推薦使用跨設備認證
+                                document.getElementById('deviceHint').style.display = 'block';
+                                document.getElementById('deviceHint').innerHTML = `
+                                    <i class="fas fa-info-circle"></i> 
+                                    <strong>桌面電腦提示：</strong>檢測到您已註冊手機生物驗證。
+                                    <br>
+                                    <strong>推薦方案：</strong>
+                                    <br>1. <strong>點擊「使用手機掃描驗證」</strong>，用手機掃描 QR 碼完成生物驗證（最方便，推薦）
+                                    <br>2. 或使用手機瀏覽器直接打開此頁面進行生物驗證
+                                    <br>3. 或使用下方的「使用傳統簽名」按鈕
+                                `;
+                                document.getElementById('webauthnDescription').innerHTML = `
+                                    <span style="color: #1890ff;">💡 您已註冊手機生物驗證</span>
+                                    <br>建議使用「手機掃描驗證」功能，或直接使用手機瀏覽器
+                                `;
+                                // 將跨設備認證設為主要按鈕
+                                document.getElementById('crossDeviceBtn').classList.remove('btn-secondary');
+                                document.getElementById('crossDeviceBtn').classList.add('btn-primary');
+                                document.getElementById('webauthnAuthBtn').classList.remove('btn-primary');
+                                document.getElementById('webauthnAuthBtn').classList.add('btn-secondary');
+                            } else {
+                                // 沒有手機憑證
+                                if (!hasPlatformAuth) {
+                                    document.getElementById('deviceHint').style.display = 'block';
+                                    document.getElementById('deviceHint').innerHTML = `
+                                        <i class="fas fa-info-circle"></i> 
+                                        <strong>桌面電腦提示：</strong>您的電腦沒有內建生物驗證功能。
+                                        <br>
+                                        <strong>建議方案：</strong>
+                                        <br>1. <strong>點擊「使用手機掃描驗證」</strong>註冊並使用手機生物驗證（推薦）
+                                        <br>2. 使用 USB 安全性金鑰（如 YubiKey）
+                                        <br>3. 使用下方的「使用傳統簽名」按鈕
+                                    `;
+                                    document.getElementById('webauthnDescription').innerHTML = `
+                                        <span style="color: #f5222d;">⚠️ 桌面電腦沒有內建生物驗證</span>
+                                        <br>建議使用「手機掃描驗證」功能註冊手機生物驗證
+                                    `;
+                                }
+                            }
+                        } else {
+                            // 沒有憑證，提示註冊
+                            if (!hasPlatformAuth) {
+                                document.getElementById('deviceHint').style.display = 'block';
+                                document.getElementById('deviceHint').innerHTML = `
+                                    <i class="fas fa-info-circle"></i> 
+                                    <strong>桌面電腦提示：</strong>您尚未註冊任何生物驗證設備。
+                                    <br>
+                                    <strong>建議方案：</strong>
+                                    <br>1. <strong>點擊「使用手機掃描驗證」</strong>註冊並使用手機生物驗證（推薦）
+                                    <br>2. 點擊「註冊新設備」註冊 USB 安全性金鑰
+                                    <br>3. 使用下方的「使用傳統簽名」按鈕
+                                `;
+                            }
+                        }
+                    } catch (e) {
+                        console.error('檢查憑證失敗:', e);
+                        // 即使檢查失敗，也在桌面顯示跨設備認證按鈕
+                        const crossDeviceBtn = document.getElementById('crossDeviceBtn');
+                        if (crossDeviceBtn) {
+                            crossDeviceBtn.style.display = 'inline-flex';
+                            crossDeviceBtn.style.visibility = 'visible';
+                        }
+                        // 顯示提示
+                        document.getElementById('deviceHint').style.display = 'block';
+                        document.getElementById('deviceHint').innerHTML = `
+                            <i class="fas fa-info-circle"></i> 
+                            <strong>桌面電腦提示：</strong>在桌面電腦上，建議使用「手機掃描驗證」功能。
+                            <br>
+                            <strong>推薦方案：</strong>
+                            <br>1. <strong>點擊「使用手機掃描驗證」</strong>，用手機掃描 QR 碼完成生物驗證（推薦）
+                            <br>2. 或使用手機瀏覽器直接打開此頁面進行生物驗證
+                            <br>3. 或使用下方的「使用傳統簽名」按鈕
+                        `;
+                    }
+                    
+                    if (hasPlatformAuth) {
+                        // 有 Windows Hello 等平台認證器
+                        document.getElementById('deviceHint').style.display = 'block';
+                        document.getElementById('deviceHint').style.background = '#d4edda';
+                        document.getElementById('deviceHint').style.borderColor = '#28a745';
+                        document.getElementById('deviceHint').style.color = '#155724';
+                        document.getElementById('deviceHint').innerHTML = `
+                            <i class="fas fa-check-circle"></i> 
+                            <strong>檢測到生物驗證支援：</strong>您可以使用 Windows Hello（指紋/臉部辨識）進行簽名。
+                        `;
+                        document.getElementById('webauthnDescription').innerHTML = `
+                            可以使用 Windows Hello 指紋辨識或臉部辨識進行簽名
+                        `;
+                    }
+                } else {
+                    // 手機設備
+                    document.getElementById('webauthnDescription').innerHTML = `
+                        可以使用手機的指紋辨識或臉部辨識進行簽名
+                    `;
+                }
+            } else {
+                showCanvasSection();
+            }
+        });
+        
+        // 顯示 WebAuthn 區域
+        function showWebAuthnSection() {
+            document.getElementById('webauthnSection').style.display = 'block';
+            document.getElementById('canvasSection').style.display = 'none';
+            currentSignatureMethod = 'webauthn';
+        }
+        
+        // 顯示 Canvas 區域
+        function showCanvasSection() {
+            document.getElementById('webauthnSection').style.display = 'none';
+            document.getElementById('canvasSection').style.display = 'block';
+            currentSignatureMethod = 'canvas';
+            
+            // 初始化 Canvas
+            if (!ctx && canvas) {
+                ctx = canvas.getContext('2d');
+                initCanvas();
+            }
+        }
+        
+        // 切換到 Canvas
+        function switchToCanvas() {
+            showCanvasSection();
+        }
+        
+        // 切換到 WebAuthn
+        function switchToWebAuthn() {
+            showWebAuthnSection();
+        }
+        
+        // 開始 WebAuthn 認證
+        async function startWebAuthnAuth() {
+            if (!checkWebAuthnSupport()) return;
+            
+            const btn = document.getElementById('webauthnAuthBtn');
+            const statusDiv = document.getElementById('webauthnStatus');
+            const errorDiv = document.getElementById('webauthnError');
+            
+            btn.disabled = true;
+            btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 準備中...';
+            errorDiv.style.display = 'none';
+            
+            try {
+                // 1. 獲取認證選項
+                const startResponse = await fetch('webauthn_authenticate.php', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ action: 'start' })
+                });
+                
+                const startData = await startResponse.json();
+                
+                if (!startData.success) {
+                    throw new Error(startData.message || '獲取認證選項失敗');
+                }
+                
+                // 2. 檢查是否在桌面環境且有手機憑證
+                const deviceType = detectDeviceType();
+                if (deviceType === 'desktop' && startData.has_platform_credential) {
+                    // 在桌面環境且有手機憑證，建議使用跨設備認證
+                    const useCrossDevice = confirm(
+                        '檢測到您已註冊手機生物驗證。\n\n' +
+                        '在桌面電腦上，直接認證可能會要求使用 USB 金鑰。\n\n' +
+                        '建議使用「手機掃描驗證」功能，或使用手機瀏覽器進行認證。\n\n' +
+                        '是否要繼續使用直接認證？（可能會要求 USB 金鑰）'
+                    );
+                    
+                    if (!useCrossDevice) {
+                        btn.disabled = false;
+                        btn.innerHTML = '<i class="fas fa-fingerprint"></i> 使用生物驗證簽名';
+                        errorDiv.style.display = 'block';
+                        errorDiv.innerHTML = '建議使用「手機掃描驗證」功能，或使用手機瀏覽器進行生物驗證簽名。';
+                        return;
+                    }
+                }
+                
+                // 3. 轉換選項中的 challenge 為 ArrayBuffer
+                const options = startData.options;
+                options.challenge = base64UrlToArrayBuffer(options.challenge);
+                
+                // 轉換 allowCredentials 中的 id 為 ArrayBuffer
+                if (options.allowCredentials && Array.isArray(options.allowCredentials)) {
+                    options.allowCredentials = options.allowCredentials.map(cred => {
+                        const transports = cred.transports || [];
+                        // 確保包含 hybrid transport，讓 Windows 可以顯示 Passkey QR code
+                        const updatedTransports = transports.includes('hybrid') 
+                            ? transports 
+                            : [...transports, 'hybrid'];
+                        
+                        return {
+                            ...cred,
+                            id: base64UrlToArrayBuffer(cred.id),
+                            transports: updatedTransports
+                        };
+                    });
+                    
+                    // 調試：記錄允許的憑證
+                    console.log('允許的憑證數量:', options.allowCredentials.length);
+                    console.log('允許的憑證 transports:', options.allowCredentials.map(c => c.transports));
+                } else {
+                    // 如果沒有 allowCredentials，Windows 會顯示所有選項（包括 Passkey QR code）
+                    console.log('⚠️ 沒有指定 allowCredentials，Windows 會顯示所有認證選項（包括 Passkey QR code）');
+                }
+                
+                // 調試：記錄認證選項
+                console.log('認證選項:', {
+                    rpId: options.rpId,
+                    allowCredentialsCount: options.allowCredentials?.length || 0,
+                    userVerification: options.userVerification,
+                    has_platform_credential: startData.has_platform_credential
+                });
+                
+                // 提示用戶 Windows 會顯示 Passkey QR code
+                if (startData.has_platform_credential) {
+                    console.log('✅ 檢測到平台憑證，Windows 安全性對話框會顯示：');
+                    console.log('  - Windows Hello（PIN/臉部辨識/指紋）');
+                    console.log('  - Passkey QR code（用手機掃描認證）');
+                    console.log('  - 手機生物驗證（指紋/Face ID）');
+                } else {
+                    console.log('💡 提示：Windows 可能會顯示 Passkey QR code 選項，讓您用手機掃描認證');
+                }
+                
+                // 4. 檢查是否有平台認證器
+                if (startData.has_platform_credential) {
+                    // 檢查平台認證器是否可用
+                    try {
+                        const isPlatformAvailable = await PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable();
+                        if (!isPlatformAvailable && deviceType === 'desktop') {
+                            throw new Error('平台認證器不可用。在桌面電腦上，建議使用「手機掃描驗證」功能。');
+                        }
+                    } catch (e) {
+                        if (e.message && !e.message.includes('平台認證器不可用')) {
+                            console.warn('無法檢查平台認證器:', e);
+                        } else {
+                            throw e;
+                        }
+                    }
+                }
+                
+                // 5. 調用 WebAuthn API
+                statusDiv.innerHTML = '<i class="fas fa-fingerprint" style="font-size: 48px; color: #1890ff; margin-bottom: 16px;"></i><p style="font-size: 16px; color: #666;">請使用您的生物驗證設備進行驗證...</p>';
+                
+                console.log('最終認證選項:', JSON.stringify(options, null, 2));
+                
+                const credential = await navigator.credentials.get({
+                    publicKey: options
+                });
+                
+                // 3. 發送認證結果到後端
+                const authResponse = await fetch('webauthn_authenticate.php', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        action: 'complete',
+                        credential: {
+                            id: credential.id,
+                            rawId: arrayBufferToBase64(credential.rawId),
+                            response: {
+                                authenticatorData: arrayBufferToBase64(credential.response.authenticatorData),
+                                clientDataJSON: arrayBufferToBase64(credential.response.clientDataJSON),
+                                signature: arrayBufferToBase64(credential.response.signature),
+                                userHandle: credential.response.userHandle ? arrayBufferToBase64(credential.response.userHandle) : null
+                            },
+                            type: credential.type
+                        }
+                    })
+                });
+                
+                // 檢查響應狀態
+                if (!authResponse.ok) {
+                    const errorText = await authResponse.text();
+                    console.error('認證響應錯誤:', authResponse.status, errorText);
+                    throw new Error(`認證失敗 (${authResponse.status}): ${errorText || '未知錯誤'}`);
+                }
+                
+                // 獲取響應文本，檢查是否為有效的 JSON
+                const responseText = await authResponse.text();
+                if (!responseText || responseText.trim() === '') {
+                    throw new Error('伺服器返回空響應');
+                }
+                
+                let authData;
+                try {
+                    authData = JSON.parse(responseText);
+                } catch (e) {
+                    console.error('JSON 解析錯誤:', e);
+                    console.error('響應內容:', responseText);
+                    throw new Error('伺服器返回的資料格式錯誤: ' + e.message);
+                }
+                
+                if (!authData.success) {
+                    throw new Error(authData.message || '認證失敗');
+                }
+                
+                // 檢查是否使用了平台認證器
+                if (startData.has_platform_credential && !authData.is_platform) {
+                    // 雖然有平台認證器，但可能使用了 USB 金鑰
+                    console.warn('檢測到可能使用了非平台認證器');
+                    // 這裡可以選擇拒絕或允許，為了用戶體驗，我們先允許
+                }
+                
+                // 4. 認證成功，儲存結果
+                webauthnAuthResult = authData;
+                statusDiv.innerHTML = '<i class="fas fa-check-circle" style="font-size: 48px; color: #52c41a; margin-bottom: 16px;"></i><p style="font-size: 16px; color: #52c41a;">生物驗證成功！</p>';
+                
+                // 自動提交簽名
+                await submitWebAuthnSignature();
+                
+            } catch (error) {
+                console.error('WebAuthn 認證錯誤:', error);
+                errorDiv.textContent = error.message || '認證失敗，請重試';
+                errorDiv.style.display = 'block';
+                statusDiv.innerHTML = '<i class="fas fa-fingerprint" style="font-size: 48px; color: #1890ff; margin-bottom: 16px;"></i><p style="font-size: 16px; color: #666; margin-bottom: 8px;">使用手機生物驗證進行簽名</p><p style="font-size: 14px; color: #999;">支援指紋辨識、臉部辨識等</p>';
+            } finally {
+                btn.disabled = false;
+                btn.innerHTML = '<i class="fas fa-fingerprint"></i> 使用生物驗證簽名';
+            }
+        }
+        
+        // 提交 WebAuthn 簽名
+        async function submitWebAuthnSignature() {
+            if (!webauthnAuthResult) {
+                showToast('請先完成生物驗證', 'error');
+                return;
+            }
+            
+            const submitBtn = document.getElementById('webauthnAuthBtn');
+            submitBtn.disabled = true;
+            submitBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 儲存中...';
+            
+            try {
+                const response = await fetch('save_signature.php', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        webauthn_auth: webauthnAuthResult,
+                        user_id: <?php echo $user_id; ?>,
+                        document_id: <?php echo $document_id ? $document_id : 'null'; ?>,
+                        document_type: '<?php echo htmlspecialchars($document_type, ENT_QUOTES); ?>',
+                        timestamp: new Date().toISOString(),
+                        authentication_method: 'webauthn'
+                    })
+                });
+                
+                // 檢查響應狀態
+                if (!response.ok) {
+                    const errorText = await response.text();
+                    console.error('儲存簽名響應錯誤:', response.status, errorText);
+                    throw new Error(`儲存失敗 (${response.status}): ${errorText || '未知錯誤'}`);
+                }
+                
+                // 獲取響應文本，檢查是否為有效的 JSON
+                const responseText = await response.text();
+                if (!responseText || responseText.trim() === '') {
+                    throw new Error('伺服器返回空響應');
+                }
+                
+                // 檢查是否為 HTML（PHP 錯誤頁面）
+                if (responseText.trim().startsWith('<')) {
+                    console.error('伺服器返回 HTML 而非 JSON:', responseText.substring(0, 200));
+                    throw new Error('伺服器返回錯誤頁面，請檢查伺服器日誌');
+                }
+                
+                let data;
+                try {
+                    data = JSON.parse(responseText);
+                } catch (e) {
+                    console.error('JSON 解析錯誤:', e);
+                    console.error('響應內容:', responseText);
+                    throw new Error('伺服器返回的資料格式錯誤: ' + e.message);
+                }
+                
+                if (data.success) {
+                    document.getElementById('signatureStatus').style.display = 'block';
+                    document.getElementById('statusMessage').textContent = '簽名已儲存成功！';
+                    showToast('簽名已儲存成功！', 'success');
+                    
+                    setTimeout(() => {
+                        if (data.redirect_url) {
+                            window.location.href = data.redirect_url;
+                        } else if (window.opener) {
+                            window.opener.postMessage({
+                                type: 'signature_saved',
+                                signature_id: data.signature_id,
+                                signature_url: data.signature_url
+                            }, '*');
+                            window.close();
+                        }
+                    }, 2000);
+                } else {
+                    throw new Error(data.message || '儲存失敗');
+                }
+            } catch (error) {
+                console.error('儲存簽名錯誤:', error);
+                showToast('儲存失敗：' + error.message, 'error');
+                submitBtn.disabled = false;
+                submitBtn.innerHTML = '<i class="fas fa-fingerprint"></i> 使用生物驗證簽名';
+            }
+        }
+        
+        // 顯示註冊模態框
+        function showRegisterModal() {
+            document.getElementById('registerModal').style.display = 'flex';
+        }
+        
+        // 關閉註冊模態框
+        function closeRegisterModal() {
+            document.getElementById('registerModal').style.display = 'none';
+            document.getElementById('registerStatus').innerHTML = '';
+        }
+        
+        // Base64 URL 解碼並轉換為 ArrayBuffer
+        function base64UrlToArrayBuffer(base64url) {
+            // 將 base64url 轉換為標準 base64
+            let base64 = base64url.replace(/-/g, '+').replace(/_/g, '/');
+            // 補齊 padding
+            while (base64.length % 4) {
+                base64 += '=';
+            }
+            // 解碼為二進制字串
+            const binaryString = atob(base64);
+            // 轉換為 ArrayBuffer
+            const bytes = new Uint8Array(binaryString.length);
+            for (let i = 0; i < binaryString.length; i++) {
+                bytes[i] = binaryString.charCodeAt(i);
+            }
+            return bytes.buffer;
+        }
+        
+        // 開始 WebAuthn 註冊
+        async function startWebAuthnRegister() {
+            if (!checkWebAuthnSupport()) return;
+            
+            const statusDiv = document.getElementById('registerStatus');
+            const startBtn = document.getElementById('startRegisterBtn');
+            
+            startBtn.disabled = true;
+            startBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 準備中...';
+            statusDiv.innerHTML = '<p style="color: #666;">正在準備註冊流程...</p>';
+            
+            try {
+                // 1. 獲取註冊選項
+                const startResponse = await fetch('webauthn_register.php', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ action: 'start' })
+                });
+                
+                const startData = await startResponse.json();
+                
+                if (!startData.success) {
+                    throw new Error(startData.message || '獲取註冊選項失敗');
+                }
+                
+                // 2. 轉換選項中的 challenge 和 user.id 為 ArrayBuffer
+                const options = startData.options;
+                
+                // 驗證必要欄位
+                if (!options.challenge || !options.user || !options.user.id) {
+                    throw new Error('註冊選項不完整');
+                }
+                
+                // 轉換 challenge 為 ArrayBuffer
+                options.challenge = base64UrlToArrayBuffer(options.challenge);
+                
+                // 轉換 user.id 為 ArrayBuffer（必須是 ArrayBuffer）
+                options.user.id = base64UrlToArrayBuffer(options.user.id);
+                
+                // 驗證 user.id 不為空
+                if (!options.user.id || options.user.id.byteLength === 0) {
+                    throw new Error('用戶 ID 無效');
+                }
+                
+                // 驗證 user.id 長度（WebAuthn 規範：1-64 字節）
+                if (options.user.id.byteLength > 64) {
+                    throw new Error('用戶 ID 長度超過限制');
+                }
+                
+                // 調試資訊
+                console.log('註冊選項:', {
+                    rpId: options.rp?.id,
+                    rpName: options.rp?.name,
+                    userIdLength: options.user.id.byteLength,
+                    userName: options.user.name,
+                    userDisplayName: options.user.displayName,
+                    userVerification: options.authenticatorSelection?.userVerification
+                });
+                
+                // 3. 調用 WebAuthn API
+                statusDiv.innerHTML = '<p style="color: #666;">請使用您的生物驗證設備進行註冊...</p>';
+                statusDiv.innerHTML += '<p style="color: #999; font-size: 12px; margin-top: 8px;">您可以選擇：Windows Hello、手機生物驗證、或 USB 金鑰</p>';
+                
+                const credential = await navigator.credentials.create({
+                    publicKey: options
+                });
+                
+                // 3. 發送註冊結果到後端
+                const registerResponse = await fetch('webauthn_register.php', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        action: 'complete',
+                        credential: {
+                            id: credential.id,
+                            rawId: arrayBufferToBase64(credential.rawId),
+                            response: {
+                                attestationObject: arrayBufferToBase64(credential.response.attestationObject),
+                                clientDataJSON: arrayBufferToBase64(credential.response.clientDataJSON)
+                            },
+                            type: credential.type
+                        }
+                    })
+                });
+                
+                const registerData = await registerResponse.json();
+                
+                if (!registerData.success) {
+                    throw new Error(registerData.message || '註冊失敗');
+                }
+                
+                statusDiv.innerHTML = '<p style="color: #52c41a;"><i class="fas fa-check-circle"></i> 設備註冊成功！</p>';
+                showToast('設備註冊成功！現在可以使用生物驗證進行簽名', 'success');
+                
+                setTimeout(() => {
+                    closeRegisterModal();
+                }, 2000);
+                
+            } catch (error) {
+                console.error('WebAuthn 註冊錯誤:', error);
+                statusDiv.innerHTML = '<p style="color: #f5222d;"><i class="fas fa-exclamation-circle"></i> ' + (error.message || '註冊失敗，請重試') + '</p>';
+            } finally {
+                startBtn.disabled = false;
+                startBtn.innerHTML = '<i class="fas fa-fingerprint"></i> 開始註冊';
+            }
+        }
+        
+        // 工具函數：ArrayBuffer 轉 Base64
+        function arrayBufferToBase64(buffer) {
+            const bytes = new Uint8Array(buffer);
+            let binary = '';
+            for (let i = 0; i < bytes.byteLength; i++) {
+                binary += String.fromCharCode(bytes[i]);
+            }
+            return btoa(binary);
+        }
+        
+        // Canvas 初始化
+        function initCanvas() {
+            if (!ctx) return;
 
-        window.addEventListener('resize', resizeCanvas);
-        resizeCanvas();
+            // 設定畫筆樣式
+            ctx.strokeStyle = '#000000';
+            ctx.lineWidth = 2.5;
+            ctx.lineCap = 'round';
+            ctx.lineJoin = 'round';
+
+            // 調整 Canvas 大小以適應螢幕
+            function resizeCanvas() {
+                const container = canvas.parentElement;
+                const maxWidth = Math.min(800, container.clientWidth - 48);
+                canvas.style.width = maxWidth + 'px';
+                canvas.style.height = (maxWidth * 350 / 800) + 'px';
+            }
+
+            window.addEventListener('resize', resizeCanvas);
+            resizeCanvas();
 
         // 獲取滑鼠/觸控在 Canvas 上的座標
         function getEventPos(e) {
@@ -387,7 +1096,15 @@ $current_page = 'signature';
             showToast('圖片已下載', 'success');
         }
 
-        function submitSignature() {
+        }
+        
+        // 提交 Canvas 簽名
+        function submitCanvasSignature() {
+            if (!ctx) {
+                showToast('簽名畫布未初始化', 'error');
+                return;
+            }
+            
             // 檢查是否有簽名
             const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
             const hasSignature = imageData.data.some((channel, index) => {
@@ -407,7 +1124,7 @@ $current_page = 'signature';
             document.getElementById('preview').classList.add('active');
 
             // 禁用提交按鈕
-            const submitBtn = document.getElementById('submitBtn');
+            const submitBtn = document.getElementById('submitCanvasBtn');
             submitBtn.disabled = true;
             submitBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 儲存中...';
 
@@ -422,12 +1139,15 @@ $current_page = 'signature';
                     user_id: <?php echo $user_id; ?>,
                     document_id: <?php echo $document_id ? $document_id : 'null'; ?>,
                     document_type: '<?php echo htmlspecialchars($document_type, ENT_QUOTES); ?>',
-                    timestamp: new Date().toISOString()
+                    timestamp: new Date().toISOString(),
+                    authentication_method: 'canvas'
                 })
             })
             .then(response => response.json())
             .then(data => {
                 if (data.success) {
+                    document.getElementById('signatureStatus').style.display = 'block';
+                    document.getElementById('statusMessage').textContent = '簽名已儲存成功！';
                     showToast('簽名已儲存成功！', 'success');
                     // 3秒後可以選擇重定向或關閉視窗
                     setTimeout(() => {
@@ -457,6 +1177,134 @@ $current_page = 'signature';
             });
         }
 
+        // 跨設備認證功能
+        let crossDeviceSessionId = null;
+        let crossDeviceCheckInterval = null;
+        
+        async function startCrossDeviceAuth() {
+            try {
+                // 1. 創建跨設備 session
+                const response = await fetch('webauthn_cross_device.php', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ action: 'create_session' })
+                });
+                
+                const data = await response.json();
+                
+                if (!data.success) {
+                    throw new Error(data.message || '創建認證 session 失敗');
+                }
+                
+                crossDeviceSessionId = data.session_id;
+                
+                // 2. 顯示 QR 碼區域
+                document.getElementById('crossDeviceSection').style.display = 'block';
+                document.getElementById('webauthnButtons').style.display = 'none';
+                
+                // 3. 生成 QR 碼（確保 URL 正確）
+                if (data.qr_url) {
+                    generateQRCode(data.qr_url);
+                } else {
+                    throw new Error('QR 碼 URL 生成失敗');
+                }
+                
+                // 4. 開始輪詢檢查狀態
+                startPollingStatus();
+                
+            } catch (error) {
+                console.error('跨設備認證錯誤:', error);
+                showToast('啟動跨設備認證失敗：' + error.message, 'error');
+                // 如果失敗，恢復按鈕顯示
+                document.getElementById('crossDeviceSection').style.display = 'none';
+                document.getElementById('webauthnButtons').style.display = 'flex';
+            }
+        }
+        
+        function generateQRCode(url) {
+            const container = document.getElementById('qrCodeContainer');
+            container.innerHTML = '<div style="border: 3px solid #f3f3f3; border-top: 3px solid #1890ff; border-radius: 50%; width: 40px; height: 40px; animation: spin 1s linear infinite; margin: 0 auto;"></div>';
+            
+            // 使用 QR 碼 API
+            const qrUrl = 'https://api.qrserver.com/v1/create-qr-code/?size=300x300&margin=2&data=' + encodeURIComponent(url);
+            const img = document.createElement('img');
+            img.src = qrUrl;
+            img.alt = '掃描此 QR 碼';
+            img.style.maxWidth = '100%';
+            img.style.height = 'auto';
+            img.style.border = '2px solid #1890ff';
+            img.style.borderRadius = '8px';
+            img.style.padding = '10px';
+            img.style.background = 'white';
+            
+            img.onload = function() {
+                container.innerHTML = '';
+                container.appendChild(img);
+            };
+            
+            img.onerror = function() {
+                // 如果 API 失敗，嘗試使用備用方案
+                container.innerHTML = `
+                    <div style="padding: 20px; text-align: center;">
+                        <p style="color: #f5222d; margin-bottom: 10px;">QR 碼生成失敗</p>
+                        <p style="font-size: 12px; color: #666; margin-bottom: 15px;">請使用手機瀏覽器直接訪問以下連結：</p>
+                        <a href="${url}" target="_blank" style="display: inline-block; padding: 10px 20px; background: #1890ff; color: white; text-decoration: none; border-radius: 4px; word-break: break-all;">
+                            ${url}
+                        </a>
+                    </div>
+                `;
+            };
+        }
+        
+        function startPollingStatus() {
+            const statusDiv = document.getElementById('crossDeviceStatus');
+            
+            crossDeviceCheckInterval = setInterval(async () => {
+                try {
+                    const response = await fetch('webauthn_cross_device.php?action=check_status&session_id=' + crossDeviceSessionId);
+                    const data = await response.json();
+                    
+                    if (!data.success) {
+                        if (data.status === 'expired' || data.status === 'not_found') {
+                            clearInterval(crossDeviceCheckInterval);
+                            statusDiv.innerHTML = '<span style="color: #f5222d;">認證已過期，請重新開始</span>';
+                            return;
+                        }
+                        return;
+                    }
+                    
+                    if (data.status === 'completed' && data.result) {
+                        // 認證完成
+                        clearInterval(crossDeviceCheckInterval);
+                        statusDiv.innerHTML = '<span style="color: #52c41a;"><i class="fas fa-check-circle"></i> 手機驗證成功！</span>';
+                        
+                        // 使用認證結果提交簽名
+                        webauthnAuthResult = data.result;
+                        await submitWebAuthnSignature();
+                        
+                        // 隱藏跨設備區域
+                        setTimeout(() => {
+                            document.getElementById('crossDeviceSection').style.display = 'none';
+                            document.getElementById('webauthnButtons').style.display = 'flex';
+                        }, 2000);
+                    } else if (data.status === 'pending') {
+                        statusDiv.innerHTML = '<span><i class="fas fa-spinner fa-spin"></i> 等待手機驗證...</span>';
+                    }
+                } catch (error) {
+                    console.error('檢查狀態錯誤:', error);
+                }
+            }, 2000); // 每2秒檢查一次
+        }
+        
+        function cancelCrossDeviceAuth() {
+            if (crossDeviceCheckInterval) {
+                clearInterval(crossDeviceCheckInterval);
+            }
+            document.getElementById('crossDeviceSection').style.display = 'none';
+            document.getElementById('webauthnButtons').style.display = 'flex';
+            crossDeviceSessionId = null;
+        }
+        
         function showToast(message, type = 'success') {
             const toast = document.getElementById('toast');
             toast.textContent = message;

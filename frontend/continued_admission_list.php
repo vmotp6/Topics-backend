@@ -361,6 +361,65 @@ foreach ($applications as &$app) {
             $old_stmt->close();
         }
     }
+    
+    // 查詢當前用戶對該學生的評分狀態和簽章資訊
+    $app['my_score'] = null;
+    $app['my_signature'] = null;
+    if (!empty($user_id)) {
+        // 確定當前用戶的 assignment_order
+        $my_slot = null;
+        if ($has_normalized_assignments) {
+            $slot_stmt = $conn->prepare("
+                SELECT assignment_order
+                FROM continued_admission_assignments
+                WHERE application_id = ? AND reviewer_user_id = ?
+                LIMIT 1
+            ");
+            $slot_stmt->bind_param("ii", $app['id'], $user_id);
+            $slot_stmt->execute();
+            $slot_result = $slot_stmt->get_result();
+            if ($slot_row = $slot_result->fetch_assoc()) {
+                $my_slot = (int)$slot_row['assignment_order'];
+            }
+            $slot_stmt->close();
+        } else {
+            // 使用舊欄位判斷
+            if (isset($app['assigned_teacher_1_id']) && (int)$app['assigned_teacher_1_id'] === (int)$user_id) {
+                $my_slot = 1;
+            } elseif (isset($app['assigned_teacher_2_id']) && (int)$app['assigned_teacher_2_id'] === (int)$user_id) {
+                $my_slot = 2;
+            } elseif (isset($app['assigned_director_id']) && (int)$app['assigned_director_id'] === (int)$user_id) {
+                $my_slot = 3;
+            }
+        }
+        
+        if ($my_slot !== null) {
+            // 查詢評分和簽章
+            $score_check = $conn->prepare("
+                SELECT cas.self_intro_score, cas.skills_score, cas.signature_id, s.signature_path
+                FROM continued_admission_scores cas
+                LEFT JOIN signatures s ON cas.signature_id = s.id
+                WHERE cas.application_id = ? 
+                  AND cas.reviewer_user_id = ?
+                  AND cas.assignment_order = ?
+                LIMIT 1
+            ");
+            $score_check->bind_param("iii", $app['id'], $user_id, $my_slot);
+            $score_check->execute();
+            $score_check_result = $score_check->get_result();
+            if ($score_row = $score_check_result->fetch_assoc()) {
+                $app['my_score'] = [
+                    'self_intro_score' => (int)($score_row['self_intro_score'] ?? 0),
+                    'skills_score' => (int)($score_row['skills_score'] ?? 0),
+                    'total_score' => (int)($score_row['self_intro_score'] ?? 0) + (int)($score_row['skills_score'] ?? 0)
+                ];
+                if (!empty($score_row['signature_path'])) {
+                    $app['my_signature'] = $score_row['signature_path'];
+                }
+            }
+            $score_check->close();
+        }
+    }
 }
 unset($app);
 
@@ -1265,6 +1324,44 @@ function getStatusClass($status) {
                                                 <span class="status-badge <?php echo getStatusClass($current_status); ?>">
                                                     <?php echo htmlspecialchars($status_text); ?>
                                                 </span>
+                                                <?php 
+                                                // 顯示當前用戶的評分狀態
+                                                if (!empty($item['my_score'])) {
+                                                    $my_score = $item['my_score'];
+                                                    $has_signature = !empty($item['my_signature']);
+                                                ?>
+                                                    <div style="margin-top: 6px; font-size: 12px; color: #52c41a;">
+                                                        <i class="fas fa-check-circle"></i> 已評分：<?php echo $my_score['total_score']; ?> 分
+                                                        <?php if ($has_signature): ?>
+                                                            <i class="fas fa-file-signature" style="margin-left: 8px; color: #1890ff;" title="已簽章"></i>
+                                                        <?php endif; ?>
+                                                    </div>
+                                                <?php 
+                                                } else {
+                                                    // 檢查是否可以評分（用於顯示「待評分」）
+                                                    $is_pending = ($current_status === 'pending' || $current_status === 'PE');
+                                                    $assigned_dept = $item['assigned_department'] ?? '';
+                                                    $assigned_teacher_1 = $item['assigned_teacher_1_id'] ?? null;
+                                                    $assigned_teacher_2 = $item['assigned_teacher_2_id'] ?? null;
+                                                    $assigned_director_id = $item['assigned_director_id'] ?? null;
+                                                    $is_assigned = ($assigned_teacher_1 !== null || $assigned_teacher_2 !== null || $assigned_director_id !== null);
+                                                    
+                                                    $can_score_this = false;
+                                                    if ($is_teacher && !empty($user_id)) {
+                                                        if ($assigned_teacher_1 == $user_id || $assigned_teacher_2 == $user_id) {
+                                                            $can_score_this = true;
+                                                        }
+                                                    } elseif ($is_director && !empty($user_id) && !empty($user_department_code) && $assigned_dept === $user_department_code && $is_assigned) {
+                                                        $can_score_this = true;
+                                                    }
+                                                    
+                                                    if ($can_score_this): ?>
+                                                        <div style="margin-top: 6px; font-size: 12px; color: #8c8c8c;">
+                                                            <i class="fas fa-clock"></i> 待評分
+                                                        </div>
+                                                    <?php endif;
+                                                }
+                                                ?>
                                             </td>
                                             <td>
                                                 <a href="continued_admission_detail.php?id=<?php echo $item['id']; ?>" class="btn-view">查看詳情</a>
@@ -1403,11 +1500,30 @@ function getStatusClass($status) {
                                                     <th>排名</th>
                                                     <th>報名編號</th>
                                                     <th>姓名</th>
-                                                    <th>老師1評分</th>
-                                                    <th>老師2評分</th>
-                                                    <th>主任評分</th>
+                                                    <?php
+                                                    // 獲取第一個學生的評分老師姓名（用於表頭）
+                                                    $header_teacher1_name = '評分的老師';
+                                                    $header_teacher2_name = '評分的老師';
+                                                    $header_director_name = '評分的老師';
+                                                    if (!empty($ranking_data['applications'])) {
+                                                        $first_app = $ranking_data['applications'][0];
+                                                        foreach ($first_app['scores'] as $score) {
+                                                            if ($score['assignment_order'] == 1) {
+                                                                $header_teacher1_name = !empty($score['reviewer_name']) ? htmlspecialchars($score['reviewer_name']) . '評分' : '評分的老師';
+                                                            } elseif ($score['assignment_order'] == 2) {
+                                                                $header_teacher2_name = !empty($score['reviewer_name']) ? htmlspecialchars($score['reviewer_name']) . '評分' : '評分的老師';
+                                                            } elseif ($score['assignment_order'] == 3) {
+                                                                $header_director_name = !empty($score['reviewer_name']) ? htmlspecialchars($score['reviewer_name']) . '評分' : '評分的老師';
+                                                            }
+                                                        }
+                                                    }
+                                                    ?>
+                                                    <th><?php echo $header_teacher1_name; ?></th>
+                                                    <th><?php echo $header_teacher2_name; ?></th>
+                                                    <th><?php echo $header_director_name; ?></th>
                                                     <th>平均分數</th>
                                                     <th>錄取狀態</th>
+                                                    <th>操作</th>
                                                 </tr>
                                             </thead>
                                             <tbody>
@@ -1467,6 +1583,12 @@ function getStatusClass($status) {
                                                         <?php else: ?>
                                                             <span class="status-badge status-rejected">不錄取</span>
                                                         <?php endif; ?>
+                                                    </td>
+                                                    <td>
+                                                        <a href="continued_admission_ranking_detail.php?id=<?php echo $app['id']; ?>" 
+                                                           style="display: inline-block; padding: 6px 16px; border: 1px solid #91d5ff; border-radius: 6px; background: white; color: #1890ff; text-decoration: underline; font-size: 14px; transition: all 0.3s;">
+                                                            查看詳情
+                                                        </a>
                                                     </td>
                                                 </tr>
                                                 <?php endforeach; ?>
@@ -1536,11 +1658,30 @@ function getStatusClass($status) {
                                                             <th>排名</th>
                                                             <th>報名編號</th>
                                                             <th>姓名</th>
-                                                            <th>老師1評分</th>
-                                                            <th>老師2評分</th>
-                                                            <th>主任評分</th>
+                                                            <?php
+                                                            // 獲取第一個學生的評分老師姓名（用於表頭）
+                                                            $header_teacher1_name = '評分的老師';
+                                                            $header_teacher2_name = '評分的老師';
+                                                            $header_director_name = '評分的老師';
+                                                            if (!empty($dept_ranking['applications'])) {
+                                                                $first_app = $dept_ranking['applications'][0];
+                                                                foreach ($first_app['scores'] as $score) {
+                                                                    if ($score['assignment_order'] == 1) {
+                                                                        $header_teacher1_name = !empty($score['reviewer_name']) ? htmlspecialchars($score['reviewer_name']) . '評分' : '評分的老師';
+                                                                    } elseif ($score['assignment_order'] == 2) {
+                                                                        $header_teacher2_name = !empty($score['reviewer_name']) ? htmlspecialchars($score['reviewer_name']) . '評分' : '評分的老師';
+                                                                    } elseif ($score['assignment_order'] == 3) {
+                                                                        $header_director_name = !empty($score['reviewer_name']) ? htmlspecialchars($score['reviewer_name']) . '評分' : '評分的老師';
+                                                                    }
+                                                                }
+                                                            }
+                                                            ?>
+                                                            <th><?php echo $header_teacher1_name; ?></th>
+                                                            <th><?php echo $header_teacher2_name; ?></th>
+                                                            <th><?php echo $header_director_name; ?></th>
                                                             <th>平均分數</th>
                                                             <th>錄取狀態</th>
+                                                            <th>操作</th>
                                                         </tr>
                                                     </thead>
                                                     <tbody>
@@ -1600,6 +1741,12 @@ function getStatusClass($status) {
                                                                 <?php else: ?>
                                                                     <span class="status-badge status-rejected">不錄取</span>
                                                                 <?php endif; ?>
+                                                            </td>
+                                                            <td>
+                                                                <a href="continued_admission_ranking_detail.php?id=<?php echo $app['id']; ?>" 
+                                                                   style="display: inline-block; padding: 6px 16px; border: 1px solid #91d5ff; border-radius: 6px; background: white; color: #1890ff; text-decoration: underline; font-size: 14px; transition: all 0.3s;">
+                                                                    查看詳情
+                                                                </a>
                                                             </td>
                                                         </tr>
                                                         <?php endforeach; ?>
@@ -2163,8 +2310,28 @@ function getStatusClass($status) {
                 }
 
                 const deptData = data.department;
+                
+                // 獲取第一個學生的評分老師姓名（用於表頭）
+                let headerTeacher1Name = '評分的老師';
+                let headerTeacher2Name = '評分的老師';
+                let headerDirectorName = '評分的老師';
+                if (deptData.applications && deptData.applications.length > 0) {
+                    const firstApp = deptData.applications[0];
+                    if (firstApp.scores) {
+                        firstApp.scores.forEach(score => {
+                            if (score.assignment_order == 1) {
+                                headerTeacher1Name = (score.reviewer_name || '評分的老師') + '總分';
+                            } else if (score.assignment_order == 2) {
+                                headerTeacher2Name = (score.reviewer_name || '評分的老師') + '總分';
+                            } else if (score.assignment_order == 3) {
+                                headerDirectorName = (score.reviewer_name || '評分的老師') + '總分';
+                            }
+                        });
+                    }
+                }
+                
                 const excelData = [
-                    ['排名', '報名編號', '姓名', '老師1總分', '老師1自傳', '老師1專長', '老師2總分', '老師2自傳', '老師2專長', '主任總分', '主任自傳', '主任專長', '平均分數', '錄取狀態']
+                    ['排名', '報名編號', '姓名', headerTeacher1Name, (headerTeacher1Name.replace('總分', '自傳')), (headerTeacher1Name.replace('總分', '專長')), headerTeacher2Name, (headerTeacher2Name.replace('總分', '自傳')), (headerTeacher2Name.replace('總分', '專長')), headerDirectorName, (headerDirectorName.replace('總分', '自傳')), (headerDirectorName.replace('總分', '專長')), '平均分數', '錄取狀態']
                 ];
 
                 deptData.applications.forEach((app, index) => {
@@ -2228,15 +2395,15 @@ function getStatusClass($status) {
                     { wch: 8 },  // 排名
                     { wch: 15 }, // 報名編號
                     { wch: 12 }, // 姓名
-                    { wch: 12 }, // 老師1總分
-                    { wch: 12 }, // 老師1自傳
-                    { wch: 12 }, // 老師1專長
-                    { wch: 12 }, // 老師2總分
-                    { wch: 12 }, // 老師2自傳
-                    { wch: 12 }, // 老師2專長
-                    { wch: 12 }, // 主任總分
-                    { wch: 12 }, // 主任自傳
-                    { wch: 12 }, // 主任專長
+                    { wch: 12 }, // 評分的老師總分
+                    { wch: 12 }, // 評分的老師自傳
+                    { wch: 12 }, // 評分的老師專長
+                    { wch: 12 }, // 評分的老師總分
+                    { wch: 12 }, // 評分的老師自傳
+                    { wch: 12 }, // 評分的老師專長
+                    { wch: 12 }, // 評分的老師總分
+                    { wch: 12 }, // 評分的老師自傳
+                    { wch: 12 }, // 評分的老師專長
                     { wch: 12 }, // 平均分數
                     { wch: 15 }  // 錄取狀態
                 ];
@@ -2268,6 +2435,21 @@ function getStatusClass($status) {
             });
     }
 
+    // 取得目前在「達到錄取標準名單」TAB 內選取的科系（招生中心的科系分頁）
+    // - 回傳 null：代表「全部科系」
+    // - 回傳 array：代表只匯出指定科系（目前分頁）
+    function getSelectedRankingDeptCodes() {
+        const tabsWrap = document.getElementById('rankingDeptTabs');
+        if (!tabsWrap) return null;
+
+        const active = tabsWrap.querySelector('.ranking-dept-tab.active');
+        if (!active) return null;
+
+        const dept = active.getAttribute('data-dept');
+        if (!dept || dept === 'all') return null;
+        return [dept];
+    }
+
     function exportAllRankingExcel() {
         // 從 API 獲取所有科系的排名數據
         fetch('get_all_department_ranking.php')
@@ -2286,14 +2468,34 @@ function getStatusClass($status) {
                 const deptCodes = Object.keys(data.departments).filter(code => selectedDeptCodes === null || selectedDeptCodes.includes(code));
 
                 if (deptCodes.length === 0) {
-                    showToast('請先勾選至少一個科系再匯出', false);
+                    showToast('目前沒有可匯出的科系資料', false);
                     return;
                 }
 
                 deptCodes.forEach(deptCode => {
                     const deptData = data.departments[deptCode];
+                    
+                    // 獲取第一個學生的評分老師姓名（用於表頭）
+                    let headerTeacher1Name = '評分的老師';
+                    let headerTeacher2Name = '評分的老師';
+                    let headerDirectorName = '評分的老師';
+                    if (deptData.applications && deptData.applications.length > 0) {
+                        const firstApp = deptData.applications[0];
+                        if (firstApp.scores) {
+                            firstApp.scores.forEach(score => {
+                                if (score.assignment_order == 1) {
+                                    headerTeacher1Name = (score.reviewer_name || '評分的老師') + '總分';
+                                } else if (score.assignment_order == 2) {
+                                    headerTeacher2Name = (score.reviewer_name || '評分的老師') + '總分';
+                                } else if (score.assignment_order == 3) {
+                                    headerDirectorName = (score.reviewer_name || '評分的老師') + '總分';
+                                }
+                            });
+                        }
+                    }
+                    
                     const excelData = [
-                        ['排名', '報名編號', '姓名', '老師1總分', '老師1自傳', '老師1專長', '老師2總分', '老師2自傳', '老師2專長', '主任總分', '主任自傳', '主任專長', '平均分數', '錄取狀態']
+                        ['排名', '報名編號', '姓名', headerTeacher1Name, (headerTeacher1Name.replace('總分', '自傳')), (headerTeacher1Name.replace('總分', '專長')), headerTeacher2Name, (headerTeacher2Name.replace('總分', '自傳')), (headerTeacher2Name.replace('總分', '專長')), headerDirectorName, (headerDirectorName.replace('總分', '自傳')), (headerDirectorName.replace('總分', '專長')), '平均分數', '錄取狀態']
                     ];
 
                     deptData.applications.forEach((app, index) => {
@@ -2357,15 +2559,15 @@ function getStatusClass($status) {
                         { wch: 8 },  // 排名
                         { wch: 15 }, // 報名編號
                         { wch: 12 }, // 姓名
-                        { wch: 12 }, // 老師1總分
-                        { wch: 12 }, // 老師1自傳
-                        { wch: 12 }, // 老師1專長
-                        { wch: 12 }, // 老師2總分
-                        { wch: 12 }, // 老師2自傳
-                        { wch: 12 }, // 老師2專長
-                        { wch: 12 }, // 主任總分
-                        { wch: 12 }, // 主任自傳
-                        { wch: 12 }, // 主任專長
+                        { wch: 12 }, // 評分的老師總分
+                        { wch: 12 }, // 評分的老師自傳
+                        { wch: 12 }, // 評分的老師專長
+                        { wch: 12 }, // 評分的老師總分
+                        { wch: 12 }, // 評分的老師自傳
+                        { wch: 12 }, // 評分的老師專長
+                        { wch: 12 }, // 評分的老師總分
+                        { wch: 12 }, // 評分的老師自傳
+                        { wch: 12 }, // 評分的老師專長
                         { wch: 12 }, // 平均分數
                         { wch: 15 }  // 錄取狀態
                     ];

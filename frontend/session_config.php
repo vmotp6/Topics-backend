@@ -20,6 +20,11 @@ if (session_status() === PHP_SESSION_NONE) {
     session_start();
 }
 
+// 初始化跨設備認證 sessions 陣列（如果不存在）
+if (!isset($_SESSION['cross_device_sessions'])) {
+    $_SESSION['cross_device_sessions'] = [];
+}
+
 // 更新最後活動時間
 if (isset($_SESSION['last_activity'])) {
     if (time() - $_SESSION['last_activity'] > 1800) {

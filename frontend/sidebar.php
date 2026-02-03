@@ -318,7 +318,7 @@ function hasPermission($permission_code, $user_role, $permissions_array) {
             
             <!-- 教師活動紀錄 - 學校行政和主任可以看到，STAM和AS需要權限 -->
             <?php if (($is_staff || $is_admin || $is_director) || ($is_stam && hasPermission('teacher_activity_records', $user_role, $stam_permissions)) || ($is_as && hasPermission('teacher_activity_records', $user_role, $as_permissions))): ?>
-                <a href="teacher_activity_records.php" class="menu-item <?php echo $current_page === 'teacher_activity_records' ? 'active' : ''; ?>">
+                <a href="teacher_activity_records.php" class="menu-item <?php echo in_array($current_page, ['teacher_activity_records','teacher_activity_records_detail']) ?'active' : ''; ?>">
                     <i class="fas fa-clipboard-list"></i>
                     <span>教師活動紀錄</span>
                 </a>

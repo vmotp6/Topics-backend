@@ -248,16 +248,38 @@ try {
     $res = $conn->query($sql_rec);
     $stats['unassigned_recommends'] = $res ? $res->fetch_assoc()['cnt'] : 0;
 
-    // 4. 近期說明會總報名 (Upcoming Sessions)
-    $sql_sess_count = "
-        SELECT COUNT(aa.id) as cnt 
-        FROM admission_applications aa
-        JOIN admission_sessions s ON aa.session_id = s.id
-        WHERE s.session_date >= CURDATE()
-    ";
-    $res = $conn->query($sql_sess_count);
-    $stats['upcoming_sessions'] = $res ? $res->fetch_assoc()['cnt'] : 0;
+    // 4. 近期說明會總場次 (Upcoming Sessions in current academic year)
+    // 學年區間：當年 8/1 ~ 次年 7/31
+    $currentMonth = (int)date('m');
+    $currentYear  = (int)date('Y');
+    if ($currentMonth >= 8) {
+        // 例如：現在是 2025/11，學年為 2025/08/01 ~ 2026/07/31
+        $schoolYearStart = sprintf('%04d-08-01', $currentYear);
+        $schoolYearEnd   = sprintf('%04d-07-31', $currentYear + 1);
+    } else {
+        // 例如：現在是 2026/01，學年為 2025/08/01 ~ 2026/07/31
+        $schoolYearStart = sprintf('%04d-08-01', $currentYear - 1);
+        $schoolYearEnd   = sprintf('%04d-07-31', $currentYear);
+    }
 
+    $sql_sess_count = "
+        SELECT COUNT(*) AS cnt
+        FROM admission_sessions s
+        WHERE s.session_date >= ?
+          AND s.session_date <= ?
+    ";
+    $stmt_sess_count = $conn->prepare($sql_sess_count);
+    if ($stmt_sess_count) {
+        $stmt_sess_count->bind_param("ss", $schoolYearStart, $schoolYearEnd);
+        $stmt_sess_count->execute();
+        $res = $stmt_sess_count->get_result();
+        $stats['upcoming_sessions'] = $res ? (int)$res->fetch_assoc()['cnt'] : 0;
+        $stmt_sess_count->close();
+    } else {
+        // 若預備語句失敗，避免中斷頁面，記錄錯誤並設為 0
+        error_log("首頁近期說明會統計預備語句失敗：" . $conn->error);
+        $stats['upcoming_sessions'] = 0;
+    }
 
     // B. 科系名額數據 (Quota)
     $sql_quota = "
@@ -303,26 +325,38 @@ try {
         $todos = $res_todo->fetch_all(MYSQLI_ASSOC);
     }
 
-    // D. 近期場次列表（只顯示當年份的場次）
-    $current_year = date('Y');
+    // D. 近期場次列表（顯示當學年的場次：8/1 ~ 次年 7/31）
+    // 直接沿用上面計算好的 $schoolYearStart, $schoolYearEnd
     $sql_sessions = "
-        SELECT s.session_name, s.session_date, s.session_type, s.max_participants,
-        (SELECT COUNT(*) FROM admission_applications aa 
-         WHERE aa.session_id = s.id 
-         AND YEAR(aa.created_at) = YEAR(s.session_date)) as current_count
+        SELECT 
+            s.session_name, 
+            s.session_date, 
+            s.session_type, 
+            s.max_participants,
+            (
+                SELECT COUNT(*) 
+                FROM admission_applications aa 
+                WHERE aa.session_id = s.id 
+                  AND YEAR(aa.created_at) = YEAR(s.session_date)
+            ) AS current_count
         FROM admission_sessions s
-        WHERE s.session_date >= CURDATE()
-        AND YEAR(s.session_date) = ?
-        ORDER BY s.session_date ASC LIMIT 3
+        WHERE s.session_date >= ?
+          AND s.session_date <= ?
+        ORDER BY s.session_date ASC 
+        LIMIT 3
     ";
     $stmt_sessions = $conn->prepare($sql_sessions);
-    $stmt_sessions->bind_param("i", $current_year);
-    $stmt_sessions->execute();
-    $res_sessions = $stmt_sessions->get_result();
-    if ($res_sessions) {
-        $sessions = $res_sessions->fetch_all(MYSQLI_ASSOC);
+    if ($stmt_sessions) {
+        $stmt_sessions->bind_param("ss", $schoolYearStart, $schoolYearEnd);
+        $stmt_sessions->execute();
+        $res_sessions = $stmt_sessions->get_result();
+        if ($res_sessions) {
+            $sessions = $res_sessions->fetch_all(MYSQLI_ASSOC);
+        }
+        $stmt_sessions->close();
+    } else {
+        error_log("首頁近期場次列表預備語句失敗：" . $conn->error);
     }
-    $stmt_sessions->close();
 
 } catch (Exception $e) {
     error_log("首頁資料查詢失敗: " . $e->getMessage());
