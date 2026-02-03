@@ -18,39 +18,168 @@ $page_title = '使用者管理';
 require_once '../../Topics-frontend/frontend/config.php';
 
 $users = [];
+$by_department = []; // 以科系為單位： [ ['code'=>,'name'=>,'directors'=>[], 'teachers'=>[] ], ... ]
+$student_users = []; // 五專學生（role=STU）
+$other_users = [];   // 非科系成員：行政、管理員、招生中心組員、未歸科的老師/主任等（不含學生）
 $error_message = '';
 
 try {
     $conn = getDatabaseConnection();
 
-    // 排序參數
-    $sortBy = $_GET['sort_by'] ?? 'id';
-    $sortOrder = $_GET['sort_order'] ?? 'desc';
-
-    // 驗證排序參數，防止 SQL 注入
-    $allowed_columns = ['id', 'username', 'name', 'email', 'role', 'status'];
-    if (!in_array($sortBy, $allowed_columns)) {
-        $sortBy = 'id';
-    }
-    if (!in_array(strtolower($sortOrder), ['asc', 'desc'])) {
-        $sortOrder = 'desc';
-    }
-
-    $sql = "SELECT u.id, u.username, u.name, u.email, u.role, u.status, rt.name as role_name 
-            FROM user u 
-            LEFT JOIN role_types rt ON u.role = rt.code 
-            ORDER BY $sortBy $sortOrder";
-    $result = $conn->query($sql);
-
-    if ($result) {
-        $users = $result->fetch_all(MYSQLI_ASSOC);
-        // 如果沒有從 role_types 表獲取到名稱，使用預設映射
-        foreach ($users as &$user) {
-            if (empty($user['role_name'])) {
-                $user['role_name'] = getRoleName($user['role']);
+    // 1. 取得所有科系（departments 表可能不存在則用 teacher/director 的 department 去重）
+    $departments = [];
+    $dept_table = $conn->query("SHOW TABLES LIKE 'departments'");
+    if ($dept_table && $dept_table->num_rows > 0) {
+        $dept_result = $conn->query("SELECT code, name FROM departments ORDER BY code");
+        if ($dept_result) {
+            while ($row = $dept_result->fetch_assoc()) {
+                $departments[] = ['code' => $row['code'], 'name' => $row['name'] ?: $row['code']];
             }
         }
-        unset($user);
+    }
+    // 若沒有 departments 表，從 teacher / director 的 department 欄位收集不重複的科系
+    if (empty($departments)) {
+        $codes = [];
+        foreach (['teacher', 'director'] as $tbl) {
+            $tbl_check = $conn->query("SHOW TABLES LIKE '$tbl'");
+            if ($tbl_check && $tbl_check->num_rows > 0) {
+                $col_check = $conn->query("SHOW COLUMNS FROM $tbl LIKE 'department'");
+                if ($col_check && $col_check->num_rows > 0) {
+                    $r = $conn->query("SELECT DISTINCT department FROM $tbl WHERE department IS NOT NULL AND department != ''");
+                    if ($r) {
+                        while ($row = $r->fetch_assoc()) {
+                            $codes[$row['department']] = $row['department'];
+                        }
+                    }
+                }
+            }
+        }
+        foreach ($codes as $code => $name) {
+            $departments[] = ['code' => $code, 'name' => $name];
+        }
+        usort($departments, function ($a, $b) { return strcmp($a['name'], $b['name']); });
+    }
+
+    // 2. 每個科系底下的主任與老師
+    $dir_tbl = $conn->query("SHOW TABLES LIKE 'director'");
+    $director_table_exists = $dir_tbl && $dir_tbl->num_rows > 0;
+    $tea_tbl = $conn->query("SHOW TABLES LIKE 'teacher'");
+    $teacher_table_exists = $tea_tbl && $tea_tbl->num_rows > 0;
+
+    foreach ($departments as $dept) {
+        $code = $dept['code'];
+        $name = $dept['name'];
+        $directors = [];
+        $teachers = [];
+
+        // 主任：director 表 department = code 或 name（相容代碼/名稱）
+        if ($director_table_exists) {
+            $dir_sql = "SELECT u.id, u.username, u.name, u.email, u.role, u.status 
+                        FROM user u INNER JOIN director d ON u.id = d.user_id 
+                        WHERE d.department = ? ORDER BY u.name";
+            $dir_stmt = $conn->prepare($dir_sql);
+            if ($dir_stmt) {
+                $dir_stmt->bind_param("s", $code);
+                $dir_stmt->execute();
+                $res = $dir_stmt->get_result();
+                while ($row = $res->fetch_assoc()) {
+                    $row['role_name'] = getRoleName($row['role']);
+                    $directors[] = $row;
+                }
+                $dir_stmt->close();
+            }
+            // 若用 code 沒找到，嘗試用 name 再查一次（避免有的存名稱）
+            if (empty($directors) && $name !== $code) {
+                $dir_stmt = $conn->prepare($dir_sql);
+                if ($dir_stmt) {
+                    $dir_stmt->bind_param("s", $name);
+                    $dir_stmt->execute();
+                    $res = $dir_stmt->get_result();
+                    while ($row = $res->fetch_assoc()) {
+                        $row['role_name'] = getRoleName($row['role']);
+                        $directors[] = $row;
+                    }
+                    $dir_stmt->close();
+                }
+            }
+        }
+
+        // 老師：teacher 表 department = code 或 name，且同一 user 不在該科主任名單內（同一人不會同時當主任又當老師）
+        if ($teacher_table_exists) {
+            $tea_sql = "SELECT u.id, u.username, u.name, u.email, u.role, u.status 
+                        FROM user u INNER JOIN teacher t ON u.id = t.user_id 
+                        WHERE (t.department = ? OR t.department = ?) ORDER BY u.name";
+            $tea_stmt = $conn->prepare($tea_sql);
+            if ($tea_stmt) {
+                $tea_stmt->bind_param("ss", $code, $name);
+                $tea_stmt->execute();
+                $res = $tea_stmt->get_result();
+                $dir_ids = array_column($directors, 'id');
+                while ($row = $res->fetch_assoc()) {
+                    if (!in_array((int)$row['id'], $dir_ids)) {
+                        $row['role_name'] = getRoleName($row['role']);
+                        $teachers[] = $row;
+                    }
+                }
+                $tea_stmt->close();
+            }
+        }
+
+        $by_department[] = [
+            'code' => $code,
+            'name' => $name,
+            'directors' => $directors,
+            'teachers' => $teachers
+        ];
+    }
+
+    // 3. 其他使用者：非科系成員（ADM, STA, STAM, AS, IM 等）以及 role 為 TEA/DI 但未出現在任何科系的 teacher/director 中
+    $in_dept_user_ids = [];
+    foreach ($by_department as $d) {
+        foreach (array_merge($d['directors'], $d['teachers']) as $u) {
+            $in_dept_user_ids[(int)$u['id']] = true;
+        }
+    }
+
+    $all_sql = "SELECT u.id, u.username, u.name, u.email, u.role, u.status, rt.name as role_name 
+                FROM user u 
+                LEFT JOIN role_types rt ON u.role = rt.code 
+                ORDER BY u.role, u.name";
+    $all_result = $conn->query($all_sql);
+    if ($all_result) {
+        while ($row = $all_result->fetch_assoc()) {
+            if (empty($row['role_name'])) {
+                $row['role_name'] = getRoleName($row['role']);
+            }
+            $role = $row['role'];
+            $id = (int)$row['id'];
+            // 學生單獨一區「五專學生」
+            if (in_array($role, ['STU', 'STUDENT', '學生', 'student'])) {
+                $student_users[] = $row;
+                continue;
+            }
+            // 老師、主任若已在某科系底下則不重複放到「其他」
+            if (in_array($role, ['TEA', 'DI', 'TE', '老師', '主任'])) {
+                if (!empty($in_dept_user_ids[$id])) {
+                    continue;
+                }
+            }
+            $other_users[] = $row;
+        }
+    }
+
+    // 保留 $users 為全部使用者（供搜尋/匯出等若需要）
+    $users = [];
+    foreach ($by_department as $d) {
+        foreach (array_merge($d['directors'], $d['teachers']) as $u) {
+            $users[] = $u;
+        }
+    }
+    foreach ($student_users as $u) {
+        $users[] = $u;
+    }
+    foreach ($other_users as $u) {
+        $users[] = $u;
     }
 } catch (Exception $e) {
     $error_message = "讀取使用者資料失敗：" . $e->getMessage();
@@ -59,16 +188,9 @@ try {
 // 角色代碼到中文名稱的映射函數
 function getRoleName($roleCode) {
     $roleMap = [
-        'STU' => '學生',
-        'TEA' => '老師',
-        'ADM' => '管理員',
-        'STA' => '行政人員',
-        'DI' => '主任',
-        // 兼容舊代碼
-        'student' => '學生',
-        'teacher' => '老師',
-        'admin' => '管理員',
-        'staff' => '行政人員',
+        'STU' => '學生', 'TEA' => '老師', 'ADM' => '管理員', 'STA' => '行政人員',
+        'DI' => '主任', 'STAM' => '招生中心組員', 'AS' => '科助', 'IM' => '資管科主任',
+        'student' => '學生', 'teacher' => '老師', 'admin' => '管理員', 'staff' => '行政人員',
         'director' => '主任'
     ];
     return $roleMap[$roleCode] ?? $roleCode;
@@ -141,13 +263,74 @@ function getRoleName($roleCode) {
             overflow: hidden;
             border: 1px solid #f0f0f0;
         }
+
+        /* 以科系為單位顯示 */
+        .dept-section {
+            margin-bottom: 28px;
+            border: 1px solid #f0f0f0;
+            border-radius: 8px;
+            overflow: hidden;
+        }
+        .dept-section:last-of-type { margin-bottom: 0; }
+        .dept-title {
+            background: #fafafa;
+            padding: 14px 24px;
+            font-size: 18px;
+            font-weight: 600;
+            color: #262626;
+            border-bottom: 1px solid #f0f0f0;
+            cursor: pointer;
+            user-select: none;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .dept-title:hover { background: #f0f0f0; }
+        .dept-title .dept-toggle {
+            font-size: 14px;
+            color: #8c8c8c;
+            transition: transform 0.2s;
+        }
+        .dept-section.collapsed .dept-title .dept-toggle { transform: rotate(-90deg); }
+        .dept-section .dept-body { display: block; }
+        .dept-section.collapsed .dept-body { display: none; }
+        .role-subsection {
+            padding: 0 24px 16px;
+        }
+        .role-subsection-title {
+            font-size: 14px;
+            font-weight: 600;
+            color: #8c8c8c;
+            margin: 12px 0 8px;
+            padding-bottom: 4px;
+        }
+        .role-subsection:first-child .role-subsection-title { margin-top: 16px; }
+        .dept-section .user-table { margin-bottom: 0; table-layout: fixed; width: 100%; }
+        .dept-section .user-table th, .dept-section .user-table td {
+            padding: 10px 12px;
+            font-size: 14px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .dept-section .user-table th:nth-child(1), .dept-section .user-table td:nth-child(1) { width: 56px; min-width: 56px; }
+        .dept-section .user-table th:nth-child(2), .dept-section .user-table td:nth-child(2) { width: 90px; min-width: 90px; }
+        .dept-section .user-table th:nth-child(3), .dept-section .user-table td:nth-child(3) { width: 90px; min-width: 90px; }
+        .dept-section .user-table th:nth-child(4), .dept-section .user-table td:nth-child(4) { width: 180px; min-width: 180px; }
+        .dept-section .user-table th:nth-child(5), .dept-section .user-table td:nth-child(5) { width: 100px; min-width: 100px; }
+        .dept-section .user-table th:nth-child(6), .dept-section .user-table td:nth-child(6) { width: 72px; min-width: 72px; }
+        .dept-section .user-table th:nth-child(7), .dept-section .user-table td:nth-child(7) { width: 130px; min-width: 130px; }
+        .dept-section .user-table th:first-child, .dept-section .user-table td:first-child { padding-left: 12px; }
+        .other-section .dept-title { background: #f6f8fa; }
+        .student-section .dept-title { background: #f0f5ff; }
+        .student-section .pagination { margin-top: 12px; margin-bottom: 8px; }
         
         
         .table-search {
             display: flex;
-            gap: 8px;
+            flex-wrap: wrap;
+            gap: 10px;
+            align-items: center;
         }
-        
         .table-search input {
             padding: 8px 12px;
             border: 1px solid #d9d9d9;
@@ -156,6 +339,19 @@ function getRoleName($roleCode) {
             background: #fff;
             font-size: 16px;
             transition: all 0.3s;
+        }
+        .filter-select {
+            padding: 8px 12px;
+            border: 1px solid #d9d9d9;
+            border-radius: 6px;
+            font-size: 14px;
+            background: #fff;
+            min-width: 120px;
+            cursor: pointer;
+        }
+        .filter-select:focus {
+            outline: none;
+            border-color: #1890ff;
         }
         
         .table-search input:focus {
@@ -167,6 +363,7 @@ function getRoleName($roleCode) {
         .user-table {
             width: 100%;
             border-collapse: collapse;
+            table-layout: fixed;
         }
         
         .user-table th {
@@ -568,6 +765,25 @@ function getRoleName($roleCode) {
                     </div>
                     <div class="table-search">
                         <input type="text" id="tableSearchInput" placeholder="搜尋使用者..." onkeyup="filterTable()">
+                        <select id="filterDept" class="filter-select" onchange="filterTable()" title="科系篩選">
+                            <option value="">全部科系</option>
+                            <?php foreach ($by_department as $d): ?>
+                            <option value="<?php echo htmlspecialchars($d['name'] ?? $d['code'], ENT_QUOTES, 'UTF-8'); ?>"><?php echo htmlspecialchars($d['name'] ?? $d['code']); ?></option>
+                            <?php endforeach; ?>
+                            <option value="五專學生">五專學生</option>
+                            <option value="其他">其他</option>
+                        </select>
+                        <select id="filterRole" class="filter-select" onchange="filterTable()" title="角色篩選">
+                            <option value="">全部角色</option>
+                            <option value="STU">學生</option>
+                            <option value="TEA">老師</option>
+                            <option value="DI">主任</option>
+                            <option value="STA">行政人員</option>
+                            <option value="ADM">管理員</option>
+                            <option value="STAM">招生中心組員</option>
+                            <option value="AS">科助</option>
+                            <option value="IM">資管科主任</option>
+                        </select>
                         <a href="add_user.php" class="btn btn-primary" style="padding: 8px 12px; font-size: 14px;">
                             <i class="fas fa-plus" style="margin-right: 6px;"></i>
                             新增使用者
@@ -577,29 +793,13 @@ function getRoleName($roleCode) {
                 
                 <div id="messageContainer"></div>
                 
-                <!-- 使用者表格 -->
+                <!-- 使用者表格（以科系為單位顯示） -->
                 <div class="table-container">
-                    <div id="tableContainer" data-users='<?php echo json_encode($users); ?>'>
+                    <div id="tableContainer"
+                         data-by-department='<?php echo htmlspecialchars(json_encode($by_department), ENT_QUOTES, 'UTF-8'); ?>'
+                         data-student-users='<?php echo htmlspecialchars(json_encode($student_users), ENT_QUOTES, 'UTF-8'); ?>'
+                         data-other-users='<?php echo htmlspecialchars(json_encode($other_users), ENT_QUOTES, 'UTF-8'); ?>'>
                         <div class="loading">載入中...</div>
-                    </div>
-                    <!-- 分頁控制 -->
-                    <div class="pagination" id="paginationContainer" style="display: none;">
-                        <div class="pagination-info">
-                            <span>每頁顯示：</span>
-                            <select id="itemsPerPage" onchange="changeItemsPerPage()">
-                                <option value="10" selected>10</option>
-                                <option value="20">20</option>
-                                <option value="50">50</option>
-                                <option value="100">100</option>
-                                <option value="all">全部</option>
-                            </select>
-                            <span id="pageInfo">顯示第 <span id="currentRange">1-10</span> 筆，共 0 筆</span>
-                        </div>
-                        <div class="pagination-controls">
-                            <button id="prevPage" onclick="changePage(-1)" disabled>上一頁</button>
-                            <span id="pageNumbers"></span>
-                            <button id="nextPage" onclick="changePage(1)">下一頁</button>
-                        </div>
                     </div>
                 </div>
             </div>
@@ -673,60 +873,213 @@ function getRoleName($roleCode) {
         }
     }
     
-    // 渲染使用者表格
-    function renderUserTable(users) {
+    // 渲染單一使用者列
+    function renderUserRow(user) {
+        const roleClass = getRoleClass(user.role);
+        const userStatus = parseInt(user.status);
+        const statusClass = getStatusClass(userStatus);
+        const roleName = user.role_name || getRoleName(user.role);
+        const roleCode = (user.role || '').toUpperCase();
+        return `
+            <tr data-user-id="${user.id}" data-role="${roleCode}" data-search="${(user.username + ' ' + (user.name || '') + ' ' + (user.email || '') + ' ' + roleName).toLowerCase()}">
+                <td>${user.id}</td>
+                <td>${user.username}</td>
+                <td>${user.name}</td>
+                <td>${user.email}</td>
+                <td><span class="role-badge ${roleClass}">${roleName}</span></td>
+                <td><span class="status-badge ${statusClass}">${userStatus === 0 ? '停用' : '啟用'}</span></td>
+                <td>
+                    <div class="action-buttons">
+                        <button onclick="viewUser(${user.id})" class="btn-view">查看</button>
+                        <button onclick="editUser(${user.id})" class="btn-edit">編輯</button>
+                    </div>
+                </td>
+            </tr>
+        `;
+    }
+
+    // 以科系為單位渲染使用者
+    function renderUserTableByDepartment(byDepartment, studentUsers, otherUsers) {
         const tableContainer = document.getElementById('tableContainer');
-        
-        if (users.length === 0) {
+        const hasDept = byDepartment && byDepartment.length > 0;
+        const hasStudent = studentUsers && studentUsers.length > 0;
+        const hasOther = otherUsers && otherUsers.length > 0;
+        if (!hasDept && !hasStudent && !hasOther) {
             tableContainer.innerHTML = '<div class="loading">沒有找到使用者資料</div>';
             return;
         }
-        
-        let tableHTML = `
-            <table class="user-table" id="userTable">
-                <thead>
-                    <tr>
-                        <th onclick="sortTable('id')">ID <span class="sort-icon" id="sort-id"></span></th>
-                        <th onclick="sortTable('username')">帳號 <span class="sort-icon" id="sort-username"></span></th>
-                        <th onclick="sortTable('name')">姓名 <span class="sort-icon" id="sort-name"></span></th>
-                        <th onclick="sortTable('email')">電子郵件 <span class="sort-icon" id="sort-email"></span></th>
-                        <th onclick="sortTable('role')">角色 <span class="sort-icon" id="sort-role"></span></th>
-                        <th onclick="sortTable('status')">狀態 <span class="sort-icon" id="sort-status"></span></th>
-                        <th>操作</th>
-                    </tr>
-                </thead>
-                <tbody>
-        `;
-        
-        users.forEach(user => {
-            const roleClass = getRoleClass(user.role);
-            // 確保 status 是數字類型
-            const userStatus = parseInt(user.status);
-            const statusClass = getStatusClass(userStatus);
-            const roleName = user.role_name || getRoleName(user.role);
-            tableHTML += `
-                <tr>
-                    <td>${user.id}</td>
-                    <td>${user.username}</td>
-                    <td>${user.name}</td>
-                    <td>${user.email}</td>
-                    <td><span class="role-badge ${roleClass}">${roleName}</span></td>
-                    <td><span class="status-badge ${statusClass}">${userStatus === 0 ? '停用' : '啟用'}</span></td>
-                    <td>
-                        <div class="action-buttons">
-                            <button onclick="viewUser(${user.id})" class="btn-view">查看</button>
-                            <button onclick="editUser(${user.id})" class="btn-edit">編輯</button>
-                        </div>
-                    </td>
-                </tr>
-            `;
+
+        let html = '';
+        const allUsers = [];
+
+        // 各科系
+        (byDepartment || []).forEach(function(dept) {
+            const directors = dept.directors || [];
+            const teachers = dept.teachers || [];
+            if (directors.length === 0 && teachers.length === 0) return;
+
+            const deptName = (dept.name || dept.code || '科系');
+            const deptNameEsc = (dept.name || '').replace(/"/g, '&quot;');
+            html += '<div class="dept-section" data-dept-name="' + deptNameEsc + '">';
+            html += '<div class="dept-title" role="button" tabindex="0" aria-expanded="true"><i class="fas fa-chevron-down dept-toggle"></i><span>' + deptName + '</span></div>';
+            html += '<div class="dept-body">';
+
+            if (directors.length > 0) {
+                html += '<div class="role-subsection">';
+                html += '<div class="role-subsection-title">主任</div>';
+                html += '<table class="user-table"><thead><tr><th>ID</th><th>帳號</th><th>姓名</th><th>電子郵件</th><th>角色</th><th>狀態</th><th>操作</th></tr></thead><tbody>';
+                directors.forEach(function(u) { allUsers.push(u); html += renderUserRow(u); });
+                html += '</tbody></table></div>';
+            }
+            if (teachers.length > 0) {
+                html += '<div class="role-subsection">';
+                html += '<div class="role-subsection-title">老師</div>';
+                html += '<table class="user-table"><thead><tr><th>ID</th><th>帳號</th><th>姓名</th><th>電子郵件</th><th>角色</th><th>狀態</th><th>操作</th></tr></thead><tbody>';
+                teachers.forEach(function(u) { allUsers.push(u); html += renderUserRow(u); });
+                html += '</tbody></table></div>';
+            }
+            html += '</div></div>';
         });
-        
-        tableHTML += '</tbody></table>';
-        tableContainer.innerHTML = tableHTML;
-        
-        // 初始化分頁
-        initPagination();
+
+        // 五專學生（獨立一區，含分頁）
+        if (studentUsers && studentUsers.length > 0) {
+            html += '<div class="dept-section student-section" id="studentSection" data-dept-name="五專學生">';
+            html += '<div class="dept-title" role="button" tabindex="0" aria-expanded="true"><i class="fas fa-chevron-down dept-toggle"></i><span>五專學生</span></div>';
+            html += '<div class="dept-body">';
+            html += '<div class="role-subsection">';
+            html += '<table class="user-table" id="studentTable"><thead><tr><th>ID</th><th>帳號</th><th>姓名</th><th>電子郵件</th><th>角色</th><th>狀態</th><th>操作</th></tr></thead><tbody>';
+            studentUsers.forEach(function(u) { allUsers.push(u); html += renderUserRow(u); });
+            html += '</tbody></table>';
+            html += '<div class="pagination" id="studentPagination">';
+            html += '<div class="pagination-info"><span>每頁顯示：</span>';
+            html += '<select id="studentItemsPerPage" onchange="changeStudentItemsPerPage()"><option value="10" selected>10</option><option value="20">20</option><option value="50">50</option><option value="100">100</option><option value="all">全部</option></select>';
+            html += '<span id="studentPageInfo">顯示第 <span id="studentCurrentRange">1-10</span> 筆，共 ' + studentUsers.length + ' 筆</span></div>';
+            html += '<div class="pagination-controls"><button id="studentPrevPage" onclick="changeStudentPage(-1)" disabled>上一頁</button><span id="studentPageNumbers"></span><button id="studentNextPage" onclick="changeStudentPage(1)">下一頁</button></div>';
+            html += '</div></div></div></div>';
+        }
+
+        // 其他（行政、管理員、招生中心組員、未歸科老師/主任等）
+        if (otherUsers && otherUsers.length > 0) {
+            html += '<div class="dept-section other-section" data-dept-name="其他">';
+            html += '<div class="dept-title" role="button" tabindex="0" aria-expanded="true"><i class="fas fa-chevron-down dept-toggle"></i><span>其他（行政、管理員、招生中心組員、未歸科等）</span></div>';
+            html += '<div class="dept-body">';
+            html += '<div class="role-subsection">';
+            html += '<table class="user-table" id="userTable"><thead><tr><th>ID</th><th>帳號</th><th>姓名</th><th>電子郵件</th><th>角色</th><th>狀態</th><th>操作</th></tr></thead><tbody>';
+            otherUsers.forEach(function(u) { allUsers.push(u); html += renderUserRow(u); });
+            html += '</tbody></table></div></div></div>';
+        }
+
+        tableContainer.innerHTML = html || '<div class="loading">沒有找到使用者資料</div>';
+        tableContainer.dataset.users = JSON.stringify(allUsers);
+
+        // 科系標題點擊收合/展開
+        tableContainer.querySelectorAll('.dept-title').forEach(function(el) {
+            el.addEventListener('click', function() {
+                const section = this.closest('.dept-section');
+                if (section) {
+                    section.classList.toggle('collapsed');
+                    this.setAttribute('aria-expanded', section.classList.contains('collapsed') ? 'false' : 'true');
+                }
+            });
+        });
+
+        if (hasStudent) initStudentPagination();
+    }
+
+    // 五專學生分頁（參考 enrollment_list 邏輯）
+    let studentCurrentPage = 1;
+    let studentItemsPerPage = 10;
+    let studentAllRows = [];
+
+    function initStudentPagination() {
+        const section = document.getElementById('studentSection');
+        if (!section) return;
+        const tbody = section.querySelector('#studentTable tbody');
+        if (!tbody) return;
+        studentAllRows = Array.from(tbody.querySelectorAll('tr[data-user-id]'));
+        studentCurrentPage = 1;
+        const sel = document.getElementById('studentItemsPerPage');
+        studentItemsPerPage = sel ? (sel.value === 'all' ? studentAllRows.length : parseInt(sel.value) || 10) : 10;
+        updateStudentPagination();
+    }
+
+    function changeStudentItemsPerPage() {
+        const select = document.getElementById('studentItemsPerPage');
+        studentItemsPerPage = select && select.value === 'all' ? studentAllRows.length : parseInt(select ? select.value : 10) || 10;
+        studentCurrentPage = 1;
+        updateStudentPagination();
+    }
+
+    function changeStudentPage(direction) {
+        const filtered = getStudentFilteredRows();
+        const totalPages = studentItemsPerPage === 'all' || studentItemsPerPage >= filtered.length ? 1 : Math.ceil(filtered.length / studentItemsPerPage);
+        studentCurrentPage += direction;
+        if (studentCurrentPage < 1) studentCurrentPage = 1;
+        if (studentCurrentPage > totalPages) studentCurrentPage = totalPages;
+        updateStudentPagination();
+    }
+
+    function goToStudentPage(page) {
+        studentCurrentPage = page;
+        updateStudentPagination();
+    }
+
+    function getStudentFilteredRows() {
+        const filter = (document.getElementById('tableSearchInput') || {}).value.toLowerCase().trim();
+        const filterRole = (document.getElementById('filterRole') || {}).value.toUpperCase();
+        return studentAllRows.filter(function(row) {
+            const searchAttr = (row.getAttribute('data-search') || '').toLowerCase();
+            const rowRole = (row.getAttribute('data-role') || '').toUpperCase();
+            const textMatch = !filter || searchAttr.indexOf(filter) > -1;
+            const roleMatch = !filterRole || rowRole === filterRole;
+            return textMatch && roleMatch;
+        });
+    }
+
+    function updateStudentPagination() {
+        const section = document.getElementById('studentSection');
+        if (!section) return;
+        const filteredRows = getStudentFilteredRows();
+        const totalItems = filteredRows.length;
+        const totalPages = studentItemsPerPage === 'all' || studentItemsPerPage >= totalItems ? 1 : Math.ceil(totalItems / studentItemsPerPage);
+
+        studentAllRows.forEach(function(row) { row.style.display = 'none'; });
+        if (totalItems === 0) {
+            if (document.getElementById('studentCurrentRange')) document.getElementById('studentCurrentRange').textContent = '0-0';
+            if (document.getElementById('studentPageInfo')) document.getElementById('studentPageInfo').innerHTML = '顯示第 <span id="studentCurrentRange">0-0</span> 筆，共 0 筆';
+        } else if (studentItemsPerPage === 'all' || studentItemsPerPage >= totalItems) {
+            filteredRows.forEach(function(row) { row.style.display = ''; });
+            if (document.getElementById('studentCurrentRange')) document.getElementById('studentCurrentRange').textContent = '1-' + totalItems;
+            if (document.getElementById('studentPageInfo')) document.getElementById('studentPageInfo').innerHTML = '顯示第 <span id="studentCurrentRange">1-' + totalItems + '</span> 筆，共 ' + totalItems + ' 筆';
+        } else {
+            const start = (studentCurrentPage - 1) * studentItemsPerPage;
+            const end = Math.min(start + studentItemsPerPage, totalItems);
+            for (let i = start; i < end; i++) if (filteredRows[i]) filteredRows[i].style.display = '';
+            if (document.getElementById('studentCurrentRange')) document.getElementById('studentCurrentRange').textContent = (start + 1) + '-' + end;
+            if (document.getElementById('studentPageInfo')) document.getElementById('studentPageInfo').innerHTML = '顯示第 <span id="studentCurrentRange">' + (start + 1) + '-' + end + '</span> 筆，共 ' + totalItems + ' 筆';
+        }
+
+        const prevBtn = document.getElementById('studentPrevPage');
+        const nextBtn = document.getElementById('studentNextPage');
+        if (prevBtn) prevBtn.disabled = studentCurrentPage === 1;
+        if (nextBtn) nextBtn.disabled = studentCurrentPage >= totalPages || totalPages <= 1;
+        updateStudentPageNumbers(totalPages);
+    }
+
+    function updateStudentPageNumbers(totalPages) {
+        const container = document.getElementById('studentPageNumbers');
+        if (!container) return;
+        container.innerHTML = '';
+        if (totalPages >= 1) {
+            const pagesToShow = totalPages === 1 ? [1] : Array.from({ length: totalPages }, function(_, i) { return i + 1; });
+            pagesToShow.forEach(function(i) {
+                const btn = document.createElement('button');
+                btn.textContent = i;
+                btn.onclick = function() { goToStudentPage(i); };
+                if (i === studentCurrentPage) btn.classList.add('active');
+                container.appendChild(btn);
+            });
+        }
     }
     
     // 獲取角色樣式類別
@@ -751,14 +1104,12 @@ function getRoleName($roleCode) {
     // 獲取角色中文名稱
     function getRoleName(roleCode) {
         const roleMap = {
-            'STU': '學生', 'student': '學生',
-            'TEA': '老師', 'teacher': '老師',
-            'ADM': '管理員', 'admin': '管理員',
-            'STA': '行政人員', 'staff': '行政人員',
-            'DI': '主任', 'director': '主任'
+            'STU': '學生', 'TEA': '老師', 'ADM': '管理員', 'STA': '行政人員',
+            'DI': '主任', 'STAM': '招生中心組員', 'AS': '科助', 'IM': '資管科主任',
+            'student': '學生', 'teacher': '老師', 'admin': '管理員', 'staff': '行政人員',
+            'director': '主任'
         };
-        const roleUpper = roleCode.toUpperCase();
-        return roleMap[roleCode] || roleMap[roleUpper] || roleCode;
+        return roleMap[roleCode] || roleMap[(roleCode || '').toUpperCase()] || roleCode;
     }
 
     // 獲取狀態樣式類別
@@ -778,7 +1129,9 @@ function getRoleName($roleCode) {
     // 查看使用者
     async function viewUser(userId) {
         const tableContainer = document.getElementById('tableContainer');
-        const users = JSON.parse(tableContainer.dataset.users);
+        const usersJson = tableContainer.dataset.users;
+        if (!usersJson) return;
+        const users = JSON.parse(usersJson);
         const user = users.find(u => u.id == userId);
 
         if (user) {
@@ -949,54 +1302,66 @@ function getRoleName($roleCode) {
         }
     }
     
-    // 表格搜尋功能
+    // 表格搜尋與篩選（關鍵字、科系、角色）
     function filterTable() {
         const input = document.getElementById('tableSearchInput');
-        const filter = input.value.toLowerCase();
-        const table = document.getElementById('userTable');
-        
-        if (!table) return;
-        
-        const tbody = table.getElementsByTagName('tbody')[0];
-        if (!tbody) return;
-        
-        allRows = Array.from(tbody.getElementsByTagName('tr'));
-        
-        filteredRows = allRows.filter(row => {
-            const cells = row.getElementsByTagName('td');
-            for (let j = 0; j < cells.length; j++) {
-                const cell = cells[j];
-                if (cell) {
-                    const txtValue = cell.textContent || cell.innerText;
-                    if (txtValue.toLowerCase().indexOf(filter) > -1) {
-                        return true;
-                    }
-                }
+        const filterDeptEl = document.getElementById('filterDept');
+        const filterRoleEl = document.getElementById('filterRole');
+        const filter = (input ? input.value : '').toLowerCase().trim();
+        const filterDept = filterDeptEl ? filterDeptEl.value : '';
+        const filterRole = filterRoleEl ? filterRoleEl.value : '';
+        const container = document.getElementById('tableContainer');
+        if (!container) return;
+
+        const sections = container.querySelectorAll('.dept-section');
+        sections.forEach(function(section) {
+            const deptName = (section.getAttribute('data-dept-name') || '').trim();
+            // 科系篩選：若選了科系，只顯示該科系或「其他」
+            if (filterDept && deptName !== filterDept) {
+                section.style.display = 'none';
+                return;
             }
-            return false;
+            const rows = section.querySelectorAll('tr[data-user-id]');
+            let visibleCount = 0;
+            rows.forEach(function(row) {
+                const searchAttr = row.getAttribute('data-search') || '';
+                const rowRole = (row.getAttribute('data-role') || '').toUpperCase();
+                const textMatch = !filter || searchAttr.indexOf(filter) > -1 || (row.textContent || '').toLowerCase().indexOf(filter) > -1;
+                const roleMatch = !filterRole || rowRole === filterRole.toUpperCase();
+                const match = textMatch && roleMatch;
+                row.style.display = match ? '' : 'none';
+                if (match) visibleCount++;
+            });
+            const subs = section.querySelectorAll('.role-subsection');
+            subs.forEach(function(sub) {
+                const subRows = sub.querySelectorAll('tr[data-user-id]');
+                const subVisible = Array.from(subRows).some(function(r) { return r.style.display !== 'none'; });
+                sub.style.display = subVisible ? '' : 'none';
+            });
+            section.style.display = visibleCount > 0 ? '' : 'none';
         });
-        
-        currentPage = 1;
-        updatePagination();
+        var studentSection = document.getElementById('studentSection');
+        if (studentSection) {
+            studentAllRows = Array.from(studentSection.querySelectorAll('tr[data-user-id]'));
+            updateStudentPagination();
+        }
     }
-    
+
     // 頁面載入時執行
     document.addEventListener('DOMContentLoaded', function() {
         const tableContainer = document.getElementById('tableContainer');
-        const usersData = tableContainer.dataset.users;
+        const byDepartmentData = tableContainer.dataset.byDepartment;
+        const studentUsersData = tableContainer.dataset.studentUsers;
+        const otherUsersData = tableContainer.dataset.otherUsers;
 
-        if (usersData) {
-            const users = JSON.parse(usersData);
-            renderUserTable(users);
+        if (byDepartmentData !== undefined || studentUsersData !== undefined || otherUsersData !== undefined) {
+            const byDepartment = byDepartmentData ? JSON.parse(byDepartmentData) : [];
+            const studentUsers = studentUsersData ? JSON.parse(studentUsersData) : [];
+            const otherUsers = otherUsersData ? JSON.parse(otherUsersData) : [];
+            renderUserTableByDepartment(byDepartment, studentUsers, otherUsers);
         } else {
-            showMessage('無法載入使用者資料', 'error');
+            tableContainer.innerHTML = '<div class="loading">無法載入使用者資料</div>';
         }
-
-        // 獲取當前 URL 的排序參數來更新圖標
-        const urlParams = new URLSearchParams(window.location.search);
-        currentSortBy = urlParams.get('sort_by') || 'id';
-        currentSortOrder = urlParams.get('sort_order') || 'desc';
-        updateSortIcons();
     });
     </script>
 </body>
