@@ -250,47 +250,104 @@ try {
         $allow_score = true;
         error_log("管理員跳過時間檢查進行評分：報名ID={$application_id}, 用戶ID={$user_id}, 時間檢查訊息=" . $time_check['message']);
     } else {
-        // 檢查是否在審查開始時間之後（即使超過截止時間，也允許評分）
-        $app_dept_stmt = $conn->prepare("SELECT assigned_department FROM continued_admission WHERE id = ?");
-        $app_dept_stmt->bind_param("i", $application_id);
-        $app_dept_stmt->execute();
-        $app_dept_result = $app_dept_stmt->get_result();
-        $app_dept_data = $app_dept_result->fetch_assoc();
-        $app_dept_stmt->close();
-        
-        if ($app_dept_data && !empty($app_dept_data['assigned_department'])) {
-            $dept_code = $app_dept_data['assigned_department'];
-            $time_stmt = $conn->prepare("SELECT review_start FROM department_quotas WHERE department_code = ? AND is_active = 1 LIMIT 1");
-            $time_stmt->bind_param("s", $dept_code);
-            $time_stmt->execute();
-            $time_result = $time_stmt->get_result();
-            if ($time_row = $time_result->fetch_assoc()) {
-                $review_start = $time_row['review_start'];
-                if ($review_start) {
-                    $review_start_timestamp = strtotime($review_start);
-                    $current_time = time();
-                    if ($current_time >= $review_start_timestamp) {
-                        // 在審查開始時間之後，允許評分（即使超過截止時間）
-                        $allow_score = true;
-                        error_log("允許評分（在審查開始時間之後）：報名ID={$application_id}, 當前時間=" . date('Y-m-d H:i:s', $current_time) . ", 開始時間=" . $review_start);
-                    } else {
-                        error_log("不允許評分（早於審查開始時間）：報名ID={$application_id}, 當前時間=" . date('Y-m-d H:i:s', $current_time) . ", 開始時間=" . $review_start);
-                    }
+        // 如果 checkScoreTimeByChoice 返回 false，檢查是否超過截止時間
+        // 只有在時間檢查失敗且不是因為超過截止時間的情況下，才允許備用邏輯
+        if (!$time_check['is_within_period']) {
+            // 檢查是否是因為超過截止時間而失敗
+            $deadline = $time_check['deadline'];
+            if ($deadline) {
+                $deadline_timestamp = strtotime($deadline);
+                $current_time = time();
+                if ($current_time > $deadline_timestamp) {
+                    // 確實超過了截止時間，不允許評分
+                    error_log("不允許評分（超過截止時間）：報名ID={$application_id}, 當前時間=" . date('Y-m-d H:i:s', $current_time) . ", 截止時間=" . date('Y-m-d H:i:s', $deadline_timestamp));
                 } else {
-                    // 沒有設定審查開始時間，允許評分
-                    $allow_score = true;
-                    error_log("允許評分（未設定審查開始時間）：報名ID={$application_id}");
+                    // 可能是因為其他原因（如尚未開始），使用備用邏輯檢查
+                    $app_dept_stmt = $conn->prepare("SELECT assigned_department FROM continued_admission WHERE id = ?");
+                    $app_dept_stmt->bind_param("i", $application_id);
+                    $app_dept_stmt->execute();
+                    $app_dept_result = $app_dept_stmt->get_result();
+                    $app_dept_data = $app_dept_result->fetch_assoc();
+                    $app_dept_stmt->close();
+                    
+                    if ($app_dept_data && !empty($app_dept_data['assigned_department'])) {
+                        $dept_code = $app_dept_data['assigned_department'];
+                        $time_stmt = $conn->prepare("SELECT review_start FROM department_quotas WHERE department_code = ? AND is_active = 1 LIMIT 1");
+                        $time_stmt->bind_param("s", $dept_code);
+                        $time_stmt->execute();
+                        $time_result = $time_stmt->get_result();
+                        if ($time_row = $time_result->fetch_assoc()) {
+                            $review_start = $time_row['review_start'];
+                            if ($review_start) {
+                                $review_start_timestamp = strtotime($review_start);
+                                if ($current_time >= $review_start_timestamp) {
+                                    // 在審查開始時間之後，且未超過截止時間，允許評分
+                                    $allow_score = true;
+                                    error_log("允許評分（在審查開始時間之後且未超過截止時間）：報名ID={$application_id}, 當前時間=" . date('Y-m-d H:i:s', $current_time) . ", 開始時間=" . $review_start);
+                                } else {
+                                    error_log("不允許評分（早於審查開始時間）：報名ID={$application_id}, 當前時間=" . date('Y-m-d H:i:s', $current_time) . ", 開始時間=" . $review_start);
+                                }
+                            } else {
+                                // 沒有設定審查開始時間，允許評分
+                                $allow_score = true;
+                                error_log("允許評分（未設定審查開始時間）：報名ID={$application_id}");
+                            }
+                        } else {
+                            // 找不到科系設定，允許評分（向後兼容）
+                            $allow_score = true;
+                            error_log("允許評分（找不到科系設定）：報名ID={$application_id}");
+                        }
+                        $time_stmt->close();
+                    } else {
+                        // 沒有分配科系，允許評分（向後兼容）
+                        $allow_score = true;
+                        error_log("允許評分（未分配科系）：報名ID={$application_id}");
+                    }
                 }
             } else {
-                // 找不到科系設定，允許評分（向後兼容）
-                $allow_score = true;
-                error_log("允許評分（找不到科系設定）：報名ID={$application_id}");
+                // 沒有截止時間資訊，使用備用邏輯（向後兼容）
+                $app_dept_stmt = $conn->prepare("SELECT assigned_department FROM continued_admission WHERE id = ?");
+                $app_dept_stmt->bind_param("i", $application_id);
+                $app_dept_stmt->execute();
+                $app_dept_result = $app_dept_stmt->get_result();
+                $app_dept_data = $app_dept_result->fetch_assoc();
+                $app_dept_stmt->close();
+                
+                if ($app_dept_data && !empty($app_dept_data['assigned_department'])) {
+                    $dept_code = $app_dept_data['assigned_department'];
+                    $time_stmt = $conn->prepare("SELECT review_start FROM department_quotas WHERE department_code = ? AND is_active = 1 LIMIT 1");
+                    $time_stmt->bind_param("s", $dept_code);
+                    $time_stmt->execute();
+                    $time_result = $time_stmt->get_result();
+                    if ($time_row = $time_result->fetch_assoc()) {
+                        $review_start = $time_row['review_start'];
+                        if ($review_start) {
+                            $review_start_timestamp = strtotime($review_start);
+                            $current_time = time();
+                            if ($current_time >= $review_start_timestamp) {
+                                // 在審查開始時間之後，允許評分
+                                $allow_score = true;
+                                error_log("允許評分（在審查開始時間之後，無截止時間資訊）：報名ID={$application_id}, 當前時間=" . date('Y-m-d H:i:s', $current_time) . ", 開始時間=" . $review_start);
+                            } else {
+                                error_log("不允許評分（早於審查開始時間）：報名ID={$application_id}, 當前時間=" . date('Y-m-d H:i:s', $current_time) . ", 開始時間=" . $review_start);
+                            }
+                        } else {
+                            // 沒有設定審查開始時間，允許評分
+                            $allow_score = true;
+                            error_log("允許評分（未設定審查開始時間）：報名ID={$application_id}");
+                        }
+                    } else {
+                        // 找不到科系設定，允許評分（向後兼容）
+                        $allow_score = true;
+                        error_log("允許評分（找不到科系設定）：報名ID={$application_id}");
+                    }
+                    $time_stmt->close();
+                } else {
+                    // 沒有分配科系，允許評分（向後兼容）
+                    $allow_score = true;
+                    error_log("允許評分（未分配科系）：報名ID={$application_id}");
+                }
             }
-            $time_stmt->close();
-        } else {
-            // 沒有分配科系，允許評分（向後兼容）
-            $allow_score = true;
-            error_log("允許評分（未分配科系）：報名ID={$application_id}");
         }
     }
     

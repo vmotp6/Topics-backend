@@ -264,34 +264,11 @@ $current_page = 'signature';
                                     <button class="btn btn-primary" onclick="startWebAuthnAuth()" id="webauthnAuthBtn">
                                         <i class="fas fa-fingerprint"></i> 使用生物驗證簽名
                                     </button>
-                                    <button class="btn btn-secondary" onclick="startCrossDeviceAuth()" id="crossDeviceBtn" style="display: none; visibility: hidden;">
-                                        <i class="fas fa-qrcode"></i> 使用手機掃描驗證
-                                    </button>
                                     <button class="btn btn-secondary" onclick="showRegisterModal()" id="registerDeviceBtn">
                                         <i class="fas fa-mobile-alt"></i> 註冊新設備
                                     </button>
                                     <button class="btn btn-secondary" onclick="switchToCanvas()" id="switchToCanvasBtn">
                                         <i class="fas fa-pen"></i> 使用傳統簽名
-                                    </button>
-                                </div>
-                                <!-- 跨設備認證 QR 碼區域 -->
-                                <div id="crossDeviceSection" style="display: none; margin-top: 20px; padding: 20px; background: white; border-radius: 8px; border: 2px solid #1890ff;">
-                                    <h4 style="margin-bottom: 15px; color: #1890ff;">
-                                        <i class="fas fa-qrcode"></i> 使用手機生物驗證
-                                    </h4>
-                                    <div id="qrCodeContainer" style="text-align: center; margin-bottom: 15px;">
-                                        <div class="spinner" style="margin: 20px auto;"></div>
-                                    </div>
-                                    <p style="font-size: 13px; color: #666; margin-bottom: 15px;">
-                                        1. 使用手機掃描上方 QR 碼<br>
-                                        2. 在手機上使用指紋或臉部辨識完成驗證<br>
-                                        3. 驗證成功後，此頁面會自動完成簽名
-                                    </p>
-                                    <div id="crossDeviceStatus" style="padding: 10px; background: #f5f5f5; border-radius: 4px; font-size: 12px; color: #666; margin-bottom: 10px;">
-                                        等待手機驗證...
-                                    </div>
-                                    <button class="btn btn-secondary" onclick="cancelCrossDeviceAuth()" style="width: 100%;">
-                                        取消
                                     </button>
                                 </div>
                                 <div id="webauthnError" style="display: none; margin-top: 16px; padding: 12px; background: #fff2f0; border: 1px solid #ffccc7; border-radius: 4px; color: #a8071a;"></div>
@@ -409,16 +386,6 @@ $current_page = 'signature';
                 
                 // 如果是桌面設備
                 if (deviceType === 'desktop') {
-                    // 在桌面環境，總是顯示跨設備認證按鈕（推薦使用）
-                    const crossDeviceBtn = document.getElementById('crossDeviceBtn');
-                    if (crossDeviceBtn) {
-                        crossDeviceBtn.style.display = 'inline-flex';
-                        crossDeviceBtn.style.visibility = 'visible';
-                        console.log('已顯示跨設備認證按鈕');
-                    } else {
-                        console.error('找不到跨設備認證按鈕元素');
-                    }
-                    
                     // 檢查是否有手機憑證
                     try {
                         const checkResponse = await fetch('check_credentials.php');
@@ -438,42 +405,37 @@ $current_page = 'signature';
                             );
                             
                             if (hasMobileCredential) {
-                                // 有手機憑證，推薦使用跨設備認證
+                                // 有手機憑證
                                 document.getElementById('deviceHint').style.display = 'block';
                                 document.getElementById('deviceHint').innerHTML = `
                                     <i class="fas fa-info-circle"></i> 
                                     <strong>桌面電腦提示：</strong>檢測到您已註冊手機生物驗證。
                                     <br>
                                     <strong>推薦方案：</strong>
-                                    <br>1. <strong>點擊「使用手機掃描驗證」</strong>，用手機掃描 QR 碼完成生物驗證（最方便，推薦）
-                                    <br>2. 或使用手機瀏覽器直接打開此頁面進行生物驗證
-                                    <br>3. 或使用下方的「使用傳統簽名」按鈕
+                                    <br>1. 使用手機瀏覽器直接打開此頁面進行生物驗證
+                                    <br>2. 或使用下方的「使用傳統簽名」按鈕
                                 `;
                                 document.getElementById('webauthnDescription').innerHTML = `
                                     <span style="color: #1890ff;">💡 您已註冊手機生物驗證</span>
-                                    <br>建議使用「手機掃描驗證」功能，或直接使用手機瀏覽器
+                                    <br>建議直接使用手機瀏覽器進行認證
                                 `;
-                                // 將跨設備認證設為主要按鈕
-                                document.getElementById('crossDeviceBtn').classList.remove('btn-secondary');
-                                document.getElementById('crossDeviceBtn').classList.add('btn-primary');
-                                document.getElementById('webauthnAuthBtn').classList.remove('btn-primary');
-                                document.getElementById('webauthnAuthBtn').classList.add('btn-secondary');
                             } else {
                                 // 沒有手機憑證
                                 if (!hasPlatformAuth) {
+                                    document.getElementById('deviceHint').style.display = 'block';
                                     document.getElementById('deviceHint').style.display = 'block';
                                     document.getElementById('deviceHint').innerHTML = `
                                         <i class="fas fa-info-circle"></i> 
                                         <strong>桌面電腦提示：</strong>您的電腦沒有內建生物驗證功能。
                                         <br>
                                         <strong>建議方案：</strong>
-                                        <br>1. <strong>點擊「使用手機掃描驗證」</strong>註冊並使用手機生物驗證（推薦）
+                                        <br>1. 使用手機瀏覽器直接打開此頁面註冊並使用手機生物驗證（推薦）
                                         <br>2. 使用 USB 安全性金鑰（如 YubiKey）
                                         <br>3. 使用下方的「使用傳統簽名」按鈕
                                     `;
                                     document.getElementById('webauthnDescription').innerHTML = `
                                         <span style="color: #f5222d;">⚠️ 桌面電腦沒有內建生物驗證</span>
-                                        <br>建議使用「手機掃描驗證」功能註冊手機生物驗證
+                                        <br>建議使用手機瀏覽器進行生物驗證
                                     `;
                                 }
                             }
@@ -481,12 +443,13 @@ $current_page = 'signature';
                             // 沒有憑證，提示註冊
                             if (!hasPlatformAuth) {
                                 document.getElementById('deviceHint').style.display = 'block';
+                                document.getElementById('deviceHint').style.display = 'block';
                                 document.getElementById('deviceHint').innerHTML = `
                                     <i class="fas fa-info-circle"></i> 
                                     <strong>桌面電腦提示：</strong>您尚未註冊任何生物驗證設備。
                                     <br>
                                     <strong>建議方案：</strong>
-                                    <br>1. <strong>點擊「使用手機掃描驗證」</strong>註冊並使用手機生物驗證（推薦）
+                                    <br>1. 使用手機瀏覽器直接打開此頁面註冊並使用手機生物驗證（推薦）
                                     <br>2. 點擊「註冊新設備」註冊 USB 安全性金鑰
                                     <br>3. 使用下方的「使用傳統簽名」按鈕
                                 `;
@@ -494,22 +457,15 @@ $current_page = 'signature';
                         }
                     } catch (e) {
                         console.error('檢查憑證失敗:', e);
-                        // 即使檢查失敗，也在桌面顯示跨設備認證按鈕
-                        const crossDeviceBtn = document.getElementById('crossDeviceBtn');
-                        if (crossDeviceBtn) {
-                            crossDeviceBtn.style.display = 'inline-flex';
-                            crossDeviceBtn.style.visibility = 'visible';
-                        }
                         // 顯示提示
                         document.getElementById('deviceHint').style.display = 'block';
                         document.getElementById('deviceHint').innerHTML = `
                             <i class="fas fa-info-circle"></i> 
-                            <strong>桌面電腦提示：</strong>在桌面電腦上，建議使用「手機掃描驗證」功能。
+                            <strong>桌面電腦提示：</strong>在桌面電腦上，建議使用手機瀏覽器進行生物驗證。
                             <br>
                             <strong>推薦方案：</strong>
-                            <br>1. <strong>點擊「使用手機掃描驗證」</strong>，用手機掃描 QR 碼完成生物驗證（推薦）
-                            <br>2. 或使用手機瀏覽器直接打開此頁面進行生物驗證
-                            <br>3. 或使用下方的「使用傳統簽名」按鈕
+                            <br>1. 使用手機瀏覽器直接打開此頁面進行生物驗證（推薦）
+                            <br>2. 使用下方的「使用傳統簽名」按鈕
                         `;
                     }
                     
@@ -597,19 +553,19 @@ $current_page = 'signature';
                 // 2. 檢查是否在桌面環境且有手機憑證
                 const deviceType = detectDeviceType();
                 if (deviceType === 'desktop' && startData.has_platform_credential) {
-                    // 在桌面環境且有手機憑證，建議使用跨設備認證
-                    const useCrossDevice = confirm(
+                    // 在桌面環境且有手機憑證，提示使用手機瀏覽器
+                    const useMobile = confirm(
                         '檢測到您已註冊手機生物驗證。\n\n' +
                         '在桌面電腦上，直接認證可能會要求使用 USB 金鑰。\n\n' +
-                        '建議使用「手機掃描驗證」功能，或使用手機瀏覽器進行認證。\n\n' +
+                        '建議使用手機瀏覽器進行認證。\n\n' +
                         '是否要繼續使用直接認證？（可能會要求 USB 金鑰）'
                     );
                     
-                    if (!useCrossDevice) {
+                    if (!useMobile) {
                         btn.disabled = false;
                         btn.innerHTML = '<i class="fas fa-fingerprint"></i> 使用生物驗證簽名';
                         errorDiv.style.display = 'block';
-                        errorDiv.innerHTML = '建議使用「手機掃描驗證」功能，或使用手機瀏覽器進行生物驗證簽名。';
+                        errorDiv.innerHTML = '建議使用手機瀏覽器進行生物驗證簽名。';
                         return;
                     }
                 }
@@ -666,7 +622,7 @@ $current_page = 'signature';
                     try {
                         const isPlatformAvailable = await PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable();
                         if (!isPlatformAvailable && deviceType === 'desktop') {
-                            throw new Error('平台認證器不可用。在桌面電腦上，建議使用「手機掃描驗證」功能。');
+                            throw new Error('平台認證器不可用。在桌面電腦上，建議使用手機瀏覽器進行生物驗證。');
                         }
                     } catch (e) {
                         if (e.message && !e.message.includes('平台認證器不可用')) {
@@ -1177,134 +1133,6 @@ $current_page = 'signature';
             });
         }
 
-        // 跨設備認證功能
-        let crossDeviceSessionId = null;
-        let crossDeviceCheckInterval = null;
-        
-        async function startCrossDeviceAuth() {
-            try {
-                // 1. 創建跨設備 session
-                const response = await fetch('webauthn_cross_device.php', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ action: 'create_session' })
-                });
-                
-                const data = await response.json();
-                
-                if (!data.success) {
-                    throw new Error(data.message || '創建認證 session 失敗');
-                }
-                
-                crossDeviceSessionId = data.session_id;
-                
-                // 2. 顯示 QR 碼區域
-                document.getElementById('crossDeviceSection').style.display = 'block';
-                document.getElementById('webauthnButtons').style.display = 'none';
-                
-                // 3. 生成 QR 碼（確保 URL 正確）
-                if (data.qr_url) {
-                    generateQRCode(data.qr_url);
-                } else {
-                    throw new Error('QR 碼 URL 生成失敗');
-                }
-                
-                // 4. 開始輪詢檢查狀態
-                startPollingStatus();
-                
-            } catch (error) {
-                console.error('跨設備認證錯誤:', error);
-                showToast('啟動跨設備認證失敗：' + error.message, 'error');
-                // 如果失敗，恢復按鈕顯示
-                document.getElementById('crossDeviceSection').style.display = 'none';
-                document.getElementById('webauthnButtons').style.display = 'flex';
-            }
-        }
-        
-        function generateQRCode(url) {
-            const container = document.getElementById('qrCodeContainer');
-            container.innerHTML = '<div style="border: 3px solid #f3f3f3; border-top: 3px solid #1890ff; border-radius: 50%; width: 40px; height: 40px; animation: spin 1s linear infinite; margin: 0 auto;"></div>';
-            
-            // 使用 QR 碼 API
-            const qrUrl = 'https://api.qrserver.com/v1/create-qr-code/?size=300x300&margin=2&data=' + encodeURIComponent(url);
-            const img = document.createElement('img');
-            img.src = qrUrl;
-            img.alt = '掃描此 QR 碼';
-            img.style.maxWidth = '100%';
-            img.style.height = 'auto';
-            img.style.border = '2px solid #1890ff';
-            img.style.borderRadius = '8px';
-            img.style.padding = '10px';
-            img.style.background = 'white';
-            
-            img.onload = function() {
-                container.innerHTML = '';
-                container.appendChild(img);
-            };
-            
-            img.onerror = function() {
-                // 如果 API 失敗，嘗試使用備用方案
-                container.innerHTML = `
-                    <div style="padding: 20px; text-align: center;">
-                        <p style="color: #f5222d; margin-bottom: 10px;">QR 碼生成失敗</p>
-                        <p style="font-size: 12px; color: #666; margin-bottom: 15px;">請使用手機瀏覽器直接訪問以下連結：</p>
-                        <a href="${url}" target="_blank" style="display: inline-block; padding: 10px 20px; background: #1890ff; color: white; text-decoration: none; border-radius: 4px; word-break: break-all;">
-                            ${url}
-                        </a>
-                    </div>
-                `;
-            };
-        }
-        
-        function startPollingStatus() {
-            const statusDiv = document.getElementById('crossDeviceStatus');
-            
-            crossDeviceCheckInterval = setInterval(async () => {
-                try {
-                    const response = await fetch('webauthn_cross_device.php?action=check_status&session_id=' + crossDeviceSessionId);
-                    const data = await response.json();
-                    
-                    if (!data.success) {
-                        if (data.status === 'expired' || data.status === 'not_found') {
-                            clearInterval(crossDeviceCheckInterval);
-                            statusDiv.innerHTML = '<span style="color: #f5222d;">認證已過期，請重新開始</span>';
-                            return;
-                        }
-                        return;
-                    }
-                    
-                    if (data.status === 'completed' && data.result) {
-                        // 認證完成
-                        clearInterval(crossDeviceCheckInterval);
-                        statusDiv.innerHTML = '<span style="color: #52c41a;"><i class="fas fa-check-circle"></i> 手機驗證成功！</span>';
-                        
-                        // 使用認證結果提交簽名
-                        webauthnAuthResult = data.result;
-                        await submitWebAuthnSignature();
-                        
-                        // 隱藏跨設備區域
-                        setTimeout(() => {
-                            document.getElementById('crossDeviceSection').style.display = 'none';
-                            document.getElementById('webauthnButtons').style.display = 'flex';
-                        }, 2000);
-                    } else if (data.status === 'pending') {
-                        statusDiv.innerHTML = '<span><i class="fas fa-spinner fa-spin"></i> 等待手機驗證...</span>';
-                    }
-                } catch (error) {
-                    console.error('檢查狀態錯誤:', error);
-                }
-            }, 2000); // 每2秒檢查一次
-        }
-        
-        function cancelCrossDeviceAuth() {
-            if (crossDeviceCheckInterval) {
-                clearInterval(crossDeviceCheckInterval);
-            }
-            document.getElementById('crossDeviceSection').style.display = 'none';
-            document.getElementById('webauthnButtons').style.display = 'flex';
-            crossDeviceSessionId = null;
-        }
-        
         function showToast(message, type = 'success') {
             const toast = document.getElementById('toast');
             toast.textContent = message;

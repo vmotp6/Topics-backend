@@ -259,15 +259,20 @@ function caSyncAnnouncementToBulletin(mysqli $conn, int $year, int $userId, stri
 
 /**
  * 發布公告：寫入 published_at，並可選同步到前台公告欄
+ * 注意：即使前台公告已經是草稿狀態，也會更新為 published 狀態
  * @param array $files 附件列表
  */
 function caPublishAnnouncement(mysqli $conn, int $year, int $userId, bool $syncBulletin = true, array $files = []): array {
     $ann = caGetAnnouncement($conn, $year);
     if (!$ann) throw new Exception("找不到公告草稿，請先儲存公告內容");
 
+    // 先標記為已發布
     caMarkAnnouncementPublished($conn, $year);
+    
     $bulletinId = null;
     if ($syncBulletin) {
+        // 同步到前台公告欄，狀態設為 'published'
+        // 即使之前是草稿狀態，這裡也會更新為 published
         $bulletinId = caSyncAnnouncementToBulletin(
             $conn,
             $year,
@@ -275,9 +280,19 @@ function caPublishAnnouncement(mysqli $conn, int $year, int $userId, bool $syncB
             (string)($ann['title'] ?? "續招錄取名單公告（{$year}）"),
             (string)($ann['content'] ?? ''),
             isset($ann['publish_at']) ? (string)$ann['publish_at'] : null,
-            'published',
+            'published',  // 強制設為 published 狀態
             $files
         );
+        
+        // 確保前台公告狀態確實更新為 published（防止更新失敗）
+        if ($bulletinId) {
+            $update_status_stmt = $conn->prepare("UPDATE bulletin_board SET status_code = 'published', updated_at = NOW() WHERE id = ?");
+            if ($update_status_stmt) {
+                $update_status_stmt->bind_param("i", $bulletinId);
+                $update_status_stmt->execute();
+                $update_status_stmt->close();
+            }
+        }
     }
     return ['bulletin_id' => $bulletinId];
 }

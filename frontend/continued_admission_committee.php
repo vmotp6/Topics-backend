@@ -84,28 +84,36 @@ if ($announcement && !empty($announcement['publish_at']) && empty($announcement[
 }
 
 // 取得本年度「委員會確認錄取結果」簽章狀態（僅供畫面顯示）
+// 注意：每次登入需重新簽章，所以只檢查當前 session 中的簽章狀態
 $committee_signature = null;
-try {
-    $sig_stmt = $conn->prepare("
-        SELECT id, created_at
-        FROM signatures
-        WHERE user_id = ?
-          AND document_type = 'continued_admission_committee_confirm'
-          AND document_id = ?
-        ORDER BY created_at DESC
-        LIMIT 1
-    ");
-    if ($sig_stmt) {
-        $sig_stmt->bind_param("ii", $user_id, $year);
-        $sig_stmt->execute();
-        $sig_res = $sig_stmt->get_result();
-        if ($sig_res && ($row = $sig_res->fetch_assoc())) {
-            $committee_signature = $row;
+$session_signature_key = "committee_signature_{$year}_{$user_id}";
+
+// 檢查 session 中是否有簽章記錄（每次登入需重新簽章）
+if (isset($_SESSION[$session_signature_key]) && !empty($_SESSION[$session_signature_key])) {
+    $signature_id = (int)$_SESSION[$session_signature_key];
+    try {
+        $sig_stmt = $conn->prepare("
+            SELECT id, created_at, signature_path
+            FROM signatures
+            WHERE id = ? AND user_id = ?
+              AND document_type = 'continued_admission_committee_confirm'
+              AND document_id = ?
+            LIMIT 1
+        ");
+        if ($sig_stmt) {
+            $sig_stmt->bind_param("iii", $signature_id, $user_id, $year);
+            $sig_stmt->execute();
+            $sig_res = $sig_stmt->get_result();
+            if ($sig_res && ($row = $sig_res->fetch_assoc())) {
+                $committee_signature = $row;
+            }
+            $sig_stmt->close();
         }
-        $sig_stmt->close();
+    } catch (Throwable $e) {
+        $committee_signature = null;
+        // 如果查詢失敗，清除 session 中的記錄
+        unset($_SESSION[$session_signature_key]);
     }
-} catch (Throwable $e) {
-    $committee_signature = null;
 }
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
@@ -214,32 +222,65 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
 
         if ($action === 'confirm_ranking') {
-            // 確認前必須先完成電子簽章
+            // 檢查是否有待處理名單
+            $pending_check_stmt = $conn->prepare("
+                SELECT COUNT(*) as count
+                FROM continued_admission
+                WHERE assigned_department IS NOT NULL AND assigned_department != ''
+                  AND LEFT(apply_no, 4) = ?
+                  AND (status IS NULL OR status IN ('PE','pending'))
+            ");
+            $pending_count = 0;
+            if ($pending_check_stmt) {
+                $pending_check_stmt->bind_param("i", $year);
+                $pending_check_stmt->execute();
+                $pending_result = $pending_check_stmt->get_result();
+                if ($pending_row = $pending_result->fetch_assoc()) {
+                    $pending_count = (int)$pending_row['count'];
+                }
+                $pending_check_stmt->close();
+            }
+            
+            if ($pending_count > 0) {
+                throw new Exception("尚有 {$pending_count} 筆待處理名單，請先處理完畢後再確認錄取結果。");
+            }
+            
+            // 確認前必須先完成電子簽章（檢查當前 session 中的簽章）
+            $session_signature_key = "committee_signature_{$year}_{$user_id}";
+            $has_signature = isset($_SESSION[$session_signature_key]) && !empty($_SESSION[$session_signature_key]);
+            
+            if (!$has_signature) {
+                throw new Exception("請先完成電子簽章，再確認錄取結果。");
+            }
+            
+            // 驗證簽章是否有效
+            $signature_id = (int)$_SESSION[$session_signature_key];
             try {
                 $sig_stmt = $conn->prepare("
                     SELECT id 
                     FROM signatures 
-                    WHERE user_id = ? 
+                    WHERE id = ? AND user_id = ?
                       AND document_type = 'continued_admission_committee_confirm'
                       AND document_id = ?
-                    ORDER BY created_at DESC
                     LIMIT 1
                 ");
                 if ($sig_stmt) {
-                    $sig_stmt->bind_param("ii", $user_id, $year);
+                    $sig_stmt->bind_param("iii", $signature_id, $user_id, $year);
                     $sig_stmt->execute();
                     $sig_res = $sig_stmt->get_result();
-                    $has_signature = $sig_res && $sig_res->fetch_assoc();
+                    $valid_signature = $sig_res && $sig_res->fetch_assoc();
                     $sig_stmt->close();
+                    
+                    if (!$valid_signature) {
+                        throw new Exception("簽章驗證失敗，請重新簽章。");
+                    }
                 } else {
-                    $has_signature = false;
+                    throw new Exception("無法驗證簽章，請重新簽章。");
                 }
             } catch (Throwable $e) {
-                $has_signature = false;
-            }
-
-            if (empty($has_signature)) {
-                throw new Exception("請先完成電子簽章，再確認錄取結果。");
+                // 清除無效的簽章記錄
+                unset($_SESSION[$session_signature_key]);
+                throw new Exception("簽章驗證失敗：" . $e->getMessage());
             }
 
             // 寫入各科系錄取結果（status/admission_rank）
@@ -298,28 +339,7 @@ try {
     // ignore
 }
 
-// 讀取目前使用者在本年度的委員會簽章（用於顯示與驗證）
-$committee_signature = null;
-try {
-    $sig_stmt = $conn->prepare("
-        SELECT id, signature_path, created_at 
-        FROM signatures 
-        WHERE user_id = ? 
-          AND document_type = 'continued_admission_committee_confirm'
-          AND document_id = ?
-        ORDER BY created_at DESC
-        LIMIT 1
-    ");
-    if ($sig_stmt) {
-        $sig_stmt->bind_param("ii", $user_id, $year);
-        $sig_stmt->execute();
-        $sig_result = $sig_stmt->get_result();
-        $committee_signature = $sig_result ? $sig_result->fetch_assoc() : null;
-        $sig_stmt->close();
-    }
-} catch (Throwable $e) {
-    // 若 signatures 表不存在或其他錯誤，僅略過顯示，不影響頁面載入
-}
+// 簽章狀態已在上面檢查過（基於 session），這裡不需要重複查詢
 
 $page_title = "續招：招生委員會確認/公告/寄信";
 $current_page = 'continued_admission_committee';
@@ -732,9 +752,21 @@ $current_page = 'continued_admission_committee';
             <input type="hidden" name="action" value="confirm_ranking" />
             <!-- 簽章 ID（由簽名頁面回傳後寫入，方便之後若要記錄） -->
             <input type="hidden" name="signature_id" value="" />
-            <button class="btn btn-primary" type="button" onclick="confirmRankingWithSignature()">
+            <button class="btn btn-primary" type="button" onclick="confirmRankingWithSignature()" 
+                    id="confirmRankingBtn" 
+                    <?php if ($pending_count > 0 || !$committee_signature): ?>disabled<?php endif; ?>>
               <i class="fas fa-check"></i> 確認錄取結果（需簽名）
             </button>
+            <?php if ($pending_count > 0): ?>
+              <div style="margin-top:8px; padding:8px; background:#fff1f0; border:1px solid #ffccc7; border-radius:6px; font-size:13px; color:#a8071a;">
+                <i class="fas fa-exclamation-triangle"></i> 尚有 <?php echo (int)$pending_count; ?> 筆待處理名單，請先處理完畢後再確認。
+              </div>
+            <?php endif; ?>
+            <?php if (!$committee_signature): ?>
+              <div style="margin-top:8px; padding:8px; background:#fff1f0; border:1px solid #ffccc7; border-radius:6px; font-size:13px; color:#a8071a;">
+                <i class="fas fa-exclamation-triangle"></i> 請先完成電子簽章後再確認。
+              </div>
+            <?php endif; ?>
           </form>
         </div>
       </div>
@@ -833,8 +865,15 @@ $current_page = 'continued_admission_committee';
       );
     }
 
-    // 2) 點擊「確認錄取結果」時，檢查是否已簽名
+    // 2) 點擊「確認錄取結果」時，檢查是否已簽名和是否有待處理名單
     function confirmRankingWithSignature() {
+      // 檢查是否有待處理名單
+      const pendingCount = <?php echo (int)$pending_count; ?>;
+      if (pendingCount > 0) {
+        alert('尚有 ' + pendingCount + ' 筆待處理名單，請先處理完畢後再確認錄取結果。');
+        return;
+      }
+      
       // 檢查是否已有簽名（從 PHP 傳入的變數）
       const hasSignature = <?php echo $committee_signature ? 'true' : 'false'; ?>;
       
@@ -846,11 +885,11 @@ $current_page = 'continued_admission_committee';
         }
       } else {
         // 如果未簽名，打開簽名視窗
-      openCommitteeSignatureWindow();
+        openCommitteeSignatureWindow();
       }
     }
 
-    // 3) 接收簽名頁面回傳的訊息，簽完後自動送出表單
+    // 3) 接收簽名頁面回傳的訊息，簽完後更新 session 並自動送出表單
     window.addEventListener('message', function (event) {
       if (!event || !event.data || event.data.type !== 'signature_saved') {
         return;
@@ -863,10 +902,49 @@ $current_page = 'continued_admission_committee';
           signatureIdInput.value = event.data.signature_id;
         }
 
-        // 自動送出「確認錄取結果」表單
-        const form = document.getElementById('confirmRankingForm');
-        if (form) {
-          form.submit();
+        // 將簽章 ID 保存到 session（通過後端 API）
+        if (event.data.signature_id) {
+          fetch('save_committee_signature_session.php', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              signature_id: event.data.signature_id,
+              year: <?php echo (int)$year; ?>
+            })
+          }).then(response => response.json())
+            .then(data => {
+              if (data.success) {
+                // 更新按鈕狀態
+                const btn = document.getElementById('confirmRankingBtn');
+                if (btn) {
+                  btn.disabled = false;
+                }
+                // 移除簽章提示
+                const sigWarning = document.querySelector('#confirmRankingForm div[style*="請先完成電子簽章"]');
+                if (sigWarning) {
+                  sigWarning.remove();
+                }
+                // 自動送出「確認錄取結果」表單
+                const form = document.getElementById('confirmRankingForm');
+                if (form) {
+                  form.submit();
+                }
+              } else {
+                alert('保存簽章狀態失敗：' + (data.message || '未知錯誤'));
+              }
+            })
+            .catch(error => {
+              console.error('保存簽章狀態時發生錯誤:', error);
+              alert('保存簽章狀態失敗，請重新整理頁面後再試');
+            });
+        } else {
+          // 如果沒有簽章 ID，直接提交表單（向後兼容）
+          const form = document.getElementById('confirmRankingForm');
+          if (form) {
+            form.submit();
+          }
         }
       } catch (e) {
         console.error('處理簽名回傳時發生錯誤:', e);

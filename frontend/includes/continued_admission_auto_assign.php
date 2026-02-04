@@ -194,15 +194,14 @@ function checkScoreTimeByChoice($conn, $application_id) {
     // 但為了方便測試和實際使用，允許在審查開始時間前1小時就可以開始評分
     $allow_early_start = $review_start_timestamp - 3600; // 提前1小時允許評分
     
-    // 如果當前時間已經超過開始時間，直接允許評分
-    // 注意：為了方便實際使用，只要在審查開始時間之後就允許評分，即使超過截止時間也允許（但會顯示提示）
+    // 如果當前時間已經超過開始時間，檢查是否在截止時間內
     if ($current_time >= $review_start_timestamp) {
-        // 檢查是否超過截止時間（超過也會允許，但顯示警告）
+        // 檢查是否超過截止時間
         if ($current_time > $deadline_timestamp) {
-            error_log("時間檢查：當前時間晚於截止時間，但仍允許評分");
+            error_log("時間檢查失敗：當前時間晚於截止時間");
             return [
-                'is_within_period' => true, // 改為 true，允許評分
-                'message' => "志願{$choice_order}評分時間已截止（截止時間：" . date('Y-m-d H:i', $deadline_timestamp) . "），但仍可評分",
+                'is_within_period' => false, // 超過截止時間，不允許評分
+                'message' => "志願{$choice_order}評分時間已截止，截止時間：" . date('Y-m-d H:i', $deadline_timestamp),
                 'deadline' => $deadline
             ];
         }

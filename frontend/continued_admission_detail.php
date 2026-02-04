@@ -447,6 +447,176 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_status'])) {
             padding: 8px 12px; border: 1px solid #d9d9d9; border-radius: 6px; font-size: 14px;
         }
         .status-select:focus {
+            outline: none;
+            border-color: var(--primary-color);
+        }
+        
+        /* 評分輔助浮動視窗樣式 */
+        .score-helper-panel {
+            position: fixed !important;
+            right: 0 !important;
+            top: 50% !important;
+            transform: translateY(-50%) !important;
+            width: 380px !important;
+            max-height: 90vh !important;
+            background: #fff !important;
+            box-shadow: -2px 0 8px rgba(0, 0, 0, 0.15) !important;
+            border-radius: 8px 0 0 8px !important;
+            z-index: 9998 !important;
+            transition: transform 0.3s ease !important;
+            display: flex !important;
+            flex-direction: column !important;
+        }
+        
+        .score-helper-panel.collapsed {
+            transform: translateY(-50%) translateX(calc(100% - 50px));
+        }
+        
+        .score-helper-panel.collapsed {
+            transform: translateY(-50%) translateX(calc(100% - 50px)) !important;
+        }
+        
+        .score-helper-header {
+            background: linear-gradient(135deg, #1890ff 0%, #096dd9 100%);
+            color: white;
+            padding: 16px 20px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            border-radius: 8px 0 0 0;
+            font-weight: 500;
+            user-select: none;
+        }
+        
+        .score-helper-header:hover {
+            background: linear-gradient(135deg, #40a9ff 0%, #1890ff 100%);
+        }
+        
+        .score-helper-header i:first-child {
+            margin-right: 8px;
+        }
+        
+        .score-helper-header i:last-child {
+            transition: transform 0.3s ease;
+        }
+        
+        .score-helper-panel.collapsed .score-helper-header i:last-child {
+            transform: rotate(180deg);
+        }
+        
+        .score-helper-content {
+            flex: 1;
+            overflow-y: auto;
+            padding: 20px;
+            max-height: calc(90vh - 60px);
+        }
+        
+        .score-helper-section {
+            margin-bottom: 24px;
+            padding-bottom: 20px;
+            border-bottom: 1px solid #f0f0f0;
+        }
+        
+        .score-helper-section:last-child {
+            border-bottom: none;
+            margin-bottom: 0;
+            padding-bottom: 0;
+        }
+        
+        .score-helper-section h5 {
+            font-size: 15px;
+            font-weight: 600;
+            color: #1890ff;
+            margin-bottom: 12px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        
+        .score-helper-section h5 i {
+            font-size: 14px;
+        }
+        
+        .score-helper-item {
+            display: flex;
+            margin-bottom: 10px;
+            font-size: 13px;
+            line-height: 1.6;
+        }
+        
+        .score-helper-label {
+            font-weight: 500;
+            color: #8c8c8c;
+            min-width: 80px;
+            flex-shrink: 0;
+        }
+        
+        .score-helper-value {
+            color: #262626;
+            word-break: break-word;
+        }
+        
+        .score-helper-list {
+            list-style: none;
+            padding: 0;
+            margin: 0;
+        }
+        
+        .score-helper-list li {
+            padding: 6px 0;
+            padding-left: 20px;
+            position: relative;
+            font-size: 13px;
+            line-height: 1.6;
+            color: #262626;
+        }
+        
+        .score-helper-list li:before {
+            content: "•";
+            position: absolute;
+            left: 0;
+            color: #1890ff;
+            font-weight: bold;
+        }
+        
+        .score-helper-text {
+            background: #fafafa;
+            padding: 12px;
+            border-radius: 6px;
+            border: 1px solid #e8e8e8;
+            font-size: 13px;
+            line-height: 1.8;
+            color: #262626;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+            max-height: 200px;
+            overflow-y: auto;
+        }
+        
+        .score-helper-empty {
+            color: #8c8c8c;
+            font-size: 13px;
+            margin: 0;
+            font-style: italic;
+        }
+        
+        /* 響應式設計 */
+        @media (max-width: 1200px) {
+            .score-helper-panel {
+                width: 320px;
+            }
+        }
+        
+        @media (max-width: 768px) {
+            .score-helper-panel {
+                width: 280px;
+            }
+            
+            .score-helper-content {
+                padding: 16px;
+            }
+        }
             outline: none; border-color: var(--primary-color); box-shadow: 0 0 0 2px rgba(24, 144, 255, 0.2);
         }
 
@@ -724,10 +894,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_status'])) {
                                 error_log("已評分狀態檢查 - 報名ID: {$application_id}, slot: {$teacher_slot}, 已評分，不允許修改");
                             }
                             
-                            // 如果未評分，檢查是否在評分期間內
-                            if (!$is_scored && $review_start_timestamp && $current_time >= $review_start_timestamp) {
-                                $is_within_review_period = true;
-                                error_log("強制允許評分：報名ID={$application_id}, 當前時間=" . date('Y-m-d H:i:s', $current_time) . ", 開始時間=" . date('Y-m-d H:i:s', $review_start_timestamp));
+                            // 如果未評分，檢查是否在評分期間內（需要同時檢查開始時間和截止時間）
+                            // 注意：這裡不再強制覆蓋 checkScoreTimeByChoice 的結果，因為它已經正確檢查了截止時間
+                            if (!$is_scored && $score_deadline_timestamp && $current_time > $score_deadline_timestamp) {
+                                // 如果超過截止時間，確保不允許評分（除非是管理員）
+                                $can_force_score = in_array($user_role, ['ADM', 'STA']);
+                                if (!$can_force_score) {
+                                    $is_within_review_period = false;
+                                    error_log("超過評分截止時間：報名ID={$application_id}, 當前時間=" . date('Y-m-d H:i:s', $current_time) . ", 截止時間=" . date('Y-m-d H:i:s', $score_deadline_timestamp));
+                                }
                             }
                             
                             // 調試信息：記錄時間檢查結果
@@ -928,21 +1103,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_status'])) {
                                             <div id="webauthnStatus" style="display: none; margin-top: 8px; padding: 8px; background: #fff; border-radius: 4px; font-size: 12px;"></div>
                                         </div>
                                         
-                                        <!-- Canvas 傳統簽名區域 -->
-                                        <div id="canvasSignatureArea">
-                                            <div style="background: #fafafa; padding: 16px; border-radius: 6px; border: 1px solid #e8e8e8; margin-bottom: 12px;">
-                                                <canvas id="signatureCanvas" width="700" height="250" style="border: 2px solid #d9d9d9; border-radius: 6px; cursor: crosshair; background: white; display: block; width: 100%; max-width: 700px; touch-action: none;"></canvas>
-                                            </div>
-                                            <div style="display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap;">
-                                                <button type="button" onclick="clearSignature()" class="btn-secondary" style="padding: 8px 16px; font-size: 14px;">
-                                                    <i class="fas fa-eraser"></i> 清除簽名
-                                                </button>
-                                                <button type="button" onclick="openSignatureModal()" class="btn-secondary" style="padding: 8px 16px; font-size: 14px;">
-                                                    <i class="fas fa-expand"></i> 全螢幕簽名
-                                                </button>
-                                            </div>
-                                        </div>
-                                        
                                         <div id="signaturePreview" style="display: none; margin-top: 12px; padding: 12px; background: #f6ffed; border: 1px solid #b7eb8f; border-radius: 6px;">
                                             <div style="font-size: 12px; color: #52c41a; margin-bottom: 8px;">
                                                 <i class="fas fa-check-circle"></i> 簽名預覽
@@ -951,7 +1111,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_status'])) {
                                         </div>
                                         <input type="hidden" id="signatureData" name="signature_data" value="">
                                         <input type="hidden" id="signatureId" name="signature_id" value="">
-                                        <input type="hidden" id="signatureMethod" name="signature_method" value="canvas">
+                                        <input type="hidden" id="signatureMethod" name="signature_method" value="webauthn">
                                     </div>
                                     <?php else: ?>
                                     <!-- 已評分時顯示簽章 -->
@@ -1327,6 +1487,69 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_status'])) {
         </div>
     </div>
 
+    <?php if ($action === 'score'): ?>
+    <!-- 評分輔助浮動視窗 -->
+    <div id="scoreHelperPanel" class="score-helper-panel">
+        <div class="score-helper-header" onclick="toggleScoreHelper()">
+            <i class="fas fa-info-circle"></i>
+            <span>學生資料</span>
+            <i class="fas fa-chevron-left" id="scoreHelperToggleIcon"></i>
+        </div>
+        <div class="score-helper-content" id="scoreHelperContent">
+            <div class="score-helper-section">
+                <h5><i class="fas fa-user"></i> 基本資料</h5>
+                <div class="score-helper-item">
+                    <span class="score-helper-label">姓名：</span>
+                    <span class="score-helper-value"><?php echo htmlspecialchars($application['name']); ?></span>
+                </div>
+                <div class="score-helper-item">
+                    <span class="score-helper-label">報名編號：</span>
+                    <span class="score-helper-value"><?php echo htmlspecialchars($application['apply_no'] ?? $application['ID']); ?></span>
+                </div>
+                <div class="score-helper-item">
+                    <span class="score-helper-label">就讀國中：</span>
+                    <span class="score-helper-value"><?php echo htmlspecialchars($school_name); ?></span>
+                </div>
+                <div class="score-helper-item">
+                    <span class="score-helper-label">性別：</span>
+                    <span class="score-helper-value"><?php echo ($application['gender'] == 1) ? '男' : '女'; ?></span>
+                </div>
+                <div class="score-helper-item">
+                    <span class="score-helper-label">生日：</span>
+                    <span class="score-helper-value"><?php echo $application['birth_date'] ? date('Y/m/d', strtotime($application['birth_date'])) : '未填寫'; ?></span>
+                </div>
+            </div>
+            
+            <div class="score-helper-section">
+                <h5><i class="fas fa-star"></i> 志願</h5>
+                <?php if (!empty($choices)): ?>
+                    <ul class="score-helper-list">
+                        <?php foreach ($choices as $choice): ?>
+                            <li><?php echo htmlspecialchars($choice); ?></li>
+                        <?php endforeach; ?>
+                    </ul>
+                <?php else: ?>
+                    <p class="score-helper-empty">未選擇志願</p>
+                <?php endif; ?>
+            </div>
+            
+            <div class="score-helper-section">
+                <h5><i class="fas fa-pen"></i> 自傳/自我介紹</h5>
+                <div class="score-helper-text">
+                    <?php echo nl2br(htmlspecialchars($application['self_intro'] ?: '未填寫')); ?>
+                </div>
+            </div>
+            
+            <div class="score-helper-section">
+                <h5><i class="fas fa-heart"></i> 興趣/專長</h5>
+                <div class="score-helper-text">
+                    <?php echo nl2br(htmlspecialchars($application['skills'] ?: '未填寫')); ?>
+                </div>
+            </div>
+        </div>
+    </div>
+    <?php endif; ?>
+
     <!-- 訊息提示框 -->
     <div id="toast" style="position: fixed; top: 20px; right: 20px; background-color: #333; color: white; padding: 15px 20px; border-radius: 8px; z-index: 9999; display: none; opacity: 0; transition: opacity 0.5s;"></div>
 
@@ -1341,6 +1564,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_status'])) {
             toast.style.opacity = 0;
             setTimeout(() => { toast.style.display = 'none'; }, 500);
         }, 3000);
+    }
+    
+    // 評分輔助浮動視窗控制
+    function toggleScoreHelper() {
+        const panel = document.getElementById('scoreHelperPanel');
+        if (panel) {
+            panel.classList.toggle('collapsed');
+            // 保存狀態到 localStorage
+            localStorage.setItem('scoreHelperCollapsed', panel.classList.contains('collapsed'));
+        }
     }
 
     // 標籤頁切換功能
@@ -1376,8 +1609,30 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_status'])) {
         
         if (!selfIntroScoreEl || !skillsScoreEl) return;
         
-        const selfIntroScore = parseInt(selfIntroScoreEl.value) || 0;
-        const skillsScore = parseInt(skillsScoreEl.value) || 0;
+        let selfIntroScore = parseInt(selfIntroScoreEl.value) || 0;
+        let skillsScore = parseInt(skillsScoreEl.value) || 0;
+        
+        // 防呆驗證：確保不超過最大值
+        if (selfIntroScore > 80) {
+            selfIntroScore = 80;
+            selfIntroScoreEl.value = 80;
+            showToast('自傳分數不得超過 80 分', false);
+        }
+        if (selfIntroScore < 0) {
+            selfIntroScore = 0;
+            selfIntroScoreEl.value = 0;
+        }
+        
+        if (skillsScore > 20) {
+            skillsScore = 20;
+            skillsScoreEl.value = 20;
+            showToast('興趣/專長分數不得超過 20 分', false);
+        }
+        if (skillsScore < 0) {
+            skillsScore = 0;
+            skillsScoreEl.value = 0;
+        }
+        
         const total = selfIntroScore + skillsScore;
         
         const totalScoreEl = document.getElementById('totalScore');
@@ -1512,164 +1767,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_status'])) {
         statusDiv.innerHTML = '<i class="fas fa-' + (type === 'success' ? 'check-circle' : 'exclamation-circle') + '"></i> ' + message;
     }
     
-    // 電子簽章功能（Canvas）
-    let signatureCanvas = null;
-    let signatureCtx = null;
-    let isDrawing = false;
-    let lastX = 0;
-    let lastY = 0;
 
-    function initSignatureCanvas() {
-        signatureCanvas = document.getElementById('signatureCanvas');
-        if (!signatureCanvas) {
-            console.error('找不到簽章畫布元素');
-            return;
-        }
-        
-        signatureCtx = signatureCanvas.getContext('2d');
-        signatureCtx.strokeStyle = '#000000';
-        signatureCtx.lineWidth = 2.5;
-        signatureCtx.lineCap = 'round';
-        signatureCtx.lineJoin = 'round';
-
-        // 調整 Canvas 大小
-        function resizeCanvas() {
-            const container = signatureCanvas.parentElement;
-            const maxWidth = Math.min(700, container.clientWidth - 32);
-            signatureCanvas.style.width = maxWidth + 'px';
-            signatureCanvas.style.height = (maxWidth * 250 / 700) + 'px';
-        }
-        resizeCanvas();
-        window.addEventListener('resize', resizeCanvas);
-
-        // 滑鼠事件
-        signatureCanvas.addEventListener('mousedown', (e) => {
-            isDrawing = true;
-            const pos = getEventPos(e);
-            lastX = pos.x;
-            lastY = pos.y;
-        });
-
-        signatureCanvas.addEventListener('mousemove', (e) => {
-            if (!isDrawing) return;
-            const pos = getEventPos(e);
-            drawLine(lastX, lastY, pos.x, pos.y);
-            lastX = pos.x;
-            lastY = pos.y;
-        });
-
-        signatureCanvas.addEventListener('mouseup', stopDrawing);
-        signatureCanvas.addEventListener('mouseout', stopDrawing);
-
-        // 觸控事件
-        signatureCanvas.addEventListener('touchstart', (e) => {
-            e.preventDefault();
-            isDrawing = true;
-            const pos = getEventPos(e);
-            lastX = pos.x;
-            lastY = pos.y;
-        });
-
-        signatureCanvas.addEventListener('touchmove', (e) => {
-            e.preventDefault();
-            if (!isDrawing) return;
-            const pos = getEventPos(e);
-            drawLine(lastX, lastY, pos.x, pos.y);
-            lastX = pos.x;
-            lastY = pos.y;
-        });
-
-        signatureCanvas.addEventListener('touchend', (e) => {
-            e.preventDefault();
-            stopDrawing();
-        });
-
-        console.log('簽章畫布初始化完成');
-    }
-
-    function getEventPos(e) {
-        if (!signatureCanvas) return { x: 0, y: 0 };
-        const rect = signatureCanvas.getBoundingClientRect();
-        const scaleX = signatureCanvas.width / rect.width;
-        const scaleY = signatureCanvas.height / rect.height;
-        
-        if (e.touches && e.touches.length > 0) {
-            return {
-                x: (e.touches[0].clientX - rect.left) * scaleX,
-                y: (e.touches[0].clientY - rect.top) * scaleY
-            };
-        } else {
-            return {
-                x: (e.clientX - rect.left) * scaleX,
-                y: (e.clientY - rect.top) * scaleY
-            };
-        }
-    }
-
-    function drawLine(x1, y1, x2, y2) {
-        if (!signatureCtx) return;
-        signatureCtx.beginPath();
-        signatureCtx.moveTo(x1, y1);
-        signatureCtx.lineTo(x2, y2);
-        signatureCtx.stroke();
-        updateSignaturePreview();
-    }
-
-    function stopDrawing() {
-        isDrawing = false;
-    }
-
-    function clearSignature() {
-        if (!signatureCanvas || !signatureCtx) return;
-        if (confirm('確定要清除簽名嗎？')) {
-            signatureCtx.clearRect(0, 0, signatureCanvas.width, signatureCanvas.height);
-            document.getElementById('signatureData').value = '';
-            document.getElementById('signatureId').value = '';
-            document.getElementById('signaturePreview').style.display = 'none';
-        }
-    }
-
-    function updateSignaturePreview() {
-        if (!signatureCanvas) return;
-        const dataURL = signatureCanvas.toDataURL('image/png');
-        document.getElementById('signatureData').value = dataURL;
-        document.getElementById('signatureMethod').value = 'canvas';
-        const previewImg = document.getElementById('signaturePreviewImg');
-        const previewDiv = document.getElementById('signaturePreview');
-        if (previewImg) previewImg.src = dataURL;
-        if (previewDiv) previewDiv.style.display = 'block';
-    }
-
-    function openSignatureModal() {
-        const applicationId = <?php echo $application_id; ?>;
-        const url = `signature.php?document_id=${applicationId}&document_type=continued_admission_score`;
-        const width = 900;
-        const height = 700;
-        const left = (screen.width - width) / 2;
-        const top = (screen.height - height) / 2;
-        const signatureWindow = window.open(url, 'signature', `width=${width},height=${height},left=${left},top=${top}`);
-        
-        // 監聽簽名完成訊息
-        window.addEventListener('message', function(event) {
-            if (event.data.type === 'signature_saved') {
-                document.getElementById('signatureId').value = event.data.signature_id;
-                document.getElementById('signatureData').value = '';
-                // 載入簽名圖片到預覽
-                if (event.data.signature_url) {
-                    document.getElementById('signaturePreviewImg').src = event.data.signature_url;
-                    document.getElementById('signaturePreview').style.display = 'block';
-                }
-                showToast('簽名已載入', true);
-            }
-        });
-    }
-
-    // 頁面載入時計算總分並初始化簽章
+    // 頁面載入時計算總分
     document.addEventListener('DOMContentLoaded', function() {
         updateTotalScore();
         
-        // 初始化簽章畫布
-        initSignatureCanvas();
+        // 恢復評分輔助浮動視窗狀態
+        <?php if ($action === 'score'): ?>
+        const scoreHelperPanel = document.getElementById('scoreHelperPanel');
+        if (scoreHelperPanel) {
+            const savedState = localStorage.getItem('scoreHelperCollapsed');
+            if (savedState === 'true') {
+                scoreHelperPanel.classList.add('collapsed');
+            }
+        }
+        <?php endif; ?>
         
         // 調試：檢查輸入框和按鈕狀態
         const selfIntroInput = document.getElementById('selfIntroScore');
@@ -1851,30 +1963,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_status'])) {
             let finalSignatureData = sigDataEl ? sigDataEl.value : '';
             let finalSignatureId = sigIdEl ? sigIdEl.value : '';
             
-            // 如果沒有簽章資料，檢查畫布
-            if (!finalSignatureData && !finalSignatureId && signatureCanvas && signatureCtx) {
-                try {
-                    const imageData = signatureCtx.getImageData(0, 0, signatureCanvas.width, signatureCanvas.height);
-                    const hasSignature = imageData.data.some((channel, index) => {
-                        return index % 4 !== 3 && channel !== 255;
-                    });
-                    if (!hasSignature) {
-                        showToast('請先進行電子簽章', false);
-                        return;
-                    }
-                    // 如果有簽名但沒有 data，更新它
-                    updateSignaturePreview();
-                    finalSignatureData = sigDataEl ? sigDataEl.value : '';
-                    if (!finalSignatureData) {
-                        showToast('簽名處理失敗，請重新簽名', false);
-                        return;
-                    }
-                } catch (e) {
-                    console.error('檢查簽章時發生錯誤:', e);
-                    showToast('請先進行電子簽章', false);
-                    return;
-                }
-            } else if (!finalSignatureData && !finalSignatureId) {
+            if (!finalSignatureData && !finalSignatureId) {
                 showToast('請先進行電子簽章', false);
                 return;
             }
@@ -2004,6 +2093,168 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_status'])) {
         });
     });
     <?php endif; ?>
+    </script>
+    
+    <!-- 學生資料懸浮視窗 -->
+    <div id="studentInfoModal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0, 0, 0, 0.5); z-index: 10000; overflow-y: auto;">
+        <div style="position: relative; max-width: 900px; margin: 40px auto; background: white; border-radius: 8px; box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3); padding: 0;">
+            <!-- 標題列 -->
+            <div style="display: flex; justify-content: space-between; align-items: center; padding: 20px 24px; border-bottom: 1px solid #f0f0f0; background: #fafafa; border-radius: 8px 8px 0 0;">
+                <h3 style="margin: 0; font-size: 20px; font-weight: 600; color: var(--text-color);">
+                    <i class="fas fa-user-circle"></i> 學生資料
+                </h3>
+                <button onclick="closeStudentInfoModal()" style="background: none; border: none; font-size: 24px; color: #8c8c8c; cursor: pointer; padding: 0; width: 32px; height: 32px; display: flex; align-items: center; justify-content: center; border-radius: 4px; transition: all 0.3s;" onmouseover="this.style.background='#f0f0f0'; this.style.color='#262626';" onmouseout="this.style.background='none'; this.style.color='#8c8c8c';">
+                    <i class="fas fa-times"></i>
+                </button>
+            </div>
+            
+            <!-- 內容區域 -->
+            <div style="padding: 24px; max-height: calc(100vh - 200px); overflow-y: auto;">
+                <!-- 基本資料 -->
+                <div style="margin-bottom: 32px;">
+                    <h4 style="margin: 0 0 16px 0; font-size: 18px; font-weight: 600; color: var(--text-color); padding-bottom: 12px; border-bottom: 2px solid #f0f0f0;">
+                        <i class="fas fa-user"></i> 基本資料
+                    </h4>
+                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 16px;">
+                        <div>
+                            <div style="font-size: 12px; color: var(--text-secondary-color); margin-bottom: 4px;">報名編號</div>
+                            <div style="font-size: 16px; font-weight: 500; color: var(--text-color);"><?php echo htmlspecialchars($application['apply_no'] ?? $application['ID']); ?></div>
+                        </div>
+                        <div>
+                            <div style="font-size: 12px; color: var(--text-secondary-color); margin-bottom: 4px;">姓名</div>
+                            <div style="font-size: 16px; font-weight: 500; color: var(--text-color);"><?php echo htmlspecialchars($application['name']); ?></div>
+                        </div>
+                        <div>
+                            <div style="font-size: 12px; color: var(--text-secondary-color); margin-bottom: 4px;">身分證字號</div>
+                            <div style="font-size: 16px; font-weight: 500; color: var(--text-color);"><?php echo htmlspecialchars($application['id_number']); ?></div>
+                        </div>
+                        <div>
+                            <div style="font-size: 12px; color: var(--text-secondary-color); margin-bottom: 4px;">准考證號碼</div>
+                            <div style="font-size: 16px; font-weight: 500; color: var(--text-color);"><?php echo htmlspecialchars($application['exam_no'] ?: '未填寫'); ?></div>
+                        </div>
+                        <div>
+                            <div style="font-size: 12px; color: var(--text-secondary-color); margin-bottom: 4px;">生日</div>
+                            <div style="font-size: 16px; font-weight: 500; color: var(--text-color);"><?php echo $application['birth_date'] ? date('Y/m/d', strtotime($application['birth_date'])) : '未填寫'; ?></div>
+                        </div>
+                        <div>
+                            <div style="font-size: 12px; color: var(--text-secondary-color); margin-bottom: 4px;">性別</div>
+                            <div style="font-size: 16px; font-weight: 500; color: var(--text-color);"><?php echo ($application['gender'] == 1) ? '男' : '女'; ?></div>
+                        </div>
+                        <div>
+                            <div style="font-size: 12px; color: var(--text-secondary-color); margin-bottom: 4px;">外籍生</div>
+                            <div style="font-size: 16px; font-weight: 500; color: var(--text-color);"><?php echo ($application['foreign_student'] == 1) ? '是' : '否'; ?></div>
+                        </div>
+                        <div>
+                            <div style="font-size: 12px; color: var(--text-secondary-color); margin-bottom: 4px;">室內電話</div>
+                            <div style="font-size: 16px; font-weight: 500; color: var(--text-color);"><?php echo htmlspecialchars($application['phone'] ?: '未填寫'); ?></div>
+                        </div>
+                        <div>
+                            <div style="font-size: 12px; color: var(--text-secondary-color); margin-bottom: 4px;">行動電話</div>
+                            <div style="font-size: 16px; font-weight: 500; color: var(--text-color);"><?php echo htmlspecialchars($application['mobile']); ?></div>
+                        </div>
+                        <div>
+                            <div style="font-size: 12px; color: var(--text-secondary-color); margin-bottom: 4px;">就讀國中</div>
+                            <div style="font-size: 16px; font-weight: 500; color: var(--text-color);"><?php echo htmlspecialchars($school_name); ?></div>
+                        </div>
+                        <div style="grid-column: 1 / -1;">
+                            <div style="font-size: 12px; color: var(--text-secondary-color); margin-bottom: 4px;">戶籍地址</div>
+                            <div style="font-size: 16px; font-weight: 500; color: var(--text-color);"><?php echo htmlspecialchars(formatAddress($address_data)); ?></div>
+                        </div>
+                        <div style="grid-column: 1 / -1;">
+                            <div style="font-size: 12px; color: var(--text-secondary-color); margin-bottom: 4px;">通訊地址</div>
+                            <div style="font-size: 16px; font-weight: 500; color: var(--text-color);"><?php echo ($address_data && $address_data['same_address'] == 1) ? '同戶籍地址' : htmlspecialchars($address_data['contact_address'] ?? '未填寫'); ?></div>
+                        </div>
+                        <div>
+                            <div style="font-size: 12px; color: var(--text-secondary-color); margin-bottom: 4px;">監護人姓名</div>
+                            <div style="font-size: 16px; font-weight: 500; color: var(--text-color);"><?php echo htmlspecialchars($application['guardian_name']); ?></div>
+                        </div>
+                        <div>
+                            <div style="font-size: 12px; color: var(--text-secondary-color); margin-bottom: 4px;">監護人室內電話</div>
+                            <div style="font-size: 16px; font-weight: 500; color: var(--text-color);"><?php echo htmlspecialchars($application['guardian_phone'] ?: '未填寫'); ?></div>
+                        </div>
+                        <div>
+                            <div style="font-size: 12px; color: var(--text-secondary-color); margin-bottom: 4px;">監護人行動電話</div>
+                            <div style="font-size: 16px; font-weight: 500; color: var(--text-color);"><?php echo htmlspecialchars($application['guardian_mobile']); ?></div>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- 志願 -->
+                <?php if (!empty($choices)): ?>
+                <div style="margin-bottom: 32px;">
+                    <h4 style="margin: 0 0 16px 0; font-size: 18px; font-weight: 600; color: var(--text-color); padding-bottom: 12px; border-bottom: 2px solid #f0f0f0;">
+                        <i class="fas fa-star"></i> 志願
+                    </h4>
+                    <ul style="margin: 0; padding-left: 20px; text-align: left; list-style: none;">
+                        <?php foreach ($choices as $choice): ?>
+                            <li style="margin-bottom: 8px; padding: 8px; background: #fafafa; border-radius: 4px;">
+                                <?php echo htmlspecialchars($choice); ?>
+                            </li>
+                        <?php endforeach; ?>
+                    </ul>
+                </div>
+                <?php endif; ?>
+                
+                <!-- 自傳/專長 -->
+                <div style="margin-bottom: 32px;">
+                    <h4 style="margin: 0 0 16px 0; font-size: 18px; font-weight: 600; color: var(--text-color); padding-bottom: 12px; border-bottom: 2px solid #f0f0f0;">
+                        <i class="fas fa-pen"></i> 自傳/專長
+                    </h4>
+                    <div style="margin-bottom: 20px;">
+                        <div style="font-size: 14px; color: var(--text-secondary-color); margin-bottom: 8px; font-weight: 500;">自傳/自我介紹</div>
+                        <div style="padding: 16px; background: #fafafa; border-radius: 6px; border: 1px solid #f0f0f0; line-height: 1.6; white-space: pre-wrap; word-wrap: break-word; color: var(--text-color);">
+                            <?php echo htmlspecialchars($application['self_intro']); ?>
+                        </div>
+                    </div>
+                    <div>
+                        <div style="font-size: 14px; color: var(--text-secondary-color); margin-bottom: 8px; font-weight: 500;">興趣/專長</div>
+                        <div style="padding: 16px; background: #fafafa; border-radius: 6px; border: 1px solid #f0f0f0; line-height: 1.6; white-space: pre-wrap; word-wrap: break-word; color: var(--text-color);">
+                            <?php echo htmlspecialchars($application['skills']); ?>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- 底部按鈕 -->
+            <div style="padding: 16px 24px; border-top: 1px solid #f0f0f0; background: #fafafa; border-radius: 0 0 8px 8px; text-align: right;">
+                <button onclick="closeStudentInfoModal()" class="btn-primary" style="padding: 10px 24px; font-size: 14px;">
+                    <i class="fas fa-times"></i> 關閉
+                </button>
+            </div>
+        </div>
+    </div>
+    
+    <script>
+    // 學生資料懸浮視窗控制
+    function openStudentInfoModal() {
+        const modal = document.getElementById('studentInfoModal');
+        if (modal) {
+            modal.style.display = 'block';
+            document.body.style.overflow = 'hidden'; // 防止背景滾動
+        }
+    }
+    
+    function closeStudentInfoModal() {
+        const modal = document.getElementById('studentInfoModal');
+        if (modal) {
+            modal.style.display = 'none';
+            document.body.style.overflow = ''; // 恢復滾動
+        }
+    }
+    
+    // 點擊背景關閉視窗
+    document.getElementById('studentInfoModal')?.addEventListener('click', function(e) {
+        if (e.target === this) {
+            closeStudentInfoModal();
+        }
+    });
+    
+    // ESC 鍵關閉視窗
+    document.addEventListener('keydown', function(e) {
+        if (e.key === 'Escape') {
+            closeStudentInfoModal();
+        }
+    });
     </script>
     
     <?php
