@@ -126,15 +126,18 @@ $page_title = '未到警示 - 有報名但未出席清單';
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; 
             background: var(--background-color); 
             color: var(--text-color); 
-            padding: 20px;
+            overflow-x: hidden;
         }
+        
+        .dashboard { display: flex; min-height: 100vh; }
+        .content { padding: 24px; }
         
         .container {
-            max-width: 1400px;
-            margin: 0 auto;
+            width: 100%;
+            max-width: none;
         }
         
-        .page-header {
+        .content-intro {
             background: var(--card-background-color);
             border-radius: 12px;
             box-shadow: 0 4px 12px rgba(0,0,0,0.1);
@@ -142,7 +145,7 @@ $page_title = '未到警示 - 有報名但未出席清單';
             margin-bottom: 24px;
         }
         
-        .page-header h1 {
+        .content-intro h1 {
             font-size: 28px;
             color: var(--text-color);
             margin-bottom: 16px;
@@ -315,16 +318,38 @@ $page_title = '未到警示 - 有報名但未出席清單';
             color: #595959;
             line-height: 1.6;
         }
+
+        
+       .btn-se {
+            background: #fff;
+            color: #595959;
+            border-color: #d9d9d9;    
+            border: 1px solid #d9d9d9;
+            margin-bottom: 12px;
+        }
+        .btn-se:hover {
+            background: #f5f5f5;
+            border-color: #40a9ff;
+            color: #40a9ff;
+        }
     </style>
 </head>
 <body>
-    <div class="container">
-        <div class="page-header">
-            <h1><i class="fas fa-exclamation-triangle"></i> 未到警示</h1>
-            <p style="color: var(--text-secondary-color); margin-top: 8px;">
-                此頁面顯示有報名但未出席的學生清單。系統會在場次結束後自動發送提醒 Email 給未到學生，您也可以手動觸發發送。
-            </p>
-        </div>
+    <div class="dashboard">
+        <?php include 'sidebar.php'; ?>
+        <div class="main-content" id="mainContent">
+            <?php include 'header.php'; ?>
+            <div class="content">
+                <div class="container">
+                    <div class="page-controls" style="display: flex; justify-content: flex-end;">
+                        <a href="attendance_management.php?session_id=<?php echo $session_id; ?>" class="btn btn-se"><i class="fas fa-arrow-left"></i> 返回</a>
+                    </div>
+                    <div class="content-intro">
+                        <h1><i class="fas fa-exclamation-triangle"></i> 未到警示</h1>
+                        <p style="color: var(--text-secondary-color); margin-top: 8px;">
+                            此頁面顯示有報名但未出席的學生清單。系統會在場次結束後自動發送提醒 Email 給未到學生，您也可以手動觸發發送。
+                        </p>
+                    </div>
         
         <div class="stats-cards">
             <div class="stat-card urgent">
@@ -458,6 +483,9 @@ $page_title = '未到警示 - 有報名但未出席清單';
                     </tbody>
                 </table>
             <?php endif; ?>
+        </div>
+                </div>
+            </div>
         </div>
     </div>
     

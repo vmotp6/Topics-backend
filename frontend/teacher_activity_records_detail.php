@@ -386,6 +386,28 @@ $page_title = $department_name . ' - 教師活動紀錄';
             font-weight: 600;
             width: 150px;
         }
+        .btn {
+            padding: 8px 16px;
+            border: none;
+            border-radius: 6px;
+            font-size: 14px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.3s;
+            text-decoration: none;
+            display: inline-block;
+        }
+        .btn-se {
+            background: #fff;
+            color: #595959;
+            border-color: #d9d9d9;    
+            border: 1px solid #d9d9d9;
+        }
+        .btn-se:hover {
+            background: #f5f5f5;
+            border-color: #40a9ff;
+            color: #40a9ff;
+        }
     </style>
 </head>
 <body>
@@ -401,6 +423,9 @@ $page_title = $department_name . ' - 教師活動紀錄';
                     <div class="table-search">
                         <input type="text" id="searchInput" class="search-input" placeholder="搜尋教師姓名...">
                     </div>
+                </div>
+                <div class="page-controls" style="display: flex; justify-content: flex-end;">
+                        <a href="teacher_activity_records.php" class="btn btn-se"><i class="fas fa-arrow-left"></i> 返回</a>
                 </div>
 
                 <div class="table-wrapper">

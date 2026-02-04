@@ -722,7 +722,7 @@ $page_title = '出席紀錄管理 - ' . htmlspecialchars($session['session_name'
                         <div class="value"><?php echo $absent_count; ?></div>
                     </div>
                 </div>
-                <div class="filter-group" style="margin-bottom:15px; margin-left:1290px;">
+                <div class="filter-group" style="margin-bottom:15px; margin-left:1275px;">
                         <select id="filterGrade" class="form-control" style="width: auto; padding: 8px 12px; margin: 0;" onchange="filterTable()">
                             <option value="">全部年級</option>
                             <option value="國三">國三</option>
