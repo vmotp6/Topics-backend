@@ -369,55 +369,6 @@ function getDepartmentName($code, $departments) {
     return $code;
 }
 
-function getFollowUpStatusBadge($status) {
-    $s = $status ?? '';
-    $map = [
-        'tracking' => ['追蹤中', '#8c8c8c', 'fa-circle'],
-        'decline_follow_up' => ['無意願－待再聯絡', '#fa8c16', 'fa-clock'],
-        'closed_unreachable' => ['已結案－聯絡不到', '#595959', 'fa-archive'],
-        'closed_declined' => ['已結案－無意願', '#722ed1', 'fa-times-circle'],
-    ];
-    if (!isset($map[$s])) $s = 'tracking';
-    $t = $map[$s];
-    return '<span style="display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:6px;font-size:12px;font-weight:500;background:'.($t[1]).'22;color:'.$t[1].';border:1px solid '.($t[1]).'44;"><i class="fas '.$t[2].'" style="font-size:10px;"></i>'.htmlspecialchars($t[0]).'</span>';
-}
-
-function getIntentionLevelBadge($intention_level) {
-    $level = $intention_level ?? '';
-    $map = [
-        'high' => ['高意願', '#52c41a', 'fa-arrow-up'],
-        'medium' => ['中意願', '#1890ff', 'fa-minus'],
-        'low' => ['低意願', '#faad14', 'fa-arrow-down'],
-        'none' => ['無意願', '#ff4d4f', 'fa-times'],
-    ];
-    
-    if (empty($level) || !isset($map[$level])) {
-        // 如果沒有填寫意願，顯示「待確認」
-        return '<span style="display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:6px;font-size:12px;font-weight:500;background:#f0f0f022;color:#8c8c8c;border:1px solid #d9d9d9;"><i class="fas fa-question-circle" style="font-size:10px;"></i>待確認</span>';
-    }
-    
-    $t = $map[$level];
-    return '<span style="display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:6px;font-size:12px;font-weight:500;background:'.($t[1]).'22;color:'.$t[1].';border:1px solid '.($t[1]).'44;"><i class="fas '.$t[2].'" style="font-size:10px;"></i>'.htmlspecialchars($t[0]).'</span>';
-}
-
-function getCaseClosedBadgeHtml($case_closed) {
-    if ((int)($case_closed ?? 0) !== 1) return '';
-    return ' <span style="display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:6px;font-size:12px;font-weight:600;background:#59595922;color:#595959;border:1px solid #59595944;"><i class="fas fa-archive" style="font-size:10px;"></i>已結案</span>';
-}
-
-function getYesNoIntentionBadge($intention_level) {
-    $level = $intention_level ?? '';
-    if (empty($level) || !in_array($level, ['high', 'medium', 'low', 'none'], true)) {
-        // 預設／未填寫意願：顯示「待確認」
-        return '<span style="display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:6px;font-size:12px;font-weight:500;background:#f0f0f022;color:#8c8c8c;border:1px solid #d9d9d9;"><i class="fas fa-question-circle" style="font-size:10px;"></i>待確認</span>';
-    }
-    $has = in_array($level, ['high', 'medium', 'low'], true);
-    if ($has) {
-        return '<span style="display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:6px;font-size:12px;font-weight:600;background:#52c41a22;color:#52c41a;border:1px solid #52c41a44;"><i class="fas fa-check" style="font-size:10px;"></i>有意願</span>';
-    }
-    return '<span style="display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:6px;font-size:12px;font-weight:600;background:#ff4d4f22;color:#ff4d4f;border:1px solid #ff4d4f44;"><i class="fas fa-times" style="font-size:10px;"></i>無意願</span>';
-}
-
 /**
  * 取得「報名階段｜狀態」顯示 HTML（用於意願狀態欄下方）
  * @param array $item 學生一筆資料
@@ -486,16 +437,6 @@ function getCheckInStatusBadgeHtml($check_in_status) {
 try {
     $conn = getDatabaseConnection();
 
-    // 確保 enrollment_intention 有 case_closed、追蹤狀態 欄位
-    $ec = @$conn->query("SHOW COLUMNS FROM enrollment_intention LIKE 'case_closed'");
-    if (!$ec || $ec->num_rows === 0) {
-        @$conn->query("ALTER TABLE enrollment_intention ADD COLUMN case_closed TINYINT(1) NOT NULL DEFAULT 0 COMMENT '0=否,1=是(結案後顯示於歷史紀錄)'");
-    }
-    foreach (['intention_level' => "VARCHAR(20) DEFAULT NULL", 'follow_up_status' => "VARCHAR(30) DEFAULT 'tracking'", 'decline_reason_final' => "VARCHAR(100) DEFAULT NULL"] as $col => $def) {
-        $r = @$conn->query("SHOW COLUMNS FROM enrollment_intention LIKE '$col'");
-        if (!$r || $r->num_rows === 0) { @$conn->query("ALTER TABLE enrollment_intention ADD COLUMN $col $def"); }
-    }
-    
     // 確保報名提醒相關欄位存在
     $registration_cols = [
         'registration_stage' => "VARCHAR(20) DEFAULT NULL COMMENT 'priority_exam/joint_exam/continued_recruitment 當前報名階段'",
@@ -581,13 +522,13 @@ try {
         }
     }
     
-    // 歷史資料「學年」屆列表：已過招生年度 或 有結案學生的學年（結案名單也進歷史）
+    // 歷史資料「學年」屆列表：已過招生年度
     if ($view_mode === 'history') {
         $years_sql = "
             SELECT DISTINCT
                 (ei.graduation_year - 1) AS academic_year_start
             " . $base_from_join . $perm_where . "
-                AND (ei.graduation_year IS NOT NULL AND (ei.graduation_year < ? OR IFNULL(ei.case_closed,0) = 1))
+                AND (ei.graduation_year IS NOT NULL AND (ei.graduation_year < ?))
             ORDER BY academic_year_start DESC
         ";
         $stmt_years = $conn->prepare($years_sql);
@@ -612,22 +553,22 @@ try {
     }
 
     // 四大分類：
-    // 1) 當年度招生名單（國三）：graduation_year = $this_year_grad，且未報名，且未結案
-    // 2) 潛在追蹤名單（國一、國二）：graduation_year = $this_year_grad+1 / +2，且未結案
-    // 3) 歷史資料（已過招生年度 或 已結案）：graduation_year < $this_year_grad 或 case_closed = 1
-    // 4) 已報名學生：is_registered = 1，且未結案
+    // 1) 當年度招生名單（國三）：graduation_year = $this_year_grad，且未報名
+    // 2) 潛在名單（國一、國二）：graduation_year = $this_year_grad+1 / +2
+    // 3) 歷史資料（已過招生年度）：graduation_year < $this_year_grad
+    // 4) 已報名學生：is_registered = 1
     $status_where = "";
     if ($view_mode === 'history') {
         // 歷史資料：先選屆才查名單；未選屆時不查資料
-        $status_where = " AND ((ei.graduation_year IS NOT NULL AND ei.graduation_year < $this_year_grad) OR IFNULL(ei.case_closed,0) = 1)";
+        $status_where = " AND (ei.graduation_year IS NOT NULL AND ei.graduation_year < $this_year_grad)";
         if ($selected_academic_year > 0) {
             $status_where .= " AND (ei.graduation_year = " . intval($selected_academic_year + 1) . ")";
         } else {
             $status_where .= " AND 1=0"; // 未選屆不載入名單
         }
     } elseif ($view_mode === 'registered') {
-        // 已報名學生：只顯示國三且已報名、且未結案的
-        $status_where = " AND (ei.graduation_year = $this_year_grad) AND (IFNULL(ei.is_registered,0) = 1) AND (IFNULL(ei.case_closed,0) = 0)";
+        // 已報名學生：只顯示國三且已報名的
+        $status_where = " AND (ei.graduation_year = $this_year_grad) AND (IFNULL(ei.is_registered,0) = 1)";
         // 預設只顯示「目前報名階段」註冊的名單；篩選可選全部或其他階段
         if ($registered_stage_filter === 'all') {
             // 全部：不另加條件
@@ -642,8 +583,8 @@ try {
             }
         }
     } elseif ($view_mode === 'recruit') {
-        // 當年度招生名單：國三且未結案，報名期間再排除已報名
-        $status_where = " AND (ei.graduation_year = $this_year_grad) AND (IFNULL(ei.case_closed,0) = 0)";
+        // 當年度招生名單：國三；報名期間再排除已報名
+        $status_where = " AND (ei.graduation_year = $this_year_grad)";
         if ($current_registration_stage) {
             // 報名期間：排除已報名學生
             $status_where .= " AND (IFNULL(ei.is_registered,0) = 0)";
@@ -661,21 +602,8 @@ try {
     } else { // potential
         $gy1 = $this_year_grad + 1;
         $gy2 = $this_year_grad + 2;
-        // 潛在追蹤名單：國一/國二，且未結案
-        $status_where = " AND (ei.graduation_year IN ($gy1, $gy2)) AND (IFNULL(ei.case_closed,0) = 0)";
-    }
-
-    // 意願等級篩選（相容舊參數；三分類頁面預設不使用）
-    $intention_filter = isset($_GET['intention']) ? trim((string)$_GET['intention']) : '';
-    $intention_where = '';
-    if (in_array($view_mode, ['recruit', 'potential'], true) && !empty($intention_filter)) {
-        if ($intention_filter === 'high') {
-            // 有意願：high、medium、low（這些都算有意願）
-            $intention_where = " AND (ei.intention_level IN ('high', 'medium', 'low')) ";
-        } elseif ($intention_filter === 'none') {
-            // 無意願：只有 none
-            $intention_where = " AND (ei.intention_level = 'none' OR ei.intention_level IS NULL) ";
-        }
+        // 潛在名單：國一/國二
+        $status_where = " AND (ei.graduation_year IN ($gy1, $gy2))";
     }
     
     // 主任的分配狀態篩選（自行聯絡/各教師/尚未分配）
@@ -700,18 +628,9 @@ try {
             $debug_log[] = "應用主任篩選：教師 ID = " . (int)$assignee_filter;
         }
     }
-
-    // 追蹤狀態篩選（相容舊參數；三分類頁面預設不使用）
-    $follow_up = isset($_GET['follow_up']) ? trim((string)$_GET['follow_up']) : '';
-    $follow_up_where = '';
-    if (in_array($view_mode, ['recruit', 'potential'], true) && in_array($follow_up, ['decline_follow_up'], true)) {
-        $follow_up_where = " AND IFNULL(ei.follow_up_status,'tracking') = ? ";
-        $bind_params[] = $follow_up;
-        $bind_types .= 's';
-    }
     
     // 組合最終 SQL
-    $sql = $base_select . $base_from_join . $perm_where . $status_where . $intention_where . $assignee_where . $follow_up_where . $order_by;
+    $sql = $base_select . $base_from_join . $perm_where . $status_where . $assignee_where . $order_by;
     
     // 記錄 SQL 供診斷
     $debug_sql = $sql;
@@ -1112,7 +1031,6 @@ try {
                                             <?php if ($user_role !== 'TEA'): ?>
                                                 <th><?php echo $is_admission_center ? '分配科系 / 負責老師' : '分配狀態'; ?></th>
                                             <?php endif; ?>
-                                            <th>意願狀態</th>
                                             <th>操作</th>
                                         <?php elseif ($view_mode === 'registered'): ?>
                                             <th onclick="sortTable('name')">姓名 <span class="sort-icon" id="sort-name"></span></th>
@@ -1129,7 +1047,7 @@ try {
                                             <?php if ($user_role !== 'TEA'): ?>
                                                 <th><?php echo $is_admission_center ? '分配科系 / 負責老師' : '分配狀態'; ?></th>
                                             <?php endif; ?>
-                                            <th>意願狀態</th>
+                                            <th>報名狀態</th>
                                             <th>操作</th>
                                         <?php endif; ?>
                                     </tr>
@@ -1193,14 +1111,13 @@ try {
                                             }
                                             // 老師：不顯示分配狀態（因為看到的就是自己的學生）
                                             
-                                            $case_badge = getCaseClosedBadgeHtml($item['case_closed'] ?? 0);
                                         ?>
 
                                         <?php if ($view_mode === 'history'): ?>
                                             <td><?php echo htmlspecialchars(getAcademicYearLabelFromGraduationYear($item['graduation_year'] ?? null)); ?></td>
                                             <td><?php echo htmlspecialchars($item['name']); ?></td>
                                             <td><?php echo getSchoolName($item['junior_high'] ?? '', $school_data); ?></td>
-                                            <td><?php echo $case_badge ?: '<span style="color:#999;">—</span>'; ?></td>
+                                            <td><span style="color:#999;">—</span></td>
                                             <td onclick="event.stopPropagation();">
                                                 <button type="button"
                                                     class="btn-view"
@@ -1214,7 +1131,6 @@ try {
                                             <td><?php echo getSchoolName($item['junior_high'] ?? '', $school_data); ?></td>
                                             <td><?php echo getDynamicGradeText($item['graduation_year'] ?? '', $item['current_grade'] ?? '', $identity_options); ?></td>
                                             <td><?php echo $assignment_html; ?></td>
-                                            <td><?php echo getYesNoIntentionBadge($item['intention_level'] ?? null) . $case_badge; ?></td>
                                             <td onclick="event.stopPropagation();">
                                                 <div style="display: flex; gap: 8px; flex-wrap: wrap;">
                                                     <button type="button"
@@ -1319,7 +1235,7 @@ try {
                                             <?php if ($user_role !== 'TEA'): ?>
                                                 <td><?php echo $assignment_html; ?></td>
                                             <?php endif; ?>
-                                            <td><?php echo getIntentionLevelBadge($item['intention_level'] ?? null) . $case_badge; echo getRegistrationStageStatusHtml($item, $current_registration_stage, $stage_display_names, 'recruit'); ?></td>
+                                            <td><?php echo getRegistrationStageStatusHtml($item, $current_registration_stage, $stage_display_names, 'recruit') ?: '<span style="color:#999;">—</span>'; ?></td>
                                             <td onclick="event.stopPropagation();">
                                                 <div style="display: flex; gap: 8px; flex-wrap: wrap;">
                                                     <button type="button"
@@ -1491,62 +1407,6 @@ try {
         </div>
     </div>
 
-    <!-- 更改意願 Modal -->
-    <div id="changeIntentionModal" class="modal" style="display: none;">
-        <div class="modal-content" style="max-width: 500px;">
-            <div class="modal-header">
-                <h3>更改意願</h3>
-                <span class="close" onclick="closeChangeIntentionModal()">&times;</span>
-            </div>
-            <div class="modal-body">
-                <div style="margin-bottom: 16px;">
-                    <label style="display:block; font-size: 13px; color:#666; margin-bottom:6px; font-weight:600;">目前意願</label>
-                    <div style="padding: 10px 12px; background: #f5f5f5; border: 1px solid #e8e8e8; border-radius: 6px; color: #333; font-size: 14px;" id="currentIntentionLabel">—</div>
-                </div>
-                <div>
-                    <label style="display:block; font-size: 13px; color:#666; margin-bottom:6px; font-weight:600;">選擇新的意願等級</label>
-                    <select id="newIntentionLevel" class="form-control" style="width: 100%;" onchange="toggleChangeIntentionDeclineBlock()">
-                        <option value="">— 請選擇 —</option>
-                        <option value="high">有意願</option>
-                        <option value="none">無意願</option>
-                    </select>
-                </div>
-                <div id="changeIntentionDeclineBlock" style="display: none; margin-top: 16px; padding-top: 16px; border-top: 1px dashed #d6e4ff;">
-                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
-                        <div>
-                            <label style="display:block; font-size: 13px; color:#666; margin-bottom:6px; font-weight:600;">不來原因 <span style="color: #ff4d4f;">*</span></label>
-                            <select id="changeIntentionDeclineReason" class="form-control" style="width: 100%;" onchange="document.getElementById('changeIntentionDeclineReasonOtherWrap').style.display=(this.value==='other')?'block':'none';">
-                                <option value="">— 請選擇 —</option>
-                                <option value="other_school">已選其他學校</option>
-                                <option value="distance">距離／交通因素</option>
-                                <option value="no_interest">科系不符興趣</option>
-                                <option value="parent_decision">家長意見</option>
-                                <option value="financial">經濟考量</option>
-                                <option value="still_thinking">尚在考慮中</option>
-                                <option value="other">其他</option>
-                            </select>
-                        </div>
-                        <div>
-                            <label style="display:block; font-size: 13px; color:#666; margin-bottom:6px; font-weight:600;">是否還要再聯絡</label>
-                            <select id="changeIntentionNeedFollowUp" class="form-control" style="width: 100%;">
-                                <option value="yes">要</option>
-                                <?php if ($is_director || $user_role === 'TEA'): ?><option value="no">不要（結案）</option><?php endif; ?>
-                            </select>
-                        </div>
-                    </div>
-                    <div id="changeIntentionDeclineReasonOtherWrap" style="display: none; margin-top: 8px;">
-                        <label style="display:block; font-size: 13px; color:#666; margin-bottom:6px;">其他說明</label>
-                        <input type="text" id="changeIntentionDeclineReasonOther" class="form-control" placeholder="請簡述原因" style="width: 100%;">
-                    </div>
-                </div>
-            </div>
-            <div class="modal-footer">
-                <button class="btn-cancel" onclick="closeChangeIntentionModal()">取消</button>
-                <button class="btn-confirm" onclick="confirmChangeIntention()">確定更改</button>
-            </div>
-        </div>
-    </div>
-
     <div id="contactLogsModal" class="modal contact-log-modal" style="display: none;">
         <div class="modal-content">
             <div class="modal-header">
@@ -1573,7 +1433,7 @@ try {
                         </div>
                         <div>
                             <label style="display:block; font-size: 13px; color:#666; margin-bottom:6px; font-weight:600;">聯絡結果</label>
-                            <select id="newLogContactResult" class="form-control" style="width: 100%;" onchange="toggleTrackingSection()">
+                            <select id="newLogContactResult" class="form-control" style="width: 100%;">
                                 <option value="contacted">已聯絡</option>
                                 <option value="unreachable">聯絡不到</option>
                             </select>
@@ -1583,75 +1443,10 @@ try {
                         <label style="display:block; font-size: 13px; color:#666; margin-bottom:6px; font-weight:600;">聯絡紀錄</label>
                         <textarea id="newLogContent" class="form-control" rows="4" placeholder="請輸入聯絡內容和結果..."></textarea>
                     </div>
-                    <div id="trackingSection" class="tracking-section" style="margin-top: 16px; padding: 16px; background: linear-gradient(135deg, #f8fbff 0%, #f0f7ff 100%); border: 1px solid #d6e4ff; border-radius: 10px; display: none;">
-                        <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 14px; color: #1890ff; font-weight: 600; font-size: 14px;">
-                            <i class="fas fa-chart-line"></i> 此次聯絡的追蹤資訊
-                        </div>
-                        <div id="intentionChangeBlock" style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
-                            <div>
-                                <label style="display:block; font-size: 12px; color:#666; margin-bottom:6px; font-weight:600;">目前意願</label>
-                                <div style="padding: 8px 12px; background: #fff; border: 1px solid #e8e8e8; border-radius: 6px; color: #333;" id="currentIntentionDisplay">—</div>
-                            </div>
-                            <div>
-                                <label style="display:block; font-size: 12px; color:#666; margin-bottom:6px; font-weight:600;" id="intentionLabel">填寫意願（必填）</label>
-                                <select id="newLogIntention" class="form-control" style="width: 100%;" onchange="toggleTrackingBlocks()">
-                                    <option value="">— 請選擇 —</option>
-                                    <option value="yes">有意願</option>
-                                    <option value="none">無意願</option>
-                                </select>
-                            </div>
-                        </div>
-                        <div id="trackingBlockDecline" style="display: none; margin-top: 12px; padding-top: 12px; border-top: 1px dashed #d6e4ff;">
-                            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
-                                <div>
-                                    <label style="display:block; font-size: 12px; color:#666; margin-bottom:6px; font-weight:600;">不來原因</label>
-                                    <select id="newLogDeclineReason" class="form-control" style="width: 100%;" onchange="document.getElementById('declineReasonOtherWrap').style.display=(this.value==='other')?'block':'none';">
-                                        <option value="">— 請選擇 —</option>
-                                        <option value="other_school">已選其他學校</option>
-                                        <option value="distance">距離／交通因素</option>
-                                        <option value="no_interest">科系不符興趣</option>
-                                        <option value="parent_decision">家長意見</option>
-                                        <option value="financial">經濟考量</option>
-                                        <option value="still_thinking">尚在考慮中</option>
-                                        <option value="other">其他</option>
-                                    </select>
-                                </div>
-                                <div>
-                                    <label style="display:block; font-size: 12px; color:#666; margin-bottom:6px; font-weight:600;">是否還要再聯絡</label>
-                                    <select id="newLogNeedFollowUp" class="form-control" style="width: 100%;">
-                                        <option value="yes">要</option>
-                                        <?php if ($is_director || $user_role === 'TEA'): ?><option value="no">不要（結案）</option><?php endif; ?>
-                                    </select>
-                                </div>
-                            </div>
-                            <div id="declineReasonOtherWrap" style="display: none; margin-top: 8px;">
-                                <label style="display:block; font-size: 12px; color:#666; margin-bottom:6px;">其他說明</label>
-                                <input type="text" id="newLogDeclineReasonOther" class="form-control" placeholder="請簡述原因" style="width: 100%;">
-                            </div>
-                        </div>
-                    </div>
                     <div style="margin-top: 12px; text-align: right;">
                         <button class="assign-btn" onclick="submitContactLog()">
                             <i class="fas fa-paper-plane"></i> 新增
                         </button>
-                    </div>
-                </div>
-                <div id="closeCaseSection" style="margin-bottom: 16px; display: none;">
-                    <button type="button" class="assign-btn" id="closeCaseBtn" style="background: #ff4d4f; border-color: #ff4d4f;" onclick="submitCloseCase()">
-                        <i class="fas fa-archive"></i> 結案（最近 3 次皆聯絡不到，將移入歷史紀錄）
-                    </button>
-                </div>
-                <div id="currentIntentionSection" style="margin-bottom: 16px; padding: 12px 16px; background: #f0f7ff; border: 1px solid #d6e4ff; border-radius: 8px; display: none;">
-                    <div style="display: flex; align-items: center; justify-content: space-between;">
-                        <div>
-                            <div style="font-size: 12px; color: #666; margin-bottom: 4px;">目前意願</div>
-                            <div style="font-size: 16px; font-weight: 600; color: #1890ff;" id="currentIntentionDisplaySimple">—</div>
-                        </div>
-                        <?php if (!$is_admission_center): ?>
-                        <button type="button" class="assign-btn" id="changeIntentionBtn" style="background: #1890ff; border-color: #1890ff;" onclick="openChangeIntentionModal()">
-                            <i class="fas fa-edit"></i> 更改意願
-                        </button>
-                        <?php endif; ?>
                     </div>
                 </div>
                 <div id="contactLogsList">
@@ -1662,7 +1457,6 @@ try {
 
     <script>
         let currentStudentId = null;
-        let currentIntentionLevel = '';  // 學生意願，由 loadContactLogs 回傳填入，供「變更意願」不變時之 effective
         
         function sortTable(column) {
             const urlParams = new URLSearchParams(window.location.search);
@@ -2170,19 +1964,10 @@ try {
                     var cr = document.getElementById('newLogContactResult');
                     if (cr) cr.value = 'contacted';
                     document.getElementById('newLogContent').value = '';
-                    if (typeof resetTrackingForm === 'function') resetTrackingForm();
-                    if (typeof toggleTrackingSection === 'function') toggleTrackingSection();
                 }
                 if (closeSec) closeSec.style.display = 'none';
                 if (changeIntentionSec) changeIntentionSec.style.display = 'none';
             }
-            
-            // 先清空 currentIntentionLevel，等 loadContactLogs 回調時再更新
-            currentIntentionLevel = '';
-            // 先隱藏所有相關區塊，等 loadContactLogs 回調時再根據意願狀態顯示
-            var trackingSec = document.getElementById('trackingSection');
-            if (trackingSec) trackingSec.style.display = 'none';
-            if (!isViewOnly && currentIntentionSec) currentIntentionSec.style.display = 'none';
             loadContactLogs(studentId);
         }
 
@@ -2190,42 +1975,6 @@ try {
             document.getElementById('contactLogsModal').style.display = 'none';
         }
 
-        function toggleTrackingSection() {
-            var cr = document.getElementById('newLogContactResult');
-            var sec = document.getElementById('trackingSection');
-            var currentSec = document.getElementById('currentIntentionSection');
-            var isUnreachable = (cr && cr.value === 'unreachable');
-            
-            // 只有在第一次填寫（沒有意願記錄）時才顯示追蹤資訊區塊
-            if (!currentIntentionLevel || currentIntentionLevel === '') {
-                if (sec) sec.style.display = isUnreachable ? 'none' : 'block';
-                if (currentSec) currentSec.style.display = 'none';
-            } else {
-                // 已有意願時，追蹤資訊區塊始終隱藏
-                if (sec) sec.style.display = 'none';
-                if (currentSec) currentSec.style.display = isUnreachable ? 'none' : 'block';
-            }
-        }
-        function toggleTrackingBlocks() {
-            var sel = (document.getElementById('newLogIntention') || {}).value;
-            var decl = document.getElementById('trackingBlockDecline');
-            // 當選擇「無意願」時顯示不來原因區塊
-            if (decl) {
-                decl.style.display = (sel === 'none') ? 'block' : 'none';
-            }
-            var ow = document.getElementById('declineReasonOtherWrap');
-            if (ow) ow.style.display = ((document.getElementById('newLogDeclineReason') || {}).value === 'other') ? 'block' : 'none';
-        }
-        function resetTrackingForm() {
-            var i = document.getElementById('newLogIntention'); if (i) i.value = '';
-            var d = document.getElementById('newLogDeclineReason'); if (d) d.value = '';
-            var o = document.getElementById('newLogDeclineReasonOther'); if (o) o.value = '';
-            var n = document.getElementById('newLogNeedFollowUp'); if (n) n.value = 'yes';
-            var ow = document.getElementById('declineReasonOtherWrap'); if (ow) ow.style.display = 'none';
-            var cur = document.getElementById('currentIntentionDisplay'); if (cur) cur.textContent = '—';
-            toggleTrackingBlocks();
-        }
-        
         // 轉義 HTML 函數（供 loadContactLogs 使用）
         function escapeHtml(text) {
             if (!text) return '';
@@ -2262,47 +2011,8 @@ try {
                 return res.json();
             })
             .then(data => {
-                var closeSec = document.getElementById('closeCaseSection');
                 var addSec = document.getElementById('addLogSection');
-                if (data.case_closed) {
-                    if (closeSec) closeSec.style.display = 'none';
-                    if (addSec) addSec.style.display = 'none';
-                } else {
-                    if (closeSec) closeSec.style.display = data.show_close_button ? 'block' : 'none';
-                }
-                currentIntentionLevel = data.current_intention_level || '';
-                var intentionLabelMap = { high:'高意願', medium:'中意願', low:'低意願', none:'無意願' };
-                var currentLabel = intentionLabelMap[currentIntentionLevel] || '未標註';
-                
-                // 顯示目前意願（在 trackingSection 和 currentIntentionSection 中）
-                var disp = document.getElementById('currentIntentionDisplay');
-                if (disp) disp.textContent = currentLabel;
-                var dispSimple = document.getElementById('currentIntentionDisplaySimple');
-                if (dispSimple) dispSimple.textContent = currentLabel;
-                
-                // 根據是否有意願記錄，決定顯示哪些區塊
-                var trackingSec = document.getElementById('trackingSection');
-                var currentIntentionSec = document.getElementById('currentIntentionSection');
-                var cr = document.getElementById('newLogContactResult');
-                var isUnreachable = (cr && cr.value === 'unreachable');
-                
-                if (!currentIntentionLevel || currentIntentionLevel === '') {
-                    // 第一次填寫：顯示完整的追蹤資訊區塊（包含填寫意願）
-                    // 但如果聯絡結果是「聯絡不到」，則隱藏
-                    if (trackingSec) trackingSec.style.display = isUnreachable ? 'none' : 'block';
-                    if (currentIntentionSec) currentIntentionSec.style.display = 'none';
-                    var intentionSelect = document.getElementById('newLogIntention');
-                    if (intentionSelect) {
-                        intentionSelect.required = true;
-                        intentionSelect.value = '';
-                    }
-                } else {
-                    // 已有意願：只顯示目前意願區塊，隱藏追蹤資訊區塊
-                    if (trackingSec) trackingSec.style.display = 'none';
-                    if (currentIntentionSec) currentIntentionSec.style.display = 'block';
-                }
-                
-                if (typeof toggleTrackingBlocks === 'function') toggleTrackingBlocks();
+                if (addSec) addSec.style.display = 'block';
                 if (data.success && data.logs && data.logs.length > 0) {
                     list.innerHTML = data.logs.map(log => {
                         const method = log.method || log.contact_method || '其他';
@@ -2327,14 +2037,6 @@ try {
                         const escapedMethod = escapeHtml(method);
                         const escapedNotes = escapeHtml(notes);
                         const unreachableBadge = isUnreachable ? '<span style="background:#ff4d4f;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px;margin-left:6px;">聯絡不到</span>' : '';
-                        const il = log.intention_level || '';
-                        const ilabel = { high:'高意願', medium:'中意願', low:'低意願', none:'無意願' }[il] || '';
-                        const rawDr = log.decline_reason || '';
-                        const drDisplay = { other_school:'已選其他學校', distance:'距離／交通', no_interest:'科系不符', parent_decision:'家長意見', financial:'經濟', still_thinking:'考慮中' }[rawDr] || (rawDr.indexOf('其他')===0 ? rawDr.replace(/^其他:\s*/, '') : rawDr);
-                        const nf = (log.need_follow_up || '');
-                        const nflabel = { yes:'要再聯絡', no:'不再聯絡' }[nf] || '';
-                        const trackingBadges = [ilabel, drDisplay, nflabel].filter(Boolean);
-                        const trackingLine = trackingBadges.length ? '<div style="margin-top:8px;font-size:12px;color:#666;"><span style="color:#1890ff;">追蹤</span> ' + escapeHtml(trackingBadges.join(' · ')) + '</div>' : '';
                         
                         return '<div class="contact-log-item">' +
                             '<div class="contact-log-header" style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 12px;">' +
@@ -2355,7 +2057,6 @@ try {
                             '<div style="white-space: pre-wrap; padding-top: 12px; border-top: 1px solid #e8e8e8; color:#333; line-height:1.6; font-size:14px;">' +
                                 '<div style="color:#666; font-size:12px; margin-bottom: 6px; font-weight:600;">紀錄內容：</div>' +
                                 (escapedNotes ? escapedNotes : '<span style="color:#999;">無紀錄內容</span>') +
-                                trackingLine +
                             '</div>' +
                         '</div>';
                     }).join('');
@@ -2373,7 +2074,6 @@ try {
             const content = document.getElementById('newLogContent').value.trim();
             const contactDate = document.getElementById('newLogDate').value;
             const contactMethod = document.getElementById('newLogMethod').value;
-            const intentionSelect = document.getElementById('newLogIntention');
             
             if (!content) {
                 alert('請輸入聯絡內容');
@@ -2390,31 +2090,6 @@ try {
                 return;
             }
             
-            // 第一次填寫時，意願為必填（只有在追蹤資訊區塊顯示時才需要）
-            var trackingSec = document.getElementById('trackingSection');
-            var isFirstTime = (!currentIntentionLevel || currentIntentionLevel === '') && trackingSec && trackingSec.style.display !== 'none';
-            if (isFirstTime && (!intentionSelect || !intentionSelect.value)) {
-                alert('第一次填寫聯絡紀錄時，請填寫學生意願');
-                return;
-            }
-            var decl = document.getElementById('trackingBlockDecline');
-            var iEl = document.getElementById('newLogIntention');
-            var nf = document.getElementById('newLogNeedFollowUp');
-            var dr = document.getElementById('newLogDeclineReason');
-            var dro = document.getElementById('newLogDeclineReasonOther');
-            // 當選擇「無意願」時，必須填寫不來原因
-            if (iEl && iEl.value === 'none') {
-                if (!dr || !dr.value || (dr.value === 'other' && (!dro || !dro.value.trim()))) {
-                    alert('選擇「無意願」時請選擇或填寫不來原因');
-                    return;
-                }
-            }
-            // 結案（無意願）時也需要不來原因
-            if (decl && decl.style.display !== 'none' && nf && nf.value === 'no' && (!dr || !dr.value || (dr.value === 'other' && (!dro || !dro.value.trim())))) {
-                alert('結案（無意願）時請選擇或填寫不來原因');
-                return;
-            }
-            
             const formData = new FormData();
             formData.append('enrollment_id', currentStudentId);
             formData.append('notes', content);
@@ -2422,21 +2097,6 @@ try {
             formData.append('contact_date', contactDate);
             var crEl = document.getElementById('newLogContactResult');
             formData.append('contact_result', (crEl && crEl.value) ? crEl.value : 'contacted');
-            // 將「有意願」映射為 'high'，以符合後端 API 的要求
-            if (iEl && iEl.value) {
-                var intentionValue = iEl.value;
-                if (intentionValue === 'yes') {
-                    intentionValue = 'high'; // 有意願映射為高意願
-                }
-                formData.append('intention_level', intentionValue);
-            }
-            // 當選擇「無意願」時，必須填寫不來原因
-            if (decl && decl.style.display !== 'none') {
-                if (dr && dr.value) {
-                    formData.append('decline_reason', (dr.value === 'other' && dro && dro.value) ? ('其他: ' + dro.value.trim()) : dr.value);
-                }
-                if (nf && nf.value) formData.append('need_follow_up', nf.value);
-            }
 
             fetch('../../Topics-frontend/frontend/api/contact_logs_api.php', {
                 method: 'POST',
@@ -2469,8 +2129,6 @@ try {
                     if (methodField) methodField.value = '電話';
                     var crEl = document.getElementById('newLogContactResult');
                     if (crEl) crEl.value = 'contacted';
-                    if (typeof resetTrackingForm === 'function') resetTrackingForm();
-                    if (typeof toggleTrackingSection === 'function') toggleTrackingSection();
                     if (currentStudentId) loadContactLogs(currentStudentId);
                 } else {
                     alert(data.message || '新增失敗');
@@ -2581,157 +2239,7 @@ try {
             });
         }
 
-        function submitCloseCase() {
-            if (!currentStudentId) return;
-            if (!confirm('確定要將此學生結案嗎？結案後將顯示於歷史紀錄。')) return;
-            var fd = new FormData();
-            fd.append('enrollment_id', currentStudentId);
-            fetch('../../Topics-frontend/frontend/api/close_case_api.php', { method: 'POST', body: fd })
-                .then(function(r) { return r.json(); })
-                .then(function(data) {
-                    if (data.success) {
-                        alert(data.message || '已結案');
-                        closeContactLogsModal();
-                        location.reload();
-                    } else {
-                        alert(data.message || '結案失敗');
-                    }
-                })
-                .catch(function(e) {
-                    console.error(e);
-                    alert('結案失敗，請稍後再試');
-                });
-        }
-
-        function openChangeIntentionModal() {
-            // 檢查是否為招生中心，招生中心不能更改意願
-            const isAdmissionCenter = <?php echo isset($is_admission_center) && $is_admission_center ? 'true' : 'false'; ?>;
-            if (isAdmissionCenter) {
-                alert('招生中心無法更改學生意願');
-                return;
-            }
-            
-            if (!currentStudentId) return;
-            
-            // 顯示目前意願（將後端的 high/medium/low/none 映射為顯示文字）
-            var intentionLabelMap = { 
-                high:'有意願', 
-                medium:'有意願', 
-                low:'有意願', 
-                none:'無意願' 
-            };
-            var currentLabel = intentionLabelMap[currentIntentionLevel] || '未標註';
-            document.getElementById('currentIntentionLabel').textContent = currentLabel;
-            
-            // 重置選擇和「不來原因」區塊
-            var selectEl = document.getElementById('newIntentionLevel');
-            if (selectEl) {
-                selectEl.value = '';
-                toggleChangeIntentionDeclineBlock();
-            }
-            
-            // 重置「不來原因」相關欄位
-            var declineBlock = document.getElementById('changeIntentionDeclineBlock');
-            if (declineBlock) declineBlock.style.display = 'none';
-            var declineReason = document.getElementById('changeIntentionDeclineReason');
-            if (declineReason) declineReason.value = '';
-            var declineReasonOther = document.getElementById('changeIntentionDeclineReasonOther');
-            if (declineReasonOther) declineReasonOther.value = '';
-            var declineReasonOtherWrap = document.getElementById('changeIntentionDeclineReasonOtherWrap');
-            if (declineReasonOtherWrap) declineReasonOtherWrap.style.display = 'none';
-            var needFollowUp = document.getElementById('changeIntentionNeedFollowUp');
-            if (needFollowUp) needFollowUp.value = 'yes';
-            
-            // 確保更改意願 Modal 的 z-index 高於聯絡紀錄 Modal
-            var changeIntentionModal = document.getElementById('changeIntentionModal');
-            if (changeIntentionModal) {
-                changeIntentionModal.style.zIndex = '1100';
-                changeIntentionModal.style.display = 'flex';
-            }
-        }
-        
-        function closeChangeIntentionModal() {
-            document.getElementById('changeIntentionModal').style.display = 'none';
-        }
-        
-        function toggleChangeIntentionDeclineBlock() {
-            var selectEl = document.getElementById('newIntentionLevel');
-            var declineBlock = document.getElementById('changeIntentionDeclineBlock');
-            if (!selectEl || !declineBlock) return;
-            var sel = selectEl.value;
-            declineBlock.style.display = (sel === 'none') ? 'block' : 'none';
-        }
-        
-        function confirmChangeIntention() {
-            var selectEl = document.getElementById('newIntentionLevel');
-            if (!selectEl || !selectEl.value) {
-                alert('請選擇新的意願等級');
-                return;
-            }
-            
-            var level = selectEl.value;
-            
-            // 如果選擇「無意願」，必須填寫「不來原因」
-            if (level === 'none') {
-                var declineReason = document.getElementById('changeIntentionDeclineReason');
-                if (!declineReason || !declineReason.value) {
-                    alert('選擇「無意願」時，必須填寫「不來原因」');
-                    return;
-                }
-            }
-            
-            // 將後端的 high/medium/low 都顯示為「有意願」
-            var intentionLabelMap = { 
-                high:'有意願', 
-                medium:'有意願', 
-                low:'有意願', 
-                none:'無意願' 
-            };
-            var newLabel = intentionLabelMap[level] || level;
-            
-            var fd = new FormData();
-            fd.append('enrollment_id', currentStudentId);
-            fd.append('intention_level', level);
-            
-            // 如果選擇「無意願」，同時提交「不來原因」等資訊
-            if (level === 'none') {
-                var declineReason = document.getElementById('changeIntentionDeclineReason');
-                var declineReasonOther = document.getElementById('changeIntentionDeclineReasonOther');
-                var needFollowUp = document.getElementById('changeIntentionNeedFollowUp');
-                
-                if (declineReason && declineReason.value) {
-                    fd.append('decline_reason', declineReason.value);
-                }
-                if (declineReasonOther && declineReason.value === 'other' && declineReasonOther.value) {
-                    fd.append('decline_reason_other', declineReasonOther.value);
-                }
-                if (needFollowUp && needFollowUp.value) {
-                    fd.append('need_follow_up', needFollowUp.value);
-                }
-            }
-            
-            fetch('../../Topics-frontend/frontend/api/update_intention_api.php', { method: 'POST', body: fd })
-                .then(function(r) { return r.json(); })
-                .then(function(data) {
-                    if (data.success) {
-                        alert('意願已更新為「' + newLabel + '」');
-                        closeChangeIntentionModal();
-                        closeContactLogsModal();
-                        location.reload();
-                    } else {
-                        alert(data.message || '更新失敗');
-                    }
-                })
-                .catch(function(e) {
-                    console.error(e);
-                    alert('更新失敗，請稍後再試');
-                });
-        }
-
         // Click outside closes modals
-        document.getElementById('changeIntentionModal')?.addEventListener('click', function(e) {
-            if (e.target === this) this.style.display = 'none';
-        });
         window.onclick = function(event) {
             if (event.target.classList.contains('modal')) {
                 event.target.style.display = "none";

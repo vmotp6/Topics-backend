@@ -23,9 +23,6 @@ function ensure_enrollment_intention_columns(mysqli $conn): void {
         'assigned_department' => "VARCHAR(50) NULL",
         'assigned_teacher_id' => "INT NULL",
         'graduation_year' => "INT NULL",
-        'case_closed' => "TINYINT(1) NOT NULL DEFAULT 0 COMMENT '0=否,1=是(結案後顯示於歷史紀錄)'",
-        'intention_level' => "VARCHAR(20) DEFAULT NULL",
-        'follow_up_status' => "VARCHAR(30) DEFAULT 'tracking'",
     ];
     foreach ($cols as $col => $def) {
         $r = @$conn->query("SHOW COLUMNS FROM enrollment_intention LIKE '{$conn->real_escape_string($col)}'");
@@ -162,9 +159,6 @@ if ($existing_enrollment) {
         $this_year_grad = ($current_month >= 8) ? $current_year + 1 : $current_year;
         $graduation_year = $this_year_grad;
 
-        $intention_level = 'high';
-        $follow_up_status = 'tracking';
-
         // 更新既有 enrollment_intention（只補空或關鍵欄位，不覆蓋使用者後續手動編輯）
         $upd = $conn->prepare("
             UPDATE enrollment_intention
@@ -175,8 +169,6 @@ if ($existing_enrollment) {
                 junior_high = COALESCE(NULLIF(junior_high,''), ?),
                 current_grade = COALESCE(NULLIF(current_grade,''), ?),
                 assigned_department = COALESCE(NULLIF(assigned_department,''), ?),
-                intention_level = COALESCE(NULLIF(intention_level,''), ?),
-                follow_up_status = COALESCE(NULLIF(follow_up_status,''), ?),
                 graduation_year = COALESCE(graduation_year, ?)
             WHERE id = ?
             LIMIT 1
@@ -188,15 +180,13 @@ if ($existing_enrollment) {
         $incoming_jh = trim((string)($data['school'] ?? ''));
         $incoming_grade = trim((string)($data['grade'] ?? ''));
         $upd->bind_param(
-            "ssssssssii",
+            "ssssssii",
             $incoming_name,
             $incoming_email,
             $incoming_phone,
             $incoming_jh,
             $incoming_grade,
             $assigned_department,
-            $intention_level,
-            $follow_up_status,
             $graduation_year,
             $enrollment_id
         );
@@ -290,9 +280,9 @@ if ($existing_enrollment) {
             INSERT INTO enrollment_intention (
                 name, email, phone1, phone2, junior_high, current_grade, 
                 identity, gender, line_id, facebook, remarks,
-                assigned_department, intention_level, follow_up_status, graduation_year,
+                assigned_department, graduation_year,
                 created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())
         ");
         if (!$insert_stmt) {
             throw new Exception('準備寫入就讀意願資料失敗：' . $conn->error);
@@ -319,14 +309,11 @@ if ($existing_enrollment) {
             $assigned_department = $priority1;
         }
 
-        $intention_level = 'high'; // 本功能觸發條件為高意願
-        $follow_up_status = 'tracking';
-
-        // 15 個參數：6s + 2i + 6s + 1i = 15
-        $insert_stmt->bind_param("ssssssii" . "ssssss" . "i",
+        // 13 個參數：6s + 2i + 4s + 1i = 13
+        $insert_stmt->bind_param("ssssssii" . "ssss" . "i",
             $name, $email, $phone1, $phone2, $junior_high, $current_grade,
             $identity, $gender, $line_id, $facebook, $remarks,
-            $assigned_department, $intention_level, $follow_up_status, $graduation_year
+            $assigned_department, $graduation_year
         );
         
         if (!$insert_stmt->execute()) {

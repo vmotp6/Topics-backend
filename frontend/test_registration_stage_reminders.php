@@ -159,7 +159,6 @@ try {
             WHERE email IS NOT NULL 
             AND email != '' 
             AND graduation_year = ?
-            AND (IFNULL(case_closed, 0) = 0)
             LIMIT 5";
     
     $stmt = $conn->prepare($sql);

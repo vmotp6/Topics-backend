@@ -256,7 +256,6 @@ try {
     // 2. 未報名（is_registered = 0）
     // 3. 該階段未提醒過（{stage}_reminded = 0）
     // 4. 當年度國三（graduation_year = this_year_grad）
-    // 5. 未結案（case_closed = 0）
     $reminded_col = $current_stage . '_reminded';
     $declined_col = $current_stage . '_declined';
     
@@ -272,7 +271,7 @@ try {
             AND (IFNULL({$reminded_col_escaped}, 0) = 0)
             AND (IFNULL({$declined_col_escaped}, 0) = 0)
             AND graduation_year = ?
-            AND (IFNULL(case_closed, 0) = 0)";
+            ";
     
     $stmt = $conn->prepare($sql);
     if (!$stmt) {
