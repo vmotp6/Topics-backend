@@ -330,18 +330,33 @@ try {
   <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
   <style>
     .dashboard { display: flex; min-height: 100vh; background: #f0f2f5; }
-    .main-content { flex: 1; margin-left: 250px; padding: 24px; }
+    .main-content {
+      flex: 1;
+      margin-left: 250px;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      background: #f0f2f5;
+    }
+    .main-content .page-header { flex-shrink: 0; }
+    .content {
+      flex: 1;
+      overflow-y: auto;
+      padding: 24px;
+    }
     .card { background: #fff; border-radius: 10px; padding: 20px; margin-bottom: 16px; box-shadow: 0 2px 8px rgba(0,0,0,0.06); }
     .muted { color: #666; font-size: 14px; }
     .success { color: #52c41a; }
     .warning { color: #fa8c16; }
     ul { margin: 8px 0; padding-left: 20px; }
+    @media (max-width: 768px) { .main-content { margin-left: 0; } }
   </style>
 </head>
 <body>
   <div class="dashboard">
     <?php include __DIR__ . '/sidebar.php'; ?>
-    <div class="main-content">
+    <div class="main-content" id="mainContent">
       <?php include __DIR__ . '/header.php'; ?>
       <div class="content">
         <div class="card">

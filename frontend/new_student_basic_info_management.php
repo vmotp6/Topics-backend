@@ -337,15 +337,27 @@ if ($view === 'legacy') {
     // ========================================
     // 4. 取得列表資料
     // ========================================
-    $listSql = "SELECT
-    s.id,
-    s.student_no,
-    s.student_name,
-    s.class_name,
-    COALESCE(s.status, '在學') AS status,
-    $dept_select,
-    DATE_FORMAT(s.created_at, '%Y-%m-%d %H:%i:%s') AS created_at
-    FROM new_student_basic_info s" . $dept_join . $where . " ORDER BY s.created_at DESC, s.id DESC LIMIT ? OFFSET ?";
+    // 狀態欄位顯示規則
+    $statusSelect = "COALESCE(s.status, '在學') AS status";
+        if ($view === 'active') {
+             $statusSelect = "'新生' AS status";
+        }
+
+        $listSql = "SELECT
+        s.id,
+        s.student_no,
+        s.student_name,
+        s.class_name,
+        $statusSelect,
+        $dept_select,
+        DATE_FORMAT(s.created_at, '%Y-%m-%d %H:%i:%s') AS created_at
+        FROM new_student_basic_info s
+        $dept_join
+        $where
+        ORDER BY s.created_at DESC, s.id DESC
+        LIMIT ? OFFSET ?";
+    
+    
 
 
     $stmt = $conn->prepare($listSql);
@@ -635,9 +647,17 @@ if ($view === 'legacy') {
                 <tr ><td colspan="5" style="padding:18px; text-align:center; color:#666;">目前沒有資料</td></tr>
               <?php else: ?>
                 <?php
-                $statusColors = ['在學' => '#52c41a', '休學' => '#fa8c16', '退學' => '#f5222d', '轉學' => '#1890ff', '延畢' => '#d46b08', '畢業' => '#8c8c8c'];
+                $statusColors = ['新生' => '#1890ff','在學' => '#52c41a', '休學' => '#fa8c16', '退學' => '#f5222d', '轉學' => '#1890ff', '延畢' => '#d46b08', '畢業' => '#8c8c8c'];
                 foreach ($rows as $r):
-                  $statusText = computeEnrollmentStatus($r['student_no'] ?? '', $r['created_at'] ?? null, $r['status'] ?? '');
+                  if ($view === 'active') {
+                    $statusText = '新生';
+                } else {
+                    $statusText = computeEnrollmentStatus(
+                        $r['student_no'] ?? '',
+                        $r['created_at'] ?? null,
+                        $r['status'] ?? ''
+                    );
+                }
                   $statusColor = $statusColors[$statusText] ?? '#595959';
                 ?>
                   <tr  class="table-row-clickable">
