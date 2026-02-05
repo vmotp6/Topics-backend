@@ -357,6 +357,87 @@ function send_review_result_email_once($conn, $recommendation_id, $status_code, 
     return ['sent' => $ok, 'message' => $ok ? 'sent' : 'failed', 'bonus_amount' => $bonus_amount];
 }
 
+function send_director_approved_email_once($conn, $recommendation_id, $sent_by = '') {
+    if (!$conn || $recommendation_id <= 0) return ['sent' => false, 'message' => 'invalid'];
+    $status_code = 'APD';
+
+    ensure_review_email_logs_table($conn);
+
+    $chk = $conn->prepare("SELECT send_status FROM recommendation_review_email_logs WHERE recommendation_id = ? AND status_code = ? LIMIT 1");
+    if ($chk) {
+        $chk->bind_param('is', $recommendation_id, $status_code);
+        $chk->execute();
+        $r = $chk->get_result();
+        if ($r && $row = $r->fetch_assoc()) {
+            if (($row['send_status'] ?? '') === 'sent') {
+                $chk->close();
+                return ['sent' => false, 'message' => 'already_sent'];
+            }
+        }
+        $chk->close();
+    }
+
+    $info = fetch_recommendation_recommender_contact($conn, $recommendation_id);
+    $to_email = trim((string)($info['recommender_email'] ?? ''));
+    if ($to_email === '') {
+        return ['sent' => false, 'message' => 'no_email'];
+    }
+
+    $recommender_name = trim((string)($info['recommender_name'] ?? ''));
+    $student_name = trim((string)($info['student_name'] ?? ''));
+    $student_school = trim((string)($info['student_school'] ?? ''));
+    $student_grade = trim((string)($info['student_grade'] ?? ''));
+
+    $subject = '推薦學生審核通過（主任已簽核）通知';
+    $body_lines = [];
+    $body_lines[] = ($recommender_name !== '') ? ($recommender_name . ' 您好：') : '您好：';
+    $body_lines[] = '您推薦的學生資訊已經完成主任簽核並審核通過。';
+    if ($student_name !== '' || $student_school !== '' || $student_grade !== '') {
+        $body_lines[] = '';
+        if ($student_name !== '') $body_lines[] = '學生姓名：' . $student_name;
+        if ($student_school !== '') $body_lines[] = '就讀學校：' . $student_school;
+        if ($student_grade !== '') $body_lines[] = '年級：' . $student_grade;
+    }
+    $body_lines[] = '';
+    $body_lines[] = '感謝您的推薦與協助。';
+    $body_text = implode("\n", $body_lines);
+    $body_html = nl2br(htmlspecialchars($body_text, ENT_QUOTES, 'UTF-8'));
+
+    $ok = false;
+    if (function_exists('sendEmail')) {
+        $ok = sendEmail($to_email, $subject, $body_html, $body_text);
+    }
+    $send_status = $ok ? 'sent' : 'failed';
+    $err = $ok ? null : 'email_send_failed';
+
+    $up = $conn->prepare("INSERT INTO recommendation_review_email_logs
+        (recommendation_id, status_code, recipient_email, template_name, bonus_amount, send_status, error_message, sent_by, sent_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW())
+        ON DUPLICATE KEY UPDATE
+            recipient_email = VALUES(recipient_email),
+            template_name = VALUES(template_name),
+            bonus_amount = VALUES(bonus_amount),
+            send_status = VALUES(send_status),
+            error_message = VALUES(error_message),
+            sent_by = VALUES(sent_by),
+            sent_at = VALUES(sent_at)");
+    if ($up) {
+        $rid = $recommendation_id;
+        $sc = $status_code;
+        $re = $to_email;
+        $tn = 'director_approved_notification';
+        $ba = 0;
+        $ss = $send_status;
+        $em = $err;
+        $sb = (string)$sent_by;
+        $up->bind_param('isssisss', $rid, $sc, $re, $tn, $ba, $ss, $em, $sb);
+        @$up->execute();
+        $up->close();
+    }
+
+    return ['sent' => $ok, 'message' => $ok ? 'sent' : 'failed'];
+}
+
 function ensure_bonus_send_email_logs_table($conn) {
     if (!$conn) return;
     try {

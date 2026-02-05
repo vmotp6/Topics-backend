@@ -125,12 +125,33 @@ function build_simple_xlsx($rows, $output_path) {
     return file_exists($output_path);
 }
 
+function build_simple_csv($rows, $output_path) {
+    $fh = @fopen($output_path, 'wb');
+    if (!$fh) return false;
+    fwrite($fh, "\xEF\xBB\xBF");
+    foreach ($rows as $row) {
+        fputcsv($fh, $row);
+    }
+    fclose($fh);
+    return file_exists($output_path);
+}
+
 function html_to_text($html) {
     $text = strip_tags((string)$html);
     $text = html_entity_decode($text, ENT_QUOTES | ENT_HTML5, 'UTF-8');
     $text = preg_replace('/[ \t]+/', ' ', $text);
     $text = preg_replace('/\s*\R\s*/u', "\n", $text);
     return trim($text);
+}
+
+function text_to_html_with_links($text) {
+    $escaped = htmlspecialchars((string)$text, ENT_QUOTES, 'UTF-8');
+    $escaped = preg_replace(
+        '~(https?://[^\s<]+)~i',
+        '<a href="$1" target="_blank" rel="noopener">$1</a>',
+        $escaped
+    );
+    return nl2br($escaped);
 }
 
 function collect_uploaded_attachments($files, $index) {
@@ -197,13 +218,6 @@ try {
     $ar_has_student_school = $ar_has('student_school');
     $ar_has_student_school_code = $ar_has('student_school_code');
     $ar_has_student_phone = $ar_has('student_phone');
-    $ar_has_recommender_name = $ar_has('recommender_name');
-    $ar_has_recommender_student_id = $ar_has('recommender_student_id');
-    $ar_has_recommender_department_code = $ar_has('recommender_department_code');
-    $ar_has_recommender_department = $ar_has('recommender_department');
-    $ar_has_recommender_grade_code = $ar_has('recommender_grade_code');
-    $ar_has_recommender_phone = $ar_has('recommender_phone');
-    $ar_has_recommender_email = $ar_has('recommender_email');
     $ar_has_student_grade = $ar_has('student_grade');
     $ar_has_student_grade_code = $ar_has('student_grade_code');
     $ar_has_student_email = $ar_has('student_email');
@@ -213,6 +227,13 @@ try {
     $ar_has_additional_info = $ar_has('additional_info');
     $ar_has_proof_evidence = $ar_has('proof_evidence');
     $ar_has_created_at = $ar_has('created_at');
+    $ar_has_recommender_name = $ar_has('recommender_name');
+    $ar_has_recommender_student_id = $ar_has('recommender_student_id');
+    $ar_has_recommender_department_code = $ar_has('recommender_department_code');
+    $ar_has_recommender_department = $ar_has('recommender_department');
+    $ar_has_recommender_grade_code = $ar_has('recommender_grade_code');
+    $ar_has_recommender_phone = $ar_has('recommender_phone');
+    $ar_has_recommender_email = $ar_has('recommender_email');
 
     $table_has = function($table, $column) use ($conn) {
         $t = trim((string)$table);
@@ -293,6 +314,7 @@ try {
     $skipped = 0;
     $errors = [];
     $groups = [];
+    $preview_emails = [];
 
     foreach ($id_list as $recommendation_id) {
         $stmt->bind_param("i", $recommendation_id);
@@ -308,6 +330,12 @@ try {
         $status_code_norm = strtolower($status_code);
         $is_rejected = in_array($status_code_norm, ['re', 'rejected', '不通過'], true);
         $is_approved = in_array($status_code_norm, ['ap', 'approved', '通過'], true);
+        if (!$is_approved && mb_strpos($status_code, '通過') !== false) {
+            $is_approved = true;
+        }
+        if (!$is_rejected && mb_strpos($status_code, '不通過') !== false) {
+            $is_rejected = true;
+        }
 
         if (!$is_rejected && !$is_approved) {
             $skipped++;
@@ -334,10 +362,8 @@ try {
         $recommendation_reason = trim((string)($recommendation['ar_recommendation_reason'] ?? ''));
         $additional_info = trim((string)($recommendation['ar_additional_info'] ?? ''));
         $proof_evidence = trim((string)($recommendation['ar_proof_evidence'] ?? ''));
-
         $created_at = (string)($recommendation['ar_created_at'] ?? '');
 
-        // 推薦人資訊
         $rec_name = trim((string)($recommendation['rec_name'] ?? ''));
         $rec_sid = trim((string)($recommendation['rec_student_id'] ?? ''));
         $rec_dept = trim((string)($recommendation['rec_department'] ?? ''));
@@ -394,48 +420,49 @@ try {
 
     if ($stmt) $stmt->close();
 
-        // 取得主任姓名（user 表 name）
-        $director_name = '';
-        $has_director_table = false;
-        $has_user_table = false;
-        $td = $conn->query("SHOW TABLES LIKE 'director'");
-        if ($td && $td->num_rows > 0) $has_director_table = true;
-        $tu = $conn->query("SHOW TABLES LIKE 'user'");
-        if ($tu && $tu->num_rows > 0) $has_user_table = true;
-        if ($has_director_table && $has_user_table) {
-            $stmt_dir = $conn->prepare("SELECT u.name FROM director d JOIN user u ON d.user_id = u.id WHERE d.department = ? LIMIT 1");
-            if ($stmt_dir) {
-                $department_account = 'IMD';
-                $stmt_dir->bind_param('s', $department_account);
-                if ($stmt_dir->execute()) {
-                    $res_dir = $stmt_dir->get_result();
-                    if ($res_dir && ($row_dir = $res_dir->fetch_assoc())) {
-                        $director_name = trim((string)($row_dir['name'] ?? ''));
-                    }
+    // 取得主任姓名（user 表 name）
+    $director_name = '';
+    $has_director_table = false;
+    $has_user_table = false;
+    $td = $conn->query("SHOW TABLES LIKE 'director'");
+    if ($td && $td->num_rows > 0) $has_director_table = true;
+    $tu = $conn->query("SHOW TABLES LIKE 'user'");
+    if ($tu && $tu->num_rows > 0) $has_user_table = true;
+    if ($has_director_table && $has_user_table) {
+        $stmt_dir = $conn->prepare("SELECT u.name FROM director d JOIN user u ON d.user_id = u.id WHERE d.department = ? LIMIT 1");
+        if ($stmt_dir) {
+            $department_account = 'IMD';
+            $stmt_dir->bind_param('s', $department_account);
+            if ($stmt_dir->execute()) {
+                $res_dir = $stmt_dir->get_result();
+                if ($res_dir && ($row_dir = $res_dir->fetch_assoc())) {
+                    $director_name = trim((string)($row_dir['name'] ?? ''));
                 }
-                $stmt_dir->close();
             }
+            $stmt_dir->close();
         }
-        if ($director_name === '' && $has_user_table) {
-            $stmt_dir = $conn->prepare("SELECT name FROM user WHERE role IN ('DI','主任','資管科主任') AND (username = ? OR username = ?) LIMIT 1");
-            if ($stmt_dir) {
-                $u1 = 'IMD';
-                $u2 = 'IM';
-                $stmt_dir->bind_param('ss', $u1, $u2);
-                if ($stmt_dir->execute()) {
-                    $res_dir = $stmt_dir->get_result();
-                    if ($res_dir && ($row_dir = $res_dir->fetch_assoc())) {
-                        $director_name = trim((string)($row_dir['name'] ?? ''));
-                    }
+    }
+    if ($director_name === '' && $has_user_table) {
+        $stmt_dir = $conn->prepare("SELECT name FROM user WHERE role IN ('DI','主任','資管科主任') AND (username = ? OR username = ?) LIMIT 1");
+        if ($stmt_dir) {
+            $u1 = 'IMD';
+            $u2 = 'IM';
+            $stmt_dir->bind_param('ss', $u1, $u2);
+            if ($stmt_dir->execute()) {
+                $res_dir = $stmt_dir->get_result();
+                if ($res_dir && ($row_dir = $res_dir->fetch_assoc())) {
+                    $director_name = trim((string)($row_dir['name'] ?? ''));
                 }
-                $stmt_dir->close();
             }
+            $stmt_dir->close();
         }
-        $greeting = ($director_name !== '') ? ($director_name . '主任您好：') : '主任您好：';
+    }
+    $greeting = ($director_name !== '') ? ($director_name . '主任您好：') : '主任您好：';
 
     $to_email = '110534236@stu.ukn.edu.tw';
     $dept_label = '資管科';
 
+    $xlsx_supported = class_exists('ZipArchive');
     if ($action === 'preview') {
         $emails = [];
         foreach ($groups as $rec_key => $group) {
@@ -455,62 +482,19 @@ try {
             $recHtml = "<p>• 推薦人科系：{$rec_dept}</p><p>• 推薦人學號：{$rec_sid}</p><p>• 推薦人姓名：{$rec_name}</p>";
             $recText = "• 推薦人科系：{$rec_dept}\n• 推薦人學號：{$rec_sid}\n• 推薦人姓名：{$rec_name}";
 
-            $subject = '';
-            $body = '';
-            $altBody = '';
-
             if (!empty($group['has_approved'])) {
                 $subject = '推薦學生審核通過通知';
-                $body = "
-                    <div style='font-family: Arial, sans-serif; line-height: 1.6; color: #333;'>
-                        <p>{$greeting}</p>
-                        <p>本信件為招生中心通知</p>
-                        <p>近日收到一筆以上「招生推薦」資料，該批資料已由招生中心完成初步審核並確認無誤，現需再請主任協助進行最終資訊確認並完成線上簽名</p>
-                        <p>推薦人資料摘要如下：</p>
-                        {$recHtml}
-                        <p>• 推薦科系：{$dept_label}</p>
-                        <p>• 推薦人身分：{$rec_identity}</p>
-                        <p>推薦內容相關資訊已整理於附件（Excel）。</p>
-                        <p>請主任點擊下方連結進行線上審核與簽核：</p>
-                        <p><a href='#' target='_blank' rel='noopener'>【網頁連結】</a></p>
-                        <p>若資料無誤，請於系統中完成線上簽核；如資料有誤，可於系統中填寫不通過原因退回。</p>
-                        <p>本審核結果將回傳至招生中心，作為後續獎金核發與招生統計之依據。</p>
-                        <p>感謝主任的協助與配合。</p>
-                        <br>
-                        <p>敬祝</p>
-                        <p>教安</p>
-                        <p>招生中心組長 高惠玲</p>
-                        <p>聯絡電話：0900123123</p>
-                        <p>分機：310</p>
-                        <p>（本信件為系統自動發送，請勿直接回覆）</p>
-                    </div>
-                ";
-                $altBody = "{$greeting}\n本信件為招生中心通知\n近日收到一筆以上「招生推薦」資料，該批資料已由招生中心完成初步審核並確認無誤，現需再請主任協助進行最終資訊確認並完成線上簽名\n推薦人資料摘要如下：\n{$recText}\n• 推薦科系：{$dept_label}\n• 推薦人身分：{$rec_identity}\n推薦內容相關資訊已整理於附件（Excel）。\n請主任點擊下方連結進行線上審核與簽核：\n【網頁連結】\n若資料無誤，請於系統中完成線上簽核；如資料有誤，可於系統中填寫不通過原因退回。\n本審核結果將回傳至招生中心，作為後續獎金核發與招生統計之依據。\n感謝主任的協助與配合。\n\n敬祝\n教安\n招生中心組長 高惠玲\n聯絡電話：0900123123\n分機：310\n（本信件為系統自動發送，請勿直接回覆）";
+            $body = "{$greeting}\n本信件為招生中心通知\n近日收到一筆以上「招生推薦」資料，該批資料已由招生中心完成初步審核並確認無誤，現需再請主任協助進行最終資訊確認並完成線上簽名\n推薦人資料摘要如下：\n{$recText}\n• 推薦科系：{$dept_label}\n• 推薦人身分：{$rec_identity}\n推薦內容相關資訊已整理於附件（Excel）。\n請主任點擊下方連結進行線上審核與簽核：\n【網頁連結】\n若資料無誤，請於系統中完成線上簽核；如資料有誤，可於系統中填寫不通過原因退回。\n本審核結果將回傳至招生中心，作為後續獎金核發與招生統計之依據。\n感謝主任的協助與配合。\n\n敬祝\n教安\n招生中心組長 高惠玲\n聯絡電話：0900123123\n分機：310\n（本信件為系統自動發送，請勿直接回覆）";
+            $altBody = $body;
             } else {
                 $subject = '推薦學生重複推薦提醒';
-                $body = "
-                    <div style='font-family: Arial, sans-serif; line-height: 1.6; color: #333;'>
-                        <p>以下推薦人之推薦資料被判定為不通過/重複推薦，還請您確認後再告知我。</p>
-                        <p>推薦人資料摘要如下：</p>
-                        {$recHtml}
-                        <p>推薦內容相關資訊已整理於附件（Excel）。</p>
-                        <br>
-                        <p>招生中心組長 高惠玲</p>
-                        <p>聯絡電話：0900123123</p>
-                        <p>分機：310</p>
-                        <p>shirly02@g.ukn.edu.tw</p>
-                    </div>
-                ";
-                $altBody = "以下推薦人之推薦資料被判定為不通過/重複推薦，還請您確認後再告知我。\n推薦人資料摘要如下：\n{$recText}\n推薦內容相關資訊已整理於附件（Excel）。\n\n招生中心組長 高惠玲\n聯絡電話：0900123123\n分機：310\nshirly02@g.ukn.edu.tw";
+            $body = "以下推薦人之推薦資料被判定為不通過/重複推薦，還請您確認後再告知我。\n推薦人資料摘要如下：\n{$recText}\n推薦內容相關資訊已整理於附件（Excel）。\n\n招生中心組長 高惠玲\n聯絡電話：0900123123\n分機：310\nshirly02@g.ukn.edu.tw";
+            $altBody = $body;
             }
 
             $safe_name = preg_replace('/[^\w\-]+/u', '_', $rec_name ?: '推薦人');
-            $attachment_name = '推薦內容_' . $safe_name . '_' . date('Ymd_His') . '.xlsx';
-
-            $ids = [];
-            foreach ($group['items'] as $it) {
-                $ids[] = (int)($it['id'] ?? 0);
-            }
+            $attachment_ext = $xlsx_supported ? 'xlsx' : 'csv';
+            $attachment_name = '推薦內容_' . $safe_name . '_' . date('Ymd_His') . '.' . $attachment_ext;
 
             $emails[] = [
                 'rec_key' => $rec_key,
@@ -521,7 +505,8 @@ try {
                 'alt_body' => $altBody,
                 'attachment_name' => $attachment_name,
                 'include_generated' => true,
-                'ids' => $ids,
+                'xlsx_supported' => $xlsx_supported,
+                'attachment_ext' => $attachment_ext,
             ];
         }
 
@@ -558,14 +543,16 @@ try {
             $rec_sid = $group['rec_sid'];
             $rec_dept = $group['rec_dept'];
             $rec_grade = $group['rec_grade'];
+            $rec_phone = $group['rec_phone'];
+            $rec_email = $group['rec_email'];
 
             $attachments = collect_uploaded_attachments($_FILES['custom_files'] ?? [], $idx);
-
             $attachment_path = '';
             if ($include_generated) {
                 $tmp = tempnam(sys_get_temp_dir(), 'rec_excel_');
                 if ($tmp !== false) {
-                    $attachment_path = $tmp . '.xlsx';
+                    $attachment_ext = $xlsx_supported ? 'xlsx' : 'csv';
+                    $attachment_path = $tmp . '.' . $attachment_ext;
                     @rename($tmp, $attachment_path);
                     $rows = [[
                         '推薦編號',
@@ -607,23 +594,58 @@ try {
                             $rec_sid,
                             $rec_dept,
                             $rec_grade,
-                            $group['rec_phone'] ?? '',
-                            $group['rec_email'] ?? '',
+                            $rec_phone,
+                            $rec_email,
                         ];
                     }
-                    if (build_simple_xlsx($rows, $attachment_path)) {
+                    $built = $xlsx_supported ? build_simple_xlsx($rows, $attachment_path) : build_simple_csv($rows, $attachment_path);
+                    if ($built) {
                         $safe_name = preg_replace('/[^\w\-]+/u', '_', $rec_name ?: '推薦人');
                         $attachments[] = [
                             'path' => $attachment_path,
-                            'name' => '推薦內容_' . $safe_name . '_' . date('Ymd_His') . '.xlsx',
-                            'mime' => 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                            'name' => '推薦內容_' . $safe_name . '_' . date('Ymd_His') . '.' . $attachment_ext,
+                            'mime' => $xlsx_supported
+                                ? 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+                                : 'text/csv',
                         ];
                     }
                 }
             }
 
             if (function_exists('sendEmail')) {
-                @sendEmail($to_email, $subject, $body, $altBody, $attachments);
+                if (!empty($group['has_approved'])) {
+                    $approval_link = '';
+                    $recommendation_id = (int)($group['first_approved_id'] ?? 0);
+                    if ($recommendation_id > 0) {
+                        $token = '';
+                        if (function_exists('random_bytes')) {
+                            $token = bin2hex(random_bytes(16));
+                        } elseif (function_exists('openssl_random_pseudo_bytes')) {
+                            $token = bin2hex(openssl_random_pseudo_bytes(16));
+                        } else {
+                            $token = bin2hex(uniqid('', true));
+                        }
+                        $ins = $conn->prepare("INSERT INTO recommendation_approval_links (recommendation_id, token, confirmed_by_email) VALUES (?, ?, ?)");
+                        $confirm_email = $to_email;
+                        if ($ins) {
+                            $ins->bind_param('iss', $recommendation_id, $token, $confirm_email);
+                            @$ins->execute();
+                            $ins->close();
+                        }
+                        $protocol = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
+                        $host = $_SERVER['HTTP_HOST'] ?? 'localhost';
+                        $approval_link = $protocol . '://' . $host . '/Topics-frontend/frontend/recommendation_approval.php?token=' . urlencode($token);
+                    }
+                    if ($approval_link !== '') {
+                        if (mb_strpos($body, '【網頁連結】') !== false) {
+                            $body = str_replace('【網頁連結】', '【網頁連結】' . $approval_link, $body);
+                        } else {
+                            $body .= "\n【網頁連結】" . $approval_link;
+                        }
+                    }
+                }
+                $body_html = text_to_html_with_links($body);
+                @sendEmail($to_email, $subject, $body_html, $altBody, $attachments);
                 $sent++;
             }
 
@@ -639,14 +661,14 @@ try {
 
     foreach ($groups as $group) {
         if (empty($group['items'])) continue;
-        if (empty($group['has_approved']) && empty($group['has_rejected'])) {
-            continue;
-        }
+        if (empty($group['has_approved']) && empty($group['has_rejected'])) continue;
 
         $rec_name = $group['rec_name'];
         $rec_sid = $group['rec_sid'];
         $rec_dept = $group['rec_dept'];
         $rec_grade = $group['rec_grade'];
+        $rec_phone = $group['rec_phone'];
+        $rec_email = $group['rec_email'];
 
         $rec_identity = '教師';
         if ($rec_sid !== '' || preg_match('/^F[1-5]$/', $rec_grade)) {
@@ -661,7 +683,8 @@ try {
         try {
             $tmp = tempnam(sys_get_temp_dir(), 'rec_excel_');
             if ($tmp !== false) {
-                $attachment_path = $tmp . '.xlsx';
+                $attachment_ext = $xlsx_supported ? 'xlsx' : 'csv';
+                $attachment_path = $tmp . '.' . $attachment_ext;
                 @rename($tmp, $attachment_path);
                 $rows = [[
                     '推薦編號',
@@ -707,9 +730,10 @@ try {
                         $rec_email,
                     ];
                 }
-                if (build_simple_xlsx($rows, $attachment_path)) {
+                $built = $xlsx_supported ? build_simple_xlsx($rows, $attachment_path) : build_simple_csv($rows, $attachment_path);
+                if ($built) {
                     $safe_name = preg_replace('/[^\w\-]+/u', '_', $rec_name ?: '推薦人');
-                    $attachment_name = '推薦內容_' . $safe_name . '_' . date('Ymd_His') . '.xlsx';
+                    $attachment_name = '推薦內容_' . $safe_name . '_' . date('Ymd_His') . '.' . $attachment_ext;
                 }
             }
         } catch (Exception $e) {
@@ -721,8 +745,10 @@ try {
         if ($attachment_path !== '' && file_exists($attachment_path)) {
             $attachments[] = [
                 'path' => $attachment_path,
-                'name' => $attachment_name ?: '推薦內容_' . date('Ymd_His') . '.xlsx',
-                'mime' => 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                'name' => $attachment_name ?: ('推薦內容_' . date('Ymd_His') . '.' . ($xlsx_supported ? 'xlsx' : 'csv')),
+                'mime' => $xlsx_supported
+                    ? 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+                    : 'text/csv',
             ];
         }
 
@@ -795,13 +821,15 @@ try {
         }
 
         if (function_exists('sendEmail')) {
-            @sendEmail($to_email, $subject, $body, $altBody, $attachments);
+            $body_html = text_to_html_with_links($body);
+            @sendEmail($to_email, $subject, $body_html, $altBody, $attachments);
         }
         if (!empty($attachment_path) && file_exists($attachment_path)) {
             @unlink($attachment_path);
         }
         $sent++;
     }
+
     $conn->close();
 
     $msg = "已寄送 {$sent} 筆 Gmail";
