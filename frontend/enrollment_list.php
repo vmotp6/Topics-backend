@@ -192,25 +192,87 @@ if ($view_mode_raw === 'active') $view_mode_raw = 'recruit';
 if ($view_mode_raw === 'closed') $view_mode_raw = 'recruit';
 $view_mode = in_array($view_mode_raw, ['recruit', 'potential', 'history', 'registered'], true) ? $view_mode_raw : 'recruit';
 
-// 判斷當前報名階段
-function getCurrentRegistrationStage() {
-    $current_month = (int)date('m');
-    if ($current_month >= 2 && $current_month < 3) {
-        return 'priority_exam'; // 5月：優先免試
-    } elseif ($current_month >= 6 && $current_month < 7) {
-        return 'joint_exam'; // 6-7月：聯合免試
-    } elseif ($current_month >= 8) {
-        return 'continued_recruitment'; // 8月以後：續招
+/**
+ * 從 department_quotas 取得續招報名時間區間（統一為全部科系之最早開始、最晚結束）
+ * @param mysqli|null $conn 資料庫連線；若提供則使用且不關閉，否則內部建立並關閉
+ * @return array|null ['start' => datetime, 'end' => datetime] 或 null
+ */
+function getContinuedRecruitmentTimeRange($conn = null) {
+    $own_conn = false;
+    if ($conn === null) {
+        if (!function_exists('getDatabaseConnection')) {
+            return null;
+        }
+        try {
+            $conn = getDatabaseConnection();
+            $own_conn = true;
+        } catch (Exception $e) {
+            return null;
+        }
     }
-    return null; // 非報名期間
+    try {
+        $sql = "SELECT MIN(register_start) AS min_start, MAX(register_end) AS max_end 
+                FROM department_quotas 
+                WHERE is_active = 1 AND register_start IS NOT NULL AND register_end IS NOT NULL";
+        $result = $conn->query($sql);
+        if ($own_conn && $conn) {
+            $conn->close();
+        }
+        if (!$result || $result->num_rows === 0) {
+            return null;
+        }
+        $row = $result->fetch_assoc();
+        if (empty($row['min_start']) || empty($row['max_end'])) {
+            return null;
+        }
+        return ['start' => $row['min_start'], 'end' => $row['max_end']];
+    } catch (Exception $e) {
+        if ($own_conn && $conn) {
+            $conn->close();
+        }
+        return null;
+    }
 }
-$current_registration_stage = getCurrentRegistrationStage();
+
+/**
+ * 判斷當前報名階段
+ * 優先免試/聯合免試依月份；續招依「科系名額管理」設定的報名時間區間，設定什麼時候就是什麼階段。
+ * @param mysqli|null $conn 資料庫連線；就讀意願名單請傳入以與科系名額管理同步讀取 department_quotas
+ */
+function getCurrentRegistrationStage($conn = null) {
+    $current_month = (int)date('m');
+    // 續招：以 department_quota_management 設定的時間為準（與科系名額管理同一資料表）
+    $continued_range = getContinuedRecruitmentTimeRange($conn);
+    if ($continued_range) {
+        $tz = new DateTimeZone('Asia/Taipei');
+        $now = new DateTime('now', $tz);
+        try {
+            $start = new DateTime($continued_range['start'], $tz);
+            $end = new DateTime($continued_range['end'], $tz);
+            if ($now >= $start && $now <= $end) {
+                return 'continued_recruitment';
+            }
+        } catch (Exception $e) {
+            // 解析失敗則不視為續招期間
+        }
+    }
+    if ($current_month >= 5 && $current_month < 6) {
+        return 'priority_exam'; // 5月：優先免試
+    }
+    if ($current_month >= 6 && $current_month < 8) {
+        return 'joint_exam'; // 6-7月：聯合免試
+    }
+    return null; // 非報名期間（續招未在時間區間內時 8 月後也不自動變續招，以設定為準）
+}
+
 $stage_display_names = [
     'priority_exam' => '優先免試',
     'joint_exam' => '聯合免試',
     'continued_recruitment' => '續招'
 ];
-$current_stage_display = $current_registration_stage ? ($stage_display_names[$current_registration_stage] ?? '') : null;
+// 階段與顯示名稱先設為 null，在 try 區塊內用同一 $conn 查 department_quotas 後再設定（與科系名額管理同步）
+$current_registration_stage = null;
+$current_stage_display = null;
 $selected_academic_year = isset($_GET['year']) ? (int)$_GET['year'] : 0;
 
 // 國三分類下的「已提醒/未提醒」篩選（僅在有報名階段時有效）
@@ -306,11 +368,7 @@ if ($sortBy === 'grade') {
     $order_by = " ORDER BY $case_order $sortOrder, ei.created_at DESC";
 }
 
-// 已報名名單：最上面優先顯示「目前報名階段」註冊的學生
-if ($view_mode === 'registered' && $current_registration_stage) {
-    $reg_col = $current_registration_stage . '_registered';
-    $order_by = " ORDER BY IFNULL(ei.`$reg_col`,0) DESC," . substr($order_by, 9);
-}
+// 已報名名單的排序（依目前報名階段）改在 try 區塊內設定 $current_registration_stage 後再套用
 
 function getDynamicGradeText($grad_year, $static_grade_code, $options) {
     if (empty($grad_year)) {
@@ -436,6 +494,16 @@ function getCheckInStatusBadgeHtml($check_in_status) {
 
 try {
     $conn = getDatabaseConnection();
+
+    // 用同一連線從 department_quotas 取得續招時間，與科系名額管理設定同步
+    $current_registration_stage = getCurrentRegistrationStage($conn);
+    $current_stage_display = $current_registration_stage ? ($stage_display_names[$current_registration_stage] ?? '') : null;
+
+    // 已報名名單：最上面優先顯示「目前報名階段」註冊的學生
+    if ($view_mode === 'registered' && $current_registration_stage) {
+        $reg_col = $current_registration_stage . '_registered';
+        $order_by = " ORDER BY IFNULL(ei.`$reg_col`,0) DESC," . substr($order_by, 9);
+    }
 
     // 確保報名提醒相關欄位存在
     $registration_cols = [
@@ -826,6 +894,11 @@ try {
         .btn-view { padding: 4px 12px; border: 1px solid #1890ff; border-radius: 4px; cursor: pointer; font-size: 14px; text-decoration: none; display: inline-block; transition: all 0.3s; background: #fff; color: #1890ff; margin-right: 8px; }
         .btn-view:hover { background: #1890ff; color: white; }
         button.btn-view { font-family: inherit; }
+        /* 聯絡紀錄：查看＝outline 灰；新增＝實心青藍 */
+        .btn-contact-view { border: 1px solid #8c8c8c; color: #595959; background: #fff; }
+        .btn-contact-view:hover { background: #f5f5f5; color: #262626; border-color: #595959; }
+        .btn-contact-add { border: 1px solid #17a2b8; color: #fff; background: #17a2b8; }
+        .btn-contact-add:hover { background: #138496; border-color: #117a8b; color: #fff; }
         .search-input { padding: 8px 12px; border: 1px solid #d9d9d9; border-radius: 6px; font-size: 14px; width: 250px; }
         .search-input:focus { outline: none; border-color: #1890ff; box-shadow: 0 0 0 2px rgba(24,144,255,0.2); }
         .empty-state { text-align: center; padding: 40px; color: var(--text-secondary-color); }
@@ -893,7 +966,7 @@ try {
                             </div>
                             <div class="tabs-nav-right">
                                 <?php if (in_array($view_mode, ['recruit', 'registered']) && $current_stage_display): ?>
-                                    <div style="display: flex; align-items: center; gap: 12px; margin-right: 12px;">
+                                    <div style="display: flex; align-items: center; gap: 12px; margin-right: 12px;" data-has-current-stage="1">
                                         <div style="display: flex; align-items: center; gap: 8px; padding: 8px 16px; background: #e6f7ff; border: 1px solid #91d5ff; border-radius: 6px;">
                                             <i class="fas fa-calendar-alt" style="color: #1890ff;"></i>
                                             <span style="font-size: 14px; font-weight: 600; color: #1890ff;">
@@ -1149,22 +1222,28 @@ try {
                                                                 <i class="fas fa-user-plus"></i> 分配
                                                             </button>
                                                         <?php endif; ?>
-                                                        <button type="button" class="btn-view" style="border-color: #17a2b8; color: #17a2b8;"
+                                                        <?php if ($is_assigned_to_me): ?>
+                                                        <button type="button" class="btn-view btn-contact-add"
                                                             data-student-id="<?php echo (int)$item['id']; ?>"
                                                             data-student-name="<?php echo htmlspecialchars($item['name'] ?? '', ENT_QUOTES, 'UTF-8'); ?>"
                                                             data-assigned-teacher-id="<?php echo (int)($item['assigned_teacher_id'] ?? 0); ?>"
-                                                            onmouseover="this.style.background='#17a2b8'; this.style.color='white';"
-                                                            onmouseout="this.style.background='#fff'; this.style.color='#17a2b8';"
                                                             onclick="event.stopPropagation(); openContactLogsModal(this.dataset.studentId, this.dataset.studentName, this.dataset.assignedTeacherId)">
-                                                            <i class="fas fa-address-book"></i> <?php echo $is_assigned_to_me ? '新增聯絡紀錄' : '查看聯絡紀錄'; ?>
+                                                            <i class="fas fa-address-book"></i> 新增聯絡紀錄
                                                         </button>
-                                                    <?php elseif (!$is_admission_center && ($is_assigned_to_me || !$is_director)): ?>
-                                                        <button type="button" class="btn-view" style="border-color: #17a2b8; color: #17a2b8;"
+                                                        <?php else: ?>
+                                                        <button type="button" class="btn-view btn-contact-view"
                                                             data-student-id="<?php echo (int)$item['id']; ?>"
                                                             data-student-name="<?php echo htmlspecialchars($item['name'] ?? '', ENT_QUOTES, 'UTF-8'); ?>"
                                                             data-assigned-teacher-id="<?php echo (int)($item['assigned_teacher_id'] ?? 0); ?>"
-                                                            onmouseover="this.style.background='#17a2b8'; this.style.color='white';"
-                                                            onmouseout="this.style.background='#fff'; this.style.color='#17a2b8';"
+                                                            onclick="event.stopPropagation(); openContactLogsModal(this.dataset.studentId, this.dataset.studentName, this.dataset.assignedTeacherId)">
+                                                            <i class="fas fa-address-book"></i> 查看聯絡紀錄
+                                                        </button>
+                                                        <?php endif; ?>
+                                                    <?php elseif (!$is_admission_center && ($is_assigned_to_me || !$is_director)): ?>
+                                                        <button type="button" class="btn-view btn-contact-add"
+                                                            data-student-id="<?php echo (int)$item['id']; ?>"
+                                                            data-student-name="<?php echo htmlspecialchars($item['name'] ?? '', ENT_QUOTES, 'UTF-8'); ?>"
+                                                            data-assigned-teacher-id="<?php echo (int)($item['assigned_teacher_id'] ?? 0); ?>"
                                                             onclick="event.stopPropagation(); openContactLogsModal(this.dataset.studentId, this.dataset.studentName, this.dataset.assignedTeacherId)">
                                                             <i class="fas fa-address-book"></i> 新增聯絡紀錄
                                                         </button>
@@ -1254,22 +1333,28 @@ try {
                                                                 <i class="fas fa-user-plus"></i> 分配
                                                             </button>
                                                         <?php endif; ?>
-                                                        <button type="button" class="btn-view" style="border-color: #17a2b8; color: #17a2b8;"
+                                                        <?php if ($is_assigned_to_me): ?>
+                                                        <button type="button" class="btn-view btn-contact-add"
                                                             data-student-id="<?php echo (int)$item['id']; ?>"
                                                             data-student-name="<?php echo htmlspecialchars($item['name'] ?? '', ENT_QUOTES, 'UTF-8'); ?>"
                                                             data-assigned-teacher-id="<?php echo (int)($item['assigned_teacher_id'] ?? 0); ?>"
-                                                            onmouseover="this.style.background='#17a2b8'; this.style.color='white';"
-                                                            onmouseout="this.style.background='#fff'; this.style.color='#17a2b8';"
                                                             onclick="event.stopPropagation(); openContactLogsModal(this.dataset.studentId, this.dataset.studentName, this.dataset.assignedTeacherId)">
-                                                            <i class="fas fa-address-book"></i> <?php echo $is_assigned_to_me ? '新增聯絡紀錄' : '查看聯絡紀錄'; ?>
+                                                            <i class="fas fa-address-book"></i> 新增聯絡紀錄
                                                         </button>
-                                                    <?php elseif (!$is_admission_center && ($is_assigned_to_me || !$is_director)): ?>
-                                                        <button type="button" class="btn-view" style="border-color: #17a2b8; color: #17a2b8;"
+                                                        <?php else: ?>
+                                                        <button type="button" class="btn-view btn-contact-view"
                                                             data-student-id="<?php echo (int)$item['id']; ?>"
                                                             data-student-name="<?php echo htmlspecialchars($item['name'] ?? '', ENT_QUOTES, 'UTF-8'); ?>"
                                                             data-assigned-teacher-id="<?php echo (int)($item['assigned_teacher_id'] ?? 0); ?>"
-                                                            onmouseover="this.style.background='#17a2b8'; this.style.color='white';"
-                                                            onmouseout="this.style.background='#fff'; this.style.color='#17a2b8';"
+                                                            onclick="event.stopPropagation(); openContactLogsModal(this.dataset.studentId, this.dataset.studentName, this.dataset.assignedTeacherId)">
+                                                            <i class="fas fa-address-book"></i> 查看聯絡紀錄
+                                                        </button>
+                                                        <?php endif; ?>
+                                                    <?php elseif (!$is_admission_center && ($is_assigned_to_me || !$is_director)): ?>
+                                                        <button type="button" class="btn-view btn-contact-add"
+                                                            data-student-id="<?php echo (int)$item['id']; ?>"
+                                                            data-student-name="<?php echo htmlspecialchars($item['name'] ?? '', ENT_QUOTES, 'UTF-8'); ?>"
+                                                            data-assigned-teacher-id="<?php echo (int)($item['assigned_teacher_id'] ?? 0); ?>"
                                                             onclick="event.stopPropagation(); openContactLogsModal(this.dataset.studentId, this.dataset.studentName, this.dataset.assignedTeacherId)">
                                                             <i class="fas fa-address-book"></i> 新增聯絡紀錄
                                                         </button>
@@ -1487,6 +1572,11 @@ try {
             
             // 初始化分頁
             initPagination();
+
+            // 自動檢查：有當前報名階段時，背景觸發一次（本階段只發送一次，不需排程）
+            if (document.querySelector('[data-has-current-stage="1"]')) {
+                fetch('send_registration_stage_reminders_trigger.php', { method: 'GET', credentials: 'same-origin' }).catch(function() {});
+            }
         });
 
         // 分頁相關變數
