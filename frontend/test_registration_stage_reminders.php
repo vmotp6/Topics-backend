@@ -99,8 +99,13 @@ if (empty(SMTP_USERNAME) || empty(SMTP_PASSWORD) || empty(SMTP_FROM_EMAIL)) {
 echo "✅ SMTP 設定完整\n";
 echo "   發送者：". SMTP_FROM_NAME . " <" . SMTP_FROM_EMAIL . ">\n\n";
 
-// 決定測試階段
-$current_stage = $test_stage ?: getCurrentRegistrationStage();
+// 決定測試階段（續招依科系名額管理設定；未指定時需連線取得階段）
+$current_stage = $test_stage;
+if (!$current_stage) {
+    $conn_temp = getDatabaseConnection();
+    $current_stage = getCurrentRegistrationStage($conn_temp);
+    $conn_temp->close();
+}
 $stage_names = [
     'priority_exam' => '優先免試',
     'joint_exam' => '聯合免試',
