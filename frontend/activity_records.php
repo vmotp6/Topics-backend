@@ -371,20 +371,27 @@ if ($teacher_id > 0) {
                 $school_summary[$school_code] = [
                     'school_code' => $school_code,
                     'school_name' => $school_name,
+                    // 教師活動紀錄（主觀評分）
                     'total_activities' => 0,
-                    'feedback_score_sum' => 0,
-                    'feedback_count' => [
-                        '冷淡' => 0,
+                    'feedback_score_sum' => 0,        // 分數加總（每筆活動依回饋選項換算 3/2/1 後取平均）
+                    'feedback_scored_count' => 0,     // 有填主觀評分的活動次數
+                    'feedback_avg' => 0,              // 主觀評分平均（僅計入有評分者）
+                    'feedback_count' => [             // 各評分類型次數（依平均分數換算等級）
+                        '意願較低' => 0,
                         '普通' => 0,
                         '熱烈' => 0,
-                        '其他' => 0
+                        '未評分' => 0,
                     ],
                     'grade_semester' => [
-                        '國二上' => ['count' => 0, 'feedback' => ['冷淡' => 0, '普通' => 0, '熱烈' => 0, '其他' => 0]],
-                        '國二下' => ['count' => 0, 'feedback' => ['冷淡' => 0, '普通' => 0, '熱烈' => 0, '其他' => 0]],
-                        '國三上' => ['count' => 0, 'feedback' => ['冷淡' => 0, '普通' => 0, '熱烈' => 0, '其他' => 0]],
-                        '其他' => ['count' => 0, 'feedback' => ['冷淡' => 0, '普通' => 0, '熱烈' => 0, '其他' => 0]]
+                        '國二上' => ['count' => 0, 'feedback' => ['意願較低' => 0, '普通' => 0, '熱烈' => 0, '未評分' => 0]],
+                        '國二下' => ['count' => 0, 'feedback' => ['意願較低' => 0, '普通' => 0, '熱烈' => 0, '未評分' => 0]],
+                        '國三上' => ['count' => 0, 'feedback' => ['意願較低' => 0, '普通' => 0, '熱烈' => 0, '未評分' => 0]],
+                        '其他' => ['count' => 0, 'feedback' => ['意願較低' => 0, '普通' => 0, '熱烈' => 0, '未評分' => 0]]
                     ],
+                    // 入學說明會場次（客觀數字）
+                    'session_registered_count' => 0, // 報名人次
+                    'session_attended_count' => 0,   // 出席人次（attendance_status=1）
+                    'heat_index' => 0,               // 熱度指數（用於排序）
                     'departments' => [], // 記錄該學校有哪些科系參與
                     'dept_counts' => [], // 參與科系 × 學校矩陣用
                     'last_teacher_name' => '',
@@ -413,45 +420,58 @@ if ($teacher_id > 0) {
             }
             $school_summary[$school_code]['dept_counts'][$dept_name]++;
             
-            // 讀取活動回饋
+            // 讀取活動回饋（教師主觀評分）：依選項換算 3/2/1 後取平均，系統只做數值計算
             $feedback_sql = "SELECT afo.option 
                             FROM activity_feedback af
                             LEFT JOIN activity_feedback_options afo ON af.option_id = afo.id
                             WHERE af.activity_id = ?
                             ORDER BY af.option_id";
             $feedback_stmt = $conn->prepare($feedback_sql);
-            $current_activity_feedback = '其他'; // 預設值
+            $current_activity_feedback = '未評分';
+            $activity_score = null; // 單筆活動分數（1~3），由回饋選項計算
             if ($feedback_stmt) {
                 $feedback_stmt->bind_param("i", $activity_id);
                 $feedback_stmt->execute();
                 $feedback_result = $feedback_stmt->get_result();
-                $has_feedback = false;
+                $options = [];
                 while ($f_row = $feedback_result->fetch_assoc()) {
                     if (!empty($f_row['option'])) {
-                        $has_feedback = true;
-                        $feedback_option = $f_row['option'];
-                        
-                        // 判斷回饋類型（優先順序：熱烈 > 冷淡 > 普通）
-                        if (strpos($feedback_option, '熱烈') !== false || strpos($feedback_option, '熱') !== false || strpos($feedback_option, '積極') !== false) {
-                            $current_activity_feedback = '熱烈';
-                            break; // 找到熱烈就停止
-                        } elseif (strpos($feedback_option, '冷淡') !== false || strpos($feedback_option, '冷') !== false) {
-                            $current_activity_feedback = '冷淡';
-                            // 繼續檢查是否有熱烈
-                        } elseif (strpos($feedback_option, '普通') !== false || strpos($feedback_option, '一般') !== false) {
-                            if ($current_activity_feedback == '其他') {
-                                $current_activity_feedback = '普通';
-                            }
-                        }
+                        $options[] = trim((string)$f_row['option']);
                     }
                 }
                 $feedback_stmt->close();
+
+                // 主觀評分對照（同時相容舊選項：熱烈/普通/冷淡）
+                // 反應熱絡=3、詢問度高=2、反應冷淡=1
+                $score_map_labels = [
+                    3 => ['反應熱絡', '熱烈'],
+                    2 => ['詢問度高', '普通'],
+                    1 => ['反應冷淡', '冷淡'],
+                ];
+                $scores = [];
+                foreach ($options as $opt) {
+                    foreach ($score_map_labels as $s => $labels) {
+                        if (in_array($opt, $labels, true)) {
+                            $scores[] = (int)$s;
+                            break;
+                        }
+                    }
+                }
+                if (!empty($scores)) {
+                    $activity_score = array_sum($scores) / count($scores);
+                    // 依平均分數換算等級（門檻可再依需求微調）
+                    if ($activity_score >= 2.5) $current_activity_feedback = '熱烈';
+                    elseif ($activity_score >= 1.5) $current_activity_feedback = '普通';
+                    else $current_activity_feedback = '意願較低';
+                }
             }
             
             // 累加該活動的回饋
             $school_summary[$school_code]['feedback_count'][$current_activity_feedback]++;
-            $score_map = ['熱烈' => 3, '普通' => 2, '冷淡' => 1, '其他' => 0];
-            $school_summary[$school_code]['feedback_score_sum'] += $score_map[$current_activity_feedback] ?? 0;
+            if ($activity_score !== null) {
+                $school_summary[$school_code]['feedback_score_sum'] += $activity_score;
+                $school_summary[$school_code]['feedback_scored_count']++;
+            }
             
             // 讀取參與對象（判斷年級和學期）
             $participants_sql = "SELECT io.name, io.code
@@ -501,8 +521,8 @@ if ($teacher_id > 0) {
                 if (isset($school_summary[$school_code]['grade_semester'][$grade_semester_key]['feedback'][$current_activity_feedback])) {
                     $school_summary[$school_code]['grade_semester'][$grade_semester_key]['feedback'][$current_activity_feedback]++;
                 } else {
-                    // 如果回饋類型不存在，使用 '其他'
-                    $school_summary[$school_code]['grade_semester'][$grade_semester_key]['feedback']['其他']++;
+                    // 如果回饋類型不存在，視為未評分
+                    $school_summary[$school_code]['grade_semester'][$grade_semester_key]['feedback']['未評分']++;
                 }
             }
 
@@ -518,6 +538,7 @@ if ($teacher_id > 0) {
                     'activity_date' => $activity_date,
                     'created_at' => $created_at,
                     'feedback' => $current_activity_feedback,
+                    'score' => $activity_score,
                     'grade_semester' => $grade_semester_key,
                     'department' => $dept_name,
                 ];
@@ -532,44 +553,102 @@ if ($teacher_id > 0) {
         if (isset($school_summary_stmt)) {
             $school_summary_stmt->close();
         }
-        
-        // 計算每個學校的評級（A/B/C級）
-        foreach ($school_summary as &$school) {
-            $total_feedback = array_sum($school['feedback_count']);
-            if ($total_feedback > 0) {
-                $hot_ratio = $school['feedback_count']['熱烈'] / $total_feedback;
-                $cold_ratio = $school['feedback_count']['冷淡'] / $total_feedback;
-                
-                // A級：熱烈回饋 >= 50% 或 熱烈 > 冷淡
-                // B級：普通回饋為主 或 熱烈和冷淡比例相近
-                // C級：冷淡回饋 >= 50% 或 冷淡 > 熱烈
-                if ($hot_ratio >= 0.5 || ($school['feedback_count']['熱烈'] > $school['feedback_count']['冷淡'] && $school['feedback_count']['熱烈'] > 0)) {
-                    $school['rating'] = 'A';
-                    $school['rating_text'] = '互動好、值得每年固定經營';
-                } elseif ($cold_ratio >= 0.5 || ($school['feedback_count']['冷淡'] > $school['feedback_count']['熱烈'] && $school['feedback_count']['冷淡'] > 0)) {
-                    $school['rating'] = 'C';
-                    $school['rating_text'] = '可以降低投入或更換策略';
-                } else {
-                    $school['rating'] = 'B';
-                    $school['rating_text'] = '要調整活動方式';
-                }
-            } else {
-                $school['rating'] = 'B';
-                $school['rating_text'] = '要調整活動方式';
-            }
-        }
-        unset($school);
     }
     // ===== 依學校彙整活動紀錄結束 =====
+
+    // 整合入學說明會場次（報名/出席）到同一份「依學校」彙整中（招生中心=全校；主任=本科系）
+    try {
+        $has_session_dept_col = false;
+        $col_check = @$conn->query("SHOW COLUMNS FROM admission_sessions LIKE 'department_id'");
+        if ($col_check && $col_check->num_rows > 0) $has_session_dept_col = true;
+
+        $session_sql = "
+            SELECT
+                aa.school AS school_code,
+                COALESCE(sd.name, aa.school) AS school_name,
+                COUNT(*) AS registered_count,
+                SUM(CASE WHEN ar.attendance_status = 1 THEN 1 ELSE 0 END) AS attended_count
+            FROM admission_applications aa
+            INNER JOIN admission_sessions s ON aa.session_id = s.id
+            LEFT JOIN attendance_records ar ON ar.application_id = aa.id AND ar.session_id = s.id
+            LEFT JOIN school_data sd ON aa.school = sd.school_code
+            WHERE s.session_date >= ? AND s.session_date <= ?
+        ";
+        // 主任（科系層級）：只看自己科系場次；招生中心（全校層級）：看全部場次
+        if ($has_session_dept_col && $is_director && !$is_stam && $user_department_code) {
+            $session_sql .= " AND s.department_id = ? ";
+        }
+        $session_sql .= " GROUP BY aa.school, sd.name ORDER BY attended_count DESC, registered_count DESC";
+
+        $stmt_sess = $conn->prepare($session_sql);
+        if ($stmt_sess) {
+            if ($has_session_dept_col && $is_director && !$is_stam && $user_department_code) {
+                $stmt_sess->bind_param("sss", $academic_year_start, $academic_year_end, $user_department_code);
+            } else {
+                $stmt_sess->bind_param("ss", $academic_year_start, $academic_year_end);
+            }
+            $stmt_sess->execute();
+            $rs_sess = $stmt_sess->get_result();
+            if ($rs_sess) {
+                while ($row = $rs_sess->fetch_assoc()) {
+                    $sc = (string)($row['school_code'] ?? '');
+                    if ($sc === '') $sc = '未設定學校';
+                    $sn = (string)($row['school_name'] ?? $sc);
+                    if (!isset($school_summary[$sc])) {
+                        // 若只有說明會資料但沒有教師活動紀錄，也要納入排序清單
+                        $school_summary[$sc] = [
+                            'school_code' => $sc,
+                            'school_name' => $sn,
+                            'total_activities' => 0,
+                            'feedback_score_sum' => 0,
+                            'feedback_scored_count' => 0,
+                            'feedback_avg' => 0,
+                            'feedback_count' => ['意願較低' => 0, '普通' => 0, '熱烈' => 0, '未評分' => 0],
+                            'grade_semester' => [
+                                '國二上' => ['count' => 0, 'feedback' => ['意願較低' => 0, '普通' => 0, '熱烈' => 0, '未評分' => 0]],
+                                '國二下' => ['count' => 0, 'feedback' => ['意願較低' => 0, '普通' => 0, '熱烈' => 0, '未評分' => 0]],
+                                '國三上' => ['count' => 0, 'feedback' => ['意願較低' => 0, '普通' => 0, '熱烈' => 0, '未評分' => 0]],
+                                '其他' => ['count' => 0, 'feedback' => ['意願較低' => 0, '普通' => 0, '熱烈' => 0, '未評分' => 0]],
+                            ],
+                            'session_registered_count' => 0,
+                            'session_attended_count' => 0,
+                            'heat_index' => 0,
+                            'departments' => [],
+                            'dept_counts' => [],
+                            'last_teacher_name' => '',
+                            'last_created_at' => '',
+                            'records' => [],
+                        ];
+                    }
+                    $school_summary[$sc]['session_registered_count'] = (int)($row['registered_count'] ?? 0);
+                    $school_summary[$sc]['session_attended_count'] = (int)($row['attended_count'] ?? 0);
+                }
+            }
+            $stmt_sess->close();
+        }
+    } catch (Throwable $e) {
+        error_log('整合入學說明會（依學校）統計失敗: ' . $e->getMessage());
+    }
+
+    // 最終計算：平均分數 + 熱度指數（用於排序，不做 A/B/C 自動判斷）
+    foreach ($school_summary as &$school) {
+        $scored = (int)($school['feedback_scored_count'] ?? 0);
+        $sum = (float)($school['feedback_score_sum'] ?? 0);
+        $school['feedback_avg'] = ($scored > 0) ? round($sum / $scored, 2) : 0;
+        // 熱度指數：教師主觀分數加總 + 說明會出席人次（加分關係；可再依需求調整權重）
+        $school['heat_index'] = round($sum + (int)($school['session_attended_count'] ?? 0), 2);
+    }
+    unset($school);
 
     // 轉成排序後的列表（給表格與圖表用）
     $school_summary_list = array_values($school_summary);
     usort($school_summary_list, function($a, $b) {
-        $rating_order = ['A' => 1, 'B' => 2, 'C' => 3];
-        $a_rating = $rating_order[$a['rating'] ?? ''] ?? 4;
-        $b_rating = $rating_order[$b['rating'] ?? ''] ?? 4;
-        if ($a_rating !== $b_rating) return $a_rating - $b_rating;
-        return ($b['total_activities'] ?? 0) <=> ($a['total_activities'] ?? 0);
+        // 依「熱度指數」排序（高到低），再依說明會出席、教師活動次數做次排序
+        $cmp = ((int)($b['heat_index'] ?? 0)) <=> ((int)($a['heat_index'] ?? 0));
+        if ($cmp !== 0) return $cmp;
+        $cmp2 = ((int)($b['session_attended_count'] ?? 0)) <=> ((int)($a['session_attended_count'] ?? 0));
+        if ($cmp2 !== 0) return $cmp2;
+        return ((int)($b['total_activities'] ?? 0)) <=> ((int)($a['total_activities'] ?? 0));
     });
     
     // 獲取出席記錄數據（用於出席統計圖表）- 從 admission_sessions 表抓取所有入學說明會場次
@@ -974,6 +1053,37 @@ if ($teacher_id > 0) {
         }
     } catch (Exception $e) {
         error_log('查詢新生基本資料統計失敗: ' . $e->getMessage());
+    }
+
+    // 將「本屆新生入學」(new_student_basic_info) 合併回依學校彙整清單：
+    // - 招生中心（全校層級）：看該國中來本校的人數（全校）
+    // - 科主任（科系層級）：看該國中來「本科系」的人數
+    $new_students_total_by_school = [];
+    $new_students_by_school_dept = [];
+    if (!empty($new_student_school_stats) && is_array($new_student_school_stats)) {
+        foreach ($new_student_school_stats as $srow) {
+            $sc = (string)($srow['school_code'] ?? '');
+            if ($sc === '') continue;
+            $new_students_total_by_school[$sc] = (int)($srow['student_count'] ?? 0);
+            $dept_list = $srow['departments'] ?? [];
+            if (is_array($dept_list)) {
+                foreach ($dept_list as $drow) {
+                    $dept_id = (string)($drow['department_id'] ?? '');
+                    if ($dept_id === '') continue;
+                    $new_students_by_school_dept[$sc][$dept_id] = (int)($drow['student_count'] ?? 0);
+                }
+            }
+        }
+    }
+    if (!empty($school_summary_list) && is_array($school_summary_list)) {
+        foreach ($school_summary_list as &$sitem) {
+            $sc = (string)($sitem['school_code'] ?? '');
+            $sitem['new_students_total'] = $new_students_total_by_school[$sc] ?? 0;
+            $sitem['new_students_dept'] = ($is_director && !$is_stam && !empty($user_department_code))
+                ? (($new_students_by_school_dept[$sc][$user_department_code] ?? 0))
+                : 0;
+        }
+        unset($sitem);
     }
 
     if ($result) {
@@ -1666,18 +1776,18 @@ $conn->close();
                         </h4>
                         <?php if ($is_staff): ?>
                         <p style="color: #666; font-size: 14px; margin-bottom: 15px;">
-                            <i class="fas fa-info-circle"></i> 招生中心視圖：顯示各科基本統計資料
+                            <i class="fas fa-info-circle"></i> 招生中心視圖（全校層級）：整合教師活動主觀評分 + 入學說明會（報名/出席）數值
                         </p>
                         <?php elseif ($is_director): ?>
                         <p style="color: #666; font-size: 14px; margin-bottom: 15px;">
-                            <i class="fas fa-info-circle"></i> 主任視圖：顯示本科詳細統計資料
+                            <i class="fas fa-info-circle"></i> 主任視圖（科系層級）：只看本科教師活動 + 本科說明會場次（department_id）
                         </p>
                         <?php endif; ?>
                         
                         <?php if (!empty($school_summary_list)): ?>
                             <div style="display:flex; gap:10px; flex-wrap:wrap; margin-bottom: 14px;">
                                 <button type="button" class="btn-view" id="btnSchoolViewHeatmap" onclick="showSchoolView('heatmap')">
-                                    1️⃣ 學校 × 評級（色階表格）
+                                    1️⃣ 學校 × 熱度（排序表格）
                                 </button>
                                 <button type="button" class="btn-view" id="btnSchoolViewFeedback" onclick="showSchoolView('feedback')">
                                     2️⃣ 學校別活動回饋（長條圖）
@@ -1700,11 +1810,14 @@ $conn->close();
                                         <thead>
                                             <tr>
                                                 <th>學校名稱</th>
-                                                <th style="text-align: center;">活動次數</th>
-                                                <th style="text-align: center;">活動回饋</th>
-                                                <th style="text-align: center;">評級</th>
+                                                <th style="text-align: center;">教師活動</th>
+                                                <th style="text-align: center;">教師主觀評分</th>
+                                                <th style="text-align: center;">入學說明會</th>
+                                                <th style="text-align: center;">
+                                                    本屆入學<?php echo ($is_director && !$is_stam) ? '(本科)' : '(全校)'; ?>
+                                                </th>
+                                                <th style="text-align: center;">熱度指數</th>
                                                 <?php if ($is_director): // 主任顯示詳細資訊 ?>
-                                                <th style="text-align: center;">總結</th>
                                                 <th style="text-align: center;">年級學期分析</th>
                                                 <th style="text-align: center;">老師</th>
                                                 <th style="text-align: center;">填寫日期</th>
@@ -1716,56 +1829,64 @@ $conn->close();
                                         <tbody>
                                             <?php foreach ($school_summary_list as $school):
                                                 $feedback_display = [];
-                                                if ($school['feedback_count']['熱烈'] > 0) {
-                                                    $feedback_display[] = '熱烈: ' . $school['feedback_count']['熱烈'];
-                                                }
-                                                if ($school['feedback_count']['普通'] > 0) {
-                                                    $feedback_display[] = '普通: ' . $school['feedback_count']['普通'];
-                                                }
-                                                if ($school['feedback_count']['冷淡'] > 0) {
-                                                    $feedback_display[] = '冷淡: ' . $school['feedback_count']['冷淡'];
-                                                }
-                                                if (empty($feedback_display)) {
-                                                    $feedback_display[] = '無回饋資料';
-                                                }
-                                                
-                                                $rating_class = '';
-                                                $rating_color = '';
-                                                if ($school['rating'] == 'A') {
-                                                    $rating_class = 'badge-success';
-                                                    $rating_color = '#28a745';
-                                                } elseif ($school['rating'] == 'B') {
-                                                    $rating_class = 'badge-secondary';
-                                                    $rating_color = '#ffc107';
-                                                } else {
-                                                    $rating_class = 'badge-secondary';
-                                                    $rating_color = '#dc3545';
-                                                }
+                                                if (($school['feedback_count']['熱烈'] ?? 0) > 0) $feedback_display[] = '熱烈: ' . (int)$school['feedback_count']['熱烈'];
+                                                if (($school['feedback_count']['普通'] ?? 0) > 0) $feedback_display[] = '普通: ' . (int)$school['feedback_count']['普通'];
+                                                if (($school['feedback_count']['意願較低'] ?? 0) > 0) $feedback_display[] = '意願較低: ' . (int)$school['feedback_count']['意願較低'];
+                                                if (($school['feedback_count']['未評分'] ?? 0) > 0) $feedback_display[] = '未評分: ' . (int)$school['feedback_count']['未評分'];
+                                                if (empty($feedback_display)) $feedback_display[] = '—';
+                                                // 教師主觀評分：取整數後轉文字與顏色（3=熱烈, 2=普通, 1=意願較低, 0=未評分）
+                                                $feedback_avg_val = (float)($school['feedback_avg'] ?? 0);
+                                                $feedback_avg_int = (int)round($feedback_avg_val);
+                                                $feedback_level_map = [3 => ['text' => '熱烈', 'color' => '#28a745'], 2 => ['text' => '普通', 'color' => '#17a2b8'], 1 => ['text' => '意願較低', 'color' => '#fd7e14'], 0 => ['text' => '未評分', 'color' => '#6c757d']];
+                                                $feedback_level = $feedback_level_map[$feedback_avg_int] ?? $feedback_level_map[0];
+                                                // 熱度指數：取整數後依區間轉文字與顏色（>=8 熱烈, 4~7 普通, 1~3 意願較低, 0 冷淡）
+                                                $heat_val = (float)($school['heat_index'] ?? 0);
+                                                $heat_int = (int)round($heat_val);
+                                                if ($heat_int >= 8) { $heat_level = ['text' => '熱烈', 'color' => '#28a745']; }
+                                                elseif ($heat_int >= 4) { $heat_level = ['text' => '普通', 'color' => '#17a2b8']; }
+                                                elseif ($heat_int >= 1) { $heat_level = ['text' => '意願較低', 'color' => '#fd7e14']; }
+                                                else { $heat_level = ['text' => '冷淡', 'color' => '#6c757d']; }
                                             ?>
                                             <?php
                                                 $__schoolRowKey = preg_replace('/[^a-zA-Z0-9_-]/', '_', (string)($school['school_code'] ?? $school['school_name'] ?? 'school'));
                                                 $__schoolDetailId = 'school-detail-' . $__schoolRowKey;
-                                                $__rowBg = ($school['rating'] == 'A')
-                                                    ? 'rgba(40,167,69,0.08)'
-                                                    : (($school['rating'] == 'B') ? 'rgba(255,193,7,0.12)' : 'rgba(220,53,69,0.08)');
+                                                $__rowBg = 'rgba(102,126,234,0.06)';
                                             ?>
                                             <tr style="background: <?php echo $__rowBg; ?>;">
                                                 <td><strong><?php echo htmlspecialchars($school['school_name']); ?></strong></td>
                                                 <td style="text-align: center;">
-                                                    <span class="badge badge-success"><?php echo $school['total_activities']; ?></span>
+                                                    <div>
+                                                        <span class="badge badge-success"><?php echo (int)($school['total_activities'] ?? 0); ?></span>
+                                                    </div>
                                                 </td>
                                                 <td style="text-align: center;">
-                                                    <?php echo implode(' / ', $feedback_display); ?>
+                                                    <div style="font-size: 12px; line-height: 1.35;">
+                                                        <div><?php echo implode(' / ', $feedback_display); ?></div>
+                                                        <div style="color:#666; margin-top:4px;">
+                                                            平均：<strong style="color:<?php echo $feedback_level['color']; ?>;"><?php echo htmlspecialchars($feedback_level['text']); ?></strong>
+                                                            <span style="font-size:11px;">（<?php echo (int)$feedback_avg_int; ?> 分，計分 <?php echo (int)($school['feedback_scored_count'] ?? 0); ?> 次）</span>
+                                                        </div>
+                                                    </div>
                                                 </td>
                                                 <td style="text-align: center;">
-                                                    <span class="badge <?php echo $rating_class; ?>" style="background-color: <?php echo $rating_color; ?>;">
-                                                        <?php echo $school['rating']; ?> 級
-                                                    </span>
+                                                    <div style="font-size: 12px; line-height: 1.35;">
+                                                        報名：<strong><?php echo (int)($school['session_registered_count'] ?? 0); ?></strong><br>
+                                                        出席：<strong><?php echo (int)($school['session_attended_count'] ?? 0); ?></strong>
+                                                    </div>
+                                                </td>
+                                                <td style="text-align: center;">
+                                                    <?php
+                                                        $incoming = ($is_director && !$is_stam && !empty($user_department_code))
+                                                            ? (int)($school['new_students_dept'] ?? 0)
+                                                            : (int)($school['new_students_total'] ?? 0);
+                                                    ?>
+                                                    <?php echo $incoming; ?>
+                                                </td>
+                                                <td style="text-align: center; max-width: 200px;">
+                                                    <strong style="color:<?php echo $heat_level['color']; ?>;"><?php echo htmlspecialchars($heat_level['text']); ?></strong>
+                                                    <span style="font-size:11px; color:#666;">（<?php echo $heat_int; ?>）</span>
                                                 </td>
                                                 <?php if ($is_director): // 主任顯示詳細資訊 ?>
-                                                <td style="text-align: center; max-width: 200px;">
-                                                    <small><?php echo htmlspecialchars($school['rating_text']); ?></small>
-                                                </td>
                                                 <td style="text-align: center;">
                                                     <div style="font-size: 12px;">
                                                         <?php if ($school['grade_semester']['國二上']['count'] > 0): ?>
@@ -1774,7 +1895,8 @@ $conn->close();
                                                                 $g2u_feedback = [];
                                                                 if ($school['grade_semester']['國二上']['feedback']['熱烈'] > 0) $g2u_feedback[] = '熱烈';
                                                                 if ($school['grade_semester']['國二上']['feedback']['普通'] > 0) $g2u_feedback[] = '普通';
-                                                                if ($school['grade_semester']['國二上']['feedback']['冷淡'] > 0) $g2u_feedback[] = '冷淡';
+                                                                if ($school['grade_semester']['國二上']['feedback']['意願較低'] > 0) $g2u_feedback[] = '意願較低';
+                                                                if ($school['grade_semester']['國二上']['feedback']['未評分'] > 0) $g2u_feedback[] = '未評分';
                                                                 if (!empty($g2u_feedback)) echo ' (' . implode('/', $g2u_feedback) . ')';
                                                                 ?>
                                                             </div>
@@ -1785,7 +1907,8 @@ $conn->close();
                                                                 $g2d_feedback = [];
                                                                 if ($school['grade_semester']['國二下']['feedback']['熱烈'] > 0) $g2d_feedback[] = '熱烈';
                                                                 if ($school['grade_semester']['國二下']['feedback']['普通'] > 0) $g2d_feedback[] = '普通';
-                                                                if ($school['grade_semester']['國二下']['feedback']['冷淡'] > 0) $g2d_feedback[] = '冷淡';
+                                                                if ($school['grade_semester']['國二下']['feedback']['意願較低'] > 0) $g2d_feedback[] = '意願較低';
+                                                                if ($school['grade_semester']['國二下']['feedback']['未評分'] > 0) $g2d_feedback[] = '未評分';
                                                                 if (!empty($g2d_feedback)) echo ' (' . implode('/', $g2d_feedback) . ')';
                                                                 ?>
                                                             </div>
@@ -1796,7 +1919,8 @@ $conn->close();
                                                                 $g3u_feedback = [];
                                                                 if ($school['grade_semester']['國三上']['feedback']['熱烈'] > 0) $g3u_feedback[] = '熱烈';
                                                                 if ($school['grade_semester']['國三上']['feedback']['普通'] > 0) $g3u_feedback[] = '普通';
-                                                                if ($school['grade_semester']['國三上']['feedback']['冷淡'] > 0) $g3u_feedback[] = '冷淡';
+                                                                if ($school['grade_semester']['國三上']['feedback']['意願較低'] > 0) $g3u_feedback[] = '意願較低';
+                                                                if ($school['grade_semester']['國三上']['feedback']['未評分'] > 0) $g3u_feedback[] = '未評分';
                                                                 if (!empty($g3u_feedback)) echo ' (' . implode('/', $g3u_feedback) . ')';
                                                                 ?>
                                                             </div>
@@ -1830,7 +1954,7 @@ $conn->close();
                                             </tr>
                                             <?php if ($is_director): ?>
                                             <tr id="<?php echo htmlspecialchars($__schoolDetailId, ENT_QUOTES, 'UTF-8'); ?>" style="display: none;">
-                                                <td colspan="10" style="padding: 16px; background: #fafafa; border-top: 1px solid #eee;">
+                                                <td colspan="11" style="padding: 16px; background: #fafafa; border-top: 1px solid #eee;">
                                                     <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:10px;">
                                                         <div style="font-weight: 600; color: #333;">
                                                             <?php echo htmlspecialchars($school['school_name']); ?>：教師填寫明細

@@ -278,10 +278,12 @@ $registrations = $registrations_result->fetch_all(MYSQLI_ASSOC);
 $stmt->close();
 
 // 計算每個學生的意願度分數
+// 條件：有報名 +1、有簽到 +3、實體場 +2、參加 2 場以上 +2、曾參加本校社團活動 +1、曾參加本校技藝班 +1
+// 等級：總分 ≥6 高意願（綠）、4–5 中意願（橙）、≤3 低意願（紅）
 foreach ($registrations as &$reg) {
     $score = 0;
     
-    // 1. 有報名：+1
+    // 1. 有報名活動：+1
     $score += 1;
     
     // 2. 有簽到：+3
@@ -294,7 +296,7 @@ foreach ($registrations as &$reg) {
         $score += 2;
     }
     
-    // 4. 參加 2 場以上：+2（需要查詢該學生報名的場次數，使用 email 或電話匹配）
+    // 4. 參加 2 場以上：+2（使用 email 或電話匹配同年度報名場次數）
     $email = $reg['email'] ?? '';
     $phone = $reg['contact_phone'] ?? '';
     if (!empty($email) || !empty($phone)) {
@@ -317,23 +319,17 @@ foreach ($registrations as &$reg) {
         }
     }
     
-    // 5. 有選科系：+1
-    if (!empty($reg['course_priority_1']) || !empty($reg['course_priority_2'])) {
+    // 5. 曾參加本校社團活動（joined_club_activity = 1）：+1
+    if (!empty($reg['joined_club_activity'])) {
         $score += 1;
     }
     
-    // 6. 國三生：+1
-    $grade_text = $reg['grade'] ?? '';
-    $grade_code = $reg['grade_code'] ?? '';
-    if (strpos($grade_text, '國三') !== false || 
-        preg_match('/\b3\b/', $grade_text) || 
-        strpos($grade_code, 'G3') !== false || 
-        $grade_code === '3' ||
-        preg_match('/\b3\b/', $grade_code)) {
+    // 6. 曾參加本校技藝班（attended_skill_class = 1）：+1
+    if (!empty($reg['attended_skill_class'])) {
         $score += 1;
     }
     
-    // 判斷意願度等級
+    // 判斷意願度等級：總分 ≥6 高意願、4–5 中意願、≤3 低意願
     if ($score >= 6) {
         $reg['willingness_level'] = '高意願';
         $reg['willingness_score'] = $score;
@@ -388,6 +384,187 @@ usort($registrations, function($a, $b) {
     // 最後按姓名排序
     return strcmp($a['student_name'], $b['student_name']);
 });
+
+// 自動寫入就讀意願名單：只要是「高意願」就寫入 enrollment_intention（同一請求、同一 DB，與畫面上意願度一致）
+$enrollment_intention_written = 0;   // 新增筆數
+$enrollment_intention_updated = 0;   // 已存在而更新筆數（email/電話重複）
+$enrollment_intention_errors = [];   // 寫入失敗原因，供提示
+$tbl_ei = $conn->query("SHOW TABLES LIKE 'enrollment_intention'");
+if ($tbl_ei && $tbl_ei->num_rows > 0) {
+    $cols_ei = ['assigned_department' => "VARCHAR(50) NULL", 'graduation_year' => "INT NULL", 'intention_level' => "VARCHAR(20) DEFAULT NULL", 'follow_up_status' => "VARCHAR(30) DEFAULT 'tracking'"];
+    foreach ($cols_ei as $col => $def) {
+        $r = @$conn->query("SHOW COLUMNS FROM enrollment_intention LIKE '" . $conn->real_escape_string($col) . "'");
+        if (!$r || $r->num_rows === 0) { @$conn->query("ALTER TABLE enrollment_intention ADD COLUMN {$col} {$def}"); }
+    }
+    $session_name = (string)($session['session_name'] ?? '');
+    $dept_id = $session['department_id'] ?? '';
+    $this_year_grad = (date('n') >= 8) ? (int)date('Y') + 1 : (int)date('Y'); // 當年度國三畢業年，與 enrollment_list 一致
+    foreach ($registrations as $reg) {
+        if (($reg['willingness_level'] ?? '') !== '高意願') continue;
+        $name = trim((string)($reg['student_name'] ?? ''));
+        $email = trim((string)($reg['email'] ?? ''));
+        $phone = trim((string)($reg['contact_phone'] ?? ''));
+        if ($name === '') continue;
+        $existing_id = null;
+        if ($email !== '' || $phone !== '') {
+            $chk = $conn->prepare("SELECT id FROM enrollment_intention WHERE (email = ? OR phone1 = ? OR phone2 = ?) LIMIT 1");
+            if ($chk) {
+                $chk->bind_param("sss", $email, $phone, $phone);
+                $chk->execute();
+                $row = $chk->get_result()->fetch_assoc();
+                $chk->close();
+                if ($row) $existing_id = (int)$row['id'];
+            }
+        }
+        $school_code = trim((string)($reg['school'] ?? ''));
+        $grade = trim((string)($reg['grade'] ?? ''));
+        $remarks = "來自場次：{$session_name} (報名時間：" . date('Y-m-d H:i', strtotime($reg['created_at'] ?? 'now')) . ")";
+        $p1_raw = (string)($reg['course_priority_1'] ?? '');
+        $p2_raw = (string)($reg['course_priority_2'] ?? '');
+        $assigned_dept = '';
+        if ($dept_id !== '') {
+            $st = $conn->prepare("SELECT code FROM departments WHERE code = ? OR name = ? LIMIT 1");
+            if ($st) { $st->bind_param("ss", $dept_id, $dept_id); $st->execute(); $rs = $st->get_result()->fetch_assoc(); $st->close(); if ($rs) $assigned_dept = $rs['code']; }
+        }
+        if ($assigned_dept === '' && $p1_raw !== '') {
+            $st = $conn->prepare("SELECT code FROM departments WHERE code = ? OR name = ? LIMIT 1");
+            if ($st) { $st->bind_param("ss", $p1_raw, $p1_raw); $st->execute(); $rs = $st->get_result()->fetch_assoc(); $st->close(); if ($rs) $assigned_dept = $rs['code']; else $assigned_dept = $p1_raw; }
+        }
+        // 若 assigned_department 有外鍵約束，僅在 departments 存在時使用，否則 NULL 避免 errno 1452
+        if ($assigned_dept !== '') {
+            $st = $conn->prepare("SELECT 1 FROM departments WHERE code = ? LIMIT 1");
+            if ($st) { $st->bind_param("s", $assigned_dept); $st->execute(); $ok = $st->get_result()->fetch_row(); $st->close(); if (!$ok) $assigned_dept = ''; }
+        }
+        // 入學說明會沒有的資訊寫入 NULL；current_grade 有 FK 至 identity_options.code，僅在該表有對應 code 時才寫入
+        $school_for_bind = ($school_code !== '') ? $school_code : null;
+        $grade_for_bind = null;
+        $graduation_year = $this_year_grad + 1; // 預設國二，落在潛在追蹤名單
+        if ($grade !== '') {
+            $st_io = $conn->prepare("SELECT code, name FROM identity_options WHERE code = ? OR name = ? LIMIT 1");
+            if ($st_io) {
+                $st_io->bind_param("ss", $grade, $grade);
+                $st_io->execute();
+                $rs_io = $st_io->get_result()->fetch_assoc();
+                $st_io->close();
+                if ($rs_io) {
+                    $grade_for_bind = $rs_io['code'];
+                    $grade_name = (string)($rs_io['name'] ?? '');
+                    if (strpos($grade_name, '國三') !== false) {
+                        $graduation_year = $this_year_grad;
+                    } elseif (strpos($grade_name, '國二') !== false) {
+                        $graduation_year = $this_year_grad + 1;
+                    } elseif (strpos($grade_name, '國一') !== false) {
+                        $graduation_year = $this_year_grad + 2;
+                    }
+                }
+            }
+            if ($grade_for_bind === null && (strpos($grade, '國三') !== false || preg_match('/\b3\b/', $grade))) {
+                $graduation_year = $this_year_grad;
+            } elseif ($grade_for_bind === null && (strpos($grade, '國二') !== false || preg_match('/\b2\b/', $grade))) {
+                $graduation_year = $this_year_grad + 1;
+            } elseif ($grade_for_bind === null && (strpos($grade, '國一') !== false || preg_match('/\b1\b/', $grade))) {
+                $graduation_year = $this_year_grad + 2;
+            }
+        }
+        $has_dept = ($assigned_dept !== '');
+        try {
+            if ($existing_id) {
+                $up_sql = $has_dept
+                    ? "UPDATE enrollment_intention SET name=?, email=?, phone1=?, junior_high=?, current_grade=?, assigned_department=?, intention_level='high', follow_up_status='tracking', graduation_year=? WHERE id=?"
+                    : "UPDATE enrollment_intention SET name=?, email=?, phone1=?, junior_high=?, current_grade=?, assigned_department=NULL, intention_level='high', follow_up_status='tracking', graduation_year=? WHERE id=?";
+                $up = $conn->prepare($up_sql);
+                if (!$up) throw new Exception($conn->error . ' (errno ' . $conn->errno . ')');
+                if ($has_dept) {
+                    $up->bind_param("ssssssii", $name, $email, $phone, $school_for_bind, $grade_for_bind, $assigned_dept, $graduation_year, $existing_id);
+                } else {
+                    $up->bind_param("sssssii", $name, $email, $phone, $school_for_bind, $grade_for_bind, $graduation_year, $existing_id);
+                }
+                if ($up->execute()) {
+                    $enrollment_intention_updated++;
+                    $up->close();
+                } else {
+                    $err = $up->error; $erno = $up->errno; $up->close();
+                    throw new Exception(($err ?: 'Unknown') . ' (errno ' . $erno . ')');
+                }
+            } else {
+                $ins_sql = $has_dept
+                    ? "INSERT INTO enrollment_intention (name,email,phone1,phone2,junior_high,current_grade,identity,gender,line_id,facebook,remarks,assigned_department,intention_level,follow_up_status,graduation_year,created_at) VALUES (?,?,?,NULL,?,?,1,0,NULL,NULL,?,?,'high','tracking',?,NOW())"
+                    : "INSERT INTO enrollment_intention (name,email,phone1,phone2,junior_high,current_grade,identity,gender,line_id,facebook,remarks,assigned_department,intention_level,follow_up_status,graduation_year,created_at) VALUES (?,?,?,NULL,?,?,1,0,NULL,NULL,?,NULL,'high','tracking',?,NOW())";
+                $ins = $conn->prepare($ins_sql);
+                if (!$ins) throw new Exception($conn->error . ' (errno ' . $conn->errno . ')');
+                if ($has_dept) {
+                    $ins->bind_param("sssssssi", $name, $email, $phone, $school_for_bind, $grade_for_bind, $remarks, $assigned_dept, $graduation_year);
+                } else {
+                    $ins->bind_param("ssssssi", $name, $email, $phone, $school_for_bind, $grade_for_bind, $remarks, $graduation_year);
+                }
+                if ($ins->execute()) {
+                    $eid = (int)$conn->insert_id;
+                    $ins->close();
+                    $enrollment_intention_written++;
+                    if ($has_dept && $eid > 0) {
+                        @$conn->query("ALTER TABLE enrollment_choices ADD UNIQUE KEY uniq_ec (enrollment_id, choice_order)");
+                        $c1 = $conn->prepare("INSERT INTO enrollment_choices (enrollment_id, choice_order, department_code, system_code) VALUES (?,1,?,NULL) ON DUPLICATE KEY UPDATE department_code=VALUES(department_code)");
+                        $c1->bind_param("is", $eid, $assigned_dept); $c1->execute(); $c1->close();
+                    }
+                    if ($p2_raw !== '' && $eid > 0) {
+                        $st = $conn->prepare("SELECT code FROM departments WHERE code = ? OR name = ? LIMIT 1");
+                        $p2_code = ''; if ($st) { $st->bind_param("ss", $p2_raw, $p2_raw); $st->execute(); $rs = $st->get_result()->fetch_assoc(); $st->close(); if ($rs) $p2_code = $rs['code']; }
+                        if ($p2_code !== '') {
+                            $c2 = $conn->prepare("INSERT INTO enrollment_choices (enrollment_id, choice_order, department_code, system_code) VALUES (?,2,?,NULL) ON DUPLICATE KEY UPDATE department_code=VALUES(department_code)");
+                            $c2->bind_param("is", $eid, $p2_code); $c2->execute(); $c2->close();
+                        }
+                    }
+                } else {
+                    $errno = $ins->errno;
+                    $errmsg = $ins->error;
+                    $ins->close();
+                    if ($errno === 1062 && ($email !== '' || $phone !== '')) {
+                        $chk2 = $conn->prepare("SELECT id FROM enrollment_intention WHERE email = ? OR phone1 = ? OR phone2 = ? LIMIT 1");
+                        if ($chk2) {
+                            $chk2->bind_param("sss", $email, $phone, $phone);
+                            $chk2->execute();
+                            $row2 = $chk2->get_result()->fetch_assoc();
+                            $chk2->close();
+                            if ($row2) {
+                                $existing_id = (int)$row2['id'];
+                                $up_sql2 = $has_dept
+                                    ? "UPDATE enrollment_intention SET name=?, email=?, phone1=?, junior_high=?, current_grade=?, assigned_department=?, intention_level='high', follow_up_status='tracking', graduation_year=? WHERE id=?"
+                                    : "UPDATE enrollment_intention SET name=?, email=?, phone1=?, junior_high=?, current_grade=?, assigned_department=NULL, intention_level='high', follow_up_status='tracking', graduation_year=? WHERE id=?";
+                                $up = $conn->prepare($up_sql2);
+                                if ($up) {
+                                    if ($has_dept) {
+                                        $up->bind_param("ssssssii", $name, $email, $phone, $school_for_bind, $grade_for_bind, $assigned_dept, $graduation_year, $existing_id);
+                                    } else {
+                                        $up->bind_param("sssssii", $name, $email, $phone, $school_for_bind, $grade_for_bind, $graduation_year, $existing_id);
+                                    }
+                                    if ($up->execute()) $enrollment_intention_updated++;
+                                    $up->close();
+                                } else throw new Exception($conn->error . ' (errno ' . $conn->errno . ')');
+                            } else throw new Exception(($errmsg ?: 'Unknown') . ' (errno ' . $errno . ')');
+                        } else throw new Exception(($errmsg ?: 'Unknown') . ' (errno ' . $errno . ')');
+                    } else throw new Exception(($errmsg ?: 'Unknown') . ' (errno ' . $errno . ')');
+                }
+            }
+        } catch (Throwable $e) {
+            $msg = $e->getMessage();
+            if ($msg === '' && $conn->errno) $msg = $conn->error . ' (errno ' . $conn->errno . ')';
+            $enrollment_intention_errors[] = $name . ($email !== '' ? " ({$email})" : '') . '：' . $msg;
+        }
+    }
+    // 僅在「有新增」或「有寫入失敗」時提示；僅更新已存在名單時不提示，避免每次進入頁面都顯示
+    if ($enrollment_intention_written > 0 || !empty($enrollment_intention_errors)) {
+        if ($message !== '') $message .= ' ';
+        if ($enrollment_intention_written > 0) {
+            $message .= "就讀意願名單：新增 " . $enrollment_intention_written . " 筆。";
+        }
+        if (!empty($enrollment_intention_errors)) {
+            $message .= " 寫入失敗 " . count($enrollment_intention_errors) . " 筆：";
+            $message .= implode('；', array_slice($enrollment_intention_errors, 0, 5));
+            if (count($enrollment_intention_errors) > 5) $message .= "…（共 " . count($enrollment_intention_errors) . " 筆失敗）";
+        }
+        $messageType = !empty($enrollment_intention_errors) ? "warning" : "success";
+    }
+}
 
 // 判斷是否為歷史紀錄：以簽到時間作為基準，非今年份的區分到歷史資料
 $current_year = date('Y');
@@ -666,7 +843,7 @@ $page_title = '出席紀錄管理 - ' . htmlspecialchars($session['session_name'
             <?php include 'header.php'; ?>
             <div class="content">
                 <?php if ($message): ?>
-                    <div class="message <?php echo $messageType; ?>"><?php echo htmlspecialchars($message); ?></div>
+                    <div id="pageMessage" class="message <?php echo $messageType; ?>"><?php echo htmlspecialchars($message); ?></div>
                 <?php endif; ?>
 
                 <div class="page-controls">
@@ -1032,6 +1209,16 @@ $page_title = '出席紀錄管理 - ' . htmlspecialchars($session['session_name'
     </div>
 
     <script>
+        document.addEventListener('DOMContentLoaded', function () {
+            var msgEl = document.getElementById('pageMessage');
+            if (msgEl) {
+                setTimeout(function () {
+                    msgEl.style.transition = 'opacity 0.3s';
+                    msgEl.style.opacity = '0';
+                    setTimeout(function () { msgEl.style.display = 'none'; }, 300);
+                }, 3000);
+            }
+        });
         function filterTable() {
             const input = document.getElementById('tableSearchInput');
             const searchFilter = input.value.toLowerCase();
@@ -1162,32 +1349,6 @@ $page_title = '出席紀錄管理 - ' . htmlspecialchars($session['session_name'
                 });
         }
 
-        // 自動發送：進入頁面即對「國三＋高意願」且尚未寄過者發送
-        document.addEventListener('DOMContentLoaded', function () {
-            const isHistory = <?php echo $is_history ? 'true' : 'false'; ?>;
-            if (isHistory) return;
-
-            const sessionId = <?php echo (int)$session_id; ?>;
-            fetch(`send_enrollment_invitation.php?session_id=${sessionId}`)
-                .then(response => response.json())
-                .then(data => {
-                    if (!data || !data.success) {
-                        // 不阻斷操作，只提示失敗
-                        const msg = (data && data.message) ? data.message : '未知錯誤';
-                        alert('自動發送就讀意願邀請失敗：' + msg);
-                        return;
-                    }
-                    // 僅在有失敗時提示（成功或 0 筆就靜默）
-                    if ((data.failed_count || 0) > 0) {
-                        const details = (data.errors && data.errors.length) ? ('\n\n錯誤詳情：\n' + data.errors.join('\n')) : '';
-                        alert(`自動發送完成（部分失敗）\n成功：${data.sent_count || 0} 筆\n失敗：${data.failed_count || 0} 筆${details}`);
-                    }
-                })
-                .catch(err => {
-                    alert('自動發送就讀意願邀請發生錯誤：' + (err && err.message ? err.message : String(err)));
-                });
-        });
-        
         window.onclick = function(event) {
             if (event.target.classList.contains('modal')) {
                 event.target.style.display = 'none';
