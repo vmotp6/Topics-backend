@@ -493,7 +493,9 @@ $page_title = $is_admission_center ? '編輯簽到表單 - ' . htmlspecialchars(
                     <div id="formFieldsContainer">
                         <!-- 表單欄位將由 JavaScript 動態生成 -->
                     </div>
-                    
+                    <div class="text-muted mb-2" style="font-size: 0.9rem;">
+                        完成簽到表示您同意我們將於招生相關範圍內使用您的資料，提供後續資訊與聯絡服務。
+                    </div>
                     <button type="submit" class="btn btn-primary" id="submitBtn">
                         <i class="fas fa-check"></i> 完成簽到
                     </button>
@@ -945,6 +947,9 @@ $page_title = $is_admission_center ? '編輯簽到表單 - ' . htmlspecialchars(
             });
             
             html += `
+                             <div class="text-muted mb-2" style="font-size: 0.9rem;">
+                                完成簽到即表示您同意我們將於招生相關範圍內使用您的資料，提供後續資訊與聯絡服務。
+                            </div>
                             <button type="submit" class="btn btn-primary">
                                 <i class="fas fa-check"></i> 完成簽到
                             </button>
