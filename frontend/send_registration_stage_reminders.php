@@ -360,20 +360,13 @@ function runRegistrationStageReminders() {
             $conn->close();
             return ['success' => true, 'message' => '沒有需要發送郵件的學生。', 'stage' => $current_stage, 'stage_name' => $stage_names[$current_stage] ?? '', 'students_total' => 0, 'students_sent' => 0, 'students_fail' => 0, 'teachers_sent' => 0, 'teachers_fail' => 0, 'updated' => 0, 'error' => ''];
         }
-        // 先發送學生（避免網頁觸發逾時時只發到老師、學生沒收到）
+        // 先發送學生 Gmail（系統通知）；不寫入「已提醒」—「已提醒」由老師親自提醒後按鈕確認
         $success_count = 0;
         $fail_count = 0;
-        $updated_count = 0;
         foreach ($students as $student) {
             $sent = sendRegistrationStageReminderEmail($student['email'], $student['name'], $current_stage);
             if ($sent) {
                 $success_count++;
-                $update_stmt = $conn->prepare("UPDATE enrollment_intention SET {$reminded_col_escaped} = 1, registration_stage = ? WHERE id = ?");
-                if ($update_stmt) {
-                    $update_stmt->bind_param("si", $current_stage, $student['id']);
-                    if ($update_stmt->execute()) $updated_count++;
-                    $update_stmt->close();
-                }
             } else {
                 $fail_count++;
             }
@@ -412,7 +405,7 @@ function runRegistrationStageReminders() {
             'students_fail' => $fail_count,
             'teachers_sent' => $teachers_sent,
             'teachers_fail' => $teachers_failed,
-            'updated' => $updated_count,
+            'updated' => 0,
             'error' => ''
         ];
     } catch (Exception $e) {
