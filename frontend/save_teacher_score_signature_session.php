@@ -7,7 +7,6 @@ header('Content-Type: application/json; charset=utf-8');
 $user_id = (int)($_SESSION['user_id'] ?? 0);
 $data = json_decode(file_get_contents('php://input'), true);
 $signature_id = isset($data['signature_id']) ? (int)$data['signature_id'] : 0;
-$year = isset($data['year']) ? (int)$data['year'] : (int)date('Y');
 
 if ($signature_id <= 0) {
     echo json_encode([
@@ -17,7 +16,7 @@ if ($signature_id <= 0) {
     exit;
 }
 
-// 驗證簽章是否屬於當前用戶
+// 驗證簽章是否屬於當前用戶（允許 continued_admission_score 或 teacher_score_session）
 require_once '../../Topics-frontend/frontend/config.php';
 $conn = getDatabaseConnection();
 
@@ -26,34 +25,32 @@ try {
         SELECT id 
         FROM signatures 
         WHERE id = ? AND user_id = ?
-          AND document_type = 'continued_admission_committee_confirm'
-          AND document_id = ?
         LIMIT 1
     ");
-    $stmt->bind_param("iii", $signature_id, $user_id, $year);
+    $stmt->bind_param("ii", $signature_id, $user_id);
     $stmt->execute();
     $result = $stmt->get_result();
     $valid = $result && $result->fetch_assoc();
     $stmt->close();
     $conn->close();
-    
+
     if (!$valid) {
         echo json_encode([
             'success' => false,
-            'message' => '簽章驗證失敗'
+            'message' => '簽章驗證失敗（非本人簽章）'
         ], JSON_UNESCAPED_UNICODE);
         exit;
     }
-    
-    // 將簽章 ID 保存到 session
-    $session_signature_key = "committee_signature_{$year}_{$user_id}";
-    $_SESSION[$session_signature_key] = $signature_id;
-    
+
+    // 本輪簽名有效期限：24 小時
+    $_SESSION['teacher_score_signature_id'] = $signature_id;
+    $_SESSION['teacher_score_signature_at'] = time();
+
     echo json_encode([
         'success' => true,
-        'message' => '簽章狀態已保存'
+        'message' => '本輪簽名已保存，評分時不必重複認證'
     ], JSON_UNESCAPED_UNICODE);
-    
+
 } catch (Throwable $e) {
     if (isset($conn) && $conn) {
         $conn->close();
@@ -63,7 +60,3 @@ try {
         'message' => '保存失敗：' . $e->getMessage()
     ], JSON_UNESCAPED_UNICODE);
 }
-?>
-
-
-

@@ -18,6 +18,7 @@ if (!in_array($user_role, ['ADM', 'STA'], true)) {
 
 date_default_timezone_set('Asia/Taipei');
 $year = (int)date('Y');
+$auto_download_pdf = false;
 
 $conn = getDatabaseConnection();
 caEnsureCommitteeTables($conn);
@@ -73,7 +74,7 @@ if ($announcement && !empty($announcement['publish_at']) && empty($announcement[
         }
         
         try {
-            $res = caPublishAnnouncement($conn, $year, $user_id, true, $existing_files);
+            caPublishAnnouncement($conn, $year, $user_id, true, $existing_files);
             // 重新讀取公告資料
             $announcement = caGetAnnouncement($conn, $year);
         } catch (Throwable $e) {
@@ -286,6 +287,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             // 寫入各科系錄取結果（status/admission_rank）
             $result = processAdmissionRanking($conn, null);
             $message = "已確認錄取結果：處理 {$result['total_processed']} 筆（正取 {$result['approved']}、備取 {$result['waitlist']}、不錄取 {$result['rejected']}）";
+            // 確認成功後自動產生榜單 PDF（前端會自動下載）
+            $auto_download_pdf = true;
         }
 
         if ($action === 'queue_emails') {
@@ -351,6 +354,7 @@ $current_page = 'continued_admission_committee';
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title><?php echo htmlspecialchars($page_title); ?> - Topics 後台管理系統</title>
   <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
   <style>
     :root {
       --primary:#1890ff;
@@ -633,6 +637,32 @@ $current_page = 'continued_admission_committee';
         padding:18px 16px;
       }
     }
+
+    /* PDF 預覽區 */
+    .pdf-preview-wrap {
+      margin-top: 14px;
+      border: 1px dashed #91caff;
+      background: #f0f7ff;
+      border-radius: 12px;
+      padding: 12px;
+      display: none;
+    }
+    .pdf-preview-actions {
+      display:flex;
+      gap:10px;
+      align-items:center;
+      justify-content:space-between;
+      flex-wrap: wrap;
+      margin-bottom: 10px;
+    }
+    .pdf-preview-box {
+      background:#fff;
+      border:1px solid #e5e7eb;
+      border-radius: 10px;
+      padding: 14px 16px;
+      max-height: 420px;
+      overflow: auto;
+    }
   </style>
 </head>
 <body>
@@ -768,6 +798,27 @@ $current_page = 'continued_admission_committee';
               </div>
             <?php endif; ?>
           </form>
+
+          <!-- PDF 預覽與下載（確認後自動生成） -->
+          <div id="pdfPreviewWrap" class="pdf-preview-wrap">
+            <div class="pdf-preview-actions">
+              <div style="font-weight:700; color:#1d4ed8; display:flex; gap:8px; align-items:center;">
+                <i class="fas fa-file-pdf"></i> 榜單 PDF（範例版型預覽）
+                <span style="font-size:12px; color:var(--muted); font-weight:600;">檔名：榜單.pdf</span>
+              </div>
+              <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+                <button type="button" class="btn btn-secondary" onclick="renderCommitteePdfPreview()">
+                  <i class="fas fa-sync"></i> 重新整理預覽
+                </button>
+                <button type="button" class="btn btn-primary" onclick="downloadCommitteePdf()">
+                  <i class="fas fa-download"></i> 下載榜單.pdf
+                </button>
+              </div>
+            </div>
+            <div class="pdf-preview-box">
+              <div id="pdfContent"></div>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -778,10 +829,15 @@ $current_page = 'continued_admission_committee';
             <span>公告內容與發布（儲存草稿 / 排程公告）</span>
           </div>
           <div class="hint">
-            - 公告時間將使用「科系名額管理」設定的統一公告錄取時間（<?php echo htmlspecialchars($global_announce_time ?? '未設定'); ?>）。<br>
-            - 此步驟會儲存公告內容並排程發布到前台公告欄。
+            - <strong>先輸入公告內容</strong>（標題、內文、附件），公告時間依「科系名額管理」設定的<strong>統一錄取公告時間</strong>（<?php echo htmlspecialchars($global_announce_time ?? '未設定'); ?>）。<br>
+            - 時間到了之後，設定的公告會自動發布，<strong>前台招生公告欄與續招錄取結果頁皆可看到</strong>該公告。
           </div>
-          <form method="post" enctype="multipart/form-data" style="margin-top:12px;">
+          <?php if (empty($global_announce_time)): ?>
+          <div class="hint" style="margin-top:12px; padding:10px; background:#fff2f0; border:1px solid #ffccc7; border-radius:8px;">
+            <strong>請先至「科系名額管理」設定統一錄取公告時間</strong>後，再儲存並排程公告。（該頁面有防呆，不可設定過去時間。）
+          </div>
+          <?php endif; ?>
+          <form method="post" enctype="multipart/form-data" style="margin-top:12px;" id="step2Form">
             <input type="hidden" name="action" value="save_and_schedule_announcement" />
             <div class="field">
               <label>公告標題</label>
@@ -807,7 +863,7 @@ $current_page = 'continued_admission_committee';
             <!-- 預設同步到前台公告欄，不需要顯示勾選框 -->
             <input type="hidden" name="sync_bulletin" value="1" />
             <div style="margin-top:12px; display:flex; gap:8px; flex-wrap:wrap;">
-              <button class="btn btn-primary" type="submit"><i class="fas fa-save"></i> 儲存並排程公告</button>
+              <button class="btn btn-primary" type="submit" id="step2SubmitBtn" <?php echo empty($global_announce_time) ? 'disabled' : ''; ?>><i class="fas fa-save"></i> 儲存並排程公告</button>
               <a class="btn btn-secondary" href="publish_continued_admission_announcement.php" target="_blank" style="text-decoration:none;">
                 <i class="fas fa-play"></i> 手動觸發發布腳本（測試用）
               </a>
@@ -816,7 +872,7 @@ $current_page = 'continued_admission_committee';
               </a>
             </div>
             <div class="hint" style="margin-top:12px; padding:10px; background:#fffbe6; border:1px solid #ffe58f; border-radius:8px;">
-              <strong>⚠️ 重要提醒：</strong>公告會在設定的時間自動發布，但需要設定定時任務執行 <code>publish_continued_admission_announcement.php</code>。如果時間到了但公告未發布，請點擊「手動觸發發布腳本」或檢查定時任務設定。
+              <strong>⚠️ 重要提醒：</strong>時間到後，只要有人造訪「<strong>前台招生公告欄</strong>」或「<strong>續招錄取結果</strong>」頁面，公告會自動發布並顯示；也可設定定時任務執行 <code>publish_continued_admission_announcement.php</code>，或在此頁點「手動觸發發布腳本」。
             </div>
           </form>
         </div>
@@ -972,6 +1028,267 @@ $current_page = 'continued_admission_committee';
         alert('至少需要保留一個檔案欄位');
       }
     }
+
+    // =========================
+    // 榜單 PDF（依範例生成）
+    // =========================
+
+    function rocDateString(d) {
+      const rocYear = d.getFullYear() - 1911;
+      const mm = String(d.getMonth() + 1).padStart(2, '0');
+      const dd = String(d.getDate()).padStart(2, '0');
+      return `中華民國${rocYear}年${mm}月${dd}日`;
+    }
+
+    function academicYearString(d) {
+      const rocYear = d.getFullYear() - 1911;
+      return `${rocYear}學年度`;
+    }
+
+    function maskIdNumber(idNumber) {
+      const s = (idNumber || '').trim();
+      if (!s) return '';
+      if (s.length <= 6) {
+        return s.slice(0, 1) + 'XXXX' + s.slice(-1);
+      }
+      const prefix = s.slice(0, 4);
+      const suffix = s.slice(-2);
+      const midLen = Math.max(1, s.length - 6);
+      return prefix + 'X'.repeat(midLen) + suffix;
+    }
+
+    function maskName(name) {
+      const s = (name || '').trim();
+      if (!s) return '';
+      const chars = Array.from(s); // 支援中文
+      if (chars.length === 1) return '〇';
+      if (chars.length === 2) return chars[0] + '〇';
+      return chars[0] + '〇' + chars[chars.length - 1];
+    }
+
+    function statusLabel(status) {
+      if (status === 'AP' || status === 'approved') return '錄取';
+      if (status === 'AD' || status === 'waitlist') return '備取';
+      return status || '';
+    }
+
+    async function fetchCommitteePdfData() {
+      const year = <?php echo (int)$year; ?>;
+      const res = await fetch(`continued_admission_committee_pdf_data.php?year=${encodeURIComponent(year)}`, {
+        headers: { 'Accept': 'application/json' },
+        credentials: 'same-origin',
+        cache: 'no-store'
+      });
+
+      const text = await res.text();
+      try {
+        const data = JSON.parse(text);
+        if (!res.ok) {
+          const detail = data && (data.detail || data.message) ? `：${data.detail || data.message}` : '';
+          throw new Error(`取得榜單資料失敗（HTTP ${res.status}）${detail}`);
+        }
+        if (!data || !data.success) {
+          const detail = data && data.detail ? `（${data.detail}）` : '';
+          throw new Error(((data && data.message) ? data.message : '取得榜單資料失敗') + detail);
+        }
+        return data;
+      } catch (e) {
+        const snippet = (text || '').trim().slice(0, 180);
+        // 常見：被導去登入頁（HTML 以 < 開頭）
+        if (snippet.startsWith('<')) {
+          throw new Error('取得榜單資料失敗：看起來被導向到登入頁/錯誤頁（回傳不是 JSON）。請重新整理後再試一次。');
+        }
+        throw new Error('取得榜單資料失敗：回傳不是合法 JSON。' + (snippet ? `（前180字：${snippet}）` : ''));
+      }
+    }
+
+    function buildPdfContentDom(data) {
+      const now = new Date();
+      // 依範例：移除「第X次」，只保留學年度與委員會會議通過字樣
+      const headerLine = `${rocDateString(now)}康寧學校財團法人康寧大學${academicYearString(now)}招生委員會會議通過`;
+
+      // 外層容器（用於 html2pdf 擷取）
+      const wrap = document.createElement('div');
+      // 依範例：公文風格（黑白、字級偏小）
+      wrap.style.fontFamily = "'Microsoft JhengHei', 'PingFang TC', Arial, sans-serif";
+      wrap.style.color = '#000000';
+      wrap.style.fontSize = '14px';
+      wrap.style.lineHeight = '1.55';
+
+      const header = document.createElement('div');
+      header.textContent = headerLine;
+      header.style.textAlign = 'center';
+      header.style.fontSize = '10px';
+      header.style.marginBottom = '12px';
+      header.style.color = '#000000';
+      wrap.appendChild(header);
+
+      const examName = `${academicYearString(now)}五專續招(二)`;
+
+      const depts = Array.isArray(data.departments) ? data.departments : [];
+      // 依科系名稱排序（更接近公告觀感）
+      depts.sort((a, b) => (a.department_name || '').localeCompare((b.department_name || ''), 'zh-TW'));
+
+      depts.forEach((dept) => {
+        const deptName = dept.department_name || dept.department_code || '';
+        const approved = Array.isArray(dept.approved) ? dept.approved : [];
+        const waitlist = Array.isArray(dept.waitlist) ? dept.waitlist : [];
+
+        // 只輸出有錄取/備取者的科系（避免空白太多）
+        if (approved.length === 0 && waitlist.length === 0) return;
+
+        const title = document.createElement('div');
+        title.textContent = `${examName}公告榜單-${deptName}`;
+        title.style.fontWeight = '700';
+        title.style.fontSize = '16px';
+        title.style.margin = '12px 0 6px';
+        title.style.textAlign = 'center';
+        title.style.color = '#000000';
+        wrap.appendChild(title);
+
+        const table = document.createElement('table');
+        table.style.width = '100%';
+        table.style.borderCollapse = 'collapse';
+        table.style.marginBottom = '6px';
+        table.style.pageBreakInside = 'auto';
+
+        const thead = document.createElement('thead');
+        const hr = document.createElement('tr');
+        hr.style.pageBreakInside = 'avoid';
+        hr.style.breakInside = 'avoid';
+        ['報名編號', '身份證號', '姓名', '考試名稱', '狀態'].forEach((t) => {
+          const th = document.createElement('th');
+          th.textContent = t;
+          th.style.border = '1px solid #000000';
+          th.style.background = '#fff8dc';
+          th.style.padding = '6px 8px';
+          th.style.textAlign = 'center';
+          th.style.fontWeight = '700';
+          th.style.fontSize = '14px';
+          th.style.color = '#000000';
+          hr.appendChild(th);
+        });
+        thead.appendChild(hr);
+        table.appendChild(thead);
+
+        const tbody = document.createElement('tbody');
+
+        const rows = [];
+        approved.forEach((x) => {
+          rows.push({ ...x, _display_status: '錄取' });
+        });
+        waitlist.forEach((x, idx) => {
+          // 備取顯示「備取 n 號」，n 取 admission_rank（若沒有欄位/值，改用當前順序）
+          const n = (x && typeof x.admission_rank === 'number' && x.admission_rank > 0) ? x.admission_rank : (idx + 1);
+          rows.push({ ...x, _display_status: `備取 ${n} 號` });
+        });
+
+        rows.forEach((item) => {
+          const tr = document.createElement('tr');
+          tr.style.pageBreakInside = 'avoid';
+          tr.style.breakInside = 'avoid';
+          const values = [
+            item.apply_no || '',
+            maskIdNumber(item.id_number || ''),
+            maskName(item.name || ''),
+            examName,
+            item._display_status || statusLabel(item.status)
+          ];
+          values.forEach((v) => {
+            const td = document.createElement('td');
+            td.textContent = v;
+            td.style.border = '1px solid #000000';
+            td.style.padding = '6px 8px';
+            td.style.fontSize = '14px';
+            td.style.textAlign = 'center';
+            td.style.color = '#000000';
+            tr.appendChild(td);
+          });
+          tbody.appendChild(tr);
+        });
+
+        table.appendChild(tbody);
+        wrap.appendChild(table);
+
+        const note = document.createElement('div');
+        const approvedCount = approved.length;
+        const waitlistCount = waitlist.length;
+        note.textContent = `※正取${approvedCount}名;${waitlistCount > 0 ? `備取${waitlistCount}名` : '無備取'}`;
+        note.style.fontSize = '12px';
+        note.style.color = '#000000';
+        note.style.marginBottom = '8px';
+        wrap.appendChild(note);
+
+        const spacer = document.createElement('div');
+        spacer.textContent = ' ';
+        spacer.style.height = '4px';
+        wrap.appendChild(spacer);
+      });
+
+      // 尾端分隔線（比照範例「================ 以下空白 ================」）
+      const tail = document.createElement('div');
+      tail.style.marginTop = '16px';
+      tail.style.color = '#000000';
+      tail.style.fontSize = '12px';
+      tail.style.textAlign = 'center';
+      tail.textContent = '================ 以下空白 ================';
+      wrap.appendChild(tail);
+
+      return wrap;
+    }
+
+    async function renderCommitteePdfPreview() {
+      const wrap = document.getElementById('pdfPreviewWrap');
+      const container = document.getElementById('pdfContent');
+      if (!wrap || !container) return;
+
+      wrap.style.display = 'block';
+      container.innerHTML = '<div style="color:#6b7280;">載入榜單資料中…</div>';
+
+      try {
+        const data = await fetchCommitteePdfData();
+        const dom = buildPdfContentDom(data);
+        container.innerHTML = '';
+        container.appendChild(dom);
+        return true;
+      } catch (e) {
+        container.innerHTML = `<div style="color:#b91c1c;">載入失敗：${String(e.message || e)}</div>`;
+        return false;
+      }
+    }
+
+    async function downloadCommitteePdf() {
+      const ok = await renderCommitteePdfPreview();
+      if (!ok) {
+        alert('榜單資料載入失敗，無法產生 PDF（請先確認登入狀態/重新整理頁面再試）');
+        return;
+      }
+      const el = document.getElementById('pdfContent');
+      if (!el) return;
+
+      const opt = {
+        margin: [10, 10, 12, 10],
+        filename: '榜單.pdf',
+        image: { type: 'jpeg', quality: 0.98 },
+        html2canvas: { scale: 2, useCORS: true },
+        jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' },
+        pagebreak: { mode: ['css', 'legacy'] }
+      };
+
+      // 下載
+      await html2pdf().set(opt).from(el).save();
+    }
+
+    // 確認成功後自動下載 PDF
+    document.addEventListener('DOMContentLoaded', function() {
+      const shouldAuto = <?php echo $auto_download_pdf ? 'true' : 'false'; ?>;
+      if (shouldAuto) {
+        // 先渲染預覽再下載，避免空白 PDF
+        setTimeout(() => {
+          downloadCommitteePdf().catch(err => console.error(err));
+        }, 300);
+      }
+    });
   </script>
 </body>
 </html>

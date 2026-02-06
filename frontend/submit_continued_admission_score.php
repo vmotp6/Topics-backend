@@ -387,17 +387,21 @@ try {
     $final_signature_path = null;
     
     if ($signature_id) {
-        // 如果已有簽章ID（從彈出視窗簽名），直接使用
-        $final_signature_id = $signature_id;
-        // 查詢簽章路徑
-        $sig_check = $conn->prepare("SELECT signature_path FROM signatures WHERE id = ? LIMIT 1");
+        // 如果已有簽章ID（本輪簽名或彈出視窗簽名），須驗證為本人且可重用
+        $sig_check = $conn->prepare("SELECT signature_path, user_id, created_at FROM signatures WHERE id = ? LIMIT 1");
         $sig_check->bind_param("i", $signature_id);
         $sig_check->execute();
         $sig_result = $sig_check->get_result();
-        if ($sig_row = $sig_result->fetch_assoc()) {
-            $final_signature_path = $sig_row['signature_path'] ?? null;
-        }
+        $sig_row = $sig_result ? $sig_result->fetch_assoc() : null;
         $sig_check->close();
+        if (!$sig_row || (int)$sig_row['user_id'] !== (int)$user_id) {
+            $conn->close();
+            echo json_encode(['success' => false, 'message' => '簽章無效或非本人簽章，請重新簽名'], JSON_UNESCAPED_UNICODE);
+            exit;
+        }
+        // 本輪簽名可重用，不限制時間；若需限制可加：created_at 在 24 小時內
+        $final_signature_id = $signature_id;
+        $final_signature_path = $sig_row['signature_path'] ?? null;
     } elseif ($signature_data && strpos($signature_data, 'data:image') === 0) {
         // 如果有簽章資料（Base64），儲存到 signatures 表
         // 移除 data:image/png;base64, 前綴
@@ -471,12 +475,19 @@ try {
         $has_signature_id = true;
     }
     
-    // 然後插入新記錄
+    // 然後插入新記錄（簽名可為空，完成全部評分後再於名單頁簽名確認）
     if ($has_signature_id) {
-        $insert_stmt = $conn->prepare("INSERT INTO continued_admission_scores 
-            (application_id, reviewer_user_id, reviewer_type, assignment_order, self_intro_score, skills_score, scored_at, signature_id)
-            VALUES (?, ?, ?, ?, ?, ?, NOW(), ?)");
-        $insert_stmt->bind_param("iisiiii", $application_id, $user_id, $reviewer_type, $assignment_order, $self_intro_score, $skills_score, $final_signature_id);
+        if ($final_signature_id !== null) {
+            $insert_stmt = $conn->prepare("INSERT INTO continued_admission_scores 
+                (application_id, reviewer_user_id, reviewer_type, assignment_order, self_intro_score, skills_score, scored_at, signature_id)
+                VALUES (?, ?, ?, ?, ?, ?, NOW(), ?)");
+            $insert_stmt->bind_param("iisiiii", $application_id, $user_id, $reviewer_type, $assignment_order, $self_intro_score, $skills_score, $final_signature_id);
+        } else {
+            $insert_stmt = $conn->prepare("INSERT INTO continued_admission_scores 
+                (application_id, reviewer_user_id, reviewer_type, assignment_order, self_intro_score, skills_score, scored_at, signature_id)
+                VALUES (?, ?, ?, ?, ?, ?, NOW(), NULL)");
+            $insert_stmt->bind_param("iisiii", $application_id, $user_id, $reviewer_type, $assignment_order, $self_intro_score, $skills_score);
+        }
     } else {
         $insert_stmt = $conn->prepare("INSERT INTO continued_admission_scores 
             (application_id, reviewer_user_id, reviewer_type, assignment_order, self_intro_score, skills_score, scored_at)

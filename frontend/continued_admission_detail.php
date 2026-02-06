@@ -734,16 +734,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_status'])) {
                                         error_log("警告：找到 slot {$teacher_slot} 的評分記錄，但 reviewer_user_id ({$score_data['reviewer_user_id']}) 不匹配當前用戶 ({$user_id})，忽略此記錄");
                                     }
                                 } else {
-                                    // 向後兼容：使用舊欄位
-                                    if ($teacher_slot == 1) {
-                                        $current_self_intro_score = $application['self_intro_score_1'] ?? '';
-                                        $current_skills_score = $application['skills_score_1'] ?? '';
-                                    } elseif ($teacher_slot == 2) {
-                                        $current_self_intro_score = $application['self_intro_score_2'] ?? '';
-                                        $current_skills_score = $application['skills_score_2'] ?? '';
-                                    } elseif ($teacher_slot == 3) {
-                                        $current_self_intro_score = $application['self_intro_score_director'] ?? '';
-                                        $current_skills_score = $application['skills_score_director'] ?? '';
+                                    // 從 application['scores'] 取得（正規化表資料）
+                                    $score_from_app = $application['scores'][$teacher_slot] ?? null;
+                                    if ($score_from_app) {
+                                        $current_self_intro_score = $score_from_app['self_intro_score'] ?? '';
+                                        $current_skills_score = $score_from_app['skills_score'] ?? '';
                                     }
                                 }
                             }
@@ -1079,39 +1074,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_status'])) {
                                                   placeholder="可選：填寫評分說明或特殊情況..."></textarea>
                                     </div>
                                     
-                                    <!-- 電子簽章區域 -->
-                                    <div style="margin-bottom: 24px; text-align: left; border: 2px solid #faad14; border-radius: 8px; padding: 20px; background: #fff;">
-                                        <label style="display: block; margin-bottom: 12px; font-weight: 500; text-align: left;">
-                                            <i class="fas fa-file-signature"></i> 電子簽章 <span style="color: #8c8c8c; font-size: 12px;">(必填)</span>
-                                        </label>
-                                        
-                                        <!-- WebAuthn 生物驗證選項 -->
-                                        <div id="webauthnOption" style="margin-bottom: 16px; padding: 16px; background: #f0f7ff; border: 1px solid #91d5ff; border-radius: 6px;">
-                                            <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 12px;">
-                                                <i class="fas fa-fingerprint" style="font-size: 24px; color: #1890ff;"></i>
-                                                <div style="flex: 1;">
-                                                    <div style="font-weight: 500; margin-bottom: 4px;">使用生物驗證簽名</div>
-                                                    <div style="font-size: 12px; color: #666;">支援手機指紋/臉部辨識，或 USB 安全性金鑰</div>
-                                                </div>
-                                                <button type="button" onclick="useWebAuthnSignature()" class="btn-primary" style="padding: 8px 16px; font-size: 14px; white-space: nowrap;" id="webauthnBtn">
-                                                    <i class="fas fa-fingerprint"></i> 使用生物驗證
-                                                </button>
-                                            </div>
-                                            <div id="webauthnDeviceHint" style="display: none; margin-top: 8px; padding: 8px; background: #fff3cd; border: 1px solid #ffc107; border-radius: 4px; font-size: 12px; color: #856404; text-align: left;">
-                                                <!-- 內容由 JavaScript 動態填充 -->
-                                            </div>
-                                            <div id="webauthnStatus" style="display: none; margin-top: 8px; padding: 8px; background: #fff; border-radius: 4px; font-size: 12px;"></div>
-                                        </div>
-                                        
-                                        <div id="signaturePreview" style="display: none; margin-top: 12px; padding: 12px; background: #f6ffed; border: 1px solid #b7eb8f; border-radius: 6px;">
-                                            <div style="font-size: 12px; color: #52c41a; margin-bottom: 8px;">
-                                                <i class="fas fa-check-circle"></i> 簽名預覽
-                                            </div>
-                                            <img id="signaturePreviewImg" src="" alt="簽名預覽" style="max-width: 100%; border: 1px solid #ddd; border-radius: 4px;">
+                                    <!-- 簽名改為「完成全部評分後」在名單頁一次簽名確認 -->
+                                    <div style="margin-bottom: 24px; text-align: left; border: 2px solid #91d5ff; border-radius: 8px; padding: 20px; background: #e6f7ff;">
+                                        <div style="font-size: 14px; color: #0050b3;">
+                                            <i class="fas fa-info-circle" style="margin-right: 8px;"></i>評分可先送出。完成<strong>全部</strong>您負責的學生評分後，請回到<strong>名單頁</strong>點「簽名確認全部評分」進行一次簽名即可。
                                         </div>
                                         <input type="hidden" id="signatureData" name="signature_data" value="">
                                         <input type="hidden" id="signatureId" name="signature_id" value="">
-                                        <input type="hidden" id="signatureMethod" name="signature_method" value="webauthn">
+                                        <input type="hidden" id="signatureMethod" name="signature_method" value="">
                                     </div>
                                     <?php else: ?>
                                     <!-- 已評分時顯示簽章 -->
@@ -1651,122 +1621,29 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_status'])) {
     }
 
     <?php if ($action === 'score' && $teacher_slot): ?>
-    // WebAuthn 簽名功能
-    let webauthnSignature = null;
-    
-    // 檢測設備類型
-    function detectDeviceType() {
-        const ua = navigator.userAgent;
-        return /Mobile|Android|iPhone|iPad/i.test(ua) ? 'mobile' : 'desktop';
-    }
-    
-    // 檢測是否支援平台認證器（Windows Hello 等）
-    async function checkPlatformAuthenticator() {
-        if (!window.PublicKeyCredential) {
-            return false;
-        }
-        try {
-            return await PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable();
-        } catch (e) {
-            return false;
-        }
-    }
-    
-    // 檢查 WebAuthn 支援並初始化
-    if (window.PublicKeyCredential) {
-        // 檢查平台認證器並顯示適當提示
-        (async function() {
-            const deviceType = detectDeviceType();
-            const hasPlatformAuth = await checkPlatformAuthenticator();
-            
-            if (deviceType === 'desktop') {
+    // 簽名改為「完成全部評分後」在名單頁一次簽名確認，此頁不載入 WebAuthn
+    (function() {
+        if (!document.getElementById('webauthnOption')) return;
+        let webauthnSignature = null;
+        function detectDeviceType() { return /Mobile|Android|iPhone|iPad/i.test(navigator.userAgent) ? 'mobile' : 'desktop'; }
+        async function checkPlatformAuthenticator() { try { return window.PublicKeyCredential ? await PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable() : false; } catch (e) { return false; } }
+        if (window.PublicKeyCredential) {
+            (async function() {
                 const hintDiv = document.getElementById('webauthnDeviceHint');
-                if (!hasPlatformAuth) {
+                if (hintDiv && detectDeviceType() === 'desktop') {
+                    const hasPlatformAuth = await checkPlatformAuthenticator();
                     hintDiv.style.display = 'block';
-                    hintDiv.innerHTML = `
-                        <i class="fas fa-info-circle"></i> 
-                        <strong>桌面電腦提示：</strong>您的電腦沒有內建生物驗證功能。
-                        <br><strong>建議：</strong>使用手機瀏覽器進行生物驗證簽名，或使用 USB 安全性金鑰。
-                    `;
-                } else {
-                    hintDiv.style.display = 'block';
-                    hintDiv.style.background = '#d4edda';
-                    hintDiv.style.borderColor = '#28a745';
-                    hintDiv.style.color = '#155724';
-                    hintDiv.innerHTML = `
-                        <i class="fas fa-check-circle"></i> 
-                        <strong>檢測到生物驗證支援：</strong>您可以使用 Windows Hello 進行簽名。
-                    `;
+                    hintDiv.innerHTML = !hasPlatformAuth ? '<i class="fas fa-info-circle"></i> 桌面電腦：建議使用手機或 USB 金鑰。' : '<i class="fas fa-check-circle"></i> 可使用 Windows Hello。';
                 }
-            }
-        })();
-        
-        // 載入 WebAuthn 簽名組件
-        const script = document.createElement('script');
-        script.src = 'js/webauthn-signature.js';
-        script.onload = function() {
-            webauthnSignature = new WebAuthnSignature({
-                userId: <?php echo $user_id; ?>,
-                documentId: <?php echo $application_id; ?>,
-                documentType: 'continued_admission_score',
-                onSuccess: function(data) {
-                    if (data.type === 'register') {
-                        showWebAuthnStatus('設備註冊成功！', 'success');
-                    } else {
-                        // 簽名成功
-                        document.getElementById('signatureId').value = data.signature_id || '';
-                        document.getElementById('signatureMethod').value = 'webauthn';
-                        showWebAuthnStatus('生物驗證簽名成功！', 'success');
-                        // 顯示簽名預覽
-                        if (data.signature_url) {
-                            document.getElementById('signaturePreviewImg').src = data.signature_url;
-                            document.getElementById('signaturePreview').style.display = 'block';
-                        }
-                    }
-                },
-                onError: function(error) {
-                    showWebAuthnStatus('錯誤：' + error, 'error');
-                }
-            });
-        };
-        document.head.appendChild(script);
-    } else {
-        // 不支援 WebAuthn，隱藏選項
-        document.getElementById('webauthnOption').style.display = 'none';
-    }
-    
-    // 使用 WebAuthn 簽名
-    async function useWebAuthnSignature() {
-        if (!webauthnSignature) {
-            showWebAuthnStatus('WebAuthn 功能未初始化，請重新整理頁面', 'error');
-            return;
+            })();
+            const script = document.createElement('script');
+            script.src = 'js/webauthn-signature.js';
+            script.onload = function() {
+                webauthnSignature = new WebAuthnSignature({ userId: <?php echo $user_id; ?>, documentId: <?php echo $application_id; ?>, documentType: 'continued_admission_score', onSuccess: function(data) {}, onError: function() {} });
+            };
+            document.head.appendChild(script);
         }
-        
-        const btn = document.getElementById('webauthnBtn');
-        const statusDiv = document.getElementById('webauthnStatus');
-        
-        btn.disabled = true;
-        btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 驗證中...';
-        statusDiv.style.display = 'block';
-        statusDiv.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 請使用您的生物驗證設備進行驗證...';
-        statusDiv.style.color = '#666';
-        
-        const success = await webauthnSignature.authenticate();
-        
-        if (!success) {
-            btn.disabled = false;
-            btn.innerHTML = '<i class="fas fa-fingerprint"></i> 使用生物驗證';
-        }
-    }
-    
-    // 顯示 WebAuthn 狀態
-    function showWebAuthnStatus(message, type) {
-        const statusDiv = document.getElementById('webauthnStatus');
-        statusDiv.style.display = 'block';
-        statusDiv.style.color = type === 'success' ? '#52c41a' : '#f5222d';
-        statusDiv.innerHTML = '<i class="fas fa-' + (type === 'success' ? 'check-circle' : 'exclamation-circle') + '"></i> ' + message;
-    }
-    
+    })();
 
     // 頁面載入時計算總分
     document.addEventListener('DOMContentLoaded', function() {
@@ -1963,10 +1840,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_status'])) {
             let finalSignatureData = sigDataEl ? sigDataEl.value : '';
             let finalSignatureId = sigIdEl ? sigIdEl.value : '';
             
-            if (!finalSignatureData && !finalSignatureId) {
-                showToast('請先進行電子簽章', false);
-                return;
-            }
+            // 簽名改為在名單頁「完成全部評分後」再簽名確認，此處可不填
+            // if (!finalSignatureData && !finalSignatureId) { showToast('請先進行電子簽章', false); return; }
 
         // 顯示載入提示
         const submitButton = this.querySelector('button[type="submit"]');

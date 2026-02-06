@@ -187,44 +187,14 @@ if ($is_teacher && !empty($user_id) && !empty($user_department_code)) {
             $stmt->bind_param("ii", $user_id, $year_param);
         }
     } else {
-        // 如果沒有正規化表，嘗試使用舊的欄位
-        $has_assigned_teacher = false;
-        $teacher_column_check = $conn->query("SHOW COLUMNS FROM continued_admission LIKE 'assigned_teacher_1_id'");
-        if ($teacher_column_check && $teacher_column_check->num_rows > 0) {
-            $has_assigned_teacher = true;
-        }
-        
-        if ($has_assigned_teacher) {
-            if ($has_assigned_department) {
-                // 有 assigned_department 欄位：檢查分配給老師
-                // 科系匹配會在 PHP 層再次檢查，這裡先不過濾 assigned_department
-                $stmt = $conn->prepare("SELECT ca.id, ca.apply_no, ca.name, ca.school, ca.status, ca.created_at, $assigned_dept_field, sd.name as school_name 
-                              FROM continued_admission ca
-                              LEFT JOIN school_data sd ON ca.school = sd.school_code
-                              WHERE (ca.assigned_teacher_1_id = ? OR ca.assigned_teacher_2_id = ?) " . $status_condition . "
-                              ORDER BY ca.$sortBy $sortOrder");
-                $year_param = $view_mode === 'active' ? $current_year : $filter_year;
-                $stmt->bind_param("iii", $user_id, $user_id, $year_param);
-            } else {
-                // 沒有 assigned_department 欄位：只檢查分配給老師（向後兼容，但理論上不應該有這種情況）
-                $stmt = $conn->prepare("SELECT ca.id, ca.apply_no, ca.name, ca.school, ca.status, ca.created_at, $assigned_dept_field, sd.name as school_name 
-                              FROM continued_admission ca
-                              LEFT JOIN school_data sd ON ca.school = sd.school_code
-                              WHERE (ca.assigned_teacher_1_id = ? OR ca.assigned_teacher_2_id = ?) " . $status_condition . "
-                              ORDER BY ca.$sortBy $sortOrder");
-                $year_param = $view_mode === 'active' ? $current_year : $filter_year;
-                $stmt->bind_param("iii", $user_id, $user_id, $year_param);
-            }
-        } else {
-            // 如果沒有分配欄位，老師看不到任何資料
-            $stmt = $conn->prepare("SELECT ca.id, ca.apply_no, ca.name, ca.school, ca.status, ca.created_at, $assigned_dept_field, sd.name as school_name 
+        // 無正規化表時分配資料已不存於 continued_admission，老師看不到任何名單
+        $stmt = $conn->prepare("SELECT ca.id, ca.apply_no, ca.name, ca.school, ca.status, ca.created_at, $assigned_dept_field, sd.name as school_name 
                           FROM continued_admission ca
                           LEFT JOIN school_data sd ON ca.school = sd.school_code
                           WHERE 1=0 " . $status_condition . "
                           ORDER BY ca.$sortBy $sortOrder");
-            $year_param = $view_mode === 'active' ? $current_year : $filter_year;
-            $stmt->bind_param("i", $year_param);
-        }
+        $year_param = $view_mode === 'active' ? $current_year : $filter_year;
+        $stmt->bind_param("i", $year_param);
     }
 } elseif ($is_director && !empty($user_department_code)) {
     // 主任只能看到已分配給他的科系的名單（assigned_department = 他的科系代碼）
@@ -347,19 +317,8 @@ foreach ($applications as &$app) {
         }
         $assign_stmt->close();
     } else {
-        // 使用舊欄位（向後兼容）
-        $old_check = $conn->query("SHOW COLUMNS FROM continued_admission LIKE 'assigned_teacher_1_id'");
-        if ($old_check && $old_check->num_rows > 0) {
-            $old_stmt = $conn->prepare("SELECT assigned_teacher_1_id, assigned_teacher_2_id FROM continued_admission WHERE id = ?");
-            $old_stmt->bind_param('i', $app['id']);
-            $old_stmt->execute();
-            $old_result = $old_stmt->get_result();
-            if ($old_row = $old_result->fetch_assoc()) {
-                $app['assigned_teacher_1_id'] = $old_row['assigned_teacher_1_id'] ?? null;
-                $app['assigned_teacher_2_id'] = $old_row['assigned_teacher_2_id'] ?? null;
-            }
-            $old_stmt->close();
-        }
+        $app['assigned_teacher_1_id'] = null;
+        $app['assigned_teacher_2_id'] = null;
     }
     
     // 查詢當前用戶對該學生的評分狀態和簽章資訊
@@ -562,6 +521,39 @@ try {
     // 如果資料表不存在或其他錯誤，設定為空陣列
     $department_stats = [];
     error_log("獲取科系名額資料失敗: " . $e->getMessage());
+}
+
+// 老師/主任：本年度「分配給我」與「已評分/未簽名確認」統計（僅在目前名單且使用正規化分配時計算）
+$teacher_score_signature_stats = null;
+if (($is_teacher || $is_director) && $view_mode === 'active' && $has_normalized_assignments && !empty($user_id)) {
+    $score_table_check = $conn->query("SHOW TABLES LIKE 'continued_admission_scores'");
+    $score_table_exists = $score_table_check && $score_table_check->num_rows > 0;
+    if ($score_table_exists) {
+        try {
+            $year_str = (string)$current_year;
+            $ac = $conn->prepare("SELECT COUNT(DISTINCT a.application_id) as c FROM continued_admission_assignments a INNER JOIN continued_admission ca ON ca.id = a.application_id WHERE a.reviewer_user_id = ? AND LEFT(ca.apply_no, 4) = ?");
+            $ac->bind_param("is", $user_id, $year_str);
+            $ac->execute();
+            $assigned_count = 0;
+            if ($row = $ac->get_result()->fetch_assoc()) $assigned_count = (int)$row['c'];
+            $ac->close();
+            $sc = $conn->prepare("SELECT COUNT(DISTINCT cas.application_id) as c FROM continued_admission_scores cas INNER JOIN continued_admission ca ON ca.id = cas.application_id WHERE cas.reviewer_user_id = ? AND LEFT(ca.apply_no, 4) = ?");
+            $sc->bind_param("is", $user_id, $year_str);
+            $sc->execute();
+            $scored_count = 0;
+            if ($row = $sc->get_result()->fetch_assoc()) $scored_count = (int)$row['c'];
+            $sc->close();
+            $uc = $conn->prepare("SELECT COUNT(*) as c FROM continued_admission_scores cas INNER JOIN continued_admission ca ON ca.id = cas.application_id WHERE cas.reviewer_user_id = ? AND cas.signature_id IS NULL AND LEFT(ca.apply_no, 4) = ?");
+            $uc->bind_param("is", $user_id, $year_str);
+            $uc->execute();
+            $unconfirmed_count = 0;
+            if ($row = $uc->get_result()->fetch_assoc()) $unconfirmed_count = (int)$row['c'];
+            $uc->close();
+            $teacher_score_signature_stats = ['assigned_count' => $assigned_count, 'scored_count' => $scored_count, 'unconfirmed_count' => $unconfirmed_count];
+        } catch (Exception $e) {
+            error_log("老師評分簽名統計失敗: " . $e->getMessage());
+        }
+    }
 }
 
 function getStatusText($status) {
@@ -1097,6 +1089,33 @@ function getStatusClass($status) {
                             $view_history = $current_view === 'history' ? 'active' : '';
                             $base_sort_qs = '&sort_by=' . urlencode($sortBy) . '&sort_order=' . urlencode($sortOrder);
                             ?>
+                            <?php if (($is_teacher || $is_director) && $view_mode === 'active' && $teacher_score_signature_stats !== null && (int)($teacher_score_signature_stats['assigned_count'] ?? 0) > 0): ?>
+                            <?php
+                            $ts = $teacher_score_signature_stats;
+                            $assigned = (int)($ts['assigned_count'] ?? 0);
+                            $scored = (int)($ts['scored_count'] ?? 0);
+                            $unconfirmed = (int)($ts['unconfirmed_count'] ?? 0);
+                            $all_scored = ($assigned > 0 && $scored >= $assigned);
+                            $can_sign = $all_scored && ($unconfirmed > 0);
+                            $already_signed = $all_scored && ($unconfirmed === 0);
+                            ?>
+                            <div id="teacherScoreSignatureBlock" style="margin-left: 60px; margin-right: 60px; margin-bottom: 12px; padding: 12px 16px; border-radius: 8px; display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; background: <?php echo $already_signed ? '#f6ffed' : ($can_sign ? '#e6f7ff' : '#fffbe6'); ?>; border: 1px solid <?php echo $already_signed ? '#b7eb8f' : ($can_sign ? '#91d5ff' : '#ffe58f'); ?>;">
+                                <div style="font-size: 14px; color: <?php echo $already_signed ? '#52c41a' : ($can_sign ? '#0050b3' : '#ad8b00'); ?>;">
+                                    <?php if (!$all_scored): ?>
+                                        <i class="fas fa-exclamation-circle" style="margin-right: 8px;"></i>您尚有 <strong><?php echo $assigned - $scored; ?></strong> 位學生未評分，請先完成<strong>全部</strong>評分後再簽名確認。
+                                    <?php elseif ($can_sign): ?>
+                                        <i class="fas fa-file-signature" style="margin-right: 8px;"></i>您已評完全部 <?php echo $assigned; ?> 位學生，請簽名確認全部評分（<?php echo $unconfirmed; ?> 筆待確認）。
+                                    <?php else: ?>
+                                        <i class="fas fa-check-circle" style="margin-right: 8px;"></i>已簽名確認全部評分。
+                                    <?php endif; ?>
+                                </div>
+                                <?php if ($can_sign): ?>
+                                <button type="button" onclick="openConfirmAllSignature()" class="btn-primary" style="padding: 8px 16px; white-space: nowrap;">
+                                    <i class="fas fa-file-signature"></i> 簽名確認全部評分
+                                </button>
+                                <?php endif; ?>
+                            </div>
+                            <?php endif; ?>
                             <div style="display:flex; align-items:center; gap:12px; margin-bottom:12px; margin-left: 60px;margin-right: 60px;">
                                 <div style="display:flex; gap:16px;">
                                     <?php
@@ -1652,12 +1671,12 @@ function getStatusClass($status) {
                                                 </p>
                                             </div>
                                             <div class="table-container">
-                                                <table class="table">
+                                                <table class="table ranking-table" data-dept="<?php echo htmlspecialchars($dept_code, ENT_QUOTES); ?>">
                                                     <thead>
                                                         <tr>
-                                                            <th>排名</th>
-                                                            <th>報名編號</th>
-                                                            <th>姓名</th>
+                                                            <th onclick="sortRankingTable('<?php echo htmlspecialchars($dept_code, ENT_QUOTES); ?>', 'rank')">排名 <span class="sort-icon" id="sort-rank_<?php echo htmlspecialchars($dept_code, ENT_QUOTES); ?>"></span></th>
+                                                            <th onclick="sortRankingTable('<?php echo htmlspecialchars($dept_code, ENT_QUOTES); ?>', 'apply_no')">報名編號 <span class="sort-icon" id="sort-apply_no_<?php echo htmlspecialchars($dept_code, ENT_QUOTES); ?>"></span></th>
+                                                            <th onclick="sortRankingTable('<?php echo htmlspecialchars($dept_code, ENT_QUOTES); ?>', 'name')">姓名 <span class="sort-icon" id="sort-name_<?php echo htmlspecialchars($dept_code, ENT_QUOTES); ?>"></span></th>
                                                             <?php
                                                             // 獲取第一個學生的評分老師姓名（用於表頭）
                                                             $header_teacher1_name = '評分的老師';
@@ -1676,15 +1695,15 @@ function getStatusClass($status) {
                                                                 }
                                                             }
                                                             ?>
-                                                            <th><?php echo $header_teacher1_name; ?></th>
-                                                            <th><?php echo $header_teacher2_name; ?></th>
-                                                            <th><?php echo $header_director_name; ?></th>
-                                                            <th>平均分數</th>
-                                                            <th>錄取狀態</th>
+                                                            <th onclick="sortRankingTable('<?php echo htmlspecialchars($dept_code, ENT_QUOTES); ?>', 'teacher1')"><?php echo $header_teacher1_name; ?> <span class="sort-icon" id="sort-teacher1_<?php echo htmlspecialchars($dept_code, ENT_QUOTES); ?>"></span></th>
+                                                            <th onclick="sortRankingTable('<?php echo htmlspecialchars($dept_code, ENT_QUOTES); ?>', 'teacher2')"><?php echo $header_teacher2_name; ?> <span class="sort-icon" id="sort-teacher2_<?php echo htmlspecialchars($dept_code, ENT_QUOTES); ?>"></span></th>
+                                                            <th onclick="sortRankingTable('<?php echo htmlspecialchars($dept_code, ENT_QUOTES); ?>', 'director')"><?php echo $header_director_name; ?> <span class="sort-icon" id="sort-director_<?php echo htmlspecialchars($dept_code, ENT_QUOTES); ?>"></span></th>
+                                                            <th onclick="sortRankingTable('<?php echo htmlspecialchars($dept_code, ENT_QUOTES); ?>', 'average')">平均分數 <span class="sort-icon" id="sort-average_<?php echo htmlspecialchars($dept_code, ENT_QUOTES); ?>"></span></th>
+                                                            <th onclick="sortRankingTable('<?php echo htmlspecialchars($dept_code, ENT_QUOTES); ?>', 'status')">錄取狀態 <span class="sort-icon" id="sort-status_<?php echo htmlspecialchars($dept_code, ENT_QUOTES); ?>"></span></th>
                                                             <th>操作</th>
                                                         </tr>
                                                     </thead>
-                                                    <tbody>
+                                                    <tbody id="rankingTableBody_<?php echo htmlspecialchars($dept_code, ENT_QUOTES); ?>">
                                                         <?php foreach ($dept_ranking['applications'] as $index => $app): 
                                                             // 獲取三位評審的評分
                                                             $teacher1_score = null;
@@ -1700,7 +1719,22 @@ function getStatusClass($status) {
                                                                 }
                                                             }
                                                         ?>
-                                                        <tr>
+                                                        <tr class="ranking-table-row" 
+                                                            data-dept="<?php echo htmlspecialchars($dept_code, ENT_QUOTES); ?>"
+                                                            data-rank="<?php echo $index + 1; ?>"
+                                                            data-apply-no="<?php echo htmlspecialchars($app['apply_no'] ?? $app['id'], ENT_QUOTES); ?>"
+                                                            data-name="<?php echo htmlspecialchars($app['name'], ENT_QUOTES); ?>"
+                                                            data-teacher1="<?php echo $teacher1_score ? ($teacher1_score['self_intro_score'] + $teacher1_score['skills_score']) : -1; ?>"
+                                                            data-teacher2="<?php echo $teacher2_score ? ($teacher2_score['self_intro_score'] + $teacher2_score['skills_score']) : -1; ?>"
+                                                            data-director="<?php echo $director_score ? ($director_score['self_intro_score'] + $director_score['skills_score']) : -1; ?>"
+                                                            data-average="<?php echo $app['average_score']; ?>"
+                                                            data-status="<?php 
+                                                                if ($app['average_score'] >= $dept_ranking['cutoff_score']) {
+                                                                    echo $index < $dept_ranking['total_quota'] ? '正取' : '備取';
+                                                                } else {
+                                                                    echo '不錄取';
+                                                                }
+                                                            ?>">
                                                             <td><?php echo $index + 1; ?></td>
                                                             <td><?php echo htmlspecialchars($app['apply_no'] ?? $app['id']); ?></td>
                                                             <td><?php echo htmlspecialchars($app['name']); ?></td>
@@ -1752,6 +1786,28 @@ function getStatusClass($status) {
                                                         <?php endforeach; ?>
                                                     </tbody>
                                                 </table>
+                                                
+                                                <!-- 分頁控制 -->
+                                                <?php if (!empty($dept_ranking['applications'])): ?>
+                                                <div class="pagination" id="paginationContainer_<?php echo htmlspecialchars($dept_code, ENT_QUOTES); ?>">
+                                                    <div class="pagination-info">
+                                                        <span>每頁顯示：</span>
+                                                        <select id="itemsPerPage_<?php echo htmlspecialchars($dept_code, ENT_QUOTES); ?>" onchange="changeRankingItemsPerPage('<?php echo htmlspecialchars($dept_code, ENT_QUOTES); ?>')">
+                                                            <option value="10" selected>10</option>
+                                                            <option value="20">20</option>
+                                                            <option value="50">50</option>
+                                                            <option value="100">100</option>
+                                                            <option value="all">全部</option>
+                                                        </select>
+                                                        <span id="pageInfo_<?php echo htmlspecialchars($dept_code, ENT_QUOTES); ?>">顯示第 <span id="currentRange_<?php echo htmlspecialchars($dept_code, ENT_QUOTES); ?>">1-<?php echo min(10, count($dept_ranking['applications'])); ?></span> 筆，共 <span id="totalItemsCount_<?php echo htmlspecialchars($dept_code, ENT_QUOTES); ?>"><?php echo count($dept_ranking['applications']); ?></span> 筆</span>
+                                                    </div>
+                                                    <div class="pagination-controls">
+                                                        <button id="prevPage_<?php echo htmlspecialchars($dept_code, ENT_QUOTES); ?>" onclick="changeRankingPage('<?php echo htmlspecialchars($dept_code, ENT_QUOTES); ?>', -1)" disabled>上一頁</button>
+                                                        <span id="pageNumbers_<?php echo htmlspecialchars($dept_code, ENT_QUOTES); ?>"></span>
+                                                        <button id="nextPage_<?php echo htmlspecialchars($dept_code, ENT_QUOTES); ?>" onclick="changeRankingPage('<?php echo htmlspecialchars($dept_code, ENT_QUOTES); ?>', 1)">下一頁</button>
+                                                    </div>
+                                                </div>
+                                                <?php endif; ?>
                                             </div>
                                         </div>
                                     <?php endforeach; ?>
@@ -1857,6 +1913,27 @@ function getStatusClass($status) {
             setTimeout(() => { toast.style.display = 'none'; }, 500);
         }, 3000);
     }
+
+    // 簽名確認全部評分：完成全部評分後才可簽名，一次簽名寫入所有未確認的評分
+    function openConfirmAllSignature() {
+        window.open('signature.php?document_type=teacher_score_confirm_all&document_id=0', 'confirm_all_signature', 'width=900,height=700');
+    }
+    window.addEventListener('message', function(event) {
+        if (!event.data || event.data.type !== 'signature_saved' || !event.data.signature_id) return;
+        fetch('confirm_all_teacher_scores_signature.php', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'same-origin',
+            body: JSON.stringify({ signature_id: event.data.signature_id })
+        }).then(function(r) { return r.json(); }).then(function(res) {
+            if (res.success) {
+                showToast('已簽名確認全部評分');
+                setTimeout(function() { window.location.reload(); }, 1500);
+            } else {
+                showToast(res.message || '簽名確認失敗', false);
+            }
+        }).catch(function() { showToast('簽名確認失敗', false); });
+    });
 
     // TAB 切換功能
     function switchTab(tabName) {
@@ -1997,13 +2074,14 @@ function getStatusClass($status) {
         // 隱藏所有行
         allRows.forEach(row => row.style.display = 'none');
         
+        let rangeText = '0-0';
+        
         if (itemsPerPage === 'all' || itemsPerPage >= totalItems) {
             // 顯示所有過濾後的行
             filteredRows.forEach(row => row.style.display = '');
             
             // 更新分頁資訊
-            document.getElementById('currentRange').textContent = 
-                totalItems > 0 ? `1-${totalItems}` : '0-0';
+            rangeText = totalItems > 0 ? `1-${totalItems}` : '0-0';
         } else {
             // 計算當前頁的範圍
             const start = (currentPage - 1) * itemsPerPage;
@@ -2017,12 +2095,20 @@ function getStatusClass($status) {
             }
             
             // 更新分頁資訊
-            document.getElementById('currentRange').textContent = 
-                totalItems > 0 ? `${start + 1}-${end}` : '0-0';
+            rangeText = totalItems > 0 ? `${start + 1}-${end}` : '0-0';
         }
         
-        // 更新總數
-        updateTotalCount();
+        // 更新分頁資訊顯示（與圖片中的格式一致）
+        const currentRangeEl = document.getElementById('currentRange');
+        const totalItemsCountEl = document.getElementById('totalItemsCount');
+        
+        if (currentRangeEl) {
+            currentRangeEl.textContent = rangeText;
+        }
+        
+        if (totalItemsCountEl) {
+            totalItemsCountEl.textContent = totalItems;
+        }
         
         // 更新上一頁/下一頁按鈕
         const prevBtn = document.getElementById('prevPage');
@@ -2320,38 +2406,34 @@ function getStatusClass($status) {
                     if (firstApp.scores) {
                         firstApp.scores.forEach(score => {
                             if (score.assignment_order == 1) {
-                                headerTeacher1Name = (score.reviewer_name || '評分的老師') + '總分';
+                                headerTeacher1Name = score.reviewer_name || '評分的老師';
                             } else if (score.assignment_order == 2) {
-                                headerTeacher2Name = (score.reviewer_name || '評分的老師') + '總分';
+                                headerTeacher2Name = score.reviewer_name || '評分的老師';
                             } else if (score.assignment_order == 3) {
-                                headerDirectorName = (score.reviewer_name || '評分的老師') + '總分';
+                                headerDirectorName = score.reviewer_name || '評分的老師';
                             }
                         });
                     }
                 }
                 
                 const excelData = [
-                    ['排名', '報名編號', '姓名', headerTeacher1Name, (headerTeacher1Name.replace('總分', '自傳')), (headerTeacher1Name.replace('總分', '專長')), headerTeacher2Name, (headerTeacher2Name.replace('總分', '自傳')), (headerTeacher2Name.replace('總分', '專長')), headerDirectorName, (headerDirectorName.replace('總分', '自傳')), (headerDirectorName.replace('總分', '專長')), '平均分數', '錄取狀態']
+                    ['排名', '報名編號', '姓名', headerTeacher1Name + '自傳', headerTeacher1Name + '專長', headerTeacher2Name + '自傳', headerTeacher2Name + '專長', headerDirectorName + '自傳', headerDirectorName + '專長', '平均分數', '錄取狀態']
                 ];
 
                 deptData.applications.forEach((app, index) => {
                     // 獲取三位評審的評分
-                    let teacher1Total = '', teacher1Intro = '', teacher1Skills = '';
-                    let teacher2Total = '', teacher2Intro = '', teacher2Skills = '';
-                    let directorTotal = '', directorIntro = '', directorSkills = '';
+                    let teacher1Intro = '', teacher1Skills = '';
+                    let teacher2Intro = '', teacher2Skills = '';
+                    let directorIntro = '', directorSkills = '';
 
                     app.scores.forEach(score => {
-                        const total = score.self_intro_score + score.skills_score;
                         if (score.assignment_order == 1) {
-                            teacher1Total = total;
                             teacher1Intro = score.self_intro_score;
                             teacher1Skills = score.skills_score;
                         } else if (score.assignment_order == 2) {
-                            teacher2Total = total;
                             teacher2Intro = score.self_intro_score;
                             teacher2Skills = score.skills_score;
                         } else if (score.assignment_order == 3) {
-                            directorTotal = total;
                             directorIntro = score.self_intro_score;
                             directorSkills = score.skills_score;
                         }
@@ -2373,13 +2455,10 @@ function getStatusClass($status) {
                         index + 1,
                         app.apply_no || app.id,
                         app.name,
-                        teacher1Total || '',
                         teacher1Intro || '',
                         teacher1Skills || '',
-                        teacher2Total || '',
                         teacher2Intro || '',
                         teacher2Skills || '',
-                        directorTotal || '',
                         directorIntro || '',
                         directorSkills || '',
                         app.average_score.toFixed(2),
@@ -2395,13 +2474,10 @@ function getStatusClass($status) {
                     { wch: 8 },  // 排名
                     { wch: 15 }, // 報名編號
                     { wch: 12 }, // 姓名
-                    { wch: 12 }, // 評分的老師總分
                     { wch: 12 }, // 評分的老師自傳
                     { wch: 12 }, // 評分的老師專長
-                    { wch: 12 }, // 評分的老師總分
                     { wch: 12 }, // 評分的老師自傳
                     { wch: 12 }, // 評分的老師專長
-                    { wch: 12 }, // 評分的老師總分
                     { wch: 12 }, // 評分的老師自傳
                     { wch: 12 }, // 評分的老師專長
                     { wch: 12 }, // 平均分數
@@ -2484,38 +2560,34 @@ function getStatusClass($status) {
                         if (firstApp.scores) {
                             firstApp.scores.forEach(score => {
                                 if (score.assignment_order == 1) {
-                                    headerTeacher1Name = (score.reviewer_name || '評分的老師') + '總分';
+                                    headerTeacher1Name = score.reviewer_name || '評分的老師';
                                 } else if (score.assignment_order == 2) {
-                                    headerTeacher2Name = (score.reviewer_name || '評分的老師') + '總分';
+                                    headerTeacher2Name = score.reviewer_name || '評分的老師';
                                 } else if (score.assignment_order == 3) {
-                                    headerDirectorName = (score.reviewer_name || '評分的老師') + '總分';
+                                    headerDirectorName = score.reviewer_name || '評分的老師';
                                 }
                             });
                         }
                     }
                     
                     const excelData = [
-                        ['排名', '報名編號', '姓名', headerTeacher1Name, (headerTeacher1Name.replace('總分', '自傳')), (headerTeacher1Name.replace('總分', '專長')), headerTeacher2Name, (headerTeacher2Name.replace('總分', '自傳')), (headerTeacher2Name.replace('總分', '專長')), headerDirectorName, (headerDirectorName.replace('總分', '自傳')), (headerDirectorName.replace('總分', '專長')), '平均分數', '錄取狀態']
+                        ['排名', '報名編號', '姓名', headerTeacher1Name + '自傳', headerTeacher1Name + '專長', headerTeacher2Name + '自傳', headerTeacher2Name + '專長', headerDirectorName + '自傳', headerDirectorName + '專長', '平均分數', '錄取狀態']
                     ];
 
                     deptData.applications.forEach((app, index) => {
                         // 獲取三位評審的評分
-                        let teacher1Total = '', teacher1Intro = '', teacher1Skills = '';
-                        let teacher2Total = '', teacher2Intro = '', teacher2Skills = '';
-                        let directorTotal = '', directorIntro = '', directorSkills = '';
+                        let teacher1Intro = '', teacher1Skills = '';
+                        let teacher2Intro = '', teacher2Skills = '';
+                        let directorIntro = '', directorSkills = '';
 
                         app.scores.forEach(score => {
-                            const total = score.self_intro_score + score.skills_score;
                             if (score.assignment_order == 1) {
-                                teacher1Total = total;
                                 teacher1Intro = score.self_intro_score;
                                 teacher1Skills = score.skills_score;
                             } else if (score.assignment_order == 2) {
-                                teacher2Total = total;
                                 teacher2Intro = score.self_intro_score;
                                 teacher2Skills = score.skills_score;
                             } else if (score.assignment_order == 3) {
-                                directorTotal = total;
                                 directorIntro = score.self_intro_score;
                                 directorSkills = score.skills_score;
                             }
@@ -2537,13 +2609,10 @@ function getStatusClass($status) {
                             index + 1,
                             app.apply_no || app.id,
                             app.name,
-                            teacher1Total || '',
                             teacher1Intro || '',
                             teacher1Skills || '',
-                            teacher2Total || '',
                             teacher2Intro || '',
                             teacher2Skills || '',
-                            directorTotal || '',
                             directorIntro || '',
                             directorSkills || '',
                             app.average_score.toFixed(2),
@@ -2559,13 +2628,10 @@ function getStatusClass($status) {
                         { wch: 8 },  // 排名
                         { wch: 15 }, // 報名編號
                         { wch: 12 }, // 姓名
-                        { wch: 12 }, // 評分的老師總分
                         { wch: 12 }, // 評分的老師自傳
                         { wch: 12 }, // 評分的老師專長
-                        { wch: 12 }, // 評分的老師總分
                         { wch: 12 }, // 評分的老師自傳
                         { wch: 12 }, // 評分的老師專長
-                        { wch: 12 }, // 評分的老師總分
                         { wch: 12 }, // 評分的老師自傳
                         { wch: 12 }, // 評分的老師專長
                         { wch: 12 }, // 平均分數
@@ -2598,6 +2664,122 @@ function getStatusClass($status) {
             });
     }
 
+    // 排序「達到錄取標準名單」表格
+    const rankingSortState = {}; // 存儲每個科系的排序狀態 { deptCode: { field: 'rank', order: 'asc' } }
+    
+    function sortRankingTable(deptCode, field) {
+        // 初始化該科系的排序狀態
+        if (!rankingSortState[deptCode]) {
+            rankingSortState[deptCode] = { field: 'rank', order: 'asc' };
+        }
+        
+        // 如果點擊的是當前排序欄位，則切換排序方向
+        if (rankingSortState[deptCode].field === field) {
+            rankingSortState[deptCode].order = rankingSortState[deptCode].order === 'asc' ? 'desc' : 'asc';
+        } else {
+            rankingSortState[deptCode].field = field;
+            rankingSortState[deptCode].order = 'asc';
+        }
+        
+        // 獲取該科系的所有行
+        const tbody = document.getElementById(`rankingTableBody_${deptCode}`);
+        if (!tbody) return;
+        
+        const rows = Array.from(tbody.querySelectorAll('tr.ranking-table-row'));
+        if (rows.length === 0) return;
+        
+        // 排序行
+        rows.sort((a, b) => {
+            let aValue, bValue;
+            
+            switch (field) {
+                case 'rank':
+                    aValue = parseInt(a.getAttribute('data-rank')) || 0;
+                    bValue = parseInt(b.getAttribute('data-rank')) || 0;
+                    break;
+                case 'apply_no':
+                    aValue = a.getAttribute('data-apply-no') || '';
+                    bValue = b.getAttribute('data-apply-no') || '';
+                    // 如果是數字，轉換為數字比較
+                    if (!isNaN(aValue) && !isNaN(bValue)) {
+                        aValue = parseInt(aValue);
+                        bValue = parseInt(bValue);
+                    }
+                    break;
+                case 'name':
+                    aValue = (a.getAttribute('data-name') || '').toLowerCase();
+                    bValue = (b.getAttribute('data-name') || '').toLowerCase();
+                    break;
+                case 'teacher1':
+                case 'teacher2':
+                case 'director':
+                    aValue = parseFloat(a.getAttribute(`data-${field}`)) || -1;
+                    bValue = parseFloat(b.getAttribute(`data-${field}`)) || -1;
+                    break;
+                case 'average':
+                    aValue = parseFloat(a.getAttribute('data-average')) || 0;
+                    bValue = parseFloat(b.getAttribute('data-average')) || 0;
+                    break;
+                case 'status':
+                    aValue = a.getAttribute('data-status') || '';
+                    bValue = b.getAttribute('data-status') || '';
+                    // 排序順序：正取 > 備取 > 不錄取
+                    const statusOrder = { '正取': 1, '備取': 2, '不錄取': 3 };
+                    aValue = statusOrder[aValue] || 999;
+                    bValue = statusOrder[bValue] || 999;
+                    break;
+                default:
+                    return 0;
+            }
+            
+            // 比較值
+            if (typeof aValue === 'string' && typeof bValue === 'string') {
+                if (rankingSortState[deptCode].order === 'asc') {
+                    return aValue.localeCompare(bValue, 'zh-TW');
+                } else {
+                    return bValue.localeCompare(aValue, 'zh-TW');
+                }
+            } else {
+                if (rankingSortState[deptCode].order === 'asc') {
+                    return aValue - bValue;
+                } else {
+                    return bValue - aValue;
+                }
+            }
+        });
+        
+        // 重新插入排序後的行（保持 DOM 順序）
+        rows.forEach(row => tbody.appendChild(row));
+        
+        // 注意：不更新排名顯示，保持原始排名
+        
+        // 更新排序圖標
+        updateRankingSortIcons(deptCode, field, rankingSortState[deptCode].order);
+        
+        // 重新初始化分頁（因為順序改變了）
+        if (rankingPagination[deptCode]) {
+            rankingPagination[deptCode].allRows = rows;
+            rankingPagination[deptCode].filteredRows = rows;
+            rankingPagination[deptCode].currentPage = 1; // 重置到第一頁
+            updateRankingPagination(deptCode);
+        }
+    }
+    
+    // 更新排序圖標
+    function updateRankingSortIcons(deptCode, field, order) {
+        // 清除該科系所有排序圖標
+        const icons = document.querySelectorAll(`[id^="sort-"][id$="_${deptCode}"]`);
+        icons.forEach(icon => {
+            icon.className = 'sort-icon';
+        });
+        
+        // 設置當前排序欄位的圖標
+        const currentIcon = document.getElementById(`sort-${field}_${deptCode}`);
+        if (currentIcon) {
+            currentIcon.className = `sort-icon active ${order}`;
+        }
+    }
+    
     // Ranking TAB 科系分頁（招生中心）：比照「評分」那種 tab 切換顯示
     function switchRankingDeptTab(deptCode) {
         const tabs = document.querySelectorAll('#rankingDeptTabs .ranking-dept-tab');
@@ -2616,6 +2798,11 @@ function getStatusClass($status) {
 
         // 記住最後選擇（刷新後保留）
         try { localStorage.setItem('rankingDeptTab', deptCode); } catch (e) {}
+        
+        // 重新初始化分頁（確保顯示的科系分頁正確）
+        setTimeout(() => {
+            initRankingPagination();
+        }, 100);
     }
 
     document.addEventListener('DOMContentLoaded', function() {
@@ -2626,11 +2813,179 @@ function getStatusClass($status) {
             const v = localStorage.getItem('rankingDeptTab');
             if (v) saved = v;
         } catch (e) {}
-
+        
         // 若保存的科系不存在，就回到 all
         const exists = !!tabsWrap.querySelector(`.ranking-dept-tab[data-dept=\"${CSS.escape(saved)}\"]`);
         switchRankingDeptTab(exists ? saved : 'all');
+        
+        // 初始化所有科系的分頁
+        initRankingPagination();
     });
+    
+    // 科系分頁相關變數（每個科系獨立的分頁狀態）
+    const rankingPagination = {};
+    
+    // 初始化所有科系的分頁
+    function initRankingPagination() {
+        const sections = document.querySelectorAll('.ranking-dept-section');
+        sections.forEach(section => {
+            const deptCode = section.getAttribute('data-dept-code');
+            if (!deptCode) return;
+            
+            // 初始化該科系的分頁狀態（只在第一次初始化時設置）
+            if (!rankingPagination[deptCode]) {
+                rankingPagination[deptCode] = {
+                    currentPage: 1,
+                    itemsPerPage: 10,
+                    allRows: [],
+                    filteredRows: []
+                };
+                
+                // 初始化該科系的排序狀態（預設按排名升序）
+                if (!rankingSortState[deptCode]) {
+                    rankingSortState[deptCode] = { field: 'rank', order: 'asc' };
+                }
+                
+                // 獲取該科系表格的所有行（只在第一次初始化時獲取）
+                const tbody = section.querySelector(`tbody[id^="rankingTableBody_"]`);
+                if (tbody) {
+                    const rows = Array.from(tbody.querySelectorAll('tr.ranking-table-row'));
+                    rankingPagination[deptCode].allRows = rows;
+                    rankingPagination[deptCode].filteredRows = rows;
+                }
+            }
+            
+            // 更新排序圖標（顯示預設排序狀態）
+            const sortState = rankingSortState[deptCode] || { field: 'rank', order: 'asc' };
+            updateRankingSortIcons(deptCode, sortState.field, sortState.order);
+            
+            // 更新分頁顯示
+            updateRankingPagination(deptCode);
+        });
+    }
+    
+    // 改變每頁顯示數量
+    function changeRankingItemsPerPage(deptCode) {
+        const select = document.getElementById(`itemsPerPage_${deptCode}`);
+        if (!select) return;
+        
+        const pagination = rankingPagination[deptCode];
+        if (!pagination) return;
+        
+        pagination.itemsPerPage = select.value === 'all' ? 
+                                  pagination.filteredRows.length : 
+                                  parseInt(select.value);
+        pagination.currentPage = 1;
+        updateRankingPagination(deptCode);
+    }
+    
+    // 改變頁面
+    function changeRankingPage(deptCode, direction) {
+        const pagination = rankingPagination[deptCode];
+        if (!pagination) return;
+        
+        const totalPages = Math.ceil(pagination.filteredRows.length / pagination.itemsPerPage);
+        pagination.currentPage += direction;
+        
+        if (pagination.currentPage < 1) pagination.currentPage = 1;
+        if (pagination.currentPage > totalPages) pagination.currentPage = totalPages;
+        
+        updateRankingPagination(deptCode);
+    }
+    
+    // 跳轉到指定頁面
+    function goToRankingPage(deptCode, page) {
+        const pagination = rankingPagination[deptCode];
+        if (!pagination) return;
+        
+        pagination.currentPage = page;
+        updateRankingPagination(deptCode);
+    }
+    
+    // 更新分頁顯示
+    function updateRankingPagination(deptCode) {
+        const pagination = rankingPagination[deptCode];
+        if (!pagination) return;
+        
+        const totalItems = pagination.filteredRows.length;
+        const totalPages = pagination.itemsPerPage === 'all' || pagination.itemsPerPage >= totalItems ? 1 : Math.ceil(totalItems / pagination.itemsPerPage);
+        
+        // 隱藏所有行
+        pagination.allRows.forEach(row => row.style.display = 'none');
+        
+        let rangeText = '0-0';
+        
+        if (pagination.itemsPerPage === 'all' || pagination.itemsPerPage >= totalItems) {
+            // 顯示所有過濾後的行
+            pagination.filteredRows.forEach(row => row.style.display = '');
+            rangeText = totalItems > 0 ? `1-${totalItems}` : '0-0';
+        } else {
+            // 計算當前頁的範圍
+            const start = (pagination.currentPage - 1) * pagination.itemsPerPage;
+            const end = Math.min(start + pagination.itemsPerPage, totalItems);
+            
+            // 顯示當前頁的行
+            for (let i = start; i < end; i++) {
+                if (pagination.filteredRows[i]) {
+                    pagination.filteredRows[i].style.display = '';
+                }
+            }
+            
+            rangeText = totalItems > 0 ? `${start + 1}-${end}` : '0-0';
+        }
+        
+        // 更新分頁資訊顯示
+        const currentRangeEl = document.getElementById(`currentRange_${deptCode}`);
+        const totalItemsCountEl = document.getElementById(`totalItemsCount_${deptCode}`);
+        const pageInfoEl = document.getElementById(`pageInfo_${deptCode}`);
+        
+        if (currentRangeEl) {
+            currentRangeEl.textContent = rangeText;
+        }
+        
+        if (totalItemsCountEl) {
+            totalItemsCountEl.textContent = totalItems;
+        }
+        
+        if (pageInfoEl) {
+            pageInfoEl.innerHTML = `顯示第 <span id="currentRange_${deptCode}">${rangeText}</span> 筆，共 ${totalItems} 筆`;
+        }
+        
+        // 更新上一頁/下一頁按鈕
+        const prevBtn = document.getElementById(`prevPage_${deptCode}`);
+        const nextBtn = document.getElementById(`nextPage_${deptCode}`);
+        if (prevBtn) prevBtn.disabled = pagination.currentPage === 1;
+        if (nextBtn) nextBtn.disabled = pagination.currentPage >= totalPages || totalPages <= 1;
+        
+        // 更新頁碼按鈕
+        updateRankingPageNumbers(deptCode, totalPages);
+    }
+    
+    // 更新頁碼按鈕
+    function updateRankingPageNumbers(deptCode, totalPages) {
+        const pageNumbers = document.getElementById(`pageNumbers_${deptCode}`);
+        if (!pageNumbers) return;
+        
+        const pagination = rankingPagination[deptCode];
+        if (!pagination) return;
+        
+        pageNumbers.innerHTML = '';
+        
+        // 總是顯示頁碼按鈕（即使只有1頁）
+        if (totalPages >= 1) {
+            // 如果只有1頁，只顯示"1"
+            // 如果有多頁，顯示所有頁碼
+            const pagesToShow = totalPages === 1 ? [1] : Array.from({length: totalPages}, (_, i) => i + 1);
+            
+            for (let i of pagesToShow) {
+                const btn = document.createElement('button');
+                btn.textContent = i;
+                btn.onclick = () => goToRankingPage(deptCode, i);
+                if (i === pagination.currentPage) btn.classList.add('active');
+                pageNumbers.appendChild(btn);
+            }
+        }
+    }
     <?php endif; ?>
 
     </script>

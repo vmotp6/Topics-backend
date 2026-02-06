@@ -374,6 +374,12 @@ function caQueueResultEmails(mysqli $conn, int $year, string $announcementConten
         return ['queued' => 0, 'skipped' => 0, 'reason' => 'continued_admission 缺少 email 欄位'];
     }
 
+    // admission_rank 在部分資料庫可能不存在，動態選取
+    $hasRank = false;
+    $rankRes = $conn->query("SHOW COLUMNS FROM continued_admission LIKE 'admission_rank'");
+    if ($rankRes && $rankRes->num_rows > 0) $hasRank = true;
+    $rankSelect = $hasRank ? ', admission_rank' : ', NULL AS admission_rank';
+
     // 取得科系名稱
     $deptNameMap = [];
     $deptRes = $conn->query("SELECT code, name FROM departments");
@@ -382,13 +388,14 @@ function caQueueResultEmails(mysqli $conn, int $year, string $announcementConten
     }
 
     // 撈出已決定結果者（含今年）
-    $stmt = $conn->prepare("
-        SELECT id, name, email, assigned_department, status, admission_rank, apply_no
+    $sql = "
+        SELECT id, name, email, assigned_department, status{$rankSelect}, apply_no
         FROM continued_admission
         WHERE assigned_department IS NOT NULL AND assigned_department != ''
           AND LEFT(apply_no, 4) = ?
           AND status IN ('approved','AP','waitlist','AD','rejected','RE')
-    ");
+    ";
+    $stmt = $conn->prepare($sql);
     if (!$stmt) throw new Exception("無法準備寄信名單查詢: " . $conn->error);
     $stmt->bind_param("i", $year);
     $stmt->execute();
