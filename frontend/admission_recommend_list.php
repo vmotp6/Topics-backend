@@ -860,7 +860,7 @@ try {
     
     // --- 根據 view_mode 在 PHP 層級過濾資料（pass/manual/fail/empty/all） ---
     // 僅使用資料庫 status（由招生中心手動設定）
-    $status_code_to_label = [ 'AP' => '通過', 'RE' => '不通過', 'MC' => '需人工審查' ];
+    $status_code_to_label = [ 'AP' => '通過(主任尚未審核)', 'RE' => '不通過(主任尚未審核)', 'MC' => '需人工審查', 'APD' => '科主任已審核' ];
     if (isset($view_mode) && $view_mode !== 'all') {
         $filtered = [];
         foreach ($recommendations as $rec) {
@@ -872,10 +872,11 @@ try {
                 $label = '未填寫';
             }
 
-            if ($view_mode === 'pass' && $label === '通過') $filtered[] = $rec;
+            if ($view_mode === 'pass' && ($label === '通過(主任尚未審核)' || $label === '科主任已審核')) $filtered[] = $rec;
             if ($view_mode === 'manual' && $label === '需人工審查') $filtered[] = $rec;
-            if ($view_mode === 'fail' && $label === '不通過') $filtered[] = $rec;
+            if ($view_mode === 'fail' && $label === '不通過(主任尚未審核)') $filtered[] = $rec;
             if ($view_mode === 'empty' && $label === '未填寫') $filtered[] = $rec;
+            if ($view_mode === 'director_pending' && ($label === '通過(主任尚未審核)' || $label === '不通過(主任尚未審核)')) $filtered[] = $rec;
         }
         $recommendations = $filtered;
     }
@@ -1731,20 +1732,9 @@ try {
                                 <option value="manual" <?php echo ($view_mode_ui === 'manual') ? 'selected' : ''; ?>>需人工審核</option>
                                 <option value="fail" <?php echo ($view_mode_ui === 'fail') ? 'selected' : ''; ?>>不通過</option>
                             </select>
-                            <button type="button" class="btn-view" id="recommenderFilterToggle">找尋相同推薦人</button>
                             <button type="button" class="btn-view" id="gmailSendToggle">寄送gmail</button>
                             <button type="button" class="btn-view" id="gmailSendConfirm" style="display:none;">發送gmail</button>
                             <button type="button" class="btn-view" id="gmailSendCancel" style="display:none;">取消</button>
-                            <select id="recommenderFilterSelect" class="search-select" style="display:none; min-width: 200px;" title="相同推薦人">
-                                <option value="">請選擇推薦人</option>
-                                <?php foreach ($dup_recommenders as $key => $info): ?>
-                                    <option value="<?php echo htmlspecialchars($key); ?>">
-                                        <?php echo htmlspecialchars($info['name'] . '（' . $info['id'] . '）'); ?>
-                                    </option>
-                                <?php endforeach; ?>
-                            </select>
-                            <button type="button" class="btn-view" id="recommenderFilterApply" style="display:none;">查詢</button>
-                            <button type="button" class="btn-view" id="recommenderFilterCancel" style="display:none;">取消</button>
                         </div>
                         <?php if (empty($recommendations)): ?>
                             <div class="empty-state" style="margin-left:55px; margin-top:24px; text-align:center;">
@@ -1782,24 +1772,15 @@ try {
                                 <tbody>
                                     <?php foreach ($recommendations as $item): ?>
                                     <?php
-                                        $status_code_to_label_ui = [ 'AP' => '通過', 'RE' => '不通過', 'MC' => '需人工審查' ];
+                                        $status_code_to_label_ui = [ 'AP' => '通過(主任尚未審核)', 'RE' => '不通過(主任尚未審核)', 'MC' => '需人工審查', 'APD' => '科主任已審核' ];
                                         $current_status_code = isset($item['status']) ? trim((string)$item['status']) : '';
                                         $row_review = ($current_status_code !== '' && isset($status_code_to_label_ui[$current_status_code]))
                                             ? $status_code_to_label_ui[$current_status_code]
                                             : '未填寫';
                                     ?>
-                                    <?php
-                                        $row_recommender_key = '';
-                                        $rname = trim((string)($item['recommender_name'] ?? ''));
-                                        $rid = trim((string)($item['recommender_student_id'] ?? ''));
-                                        if ($rname !== '' && $rid !== '') {
-                                            $row_recommender_key = normalize_text($rname) . '|' . $rid;
-                                        }
-                                    ?>
                                     <tr data-review-result="<?php echo htmlspecialchars($row_review); ?>"
                                         data-student-interest="<?php echo htmlspecialchars((string)($item['student_interest_code'] ?? '')); ?>"
-                                        data-academic-year="<?php echo htmlspecialchars((string)($item['academic_year'] ?? '')); ?>"
-                                        data-recommender-key="<?php echo htmlspecialchars($row_recommender_key); ?>">
+                                        data-academic-year="<?php echo htmlspecialchars((string)($item['academic_year'] ?? '')); ?>">
                                         <td class="gmail-select-cell" style="display:none;">
                                             <input type="checkbox" class="gmail-select-row" value="<?php echo (int)$item['id']; ?>">
                                         </td>
@@ -1831,7 +1812,7 @@ try {
                                         <?php if ($can_view_review_result): ?>
                                             <td>
                                                 <?php
-                                                    $status_code_to_label_ui = [ 'AP' => '通過', 'RE' => '不通過', 'MC' => '需人工審查' ];
+                                                    $status_code_to_label_ui = [ 'AP' => '通過(主任尚未審核)', 'RE' => '不通過(主任尚未審核)', 'MC' => '需人工審查', 'APD' => '科主任已審核' ];
                                                     $current_status = isset($item['status']) ? trim((string)$item['status']) : '';
                                                     $display_review = ($current_status !== '' && isset($status_code_to_label_ui[$current_status]))
                                                         ? $status_code_to_label_ui[$current_status]
@@ -1847,8 +1828,8 @@ try {
                                                     <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
                                                         <?php
                                                             $badge_class = 'review-badge';
-                                                            if ($display_review === '通過') $badge_class .= ' pass';
-                                                            elseif ($display_review === '不通過') $badge_class .= ' fail';
+                                                            if ($display_review === '通過(主任尚未審核)' || $display_review === '科主任已審核') $badge_class .= ' pass';
+                                                            elseif ($display_review === '不通過(主任尚未審核)') $badge_class .= ' fail';
                                                             elseif ($display_review === '需人工審查') $badge_class .= ' manual';
                                                             else $badge_class .= ' empty';
                                                         ?>
@@ -1868,8 +1849,7 @@ try {
                                                                 <?php echo (int)($item['nsbi_found'] ?? 0); ?>,
                                                                 <?php echo (int)($item['auto_review_match_name'] ?? 0); ?>,
                                                                 <?php echo (int)($item['auto_review_match_school'] ?? 0); ?>,
-                                                                <?php echo (int)($item['auto_review_match_phone'] ?? 0); ?>,
-                                                                '<?php echo htmlspecialchars((string)($item['proof_evidence'] ?? '')); ?>'
+                                                                <?php echo (int)($item['auto_review_match_phone'] ?? 0); ?>
                                                             )"
                                                         >
                                                             查看審核結果
@@ -2391,10 +2371,6 @@ try {
         const interestFilter = document.getElementById('interestFilter');
         const academicYearFilter = document.getElementById('academicYearFilter');
         const viewModeSelect = document.getElementById('viewModeSelect');
-        const recommenderFilterToggle = document.getElementById('recommenderFilterToggle');
-        const recommenderFilterSelect = document.getElementById('recommenderFilterSelect');
-        const recommenderFilterApply = document.getElementById('recommenderFilterApply');
-        const recommenderFilterCancel = document.getElementById('recommenderFilterCancel');
         const gmailSendToggle = document.getElementById('gmailSendToggle');
         const gmailSendConfirm = document.getElementById('gmailSendConfirm');
         const gmailSendCancel = document.getElementById('gmailSendCancel');
@@ -2457,8 +2433,6 @@ try {
                 const reviewVal = (reviewFilter && reviewFilter.value) ? reviewFilter.value : '';
                 const interestVal = (interestFilter && interestFilter.value) ? interestFilter.value : '';
                 const yearVal = (academicYearFilter && academicYearFilter.value) ? academicYearFilter.value : '';
-                const recommenderVal = (recommenderFilterSelect && recommenderFilterSelect.value) ? recommenderFilterSelect.value : '';
-
                 if (!tbody) return;
 
                 filteredRows = allRows.filter(row => {
@@ -2479,12 +2453,6 @@ try {
                     if (yearVal) {
                         const yy = row.dataset ? (row.dataset.academicYear || '') : '';
                         if (String(yy) !== String(yearVal)) return false;
-                    }
-
-                    // 3.5) 相同推薦人篩選（用 data-recommender-key）
-                    if (recommenderVal) {
-                        const rk = row.dataset ? (row.dataset.recommenderKey || '') : '';
-                        if (rk !== recommenderVal) return false;
                     }
 
                     // 4) 關鍵字搜尋（全欄位文字）
@@ -2522,7 +2490,6 @@ try {
                     if (reviewFilter) reviewFilter.value = '';
                     if (interestFilter) interestFilter.value = '';
                     if (academicYearFilter) academicYearFilter.value = '';
-                    if (recommenderFilterSelect) recommenderFilterSelect.value = '';
                     applyFilters();
                 });
             }
@@ -2541,28 +2508,6 @@ try {
                     // 若瀏覽器不支援 URL 物件，退回最簡單導向
                     window.location.href = '?view=' + encodeURIComponent(viewModeSelect.value || 'all');
                 }
-            });
-        }
-
-        if (recommenderFilterToggle && recommenderFilterSelect && recommenderFilterApply && recommenderFilterCancel) {
-            recommenderFilterToggle.addEventListener('click', function() {
-                const isHidden = recommenderFilterSelect.style.display === 'none' || recommenderFilterSelect.style.display === '';
-                recommenderFilterSelect.style.display = isHidden ? 'inline-block' : 'none';
-                recommenderFilterApply.style.display = isHidden ? 'inline-block' : 'none';
-                recommenderFilterCancel.style.display = isHidden ? 'inline-block' : 'none';
-            });
-        }
-
-        if (recommenderFilterApply) {
-            recommenderFilterApply.addEventListener('click', function() {
-                applyFilters();
-            });
-        }
-
-        if (recommenderFilterCancel && recommenderFilterSelect) {
-            recommenderFilterCancel.addEventListener('click', function() {
-                recommenderFilterSelect.value = '';
-                applyFilters();
             });
         }
 
@@ -2650,10 +2595,10 @@ try {
 
         const bodyWrap = document.createElement('div');
         bodyWrap.className = 'gmail-preview-field';
-        bodyWrap.innerHTML = '<label>信件內容（HTML）</label>';
+        bodyWrap.innerHTML = '<label>信件內容（純文字）</label>';
         const bodyInput = document.createElement('textarea');
         bodyInput.className = 'gmail-body';
-        bodyInput.value = email.body || '';
+        bodyInput.value = htmlToText(email.body || '');
         bodyWrap.appendChild(bodyInput);
         item.appendChild(bodyWrap);
 
@@ -2665,7 +2610,15 @@ try {
         includeCheckbox.className = 'gmail-include-generated';
         includeCheckbox.checked = !!email.include_generated;
         includeLabel.appendChild(includeCheckbox);
-        includeLabel.appendChild(document.createTextNode(' 附加系統 Excel：' + (email.attachment_name || '推薦內容.xlsx')));
+        const attachmentExt = email.attachment_ext || (email.xlsx_supported === false ? 'csv' : 'xlsx');
+        includeLabel.appendChild(document.createTextNode(' 附加系統 ' + (attachmentExt.toUpperCase()) + '：' + (email.attachment_name || ('推薦內容.' + attachmentExt))));
+        if (email.xlsx_supported === false) {
+            const warn = document.createElement('span');
+            warn.style.color = '#fa8c16';
+            warn.style.marginLeft = '8px';
+            warn.textContent = '（伺服器未啟用 ZipArchive，改附 CSV）';
+            includeLabel.appendChild(warn);
+        }
         attachWrap.appendChild(includeLabel);
 
         const fileInput = document.createElement('input');
@@ -2776,7 +2729,7 @@ try {
                 const subject = (item.querySelector('.gmail-subject') || {}).value || '';
                 const body = (item.querySelector('.gmail-body') || {}).value || '';
                 const includeGenerated = (item.querySelector('.gmail-include-generated') || {}).checked;
-                const altBody = htmlToText(body);
+                const altBody = body;
                 return {
                     rec_key: recKey,
                     subject,
@@ -3212,7 +3165,7 @@ try {
     // 查看審核結果（彈出視窗顯示三項條件 + 審核結果下拉）
     let currentReviewCriteriaId = null;
     let currentReviewCriteriaValue = '';
-    function openReviewCriteriaModal(recommendationId, studentName, currentReview, hasDuplicate, hasEnrollment, studentStatus, noBonus, nsbiFound, matchName, matchSchool, matchPhone, proofEvidence) {
+    function openReviewCriteriaModal(recommendationId, studentName, currentReview, hasDuplicate, hasEnrollment, studentStatus, noBonus, nsbiFound, matchName, matchSchool, matchPhone) {
         const modal = document.getElementById('reviewCriteriaModal');
         const nameEl = document.getElementById('reviewCriteriaStudentName');
         const listEl = document.getElementById('reviewCriteriaList');
@@ -3237,14 +3190,6 @@ try {
             } else {
                 div.style.color = isFail ? '#cf1322' : '#389e0d';
             }
-            listEl.appendChild(div);
-        };
-        const addHtmlLine = (html, colorOverride) => {
-            const div = document.createElement('div');
-            div.innerHTML = html;
-            div.style.fontWeight = '400';
-            div.style.fontSize = '16px';
-            div.style.color = colorOverride || '#595959';
             listEl.appendChild(div);
         };
 
@@ -3279,15 +3224,6 @@ try {
             addLine('姓名比對：' + (matchName ? '一致' : '不一致'), !matchName);
             addLine('學校比對：' + (matchSchool ? '一致' : '不一致'), !matchSchool);
             addLine('電話比對：' + (matchPhone ? '一致' : '不一致'), !matchPhone);
-        }
-
-        // 5) 證明文件
-        if (proofEvidence) {
-            const filePath = String(proofEvidence).replace(/\\/g, '/');
-            const fileUrl = '/Topics-frontend/frontend/' + filePath;
-            addHtmlLine('證明文件：<a href="' + fileUrl + '" target="_blank" rel="noopener">查看文件</a>');
-        } else {
-            addLine('證明文件：無', false, '#595959');
         }
 
         const normalized = (currentReview || '').trim();

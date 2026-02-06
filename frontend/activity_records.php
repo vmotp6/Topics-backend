@@ -371,20 +371,27 @@ if ($teacher_id > 0) {
                 $school_summary[$school_code] = [
                     'school_code' => $school_code,
                     'school_name' => $school_name,
+                    // 教師活動紀錄（主觀評分）
                     'total_activities' => 0,
-                    'feedback_score_sum' => 0,
-                    'feedback_count' => [
-                        '冷淡' => 0,
+                    'feedback_score_sum' => 0,        // 分數加總（每筆活動依回饋選項換算 3/2/1 後取平均）
+                    'feedback_scored_count' => 0,     // 有填主觀評分的活動次數
+                    'feedback_avg' => 0,              // 主觀評分平均（僅計入有評分者）
+                    'feedback_count' => [             // 各評分類型次數（依平均分數換算等級）
+                        '意願較低' => 0,
                         '普通' => 0,
                         '熱烈' => 0,
-                        '其他' => 0
+                        '未評分' => 0,
                     ],
                     'grade_semester' => [
-                        '國二上' => ['count' => 0, 'feedback' => ['冷淡' => 0, '普通' => 0, '熱烈' => 0, '其他' => 0]],
-                        '國二下' => ['count' => 0, 'feedback' => ['冷淡' => 0, '普通' => 0, '熱烈' => 0, '其他' => 0]],
-                        '國三上' => ['count' => 0, 'feedback' => ['冷淡' => 0, '普通' => 0, '熱烈' => 0, '其他' => 0]],
-                        '其他' => ['count' => 0, 'feedback' => ['冷淡' => 0, '普通' => 0, '熱烈' => 0, '其他' => 0]]
+                        '國二上' => ['count' => 0, 'feedback' => ['意願較低' => 0, '普通' => 0, '熱烈' => 0, '未評分' => 0]],
+                        '國二下' => ['count' => 0, 'feedback' => ['意願較低' => 0, '普通' => 0, '熱烈' => 0, '未評分' => 0]],
+                        '國三上' => ['count' => 0, 'feedback' => ['意願較低' => 0, '普通' => 0, '熱烈' => 0, '未評分' => 0]],
+                        '其他' => ['count' => 0, 'feedback' => ['意願較低' => 0, '普通' => 0, '熱烈' => 0, '未評分' => 0]]
                     ],
+                    // 入學說明會場次（客觀數字）
+                    'session_registered_count' => 0, // 報名人次
+                    'session_attended_count' => 0,   // 出席人次（attendance_status=1）
+                    'heat_index' => 0,               // 熱度指數（用於排序）
                     'departments' => [], // 記錄該學校有哪些科系參與
                     'dept_counts' => [], // 參與科系 × 學校矩陣用
                     'last_teacher_name' => '',
@@ -413,45 +420,58 @@ if ($teacher_id > 0) {
             }
             $school_summary[$school_code]['dept_counts'][$dept_name]++;
             
-            // 讀取活動回饋
+            // 讀取活動回饋（教師主觀評分）：依選項換算 3/2/1 後取平均，系統只做數值計算
             $feedback_sql = "SELECT afo.option 
                             FROM activity_feedback af
                             LEFT JOIN activity_feedback_options afo ON af.option_id = afo.id
                             WHERE af.activity_id = ?
                             ORDER BY af.option_id";
             $feedback_stmt = $conn->prepare($feedback_sql);
-            $current_activity_feedback = '其他'; // 預設值
+            $current_activity_feedback = '未評分';
+            $activity_score = null; // 單筆活動分數（1~3），由回饋選項計算
             if ($feedback_stmt) {
                 $feedback_stmt->bind_param("i", $activity_id);
                 $feedback_stmt->execute();
                 $feedback_result = $feedback_stmt->get_result();
-                $has_feedback = false;
+                $options = [];
                 while ($f_row = $feedback_result->fetch_assoc()) {
                     if (!empty($f_row['option'])) {
-                        $has_feedback = true;
-                        $feedback_option = $f_row['option'];
-                        
-                        // 判斷回饋類型（優先順序：熱烈 > 冷淡 > 普通）
-                        if (strpos($feedback_option, '熱烈') !== false || strpos($feedback_option, '熱') !== false || strpos($feedback_option, '積極') !== false) {
-                            $current_activity_feedback = '熱烈';
-                            break; // 找到熱烈就停止
-                        } elseif (strpos($feedback_option, '冷淡') !== false || strpos($feedback_option, '冷') !== false) {
-                            $current_activity_feedback = '冷淡';
-                            // 繼續檢查是否有熱烈
-                        } elseif (strpos($feedback_option, '普通') !== false || strpos($feedback_option, '一般') !== false) {
-                            if ($current_activity_feedback == '其他') {
-                                $current_activity_feedback = '普通';
-                            }
-                        }
+                        $options[] = trim((string)$f_row['option']);
                     }
                 }
                 $feedback_stmt->close();
+
+                // 主觀評分對照（同時相容舊選項：熱烈/普通/冷淡）
+                // 反應熱絡=3、詢問度高=2、反應冷淡=1
+                $score_map_labels = [
+                    3 => ['反應熱絡', '熱烈'],
+                    2 => ['詢問度高', '普通'],
+                    1 => ['反應冷淡', '冷淡'],
+                ];
+                $scores = [];
+                foreach ($options as $opt) {
+                    foreach ($score_map_labels as $s => $labels) {
+                        if (in_array($opt, $labels, true)) {
+                            $scores[] = (int)$s;
+                            break;
+                        }
+                    }
+                }
+                if (!empty($scores)) {
+                    $activity_score = array_sum($scores) / count($scores);
+                    // 依平均分數換算等級（門檻可再依需求微調）
+                    if ($activity_score >= 2.5) $current_activity_feedback = '熱烈';
+                    elseif ($activity_score >= 1.5) $current_activity_feedback = '普通';
+                    else $current_activity_feedback = '意願較低';
+                }
             }
             
             // 累加該活動的回饋
             $school_summary[$school_code]['feedback_count'][$current_activity_feedback]++;
-            $score_map = ['熱烈' => 3, '普通' => 2, '冷淡' => 1, '其他' => 0];
-            $school_summary[$school_code]['feedback_score_sum'] += $score_map[$current_activity_feedback] ?? 0;
+            if ($activity_score !== null) {
+                $school_summary[$school_code]['feedback_score_sum'] += $activity_score;
+                $school_summary[$school_code]['feedback_scored_count']++;
+            }
             
             // 讀取參與對象（判斷年級和學期）
             $participants_sql = "SELECT io.name, io.code
@@ -501,8 +521,8 @@ if ($teacher_id > 0) {
                 if (isset($school_summary[$school_code]['grade_semester'][$grade_semester_key]['feedback'][$current_activity_feedback])) {
                     $school_summary[$school_code]['grade_semester'][$grade_semester_key]['feedback'][$current_activity_feedback]++;
                 } else {
-                    // 如果回饋類型不存在，使用 '其他'
-                    $school_summary[$school_code]['grade_semester'][$grade_semester_key]['feedback']['其他']++;
+                    // 如果回饋類型不存在，視為未評分
+                    $school_summary[$school_code]['grade_semester'][$grade_semester_key]['feedback']['未評分']++;
                 }
             }
 
@@ -518,6 +538,7 @@ if ($teacher_id > 0) {
                     'activity_date' => $activity_date,
                     'created_at' => $created_at,
                     'feedback' => $current_activity_feedback,
+                    'score' => $activity_score,
                     'grade_semester' => $grade_semester_key,
                     'department' => $dept_name,
                 ];
@@ -532,44 +553,102 @@ if ($teacher_id > 0) {
         if (isset($school_summary_stmt)) {
             $school_summary_stmt->close();
         }
-        
-        // 計算每個學校的評級（A/B/C級）
-        foreach ($school_summary as &$school) {
-            $total_feedback = array_sum($school['feedback_count']);
-            if ($total_feedback > 0) {
-                $hot_ratio = $school['feedback_count']['熱烈'] / $total_feedback;
-                $cold_ratio = $school['feedback_count']['冷淡'] / $total_feedback;
-                
-                // A級：熱烈回饋 >= 50% 或 熱烈 > 冷淡
-                // B級：普通回饋為主 或 熱烈和冷淡比例相近
-                // C級：冷淡回饋 >= 50% 或 冷淡 > 熱烈
-                if ($hot_ratio >= 0.5 || ($school['feedback_count']['熱烈'] > $school['feedback_count']['冷淡'] && $school['feedback_count']['熱烈'] > 0)) {
-                    $school['rating'] = 'A';
-                    $school['rating_text'] = '互動好、值得每年固定經營';
-                } elseif ($cold_ratio >= 0.5 || ($school['feedback_count']['冷淡'] > $school['feedback_count']['熱烈'] && $school['feedback_count']['冷淡'] > 0)) {
-                    $school['rating'] = 'C';
-                    $school['rating_text'] = '可以降低投入或更換策略';
-                } else {
-                    $school['rating'] = 'B';
-                    $school['rating_text'] = '要調整活動方式';
-                }
-            } else {
-                $school['rating'] = 'B';
-                $school['rating_text'] = '要調整活動方式';
-            }
-        }
-        unset($school);
     }
     // ===== 依學校彙整活動紀錄結束 =====
+
+    // 整合入學說明會場次（報名/出席）到同一份「依學校」彙整中（招生中心=全校；主任=本科系）
+    try {
+        $has_session_dept_col = false;
+        $col_check = @$conn->query("SHOW COLUMNS FROM admission_sessions LIKE 'department_id'");
+        if ($col_check && $col_check->num_rows > 0) $has_session_dept_col = true;
+
+        $session_sql = "
+            SELECT
+                aa.school AS school_code,
+                COALESCE(sd.name, aa.school) AS school_name,
+                COUNT(*) AS registered_count,
+                SUM(CASE WHEN ar.attendance_status = 1 THEN 1 ELSE 0 END) AS attended_count
+            FROM admission_applications aa
+            INNER JOIN admission_sessions s ON aa.session_id = s.id
+            LEFT JOIN attendance_records ar ON ar.application_id = aa.id AND ar.session_id = s.id
+            LEFT JOIN school_data sd ON aa.school = sd.school_code
+            WHERE s.session_date >= ? AND s.session_date <= ?
+        ";
+        // 主任（科系層級）：只看自己科系場次；招生中心（全校層級）：看全部場次
+        if ($has_session_dept_col && $is_director && !$is_stam && $user_department_code) {
+            $session_sql .= " AND s.department_id = ? ";
+        }
+        $session_sql .= " GROUP BY aa.school, sd.name ORDER BY attended_count DESC, registered_count DESC";
+
+        $stmt_sess = $conn->prepare($session_sql);
+        if ($stmt_sess) {
+            if ($has_session_dept_col && $is_director && !$is_stam && $user_department_code) {
+                $stmt_sess->bind_param("sss", $academic_year_start, $academic_year_end, $user_department_code);
+            } else {
+                $stmt_sess->bind_param("ss", $academic_year_start, $academic_year_end);
+            }
+            $stmt_sess->execute();
+            $rs_sess = $stmt_sess->get_result();
+            if ($rs_sess) {
+                while ($row = $rs_sess->fetch_assoc()) {
+                    $sc = (string)($row['school_code'] ?? '');
+                    if ($sc === '') $sc = '未設定學校';
+                    $sn = (string)($row['school_name'] ?? $sc);
+                    if (!isset($school_summary[$sc])) {
+                        // 若只有說明會資料但沒有教師活動紀錄，也要納入排序清單
+                        $school_summary[$sc] = [
+                            'school_code' => $sc,
+                            'school_name' => $sn,
+                            'total_activities' => 0,
+                            'feedback_score_sum' => 0,
+                            'feedback_scored_count' => 0,
+                            'feedback_avg' => 0,
+                            'feedback_count' => ['意願較低' => 0, '普通' => 0, '熱烈' => 0, '未評分' => 0],
+                            'grade_semester' => [
+                                '國二上' => ['count' => 0, 'feedback' => ['意願較低' => 0, '普通' => 0, '熱烈' => 0, '未評分' => 0]],
+                                '國二下' => ['count' => 0, 'feedback' => ['意願較低' => 0, '普通' => 0, '熱烈' => 0, '未評分' => 0]],
+                                '國三上' => ['count' => 0, 'feedback' => ['意願較低' => 0, '普通' => 0, '熱烈' => 0, '未評分' => 0]],
+                                '其他' => ['count' => 0, 'feedback' => ['意願較低' => 0, '普通' => 0, '熱烈' => 0, '未評分' => 0]],
+                            ],
+                            'session_registered_count' => 0,
+                            'session_attended_count' => 0,
+                            'heat_index' => 0,
+                            'departments' => [],
+                            'dept_counts' => [],
+                            'last_teacher_name' => '',
+                            'last_created_at' => '',
+                            'records' => [],
+                        ];
+                    }
+                    $school_summary[$sc]['session_registered_count'] = (int)($row['registered_count'] ?? 0);
+                    $school_summary[$sc]['session_attended_count'] = (int)($row['attended_count'] ?? 0);
+                }
+            }
+            $stmt_sess->close();
+        }
+    } catch (Throwable $e) {
+        error_log('整合入學說明會（依學校）統計失敗: ' . $e->getMessage());
+    }
+
+    // 最終計算：平均分數 + 熱度指數（用於排序，不做 A/B/C 自動判斷）
+    foreach ($school_summary as &$school) {
+        $scored = (int)($school['feedback_scored_count'] ?? 0);
+        $sum = (float)($school['feedback_score_sum'] ?? 0);
+        $school['feedback_avg'] = ($scored > 0) ? round($sum / $scored, 2) : 0;
+        // 熱度指數：教師主觀分數加總 + 說明會出席人次（加分關係；可再依需求調整權重）
+        $school['heat_index'] = round($sum + (int)($school['session_attended_count'] ?? 0), 2);
+    }
+    unset($school);
 
     // 轉成排序後的列表（給表格與圖表用）
     $school_summary_list = array_values($school_summary);
     usort($school_summary_list, function($a, $b) {
-        $rating_order = ['A' => 1, 'B' => 2, 'C' => 3];
-        $a_rating = $rating_order[$a['rating'] ?? ''] ?? 4;
-        $b_rating = $rating_order[$b['rating'] ?? ''] ?? 4;
-        if ($a_rating !== $b_rating) return $a_rating - $b_rating;
-        return ($b['total_activities'] ?? 0) <=> ($a['total_activities'] ?? 0);
+        // 依「熱度指數」排序（高到低），再依說明會出席、教師活動次數做次排序
+        $cmp = ((int)($b['heat_index'] ?? 0)) <=> ((int)($a['heat_index'] ?? 0));
+        if ($cmp !== 0) return $cmp;
+        $cmp2 = ((int)($b['session_attended_count'] ?? 0)) <=> ((int)($a['session_attended_count'] ?? 0));
+        if ($cmp2 !== 0) return $cmp2;
+        return ((int)($b['total_activities'] ?? 0)) <=> ((int)($a['total_activities'] ?? 0));
     });
     
     // 獲取出席記錄數據（用於出席統計圖表）- 從 admission_sessions 表抓取所有入學說明會場次
@@ -976,6 +1055,37 @@ if ($teacher_id > 0) {
         error_log('查詢新生基本資料統計失敗: ' . $e->getMessage());
     }
 
+    // 將「本屆新生入學」(new_student_basic_info) 合併回依學校彙整清單：
+    // - 招生中心（全校層級）：看該國中來本校的人數（全校）
+    // - 科主任（科系層級）：看該國中來「本科系」的人數
+    $new_students_total_by_school = [];
+    $new_students_by_school_dept = [];
+    if (!empty($new_student_school_stats) && is_array($new_student_school_stats)) {
+        foreach ($new_student_school_stats as $srow) {
+            $sc = (string)($srow['school_code'] ?? '');
+            if ($sc === '') continue;
+            $new_students_total_by_school[$sc] = (int)($srow['student_count'] ?? 0);
+            $dept_list = $srow['departments'] ?? [];
+            if (is_array($dept_list)) {
+                foreach ($dept_list as $drow) {
+                    $dept_id = (string)($drow['department_id'] ?? '');
+                    if ($dept_id === '') continue;
+                    $new_students_by_school_dept[$sc][$dept_id] = (int)($drow['student_count'] ?? 0);
+                }
+            }
+        }
+    }
+    if (!empty($school_summary_list) && is_array($school_summary_list)) {
+        foreach ($school_summary_list as &$sitem) {
+            $sc = (string)($sitem['school_code'] ?? '');
+            $sitem['new_students_total'] = $new_students_total_by_school[$sc] ?? 0;
+            $sitem['new_students_dept'] = ($is_director && !$is_stam && !empty($user_department_code))
+                ? (($new_students_by_school_dept[$sc][$user_department_code] ?? 0))
+                : 0;
+        }
+        unset($sitem);
+    }
+
     if ($result) {
         $teachers_with_records = $result->fetch_all(MYSQLI_ASSOC);
     }
@@ -994,7 +1104,12 @@ $conn->close();
     <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
     <style>
         :root {
-            --primary-color: #667eea;
+            --primary-color: #1890ff;
+            --text-color: #262626;
+            --text-secondary-color: #8c8c8c;
+            --border-color: #f0f0f0;
+            --background-color: #f0f2f5;
+            --card-background-color: #fff;
             --secondary-color: #764ba2;
             --success-color: #28a745;
             --danger-color: #dc3545;
@@ -1011,63 +1126,76 @@ $conn->close();
         }
 
         body {
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background: var(--background-color);
+            color: var(--text-color);
+            overflow-x: hidden;
             min-height: 100vh;
-            color: #333;
         }
 
-        .container {
+        .dashboard {
             display: flex;
             min-height: 100vh;
         }
 
-        .sidebar {
-            width: 250px;
-            background: rgba(255, 255, 255, 0.95);
-            backdrop-filter: blur(10px);
-            box-shadow: 2px 0 10px rgba(0, 0, 0, 0.1);
-        }
-
         .main-content {
             flex: 1;
-            padding: 20px;
-            overflow-y: auto;
+            overflow-x: hidden;
+        }
+
+        .content {
+            padding: 24px;
+            width: 100%;
+        }
+
+        .page-controls {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 16px;
+            gap: 16px;
         }
 
         .breadcrumb {
-            background: rgba(255, 255, 255, 0.9);
-            padding: 15px 20px;
-            border-radius: 10px;
-            margin-bottom: 20px;
-            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+            margin-bottom: 0;
+            font-size: 16px;
+            color: var(--text-secondary-color);
         }
 
         .breadcrumb a {
             color: var(--primary-color);
             text-decoration: none;
-            font-weight: 500;
         }
 
         .breadcrumb a:hover {
             text-decoration: underline;
         }
 
+        .table-wrapper {
+            background: var(--card-background-color);
+            border-radius: 8px;
+            box-shadow: 0 1px 2px rgba(0,0,0,0.03);
+            border: 1px solid var(--border-color);
+            margin-bottom: 24px;
+        }
+
         .card {
-            background: rgba(255, 255, 255, 0.95);
-            border-radius: 15px;
-            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.1);
-            margin-bottom: 20px;
+            background: var(--card-background-color);
+            border-radius: 8px;
+            box-shadow: 0 1px 2px rgba(0,0,0,0.03);
+            border: 1px solid var(--border-color);
+            margin-bottom: 24px;
             overflow: hidden;
         }
 
         .card-header {
-            background: linear-gradient(135deg, var(--primary-color), var(--secondary-color));
-            color: white;
-            padding: 20px;
+            background: #fafafa;
+            color: var(--text-color);
+            padding: 16px 24px;
             display: flex;
             justify-content: space-between;
             align-items: center;
+            border-bottom: 1px solid var(--border-color);
         }
 
         .card-header h3 {
@@ -1133,8 +1261,9 @@ $conn->close();
             background: #f8f9fa;
         }
 
+        /* 按鈕樣式維持原樣不隨整體版型變更 */
         .btn-view {
-            background: var(--primary-color);
+            background: #667eea;
             color: white;
             border: none;
             padding: 8px 16px;
@@ -1147,7 +1276,7 @@ $conn->close();
         }
 
         .btn-view:hover {
-            background: var(--secondary-color);
+            background: #764ba2;
             transform: translateY(-2px);
             box-shadow: 0 4px 12px rgba(102, 126, 234, 0.3);
         }
@@ -1282,60 +1411,7 @@ $conn->close();
             grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
             gap: 20px;
         }
-        
-        /* 教師詳情視圖樣式（與 enrollment_list.php 一致） */
-        <?php if ($teacher_id > 0): ?>
-        :root {
-            --primary-color: #1890ff;
-            --text-color: #262626;
-            --text-secondary-color: #8c8c8c;
-            --border-color: #f0f0f0;
-            --background-color: #f0f2f5;
-            --card-background-color: #fff;
-        }
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-            background: var(--background-color);
-            color: var(--text-color);
-            overflow-x: hidden;
-        }
-        .dashboard {
-            display: flex;
-            min-height: 100vh;
-        }
-        .main-content {
-            overflow-x: hidden;
-        }
-        .content {
-            padding: 24px;
-            width: 100%;
-        }
-        .page-controls {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 16px;
-            gap: 16px;
-        }
-        .breadcrumb {
-            margin-bottom: 0;
-            font-size: 16px;
-            color: var(--text-secondary-color);
-        }
-        .breadcrumb a {
-            color: var(--primary-color);
-            text-decoration: none;
-        }
-        .breadcrumb a:hover {
-            text-decoration: underline;
-        }
-        .table-wrapper {
-            background: var(--card-background-color);
-            border-radius: 8px;
-            box-shadow: 0 1px 2px rgba(0,0,0,0.03);
-            border: 1px solid var(--border-color);
-            margin-bottom: 24px;
-        }
+
         .table-container {
             overflow-x: auto;
         }
@@ -1380,7 +1456,7 @@ $conn->close();
         }
         .search-input:focus {
             outline: none;
-            border-color: #1890ff;
+            border-color: var(--primary-color);
             box-shadow: 0 0 0 2px rgba(24,144,255,0.2);
         }
         .empty-state {
@@ -1392,25 +1468,6 @@ $conn->close();
             font-size: 48px;
             margin-bottom: 16px;
             color: #d9d9d9;
-        }
-        .btn-view {
-            padding: 4px 12px;
-            border: 1px solid #1890ff;
-            border-radius: 4px;
-            cursor: pointer;
-            font-size: 14px;
-            text-decoration: none;
-            display: inline-block;
-            transition: all 0.3s;
-            background: #fff;
-            color: #1890ff;
-        }
-        .btn-view:hover {
-            background: #1890ff;
-            color: white;
-        }
-        button.btn-view {
-            font-family: inherit;
         }
         .detail-row {
             background: #f9f9f9;
@@ -1448,7 +1505,7 @@ $conn->close();
         }
         .pagination select:focus {
             outline: none;
-            border-color: #1890ff;
+            border-color: var(--primary-color);
             box-shadow: 0 0 0 2px rgba(24,144,255,0.2);
         }
         .pagination button {
@@ -1462,32 +1519,25 @@ $conn->close();
             transition: all 0.3s;
         }
         .pagination button:hover:not(:disabled) {
-            border-color: #1890ff;
-            color: #1890ff;
+            border-color: var(--primary-color);
+            color: var(--primary-color);
         }
         .pagination button:disabled {
             opacity: 0.5;
             cursor: not-allowed;
         }
         .pagination button.active {
-            background: #1890ff;
+            background: var(--primary-color);
             color: white;
-            border-color: #1890ff;
+            border-color: var(--primary-color);
         }
-        <?php endif; ?>
     </style>
 </head>
 <body>
-    <?php if ($teacher_id > 0): ?>
     <div class="dashboard">
         <?php include 'sidebar.php'; ?>
         <div class="main-content" id="mainContent">
             <?php include 'header.php'; ?>
-    <?php else: ?>
-    <div class="container">
-        <?php include 'sidebar.php'; ?>
-        <div class="main-content">
-    <?php endif; ?>
             <?php if ($teacher_id > 0): // 詳細記錄視圖 ?>
                 <div class="content">
                     <div class="page-controls">
@@ -1649,11 +1699,12 @@ $conn->close();
                 </div>
                         <?php endif; ?>
             <?php else: // 教師列表視圖 ?>
-                    <div class="breadcrumb">
-                        <a href="index.php">首頁</a> / 教師活動紀錄管理
+                <div class="content">
+                    <div class="page-controls">
+                        <div class="breadcrumb">
+                            <a href="index.php">首頁</a> / 教師活動紀錄管理
+                        </div>
                     </div>
-
-
 
                     <!-- 依學校彙整活動紀錄 -->
                     <div class="card" style="margin-bottom: 24px;">
@@ -1666,18 +1717,18 @@ $conn->close();
                         </h4>
                         <?php if ($is_staff): ?>
                         <p style="color: #666; font-size: 14px; margin-bottom: 15px;">
-                            <i class="fas fa-info-circle"></i> 招生中心視圖：顯示各科基本統計資料
+                            <i class="fas fa-info-circle"></i> 招生中心視圖（全校層級）：整合教師活動主觀評分 + 入學說明會（報名/出席）數值
                         </p>
                         <?php elseif ($is_director): ?>
                         <p style="color: #666; font-size: 14px; margin-bottom: 15px;">
-                            <i class="fas fa-info-circle"></i> 主任視圖：顯示本科詳細統計資料
+                            <i class="fas fa-info-circle"></i> 主任視圖（科系層級）：只看本科教師活動 + 本科說明會場次（department_id）
                         </p>
                         <?php endif; ?>
                         
                         <?php if (!empty($school_summary_list)): ?>
                             <div style="display:flex; gap:10px; flex-wrap:wrap; margin-bottom: 14px;">
                                 <button type="button" class="btn-view" id="btnSchoolViewHeatmap" onclick="showSchoolView('heatmap')">
-                                    1️⃣ 學校 × 評級（色階表格）
+                                    1️⃣ 學校 × 熱度（排序表格）
                                 </button>
                                 <button type="button" class="btn-view" id="btnSchoolViewFeedback" onclick="showSchoolView('feedback')">
                                     2️⃣ 學校別活動回饋（長條圖）
@@ -1700,11 +1751,14 @@ $conn->close();
                                         <thead>
                                             <tr>
                                                 <th>學校名稱</th>
-                                                <th style="text-align: center;">活動次數</th>
-                                                <th style="text-align: center;">活動回饋</th>
-                                                <th style="text-align: center;">評級</th>
+                                                <th style="text-align: center;">教師活動</th>
+                                                <th style="text-align: center;">教師主觀評分</th>
+                                                <th style="text-align: center;">入學說明會</th>
+                                                <th style="text-align: center;">
+                                                    本屆入學<?php echo ($is_director && !$is_stam) ? '(本科)' : '(全校)'; ?>
+                                                </th>
+                                                <th style="text-align: center;">熱度指數</th>
                                                 <?php if ($is_director): // 主任顯示詳細資訊 ?>
-                                                <th style="text-align: center;">總結</th>
                                                 <th style="text-align: center;">年級學期分析</th>
                                                 <th style="text-align: center;">老師</th>
                                                 <th style="text-align: center;">填寫日期</th>
@@ -1716,56 +1770,64 @@ $conn->close();
                                         <tbody>
                                             <?php foreach ($school_summary_list as $school):
                                                 $feedback_display = [];
-                                                if ($school['feedback_count']['熱烈'] > 0) {
-                                                    $feedback_display[] = '熱烈: ' . $school['feedback_count']['熱烈'];
-                                                }
-                                                if ($school['feedback_count']['普通'] > 0) {
-                                                    $feedback_display[] = '普通: ' . $school['feedback_count']['普通'];
-                                                }
-                                                if ($school['feedback_count']['冷淡'] > 0) {
-                                                    $feedback_display[] = '冷淡: ' . $school['feedback_count']['冷淡'];
-                                                }
-                                                if (empty($feedback_display)) {
-                                                    $feedback_display[] = '無回饋資料';
-                                                }
-                                                
-                                                $rating_class = '';
-                                                $rating_color = '';
-                                                if ($school['rating'] == 'A') {
-                                                    $rating_class = 'badge-success';
-                                                    $rating_color = '#28a745';
-                                                } elseif ($school['rating'] == 'B') {
-                                                    $rating_class = 'badge-secondary';
-                                                    $rating_color = '#ffc107';
-                                                } else {
-                                                    $rating_class = 'badge-secondary';
-                                                    $rating_color = '#dc3545';
-                                                }
+                                                if (($school['feedback_count']['熱烈'] ?? 0) > 0) $feedback_display[] = '熱烈: ' . (int)$school['feedback_count']['熱烈'];
+                                                if (($school['feedback_count']['普通'] ?? 0) > 0) $feedback_display[] = '普通: ' . (int)$school['feedback_count']['普通'];
+                                                if (($school['feedback_count']['意願較低'] ?? 0) > 0) $feedback_display[] = '意願較低: ' . (int)$school['feedback_count']['意願較低'];
+                                                if (($school['feedback_count']['未評分'] ?? 0) > 0) $feedback_display[] = '未評分: ' . (int)$school['feedback_count']['未評分'];
+                                                if (empty($feedback_display)) $feedback_display[] = '—';
+                                                // 教師主觀評分：取整數後轉文字與顏色（3=熱烈, 2=普通, 1=意願較低, 0=未評分）
+                                                $feedback_avg_val = (float)($school['feedback_avg'] ?? 0);
+                                                $feedback_avg_int = (int)round($feedback_avg_val);
+                                                $feedback_level_map = [3 => ['text' => '熱烈', 'color' => '#28a745'], 2 => ['text' => '普通', 'color' => '#17a2b8'], 1 => ['text' => '意願較低', 'color' => '#fd7e14'], 0 => ['text' => '未評分', 'color' => '#6c757d']];
+                                                $feedback_level = $feedback_level_map[$feedback_avg_int] ?? $feedback_level_map[0];
+                                                // 熱度指數：取整數後依區間轉文字與顏色（>=8 熱烈, 4~7 普通, 1~3 意願較低, 0 冷淡）
+                                                $heat_val = (float)($school['heat_index'] ?? 0);
+                                                $heat_int = (int)round($heat_val);
+                                                if ($heat_int >= 8) { $heat_level = ['text' => '熱烈', 'color' => '#28a745']; }
+                                                elseif ($heat_int >= 4) { $heat_level = ['text' => '普通', 'color' => '#17a2b8']; }
+                                                elseif ($heat_int >= 1) { $heat_level = ['text' => '意願較低', 'color' => '#fd7e14']; }
+                                                else { $heat_level = ['text' => '冷淡', 'color' => '#6c757d']; }
                                             ?>
                                             <?php
                                                 $__schoolRowKey = preg_replace('/[^a-zA-Z0-9_-]/', '_', (string)($school['school_code'] ?? $school['school_name'] ?? 'school'));
                                                 $__schoolDetailId = 'school-detail-' . $__schoolRowKey;
-                                                $__rowBg = ($school['rating'] == 'A')
-                                                    ? 'rgba(40,167,69,0.08)'
-                                                    : (($school['rating'] == 'B') ? 'rgba(255,193,7,0.12)' : 'rgba(220,53,69,0.08)');
+                                                $__rowBg = 'rgba(102,126,234,0.06)';
                                             ?>
                                             <tr style="background: <?php echo $__rowBg; ?>;">
                                                 <td><strong><?php echo htmlspecialchars($school['school_name']); ?></strong></td>
                                                 <td style="text-align: center;">
-                                                    <span class="badge badge-success"><?php echo $school['total_activities']; ?></span>
+                                                    <div>
+                                                        <span class="badge badge-success"><?php echo (int)($school['total_activities'] ?? 0); ?></span>
+                                                    </div>
                                                 </td>
                                                 <td style="text-align: center;">
-                                                    <?php echo implode(' / ', $feedback_display); ?>
+                                                    <div style="font-size: 12px; line-height: 1.35;">
+                                                        <div><?php echo implode(' / ', $feedback_display); ?></div>
+                                                        <div style="color:#666; margin-top:4px;">
+                                                            平均：<strong style="color:<?php echo $feedback_level['color']; ?>;"><?php echo htmlspecialchars($feedback_level['text']); ?></strong>
+                                                            <span style="font-size:11px;">（<?php echo (int)$feedback_avg_int; ?> 分，計分 <?php echo (int)($school['feedback_scored_count'] ?? 0); ?> 次）</span>
+                                                        </div>
+                                                    </div>
                                                 </td>
                                                 <td style="text-align: center;">
-                                                    <span class="badge <?php echo $rating_class; ?>" style="background-color: <?php echo $rating_color; ?>;">
-                                                        <?php echo $school['rating']; ?> 級
-                                                    </span>
+                                                    <div style="font-size: 12px; line-height: 1.35;">
+                                                        報名：<strong><?php echo (int)($school['session_registered_count'] ?? 0); ?></strong><br>
+                                                        出席：<strong><?php echo (int)($school['session_attended_count'] ?? 0); ?></strong>
+                                                    </div>
+                                                </td>
+                                                <td style="text-align: center;">
+                                                    <?php
+                                                        $incoming = ($is_director && !$is_stam && !empty($user_department_code))
+                                                            ? (int)($school['new_students_dept'] ?? 0)
+                                                            : (int)($school['new_students_total'] ?? 0);
+                                                    ?>
+                                                    <?php echo $incoming; ?>
+                                                </td>
+                                                <td style="text-align: center; max-width: 200px;">
+                                                    <strong style="color:<?php echo $heat_level['color']; ?>;"><?php echo htmlspecialchars($heat_level['text']); ?></strong>
+                                                    <span style="font-size:11px; color:#666;">（<?php echo $heat_int; ?>）</span>
                                                 </td>
                                                 <?php if ($is_director): // 主任顯示詳細資訊 ?>
-                                                <td style="text-align: center; max-width: 200px;">
-                                                    <small><?php echo htmlspecialchars($school['rating_text']); ?></small>
-                                                </td>
                                                 <td style="text-align: center;">
                                                     <div style="font-size: 12px;">
                                                         <?php if ($school['grade_semester']['國二上']['count'] > 0): ?>
@@ -1774,7 +1836,8 @@ $conn->close();
                                                                 $g2u_feedback = [];
                                                                 if ($school['grade_semester']['國二上']['feedback']['熱烈'] > 0) $g2u_feedback[] = '熱烈';
                                                                 if ($school['grade_semester']['國二上']['feedback']['普通'] > 0) $g2u_feedback[] = '普通';
-                                                                if ($school['grade_semester']['國二上']['feedback']['冷淡'] > 0) $g2u_feedback[] = '冷淡';
+                                                                if ($school['grade_semester']['國二上']['feedback']['意願較低'] > 0) $g2u_feedback[] = '意願較低';
+                                                                if ($school['grade_semester']['國二上']['feedback']['未評分'] > 0) $g2u_feedback[] = '未評分';
                                                                 if (!empty($g2u_feedback)) echo ' (' . implode('/', $g2u_feedback) . ')';
                                                                 ?>
                                                             </div>
@@ -1785,7 +1848,8 @@ $conn->close();
                                                                 $g2d_feedback = [];
                                                                 if ($school['grade_semester']['國二下']['feedback']['熱烈'] > 0) $g2d_feedback[] = '熱烈';
                                                                 if ($school['grade_semester']['國二下']['feedback']['普通'] > 0) $g2d_feedback[] = '普通';
-                                                                if ($school['grade_semester']['國二下']['feedback']['冷淡'] > 0) $g2d_feedback[] = '冷淡';
+                                                                if ($school['grade_semester']['國二下']['feedback']['意願較低'] > 0) $g2d_feedback[] = '意願較低';
+                                                                if ($school['grade_semester']['國二下']['feedback']['未評分'] > 0) $g2d_feedback[] = '未評分';
                                                                 if (!empty($g2d_feedback)) echo ' (' . implode('/', $g2d_feedback) . ')';
                                                                 ?>
                                                             </div>
@@ -1796,7 +1860,8 @@ $conn->close();
                                                                 $g3u_feedback = [];
                                                                 if ($school['grade_semester']['國三上']['feedback']['熱烈'] > 0) $g3u_feedback[] = '熱烈';
                                                                 if ($school['grade_semester']['國三上']['feedback']['普通'] > 0) $g3u_feedback[] = '普通';
-                                                                if ($school['grade_semester']['國三上']['feedback']['冷淡'] > 0) $g3u_feedback[] = '冷淡';
+                                                                if ($school['grade_semester']['國三上']['feedback']['意願較低'] > 0) $g3u_feedback[] = '意願較低';
+                                                                if ($school['grade_semester']['國三上']['feedback']['未評分'] > 0) $g3u_feedback[] = '未評分';
                                                                 if (!empty($g3u_feedback)) echo ' (' . implode('/', $g3u_feedback) . ')';
                                                                 ?>
                                                             </div>
@@ -1830,7 +1895,7 @@ $conn->close();
                                             </tr>
                                             <?php if ($is_director): ?>
                                             <tr id="<?php echo htmlspecialchars($__schoolDetailId, ENT_QUOTES, 'UTF-8'); ?>" style="display: none;">
-                                                <td colspan="10" style="padding: 16px; background: #fafafa; border-top: 1px solid #eee;">
+                                                <td colspan="11" style="padding: 16px; background: #fafafa; border-top: 1px solid #eee;">
                                                     <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:10px;">
                                                         <div style="font-weight: 600; color: #333;">
                                                             <?php echo htmlspecialchars($school['school_name']); ?>：教師填寫明細
@@ -2261,6 +2326,7 @@ $conn->close();
 
 
                 <?php endif; ?>
+                </div>
         </div>
     </div>
 
@@ -4375,208 +4441,238 @@ $conn->close();
     }
     
     // 就讀意願統計 - 科系分布分析
+    // 調整為：圖表仍顯示志願分布，但「科系詳細統計」改為顯示「科系名稱」與「分配到本系的人數」
+    // 並以已分配科系（assigned_department）為基礎統計
     function showEnrollmentDepartmentStats() {
         console.log('showEnrollmentDepartmentStats 被調用');
-        
-        const apiUrl = buildApiUrl('../../Topics-frontend/frontend/api/enrollment_stats_api.php', 'department');
-        console.log('API URL:', apiUrl);
-        
-        // 從API獲取就讀意願數據
-        fetch(apiUrl)
-            .then(response => {
-                console.log('API 響應狀態:', response.status, response.statusText);
+
+        const choicesApiUrl = buildApiUrl('../../Topics-frontend/frontend/api/enrollment_stats_api.php', 'department');
+        const assignedApiUrl = buildApiUrl('../../Topics-frontend/frontend/api/enrollment_stats_api.php', 'assigned_department');
+        console.log('Choices API URL:', choicesApiUrl);
+        console.log('Assigned API URL:', assignedApiUrl);
+
+        // 顯示載入中提示
+        document.getElementById('enrollmentAnalyticsContent').innerHTML = `
+            <div style="text-align: center; padding: 40px;">
+                <i class="fas fa-spinner fa-spin fa-3x" style="color: #667eea; margin-bottom: 16px;"></i>
+                <h4>載入科系分布統計中...</h4>
+            </div>
+        `;
+
+        Promise.all([
+            // 志願分布資料（原本的 department 統計）
+            fetch(choicesApiUrl).then(response => {
+                console.log('Choices API 響應狀態:', response.status, response.statusText);
                 if (!response.ok) {
-                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                    throw new Error(`Choices HTTP ${response.status}: ${response.statusText}`);
+                }
+                return response.json();
+            }),
+            // 已分配科系統計（assigned_department）
+            fetch(assignedApiUrl).then(response => {
+                console.log('Assigned API 響應狀態:', response.status, response.statusText);
+                if (!response.ok) {
+                    throw new Error(`Assigned HTTP ${response.status}: ${response.statusText}`);
                 }
                 return response.json();
             })
-            .then(data => {
-                console.log('API 返回數據:', data);
-                
-                // 適配新的 API 返回格式 (object with data and total_students)
-                // 若是舊格式 (直接陣列)，也支援
-                let departmentData;
-                let totalStudents;
-                if (Array.isArray(data)) {
-                    // 舊格式：直接是陣列
-                    departmentData = data;
-                    totalStudents = data.reduce((sum, d) => sum + d.value, 0);
-                } else if (data.data && typeof data.total_students === 'number') {
-                    // 新格式：{data: [...], total_students: 123}
-                    departmentData = data.data;
-                    totalStudents = data.total_students;
-                } else if (data.error) {
-                    // 錯誤回應
-                    document.getElementById('enrollmentAnalyticsContent').innerHTML = `
-                        <div style="text-align: center; padding: 40px; color: #dc3545;">
-                            <i class="fas fa-exclamation-triangle fa-3x" style="margin-bottom: 16px;"></i>
-                            <h4>數據載入失敗</h4>
-                            <p>${data.error}</p>
-                        </div>
-                    `;
-                    return;
-                } else {
-                    // 無法識別的格式
-                    document.getElementById('enrollmentAnalyticsContent').innerHTML = `
-                        <div style="text-align: center; padding: 40px; color: #dc3545;">
-                            <i class="fas fa-exclamation-triangle fa-3x" style="margin-bottom: 16px;"></i>
-                            <h4>數據格式錯誤</h4>
-                            <p>無法識別 API 返回的數據格式</p>
-                        </div>
-                    `;
-                    return;
-                }
-                
-                if (data.error) {
-                    document.getElementById('enrollmentAnalyticsContent').innerHTML = `
-                        <div style="text-align: center; padding: 40px; color: #dc3545;">
-                            <i class="fas fa-exclamation-triangle fa-3x" style="margin-bottom: 16px;"></i>
-                            <h4>數據載入失敗</h4>
-                            <p>${data.error}</p>
-                        </div>
-                    `;
-                    return;
-                }
-                
-                // 檢查數據是否為空數組
-                if (!departmentData || !Array.isArray(departmentData) || departmentData.length === 0) {
-                    document.getElementById('enrollmentAnalyticsContent').innerHTML = `
-                        <div style="text-align: center; padding: 40px; color: #6c757d;">
-                            <i class="fas fa-inbox fa-3x" style="margin-bottom: 16px;"></i>
-                            <h4>暫無數據</h4>
-                            <p>目前沒有科系分布統計數據</p>
-                        </div>
-                    `;
-                    return;
-                }
-                
-                const content = `
-                    <div style="margin-bottom: 20px;">
-                        <h4 style="color: #667eea; margin-bottom: 15px;">
-                            <i class="fas fa-graduation-cap"></i> 科系分布分析
-                        </h4>
-                        
-                        <div class="chart-card">
-                            <div class="chart-title">科系選擇分布</div>
-                            <div class="chart-container">
-                                <canvas id="enrollmentDepartmentChart"></canvas>
-                            </div>
-                        </div>
-                        
-                        <div style="background: #f8f9fa; padding: 20px; border-radius: 10px; margin-top: 20px;">
-                            <h5 style="color: #333; margin-bottom: 15px;">科系詳細統計</h5>
-                            
-                            <!-- 總報名人數 -->
-                            <div style="background: white; padding: 15px; border-radius: 8px; margin-bottom: 20px; border-left: 4px solid #667eea;">
-                                <div style="font-weight: bold; color: #333; margin-bottom: 5px;">總報名人數</div>
-                                <div style="font-size: 1.5em; font-weight: bold; color: #667eea;">${totalStudents}人</div>
-                            </div>
-                            
-                            <!-- 科系列表 -->
-                            <div style="background: white; border-radius: 8px; overflow: hidden;">
-                                <table style="width: 100%; border-collapse: collapse;">
-                                    <thead>
-                                        <tr style="background: #f8f9fa;">
-                                            <th style="padding: 15px; text-align: left; border-bottom: 1px solid #dee2e6; font-weight: 600; color: #495057;">科系名稱</th>
-                                            <th style="padding: 15px; text-align: center; border-bottom: 1px solid #dee2e6; font-weight: 600; color: #495057;">報名人數</th>
-                                            <th style="padding: 15px; text-align: center; border-bottom: 1px solid #dee2e6; font-weight: 600; color: #495057;">百分比</th>
-                                            <th style="padding: 15px; text-align: center; border-bottom: 1px solid #dee2e6; font-weight: 600; color: #495057;">操作</th>
-                                        </tr>
-                                    </thead>
-                                    <tbody>
-                                        ${departmentData.map((item, index) => {
-                                            const colors = ['#667eea', '#28a745', '#ffc107', '#dc3545', '#17a2b8', '#6f42c1', '#fd7e14', '#20c997', '#e83e8c', '#6c757d'];
-                                            const color = colors[index % colors.length];
-                                            const totalChoices = departmentData.reduce((sum, d) => sum + d.value, 0);
-                                            const percentage = ((item.value / totalChoices) * 100).toFixed(1);
-                                            return `
-                                                <tr style="border-bottom: 1px solid #dee2e6;">
-                                                    <td style="padding: 15px; font-weight: 500; color: #333;">${item.name}</td>
-                                                    <td style="padding: 15px; text-align: center; font-weight: bold; color: #333;">${item.value}人</td>
-                                                    <td style="padding: 15px; text-align: center; color: #666;">${percentage}%</td>
-                                                    <td style="padding: 15px; text-align: center;">
-                                                        <button onclick="showDepartmentStudents('${item.name}')" 
-                                                                style="background: ${color}; color: white; border: none; padding: 8px 16px; border-radius: 20px; cursor: pointer; font-size: 14px; transition: all 0.3s ease;">
-                                                            查看詳情
-                                                        </button>
-                                                    </td>
-                                                </tr>
-                                            `;
-                                        }).join('')}
-                                    </tbody>
-                                </table>
-                            </div>
-                        </div>
-                    </div>
-                `;
-                
-                document.getElementById('enrollmentAnalyticsContent').innerHTML = content;
-                
-                // 創建圓餅圖
-                setTimeout(() => {
-                    const canvasElement = document.getElementById('enrollmentDepartmentChart');
-                    if (!canvasElement) return;
-                    
-                    const ctx = canvasElement.getContext('2d');
-                    new Chart(ctx, {
-                        type: 'pie',
-                        data: {
-                            labels: departmentData.map(item => item.name),
-                            datasets: [{
-                                data: departmentData.map(item => item.value),
-                                backgroundColor: [
-                                    '#667eea', '#28a745', '#ffc107', '#dc3545', '#17a2b8', '#6f42c1', '#fd7e14', '#20c997', '#e83e8c', '#6c757d'
-                                ],
-                                borderWidth: 2,
-                                borderColor: '#fff'
-                            }]
-                        },
-                        options: {
-                            responsive: true,
-                            maintainAspectRatio: false,
-                            plugins: {
-                                legend: {
-                                    position: 'bottom',
-                                    labels: {
-                                        padding: 20,
-                                        usePointStyle: true,
-                                        font: { size: 16 }
-                                    }
-                                },
-                                tooltip: {
-                                    enabled: true,
-                                    callbacks: {
-                                        label: function(context) {
-                                            const label = context.label || '';
-                                            const value = context.parsed;
-                                            const total = context.dataset.data.reduce((a, b) => a + b, 0);
-                                            const percentage = ((value / total) * 100).toFixed(1);
-                                            return `${label}: ${value}人 (${percentage}%)`;
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    });
-                }, 100);
-            })
-            .catch(error => {
-                console.error('載入科系統計數據失敗:', error);
-                console.error('錯誤詳情:', {
-                    message: error.message,
-                    stack: error.stack,
-                    apiUrl: apiUrl
-                });
+        ])
+        .then(([choicesDataRaw, assignedDataRaw]) => {
+            console.log('Choices API 返回數據:', choicesDataRaw);
+            console.log('Assigned API 返回數據:', assignedDataRaw);
+
+            // 解析志願分布資料（供圓餅圖使用）
+            let departmentData;
+            if (Array.isArray(choicesDataRaw)) {
+                departmentData = choicesDataRaw;
+            } else if (choicesDataRaw.data && Array.isArray(choicesDataRaw.data)) {
+                departmentData = choicesDataRaw.data;
+            } else if (choicesDataRaw.error) {
                 document.getElementById('enrollmentAnalyticsContent').innerHTML = `
                     <div style="text-align: center; padding: 40px; color: #dc3545;">
                         <i class="fas fa-exclamation-triangle fa-3x" style="margin-bottom: 16px;"></i>
                         <h4>數據載入失敗</h4>
-                        <p>無法連接到統計API</p>
-                        <p style="font-size: 0.9em; color: #999; margin-top: 10px;">錯誤: ${error.message}</p>
-                        <p style="font-size: 0.8em; color: #999; margin-top: 5px;">請檢查瀏覽器控制台 (F12) 以獲取詳細錯誤信息</p>
+                        <p>${choicesDataRaw.error}</p>
                     </div>
                 `;
-            });
+                return;
+            } else {
+                document.getElementById('enrollmentAnalyticsContent').innerHTML = `
+                    <div style="text-align: center; padding: 40px; color: #dc3545;">
+                        <i class="fas fa-exclamation-triangle fa-3x" style="margin-bottom: 16px;"></i>
+                        <h4>數據格式錯誤</h4>
+                        <p>無法識別科系分布 API 返回的數據格式</p>
+                    </div>
+                `;
+                return;
+            }
+
+            // 解析已分配科系資料（供「科系詳細統計」使用）
+            let assignedDeptData;
+            if (Array.isArray(assignedDataRaw)) {
+                assignedDeptData = assignedDataRaw;
+            } else if (assignedDataRaw.data && Array.isArray(assignedDataRaw.data)) {
+                assignedDeptData = assignedDataRaw.data;
+            } else if (assignedDataRaw.error) {
+                document.getElementById('enrollmentAnalyticsContent').innerHTML = `
+                    <div style="text-align: center; padding: 40px; color: #dc3545;">
+                        <i class="fas fa-exclamation-triangle fa-3x" style="margin-bottom: 16px;"></i>
+                        <h4>數據載入失敗</h4>
+                        <p>${assignedDataRaw.error}</p>
+                    </div>
+                `;
+                return;
+            } else {
+                document.getElementById('enrollmentAnalyticsContent').innerHTML = `
+                    <div style="text-align: center; padding: 40px; color: #dc3545;">
+                        <i class="fas fa-exclamation-triangle fa-3x" style="margin-bottom: 16px;"></i>
+                        <h4>數據格式錯誤</h4>
+                        <p>無法識別已分配科系 API 返回的數據格式</p>
+                    </div>
+                `;
+                return;
+            }
+
+            // 檢查資料是否為空
+            if (!departmentData || !Array.isArray(departmentData) || departmentData.length === 0 ||
+                !assignedDeptData || !Array.isArray(assignedDeptData) || assignedDeptData.length === 0) {
+                document.getElementById('enrollmentAnalyticsContent').innerHTML = `
+                    <div style="text-align: center; padding: 40px; color: #6c757d;">
+                        <i class="fas fa-inbox fa-3x" style="margin-bottom: 16px;"></i>
+                        <h4>暫無數據</h4>
+                        <p>目前沒有科系分布或已分配科系統計數據</p>
+                    </div>
+                `;
+                return;
+            }
+
+            const totalAssigned = assignedDeptData.reduce((sum, d) => sum + (d.value || 0), 0);
+
+            const content = `
+                <div style="margin-bottom: 20px;">
+                    <h4 style="color: #667eea; margin-bottom: 15px;">
+                        <i class="fas fa-graduation-cap"></i> 科系分布分析
+                    </h4>
+                    
+                    <div class="chart-card">
+                        <div class="chart-title">科系選擇分布</div>
+                        <div class="chart-container">
+                            <canvas id="enrollmentDepartmentChart"></canvas>
+                        </div>
+                    </div>
+                    
+                    <div style="background: #f8f9fa; padding: 20px; border-radius: 10px; margin-top: 20px;">
+                        <h5 style="color: #333; margin-bottom: 15px;">科系詳細統計</h5>
+                        
+                        <!-- 改為顯示「總分配人數」 -->
+                        <div style="background: white; padding: 15px; border-radius: 8px; margin-bottom: 20px; border-left: 4px solid #667eea;">
+                            <div style="font-weight: bold; color: #333; margin-bottom: 5px;">總分配人數</div>
+                            <div style="font-size: 1.5em; font-weight: bold; color: #667eea;">${totalAssigned}人</div>
+                        </div>
+                        
+                        <!-- 科系列表：顯示科系名稱與分配到本系人數 -->
+                        <div style="background: white; border-radius: 8px; overflow: hidden;">
+                            <table style="width: 100%; border-collapse: collapse;">
+                                <thead>
+                                    <tr style="background: #f8f9fa;">
+                                        <th style="padding: 15px; text-align: left; border-bottom: 1px solid #dee2e6; font-weight: 600; color: #495057;">科系名稱</th>
+                                        <th style="padding: 15px; text-align: center; border-bottom: 1px solid #dee2e6; font-weight: 600; color: #495057;">分配到本系人數</th>
+                                        <th style="padding: 15px; text-align: center; border-bottom: 1px solid #dee2e6; font-weight: 600; color: #495057;">占比</th>
+                                        <th style="padding: 15px; text-align: center; border-bottom: 1px solid #dee2e6; font-weight: 600; color: #495057;">操作</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    ${assignedDeptData.map((item, index) => {
+                                        const colors = ['#667eea', '#28a745', '#ffc107', '#dc3545', '#17a2b8', '#6f42c1', '#fd7e14', '#20c997', '#e83e8c', '#6c757d'];
+                                        const color = colors[index % colors.length];
+                                        const value = item.value ?? 0;
+                                        const percentage = totalAssigned > 0 ? ((value / totalAssigned) * 100).toFixed(1) : '0.0';
+                                        const safeName = String(item.name || '未填寫').replace(/'/g, "\\'");
+                                        return `
+                                            <tr style="border-bottom: 1px solid #dee2e6;">
+                                                <td style="padding: 15px; font-weight: 500; color: #333;">${item.name}</td>
+                                                <td style="padding: 15px; text-align: center; font-weight: bold; color: #28a745;">${value}人</td>
+                                                <td style="padding: 15px; text-align: center; font-weight: bold; color: #333;">${percentage}%</td>
+                                                <td style="padding: 15px; text-align: center;">
+                                                    <button onclick="showDepartmentStudents('${safeName}')" 
+                                                            style="background: ${color}; color: white; border: none; padding: 8px 16px; border-radius: 20px; cursor: pointer; font-size: 14px; transition: all 0.3s ease;">
+                                                        查看詳情
+                                                    </button>
+                                                </td>
+                                            </tr>
+                                        `;
+                                    }).join('')}
+                                </tbody>
+                            </table>
+                        </div>
+
+                        <!-- 點「查看詳情」後的展開內容區塊 -->
+                        <div id="departmentDetailContainer" style="margin-top: 24px;"></div>
+                    </div>
+                </div>
+            `;
+
+            document.getElementById('enrollmentAnalyticsContent').innerHTML = content;
+
+            // 使用志願分布資料建立圓餅圖（維持原本科系選擇分布圖）
+            setTimeout(() => {
+                const canvasElement = document.getElementById('enrollmentDepartmentChart');
+                if (!canvasElement) return;
+
+                const ctx = canvasElement.getContext('2d');
+                new Chart(ctx, {
+                    type: 'pie',
+                    data: {
+                        labels: departmentData.map(item => item.name),
+                        datasets: [{
+                            data: departmentData.map(item => item.value),
+                            backgroundColor: [
+                                '#667eea', '#28a745', '#ffc107', '#dc3545', '#17a2b8', '#6f42c1', '#fd7e14', '#20c997', '#e83e8c', '#6c757d'
+                            ],
+                            borderWidth: 2,
+                            borderColor: '#fff'
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: {
+                            legend: {
+                                position: 'bottom',
+                                labels: {
+                                    padding: 20,
+                                    usePointStyle: true,
+                                    font: { size: 16 }
+                                }
+                            },
+                            tooltip: {
+                                enabled: true,
+                                callbacks: {
+                                    label: function(context) {
+                                        const label = context.label || '';
+                                        const value = context.parsed;
+                                        const total = context.dataset.data.reduce((a, b) => a + b, 0);
+                                        const percentage = total > 0 ? ((value / total) * 100).toFixed(1) : '0.0';
+                                        return `${label}: ${value}人 (${percentage}%)`;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                });
+            }, 100);
+        })
+        .catch(error => {
+            console.error('載入科系統計數據失敗:', error);
+            document.getElementById('enrollmentAnalyticsContent').innerHTML = `
+                <div style="text-align: center; padding: 40px; color: #dc3545;">
+                    <i class="fas fa-exclamation-triangle fa-3x" style="margin-bottom: 16px;"></i>
+                    <h4>數據載入失敗</h4>
+                    <p>無法連接到統計API</p>
+                    <p style="font-size: 0.9em; color: #999; margin-top: 10px;">錯誤: ${error.message}</p>
+                </div>
+            `;
+        });
     }
     
     function showEnrollmentSystemStats() {
@@ -5673,126 +5769,337 @@ $conn->close();
             });
     }
 
-    // 顯示科系學生詳情
+    // 顯示科系「招生詳情」圖表（展開在同一區塊，不使用視窗）
+    // 1. 科系招生總覽：已報名 / 已報到 / 放棄 / 尚在追蹤
+    // 2. 這些國中有幾人分配到本系
     function showDepartmentStudents(departmentName) {
-        console.log('顯示科系學生詳情:', departmentName);
-        
+        console.log('顯示科系招生詳情 (展開):', departmentName);
+
+        const container = document.getElementById('departmentDetailContainer');
+        if (!container) {
+            console.warn('找不到 departmentDetailContainer 容器');
+            return;
+        }
+
         // 顯示載入中
-        const loadingContent = `
-            <div style="background: white; border-radius: 10px; padding: 20px; max-width: 800px; max-height: 600px; overflow-y: auto;">
-                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; border-bottom: 1px solid #dee2e6; padding-bottom: 15px;">
-                    <h4 style="margin: 0; color: #333;">
-                        <i class="fas fa-users"></i> ${departmentName} - 學生名單
-                    </h4>
-                    <button onclick="closeStudentModal()" style="background: #dc3545; color: white; border: none; padding: 8px 16px; border-radius: 5px; cursor: pointer;">
-                        <i class="fas fa-times"></i> 關閉
+        container.innerHTML = `
+            <div style="background: white; border-radius: 10px; padding: 16px 18px; border: 1px solid #e1e4eb;">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; border-bottom: 1px solid #f0f0f0; padding-bottom: 10px;">
+                    <h5 style="margin: 0; color: #333;">
+                        <i class="fas fa-chart-bar"></i> ${departmentName} - 招生詳情
+                    </h5>
+                    <button type="button"
+                            onclick="document.getElementById('departmentDetailContainer').innerHTML='';"
+                            style="background: #f5f5f5; color: #666; border: 1px solid #d9d9d9; padding: 4px 10px; border-radius: 14px; font-size: 12px; cursor: pointer;">
+                        <i class="fas fa-chevron-up"></i> 收合
                     </button>
                 </div>
-                <div style="text-align: center; padding: 40px;">
-                    <i class="fas fa-spinner fa-spin fa-2x" style="color: #667eea; margin-bottom: 15px;"></i>
-                    <p>載入學生資料中...</p>
+                <div style="text-align: center; padding: 24px 10px;">
+                    <i class="fas fa-spinner fa-spin fa-2x" style="color: #667eea; margin-bottom: 10px;"></i>
+                    <p style="margin: 0; color: #555;">載入科系統計資料中...</p>
                 </div>
             </div>
         `;
-        
-        showStudentModal(loadingContent);
-        
-        // 從API獲取該科系的學生資料
-        fetch('../../Topics-frontend/frontend/api/enrollment_department_students_api.php?department=' + encodeURIComponent(departmentName))
+
+        // 從 API 取得該科系的統計資料（以 assigned_department 為基準）
+        fetch('../../Topics-frontend/frontend/api/enrollment_department_detail_stats_api.php?department=' + encodeURIComponent(departmentName))
             .then(response => response.json())
             .then(data => {
-                if (data.error) {
-                    const errorContent = `
-                        <div style="background: white; border-radius: 10px; padding: 20px; max-width: 800px; max-height: 600px; overflow-y: auto;">
-                            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; border-bottom: 1px solid #dee2e6; padding-bottom: 15px;">
-                                <h4 style="margin: 0; color: #333;">
-                                    <i class="fas fa-users"></i> ${departmentName} - 學生名單
-                                </h4>
-                                <button onclick="closeStudentModal()" style="background: #dc3545; color: white; border: none; padding: 8px 16px; border-radius: 5px; cursor: pointer;">
-                                    <i class="fas fa-times"></i> 關閉
+                if (!data || data.success === false || data.error) {
+                    const msg = data && data.error ? data.error : '無法載入科系統計資料';
+                    container.innerHTML = `
+                        <div style="background: white; border-radius: 10px; padding: 16px 18px; border: 1px solid #ffe3e3;">
+                            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                                <h5 style="margin: 0; color: #c53030;">
+                                    <i class="fas fa-exclamation-triangle"></i> ${departmentName} - 招生詳情
+                                </h5>
+                                <button type="button"
+                                        onclick="document.getElementById('departmentDetailContainer').innerHTML='';"
+                                        style="background: #fff1f0; color: #c53030; border: 1px solid #ffa39e; padding: 2px 10px; border-radius: 14px; font-size: 12px; cursor: pointer;">
+                                    收合
                                 </button>
                             </div>
-                            <div style="text-align: center; padding: 40px; color: #dc3545;">
-                                <i class="fas fa-exclamation-triangle fa-2x" style="margin-bottom: 15px;"></i>
-                                <p>載入學生資料失敗: ${data.error}</p>
-                            </div>
+                            <p style="margin: 0; color: #c53030; font-size: 13px;">載入科系統計資料失敗：${msg}</p>
                         </div>
                     `;
-                    document.getElementById('studentModal').innerHTML = errorContent;
                     return;
                 }
-                
-                // 創建模態視窗內容
-                const modalContent = `
-                    <div style="background: white; border-radius: 10px; padding: 20px; max-width: 800px; max-height: 600px; overflow-y: auto;">
-                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; border-bottom: 1px solid #dee2e6; padding-bottom: 15px;">
+
+                const summary = data.status_summary || {};
+                const schools = data.schools || [];
+
+                const totalAssigned = summary.total_assigned || 0;
+                const applied     = summary.applied || 0;
+                const checkedIn   = summary.checked_in || 0;
+                const declined    = summary.declined || 0;
+                const tracking    = summary.tracking || 0;
+
+                const detailContent = `
+                    <div style="margin-top: 8px;">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
                             <h4 style="margin: 0; color: #333;">
-                                <i class="fas fa-users"></i> ${departmentName} - 學生名單
+                                <i class="fas fa-chart-bar"></i> ${departmentName} - 招生詳情
+                                <span style="font-size: 0.75em; color: #888; font-weight: normal; margin-left: 8px;">（分配到本系總人數 ${totalAssigned} 人）</span>
                             </h4>
-                            <button onclick="closeStudentModal()" style="background: #dc3545; color: white; border: none; padding: 8px 16px; border-radius: 5px; cursor: pointer;">
-                                <i class="fas fa-times"></i> 關閉
+                            <button type="button"
+                                    onclick="document.getElementById('departmentDetailContainer').innerHTML='';"
+                                    style="background: #f5f5f5; color: #666; border: 1px solid #d9d9d9; padding: 6px 14px; border-radius: 6px; font-size: 13px; cursor: pointer;">
+                                <i class="fas fa-chevron-up"></i> 收合
                             </button>
                         </div>
-                        
-                        <div style="margin-bottom: 15px;">
-                            <span style="background: #667eea; color: white; padding: 5px 12px; border-radius: 15px; font-size: 14px;">
-                                共 ${data.length} 位學生
-                            </span>
+
+                        <!-- 區塊 1：科系招生總覽（與其他統計圖同款樣式） -->
+                        <div class="chart-card">
+                            <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">
+                                <div class="chart-title" style="text-align: left; margin-bottom: 0;">
+                                    <i class="fas fa-users"></i> 科系招生總覽
+                                </div>
+                                <div style="display: inline-flex; gap: 8px;">
+                                    <button id="deptOverviewBarBtn" type="button" style="padding: 6px 14px; border-radius: 6px; border: 1px solid #667eea; background: #667eea; color: #fff; font-size: 13px; cursor: pointer;">
+                                        <i class="fas fa-chart-bar"></i> 長條圖
+                                    </button>
+                                    <button id="deptOverviewPieBtn" type="button" style="padding: 6px 14px; border-radius: 6px; border: 1px solid #667eea; background: #fff; color: #667eea; font-size: 13px; cursor: pointer;">
+                                        <i class="fas fa-chart-pie"></i> 圓餅圖
+                                    </button>
+                                </div>
+                            </div>
+                            <div class="chart-container">
+                                <canvas id="deptOverviewChart"></canvas>
+                            </div>
                         </div>
-                        
-                        <div style="background: #f8f9fa; border-radius: 8px; overflow: hidden;">
-                            <table style="width: 100%; border-collapse: collapse;">
-                                <thead>
-                                    <tr style="background: #e9ecef;">
-                                        <th style="padding: 12px; text-align: left; border-bottom: 1px solid #dee2e6; font-weight: 600; color: #495057;">姓名</th>
-                                        <th style="padding: 12px; text-align: left; border-bottom: 1px solid #dee2e6; font-weight: 600; color: #495057;">學校</th>
-                                        <th style="padding: 12px; text-align: center; border-bottom: 1px solid #dee2e6; font-weight: 600; color: #495057;">年級</th>
-                                        <th style="padding: 12px; text-align: left; border-bottom: 1px solid #dee2e6; font-weight: 600; color: #495057;">聯絡電話</th>
-                                        <th style="padding: 12px; text-align: center; border-bottom: 1px solid #dee2e6; font-weight: 600; color: #495057;">報名時間</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    ${data.map((student, index) => `
-                                        <tr style="border-bottom: 1px solid #dee2e6;">
-                                            <td style="padding: 12px; font-weight: 500; color: #333;">${student.name || '未填寫'}</td>
-                                            <td style="padding: 12px; color: #666;">${student.school || '未填寫'}</td>
-                                            <td style="padding: 12px; text-align: center; color: #666;">${student.grade || '未填寫'}</td>
-                                            <td style="padding: 12px; color: #666;">
-                                                ${student.phone1 ? `<div style="margin-bottom: 2px;"><i class="fas fa-phone" style="color: #667eea; margin-right: 5px;"></i>${student.phone1}</div>` : ''}
-                                                ${student.phone2 ? `<div><i class="fas fa-phone" style="color: #667eea; margin-right: 5px;"></i>${student.phone2}</div>` : ''}
-                                                ${!student.phone1 && !student.phone2 ? '未填寫' : ''}
-                                            </td>
-                                            <td style="padding: 12px; text-align: center; color: #666; font-size: 0.9em;">${student.created_at ? new Date(student.created_at).toLocaleDateString('zh-TW') : '未填寫'}</td>
-                                        </tr>
-                                    `).join('')}
-                                </tbody>
-                            </table>
+
+                        <!-- 區塊 2：分配到本系學生的國中分布（可切換圖表 / 表格） -->
+                        <div class="chart-card">
+                            <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">
+                                <div class="chart-title" style="text-align: left; margin-bottom: 0;">
+                                    <i class="fas fa-school"></i> 分配到本系學生的國中分布
+                                </div>
+                                ${(schools && schools.length > 0) ? `
+                                <div style="display: inline-flex; gap: 8px;">
+                                    <button id="deptSchoolChartBtn" type="button" style="padding: 6px 14px; border-radius: 6px; border: 1px solid #667eea; background: #667eea; color: #fff; font-size: 13px; cursor: pointer;">
+                                        <i class="fas fa-chart-bar"></i> 圖表
+                                    </button>
+                                    <button id="deptSchoolTableBtn" type="button" style="padding: 6px 14px; border-radius: 6px; border: 1px solid #667eea; background: #fff; color: #667eea; font-size: 13px; cursor: pointer;">
+                                        <i class="fas fa-table"></i> 表格
+                                    </button>
+                                </div>
+                                ` : ''}
+                            </div>
+                            ${(schools && schools.length > 0) ? `
+                            <div id="deptSchoolChartWrap" style="display: block;">
+                                <div class="chart-container">
+                                    <canvas id="deptSchoolChart"></canvas>
+                                </div>
+                            </div>
+                            <div id="deptSchoolTableWrap" style="display: none;">
+                                <div style="overflow-x: auto; margin-top: 10px;">
+                                    <table style="width: 100%; border-collapse: collapse; background: #fff;">
+                                        <thead>
+                                            <tr style="background: #f8f9fa;">
+                                                <th style="padding: 12px 15px; text-align: left; border-bottom: 2px solid #dee2e6; font-weight: 600; color: #495057;">國中名稱</th>
+                                                <th style="padding: 12px 15px; text-align: center; border-bottom: 2px solid #dee2e6; font-weight: 600; color: #495057;">分配人數</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            ${schools.map((s, i) => `
+                                            <tr style="border-bottom: 1px solid #eee;">
+                                                <td style="padding: 12px 15px; color: #333;">${(s.name || '未填寫')}</td>
+                                                <td style="padding: 12px 15px; text-align: center; font-weight: bold; color: #667eea;">${s.count || 0} 人</td>
+                                            </tr>
+                                            `).join('')}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+                            ` : '<div style="text-align: center; color: #999; padding: 20px;">目前沒有國中分布資料</div>'}
                         </div>
                     </div>
                 `;
-                
-                // 更新模態視窗內容
-                document.getElementById('studentModal').innerHTML = modalContent;
+
+                // 更新展開內容
+                container.innerHTML = detailContent;
+
+                // 捲動到展開區塊
+                container.scrollIntoView({ behavior: 'smooth', block: 'start' });
+
+                // 建立圖表
+                setTimeout(() => {
+                    // 科系招生總覽圖表
+                    const overviewCanvas = document.getElementById('deptOverviewChart');
+                    if (overviewCanvas && window.Chart) {
+                        const ctx = overviewCanvas.getContext('2d');
+                        let overviewChart = null;
+
+                        const labels = ['已報名', '已報到', '放棄', '尚在追蹤'];
+                        const values = [applied, checkedIn, declined, tracking];
+                        const colors = ['#667eea', '#28a745', '#8c8c8c', '#fa8c16'];
+
+                        function renderOverviewChart(type) {
+                            if (overviewChart) {
+                                overviewChart.destroy();
+                            }
+                            overviewChart = new Chart(ctx, {
+                                type: type,
+                                data: {
+                                    labels: labels,
+                                    datasets: [{
+                                        label: '人數',
+                                        data: values,
+                                        backgroundColor: type === 'pie' ? colors : colors.map(c => c + 'CC'),
+                                        borderColor: type === 'pie' ? '#fff' : colors,
+                                        borderWidth: type === 'pie' ? 2 : 1
+                                    }]
+                                },
+                                options: {
+                                    responsive: true,
+                                    maintainAspectRatio: false,
+                                    plugins: {
+                                        legend: {
+                                            display: type === 'pie',
+                                            position: 'bottom'
+                                        },
+                                        tooltip: {
+                                            callbacks: {
+                                                label: function(context) {
+                                                    const label = context.label || '';
+                                                    const value = type === 'bar' ? (context.parsed && context.parsed.y) : (context.parsed ?? 0);
+                                                    const num = Number(value) || 0;
+                                                    const total = values.reduce((a, b) => a + b, 0);
+                                                    const pct = total > 0 ? ((num / total) * 100).toFixed(1) : '0.0';
+                                                    return type === 'pie'
+                                                        ? `${label}: ${num}人 (${pct}%)`
+                                                        : `${label}: ${num}人`;
+                                                }
+                                            }
+                                        }
+                                    },
+                                    scales: type === 'bar' ? {
+                                        y: {
+                                            beginAtZero: true,
+                                            ticks: { stepSize: 1 }
+                                        }
+                                    } : {}
+                                }
+                            });
+                        }
+
+                        // 預設顯示長條圖
+                        renderOverviewChart('bar');
+
+                        const barBtn = document.getElementById('deptOverviewBarBtn');
+                        const pieBtn = document.getElementById('deptOverviewPieBtn');
+                        if (barBtn && pieBtn) {
+                            barBtn.addEventListener('click', () => {
+                                barBtn.style.background = '#667eea';
+                                barBtn.style.color = '#fff';
+                                pieBtn.style.background = '#fff';
+                                pieBtn.style.color = '#667eea';
+                                renderOverviewChart('bar');
+                            });
+                            pieBtn.addEventListener('click', () => {
+                                pieBtn.style.background = '#667eea';
+                                pieBtn.style.color = '#fff';
+                                barBtn.style.background = '#fff';
+                                barBtn.style.color = '#667eea';
+                                renderOverviewChart('pie');
+                            });
+                        }
+                    }
+
+                    // 來源國中分布圖表（顯示國中名稱，與其他統計圖一致大小）
+                    const schoolCanvas = document.getElementById('deptSchoolChart');
+                    if (schoolCanvas && window.Chart && schools && schools.length > 0) {
+                        const ctx2 = schoolCanvas.getContext('2d');
+                        const labels2 = schools.map(s => s.name || '未填寫');
+                        const values2 = schools.map(s => s.count || 0);
+
+                        new Chart(ctx2, {
+                            type: 'bar',
+                            data: {
+                                labels: labels2,
+                                datasets: [{
+                                    label: '分配人數',
+                                    data: values2,
+                                    backgroundColor: '#667eeaCC',
+                                    borderColor: '#667eea',
+                                    borderWidth: 1
+                                }]
+                            },
+                            options: {
+                                responsive: true,
+                                maintainAspectRatio: false,
+                                scales: {
+                                    x: {
+                                        ticks: {
+                                            font: { size: 12 },
+                                            autoSkip: false,
+                                            maxRotation: 45,
+                                            minRotation: 45
+                                        }
+                                    },
+                                    y: {
+                                        beginAtZero: true,
+                                        ticks: { stepSize: 1, font: { size: 12 } }
+                                    }
+                                },
+                                plugins: {
+                                    legend: { display: false },
+                                    tooltip: {
+                                        callbacks: {
+                                            label: function(context) {
+                                                const label = context.label || '';
+                                                const value = context.parsed.y;
+                                                return `${label}: ${value}人`;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        });
+                    }
+
+                    // 國中分布：圖表 / 表格切換
+                    const deptSchoolChartWrap = document.getElementById('deptSchoolChartWrap');
+                    const deptSchoolTableWrap = document.getElementById('deptSchoolTableWrap');
+                    const deptSchoolChartBtn = document.getElementById('deptSchoolChartBtn');
+                    const deptSchoolTableBtn = document.getElementById('deptSchoolTableBtn');
+                    if (deptSchoolChartWrap && deptSchoolTableWrap && deptSchoolChartBtn && deptSchoolTableBtn) {
+                        deptSchoolChartBtn.addEventListener('click', () => {
+                            deptSchoolChartWrap.style.display = 'block';
+                            deptSchoolTableWrap.style.display = 'none';
+                            deptSchoolChartBtn.style.background = '#667eea';
+                            deptSchoolChartBtn.style.color = '#fff';
+                            deptSchoolTableBtn.style.background = '#fff';
+                            deptSchoolTableBtn.style.color = '#667eea';
+                        });
+                        deptSchoolTableBtn.addEventListener('click', () => {
+                            deptSchoolTableWrap.style.display = 'block';
+                            deptSchoolChartWrap.style.display = 'none';
+                            deptSchoolTableBtn.style.background = '#667eea';
+                            deptSchoolTableBtn.style.color = '#fff';
+                            deptSchoolChartBtn.style.background = '#fff';
+                            deptSchoolChartBtn.style.color = '#667eea';
+                        });
+                    }
+                }, 100);
             })
             .catch(error => {
-                console.error('載入學生資料失敗:', error);
-                const errorContent = `
-                    <div style="background: white; border-radius: 10px; padding: 20px; max-width: 800px; max-height: 600px; overflow-y: auto;">
-                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; border-bottom: 1px solid #dee2e6; padding-bottom: 15px;">
-                            <h4 style="margin: 0; color: #333;">
-                                <i class="fas fa-users"></i> ${departmentName} - 學生名單
-                            </h4>
-                            <button onclick="closeStudentModal()" style="background: #dc3545; color: white; border: none; padding: 8px 16px; border-radius: 5px; cursor: pointer;">
-                                <i class="fas fa-times"></i> 關閉
+                console.error('載入科系統計資料失敗:', error);
+                container.innerHTML = `
+                    <div style="background: white; border-radius: 10px; padding: 16px 18px; border: 1px solid #ffe3e3;">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                            <h5 style="margin: 0; color: #c53030;">
+                                <i class="fas fa-exclamation-triangle"></i> ${departmentName} - 招生詳情
+                            </h5>
+                            <button type="button"
+                                    onclick="document.getElementById('departmentDetailContainer').innerHTML='';"
+                                    style="background: #fff1f0; color: #c53030; border: 1px solid #ffa39e; padding: 2px 10px; border-radius: 14px; font-size: 12px; cursor: pointer;">
+                                收合
                             </button>
                         </div>
-                        <div style="text-align: center; padding: 40px; color: #dc3545;">
-                            <i class="fas fa-exclamation-triangle fa-2x" style="margin-bottom: 15px;"></i>
-                            <p>載入學生資料失敗，請稍後再試</p>
-                        </div>
+                        <p style="margin: 0; color: #c53030; font-size: 13px;">載入科系統計資料失敗，請稍後再試</p>
                     </div>
                 `;
-                document.getElementById('studentModal').innerHTML = errorContent;
             });
     }
     
@@ -7494,8 +7801,6 @@ function showContinuedAdmissionChoicesStats() {
     </script>
     <?php if ($teacher_id > 0): ?>
         </div>
-    </div>
-    <?php else: ?>
         </div>
     </div>
     <?php endif; ?>

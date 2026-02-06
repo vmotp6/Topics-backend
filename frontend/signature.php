@@ -12,6 +12,7 @@ $user_name = $_SESSION['name'] ?? $username;
 // 獲取可選的文件ID（用於關聯簽名）
 $document_id = isset($_GET['document_id']) ? (int)$_GET['document_id'] : null;
 $document_type = $_GET['document_type'] ?? 'general'; // 文件類型：general, admission, etc.
+$embed = (isset($_GET['embed']) && $_GET['embed'] === '1');
 
 // 設置頁面標題
 $page_title = '電子簽章';
@@ -222,8 +223,16 @@ $current_page = 'signature';
             }
         }
     </style>
+        <?php if ($embed): ?>
+        <style>
+            body.embed { background: #f5f7fb; }
+            body.embed .content { padding: 12px; }
+            body.embed .card { margin-bottom: 0; }
+        </style>
+        <?php endif; ?>
 </head>
-<body>
+<body class="<?php echo $embed ? 'embed' : ''; ?>">
+    <?php if (!$embed): ?>
     <div class="dashboard">
         <?php include 'sidebar.php'; ?>
         <div class="main-content" id="mainContent">
@@ -237,6 +246,9 @@ $current_page = 'signature';
                         </a>
                     </span>
                 </div>
+    <?php else: ?>
+    <div class="content">
+    <?php endif; ?>
 
                 <div class="card">
                     <div class="card-header">
@@ -325,8 +337,10 @@ $current_page = 'signature';
                     </div>
                 </div>
             </div>
+    <?php if (!$embed): ?>
         </div>
     </div>
+    <?php endif; ?>
 
     <!-- 訊息提示框 -->
     <div id="toast" class="toast"></div>
@@ -782,6 +796,12 @@ $current_page = 'signature';
                                 signature_url: data.signature_url
                             }, '*');
                             window.close();
+                        } else if (window.parent && window.parent !== window) {
+                            window.parent.postMessage({
+                                type: 'signature_saved',
+                                signature_id: data.signature_id,
+                                signature_url: data.signature_url
+                            }, '*');
                         }
                     }, 2000);
                 } else {
@@ -1118,6 +1138,12 @@ $current_page = 'signature';
                                 signature_url: data.signature_url
                             }, '*');
                             window.close();
+                        } else if (window.parent && window.parent !== window) {
+                            window.parent.postMessage({
+                                type: 'signature_saved',
+                                signature_id: data.signature_id,
+                                signature_url: data.signature_url
+                            }, '*');
                         }
                     }, 2000);
                 } else {

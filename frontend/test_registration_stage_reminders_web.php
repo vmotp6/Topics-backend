@@ -273,7 +273,6 @@ if ($action === 'test' && !empty($test_stage)) {
                     AND (IFNULL(is_registered, 0) = 0)
                     AND (IFNULL({$reminded_col_escaped}, 0) = 0)
                     AND graduation_year = ?
-                    AND (IFNULL(case_closed, 0) = 0)
                     LIMIT 10";
             
             $stmt = $conn->prepare($sql);

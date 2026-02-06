@@ -126,6 +126,37 @@ function photoUrl($photo_path) {
   return '/Topics-frontend/frontend/' . ltrim($p, '/');
 }
 
+// 學年度：7 月 1 日～隔年 8 月 1 日為一學年（與 management 及 send_graduated_students_to_directors 一致）
+function getRocYearFromCreatedAt($created_at) {
+  $ts = strtotime($created_at);
+  if ($ts === false) return null;
+  $y = (int)date('Y', $ts);
+  $m = (int)date('m', $ts);
+  if ($m >= 9 || $m == 7) return $y - 1911;
+  if ($m <= 6 || $m == 8) return $y - 1912;
+  return $y - 1911;
+}
+
+// 依建立時間或學號前三碼判斷在學/畢業；建立時間最準確，優先使用
+function computeEnrollmentStatus($student_no, $created_at, $db_status) {
+  $manual = ['休學', '退學', '轉學', '延畢'];
+  $s = trim((string)$db_status);
+  if ($s !== '' && in_array($s, $manual, true)) return $s;
+  $roc_year = null;
+  if ($created_at !== null && $created_at !== '') {
+    $roc_year = getRocYearFromCreatedAt($created_at);
+  }
+  if (($roc_year === null || $roc_year <= 0)) {
+    $no = trim((string)$student_no);
+    if (strlen($no) >= 3 && ctype_digit(substr($no, 0, 3))) {
+      $roc_year = (int)substr($no, 0, 3);
+    }
+  }
+  if ($roc_year === null || $roc_year <= 0) return '在學';
+  $grad_date = ($roc_year + 1911 + 5) . '-08-01';
+  return (date('Y-m-d') >= $grad_date) ? '畢業' : '在學';
+}
+
 $id = isset($_GET['id']) ? (int)$_GET['id'] : 0;
 if ($id <= 0) {
   http_response_code(400);
@@ -136,6 +167,33 @@ if ($id <= 0) {
 $page_title = '新生基本資料詳情';
 $row = null;
 $error_message = '';
+$status_updated = false;
+$allowed_statuses = ['在學', '休學', '退學', '轉學', '延畢', '畢業'];
+
+// 手動更新學生狀態（在學/休學/退學/轉學/延畢/畢業）
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_status'], $_POST['status'])) {
+  $new_status = trim((string)$_POST['status']);
+  if (in_array($new_status, $allowed_statuses, true)) {
+    try {
+      $conn = getDatabaseConnection();
+      if ($conn && hasColumn($conn, 'new_student_basic_info', 'status')) {
+        $up = $conn->prepare("UPDATE new_student_basic_info SET status = ? WHERE id = ?");
+        if ($up) {
+          $up->bind_param('si', $new_status, $id);
+          if ($up->execute()) {
+            $status_updated = true;
+            header('Location: new_student_basic_info_detail.php?id=' . $id . '&updated=1');
+            exit;
+          }
+          $up->close();
+        }
+      }
+      if ($conn) $conn->close();
+    } catch (Exception $e) {
+      $error_message = '更新狀態失敗：' . $e->getMessage();
+    }
+  }
+}
 
 try {
   $conn = getDatabaseConnection();
@@ -331,6 +389,11 @@ try {
           <p>建立時間：<?php echo htmlspecialchars($row['created_at'] ?? ''); ?></p>
         </section>
 
+        <?php if (isset($_GET['updated']) && $_GET['updated'] === '1'): ?>
+          <div class="card" style="border-color:#b7eb8f; background:#f6ffed; color:#389e0d;">
+            <i class="fas fa-check-circle"></i> 學生狀態已更新
+          </div>
+        <?php endif; ?>
         <?php if (!empty($error_message)): ?>
           <div class="card" style="border-color:#ffccc7; background:#fff2f0; color:#a8071a;">
             <i class="fas fa-exclamation-circle"></i> <?php echo htmlspecialchars($error_message); ?>
@@ -343,7 +406,23 @@ try {
               <div class="field"><label>姓名</label><div class="value"><?php echo htmlspecialchars($row['student_name'] ?? ''); ?></div></div>
               <div class="field"><label>班級</label><div class="value"><?php echo htmlspecialchars($row['class_name'] ?? ''); ?></div></div>
               <div class="field"><label>所在科系</label><div class="value"><?php echo htmlspecialchars($row['department_name'] ?? ''); ?></div></div>
-              <div class="field"><label>學生狀態</label><div class="value"><?php echo htmlspecialchars($row['status'] ?? ''); ?></div></div>
+              <div class="field">
+                <label>學生狀態</label>
+                <div class="value">
+                  <?php $display_status = computeEnrollmentStatus($row['student_no'] ?? '', $row['created_at'] ?? null, $row['status'] ?? ''); ?>
+                  <span style="font-weight:600; margin-right:10px;"><?php echo htmlspecialchars($display_status); ?></span>
+                  <span class="muted" style="font-size:12px;">（學年度 7/1～隔年8/1 為一年，依建立時間或學號前三碼計算，5 年 8/1 畢業；可改為休學/退學/轉學/延畢）</span>
+                  <form method="post" action="new_student_basic_info_detail.php?id=<?php echo (int)$id; ?>" style="display:inline-flex; align-items:center; gap:8px; margin-top:8px;">
+                    <input type="hidden" name="update_status" value="1">
+                    <select name="status" style="padding:6px 10px; border:1px solid #d9d9d9; border-radius:6px; font-size:14px;">
+                      <?php foreach (['在學', '休學', '退學', '轉學', '延畢', '畢業'] as $opt): ?>
+                        <option value="<?php echo htmlspecialchars($opt); ?>" <?php echo $display_status === $opt ? 'selected' : ''; ?>><?php echo htmlspecialchars($opt); ?></option>
+                      <?php endforeach; ?>
+                    </select>
+                    <button type="submit" style="padding:6px 12px; border:1px solid #1890ff; border-radius:6px; background:#1890ff; color:#fff; cursor:pointer; font-size:14px;">儲存</button>
+                  </form>
+                </div>
+              </div>
               <div class="field"><label>在學身分</label><div class="value"><?php echo htmlspecialchars($row['enrollment_identity'] ?? ''); ?></div></div>
               <div class="field"><label>生日</label><div class="value"><?php echo htmlspecialchars($row['birthday'] ?? ''); ?></div></div>
               <div class="field"><label>性別</label><div class="value"><?php echo htmlspecialchars($row['gender'] ?? ''); ?></div></div>
