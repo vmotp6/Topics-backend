@@ -39,12 +39,28 @@ $current_year = date('Y');
 $online_check_ins = [];
 $check_table_exists = $conn->query("SHOW TABLES LIKE 'online_check_in_records'");
 if ($check_table_exists && $check_table_exists->num_rows > 0) {
+    $oc_has_school = false;
+    $oc_has_grade = false;
+    $oc_cols = $conn->query("SHOW COLUMNS FROM online_check_in_records");
+    if ($oc_cols) {
+        while ($c = $oc_cols->fetch_assoc()) {
+            if (($c['Field'] ?? '') === 'school') $oc_has_school = true;
+            if (($c['Field'] ?? '') === 'grade') $oc_has_grade = true;
+        }
+        $oc_cols->free();
+    }
+    $school_grade_sel = ($oc_has_school ? 'oc.school,' : '') . ($oc_has_grade ? 'oc.grade,' : '');
+    $school_join = $oc_has_school ? ' LEFT JOIN school_data sd_oc ON oc.school = sd_oc.school_code' : '';
+    $school_display_sel = $oc_has_school ? 'COALESCE(sd_oc.name, oc.school) AS school_display,' : '';
+    $grade_join = $oc_has_grade ? ' LEFT JOIN identity_options io_oc ON oc.grade = io_oc.code' : '';
+    $grade_display_sel = $oc_has_grade ? 'COALESCE(io_oc.name, oc.grade) AS grade_display,' : '';
     $check_in_stmt = $conn->prepare("
         SELECT 
             oc.id,
             oc.name,
             oc.email,
             oc.phone,
+            " . $school_grade_sel . $school_display_sel . $grade_display_sel . "
             oc.is_registered,
             oc.application_id,
             oc.notes,
@@ -54,6 +70,7 @@ if ($check_table_exists && $check_table_exists->num_rows > 0) {
             aa.email as registered_email,
             aa.contact_phone as registered_phone
         FROM online_check_in_records oc
+        " . $school_join . $grade_join . "
         LEFT JOIN admission_applications aa ON oc.application_id = aa.id
         LEFT JOIN attendance_records ar ON oc.session_id = ar.session_id 
             AND oc.application_id = ar.application_id
@@ -90,13 +107,12 @@ $output = fopen('php://output', 'w');
 // 輸出 BOM (讓 Excel 正確顯示 UTF-8)
 fprintf($output, chr(0xEF).chr(0xBB).chr(0xBF));
 
-// 輸出標題行
-fputcsv($output, ['姓名', 'Email', '電話', '報名狀態', '簽到時間', '備註'], ',');
+// 輸出標題行（含就讀學校、年級）
+fputcsv($output, ['姓名', 'Email', '電話', '就讀學校', '年級', '報名狀態', '簽到時間', '備註'], ',');
 
 // 輸出資料行
 foreach ($online_check_ins as $check_in) {
     $status = $check_in['is_registered'] ? '有報名' : '未報名';
-    // 優先使用 attendance_records 的簽到時間，如果沒有則使用 online_check_in_records 的建立時間
     $check_in_time = '';
     if (!empty($check_in['check_in_time'])) {
         $check_in_time = date('Y/m/d H:i', strtotime($check_in['check_in_time']));
@@ -104,11 +120,14 @@ foreach ($online_check_ins as $check_in) {
         $check_in_time = date('Y/m/d H:i', strtotime($check_in['oc_created_at']));
     }
     $notes = $check_in['notes'] ?? '';
-    
+    $school_display = isset($check_in['school_display']) ? ($check_in['school_display'] ?? '') : (isset($check_in['school']) ? ($check_in['school'] ?? '') : '');
+    $grade_display = isset($check_in['grade_display']) ? ($check_in['grade_display'] ?? '') : (isset($check_in['grade']) ? ($check_in['grade'] ?? '') : '');
     fputcsv($output, [
         $check_in['name'],
         $check_in['email'] ?? '',
         $check_in['phone'] ?? '',
+        $school_display,
+        $grade_display,
         $status,
         $check_in_time,
         $notes

@@ -81,6 +81,8 @@ try {
             ['name' => 'name', 'label' => '姓名', 'type' => 'text', 'required' => true],
             ['name' => 'email', 'label' => 'Email', 'type' => 'email', 'required' => false],
             ['name' => 'phone', 'label' => '電話', 'type' => 'tel', 'required' => true],
+            ['name' => 'school', 'label' => '就讀學校', 'type' => 'select', 'required' => false, 'options' => []],
+            ['name' => 'grade', 'label' => '年級', 'type' => 'select', 'required' => false, 'options' => [['value' => '國一', 'label' => '國一'], ['value' => '國二', 'label' => '國二'], ['value' => '國三', 'label' => '國三']]],
             ['name' => 'notes', 'label' => '備註', 'type' => 'textarea', 'required' => false]
         ];
     }
@@ -90,6 +92,8 @@ try {
     $name = '';
     $email = '';
     $phone = '';
+    $school = '';
+    $grade = '';
     $notes = '';
     $custom_fields = [];
     
@@ -105,6 +109,10 @@ try {
             $email = $field_value;
         } elseif ($field_name === 'phone') {
             $phone = $field_value;
+        } elseif ($field_name === 'school') {
+            $school = $field_value;
+        } elseif ($field_name === 'grade') {
+            $grade = $field_value;
         } elseif ($field_name === 'notes') {
             $notes = $field_value;
         } else {
@@ -147,11 +155,34 @@ try {
         exit;
     }
     
-    // 使用表單資料中的值
+    // 使用表單資料中的值；若欄位空白且找到報名記錄，則以報名資料的學校、年級帶入
     $name = $form_data['name'] ?? $name;
     $phone = $form_data['phone'] ?? $phone;
     $email = $form_data['email'] ?? $email;
     $notes = $form_data['notes'] ?? $notes;
+    if ($school === '' && $matched_school !== '') $school = $matched_school;
+    if ($grade === '' && $matched_grade !== '') $grade = $matched_grade;
+    
+    // grade 轉成 identity_options 的 code（供 admission_applications 與 online_check_in_records 寫入，滿足 FK）
+    if ($grade !== '') {
+        $io_stmt = $conn->prepare("SELECT code FROM identity_options WHERE code = ? OR name = ? LIMIT 1");
+        if ($io_stmt) {
+            $io_stmt->bind_param("ss", $grade, $grade);
+            $io_stmt->execute();
+            $io_res = $io_stmt->get_result();
+            if ($io_res && $io_res->num_rows > 0) {
+                $row = $io_res->fetch_assoc();
+                $grade = $row['code'];
+            } else {
+                $grade = null;
+            }
+            $io_stmt->close();
+        } else {
+            $grade = null;
+        }
+    } else {
+        $grade = null;
+    }
     
     // 檢查 online_check_in_records 表是否存在，如果不存在則創建
     $table_check = $conn->query("SHOW TABLES LIKE 'online_check_in_records'");
@@ -164,6 +195,8 @@ try {
           `name` varchar(255) NOT NULL COMMENT '姓名',
           `email` varchar(255) DEFAULT NULL COMMENT 'Email',
           `phone` varchar(50) DEFAULT NULL COMMENT '電話',
+          `school` varchar(255) DEFAULT NULL COMMENT '就讀學校（學校代碼或名稱）',
+          `grade` varchar(20) DEFAULT NULL COMMENT '年級：國一/國二/國三',
           `notes` text DEFAULT NULL COMMENT '備註（用於標記沒有報名但有來的人）',
           `custom_fields` text DEFAULT NULL COMMENT '自定義欄位 JSON',
           `is_registered` tinyint(1) NOT NULL DEFAULT 0 COMMENT '是否有報名: 0=未報名, 1=已報名',
@@ -185,6 +218,14 @@ try {
         if (!$column_check || $column_check->num_rows == 0) {
             $conn->query("ALTER TABLE `online_check_in_records` ADD COLUMN `custom_fields` text DEFAULT NULL COMMENT '自定義欄位 JSON' AFTER `notes`");
         }
+        // 檢查是否有 school、grade 欄位，如果沒有則添加（放在 phone 後面）
+        foreach (['school' => "varchar(255) DEFAULT NULL COMMENT '就讀學校（學校代碼或名稱）'", 'grade' => "varchar(20) DEFAULT NULL COMMENT '年級：國一/國二/國三'"] as $col => $def) {
+            $col_check = $conn->query("SHOW COLUMNS FROM online_check_in_records LIKE '$col'");
+            if (!$col_check || $col_check->num_rows == 0) {
+                $after = $col === 'school' ? 'phone' : 'school';
+                $conn->query("ALTER TABLE `online_check_in_records` ADD COLUMN `$col` $def AFTER `$after`");
+            }
+        }
     }
     
     // 將自定義欄位轉換為 JSON
@@ -201,11 +242,13 @@ try {
     // 獲取當前年份，只查詢今年的報名資料
     $current_year = (int)date('Y');
     
-    // 必須同時比對姓名和電話（嚴格匹配）
-    // 只看今年度的報名資料（YEAR(created_at) = 當前年份）
+    // 必須同時比對姓名和電話（嚴格匹配），並帶出報名資料的學校、年級供自動帶入
+    $matched_school = '';
+    $matched_grade = '';
     if (!empty($name) && !empty($normalized_phone)) {
         $find_stmt = $conn->prepare("
-            SELECT id FROM admission_applications 
+            SELECT id, school, grade 
+            FROM admission_applications 
             WHERE session_id = ? 
             AND student_name = ?
             AND REPLACE(REPLACE(REPLACE(REPLACE(contact_phone, '-', ''), ' ', ''), '(', ''), ')', '') = ?
@@ -219,6 +262,8 @@ try {
             $application = $result->fetch_assoc();
             $application_id = $application['id'];
             $is_registered = 1;
+            $matched_school = trim((string)($application['school'] ?? ''));
+            $matched_grade = trim((string)($application['grade'] ?? ''));
         }
         $find_stmt->close();
     }
@@ -250,24 +295,47 @@ try {
         $session_data = $session_result->fetch_assoc();
         $session_stmt->close();
         
-        // 插入新的報名記錄
-        // 確保所有參數都是變數（bind_param 需要變數引用）
+        // 插入新的報名記錄（沒有報名但有參加）：一併寫入學校、年級
         $email_value = !empty($email) ? $email : '';
-        
-        $insert_application_stmt = $conn->prepare("
-            INSERT INTO admission_applications 
-            (session_id, student_name, email, contact_phone, notes, created_at) 
-            VALUES (?, ?, ?, ?, ?, NOW())
-        ");
-        
-        $insert_application_stmt->bind_param("issss", 
-            $session_id, 
-            $name, 
-            $email_value, 
-            $phone, 
-            $application_notes
-        );
-        
+        $aa_has_school = false;
+        $aa_has_grade = false;
+        $aa_cols = $conn->query("SHOW COLUMNS FROM admission_applications");
+        if ($aa_cols) {
+            while ($ac = $aa_cols->fetch_assoc()) {
+                if (($ac['Field'] ?? '') === 'school') $aa_has_school = true;
+                if (($ac['Field'] ?? '') === 'grade') $aa_has_grade = true;
+            }
+            $aa_cols->free();
+        }
+        if ($aa_has_school && $aa_has_grade) {
+            $insert_application_stmt = $conn->prepare("
+                INSERT INTO admission_applications 
+                (session_id, student_name, email, contact_phone, notes, school, grade, created_at) 
+                VALUES (?, ?, ?, ?, ?, ?, ?, NOW())
+            ");
+            $insert_application_stmt->bind_param("issssss",
+                $session_id,
+                $name,
+                $email_value,
+                $phone,
+                $application_notes,
+                $school,
+                $grade
+            );
+        } else {
+            $insert_application_stmt = $conn->prepare("
+                INSERT INTO admission_applications 
+                (session_id, student_name, email, contact_phone, notes, created_at) 
+                VALUES (?, ?, ?, ?, ?, NOW())
+            ");
+            $insert_application_stmt->bind_param("issss",
+                $session_id,
+                $name,
+                $email_value,
+                $phone,
+                $application_notes
+            );
+        }
         if (!$insert_application_stmt->execute()) {
             throw new Exception("創建報名記錄失敗: " . $insert_application_stmt->error);
         }
@@ -297,16 +365,18 @@ try {
     // 插入簽到記錄
     $insert_stmt = $conn->prepare("
         INSERT INTO online_check_in_records 
-        (session_id, application_id, name, email, phone, notes, custom_fields, is_registered, check_in_time, created_at) 
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        (session_id, application_id, name, email, phone, school, grade, notes, custom_fields, is_registered, check_in_time, created_at) 
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ");
     
-    $insert_stmt->bind_param("iisssssiss", 
+    $insert_stmt->bind_param("iisssssssiss", 
         $session_id, 
         $application_id, 
         $name, 
         $email, 
         $phone, 
+        $school,
+        $grade,
         $notes,
         $custom_fields_json,
         $is_registered,
