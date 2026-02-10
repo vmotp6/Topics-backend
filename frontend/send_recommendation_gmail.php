@@ -190,6 +190,7 @@ try {
         signer_name VARCHAR(100) DEFAULT NULL,
         reject_reason VARCHAR(255) DEFAULT NULL,
         confirmed_by_email VARCHAR(255) DEFAULT NULL,
+        group_ids TEXT NULL,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         signed_at TIMESTAMP NULL DEFAULT NULL,
         INDEX idx_rec_id (recommendation_id),
@@ -198,6 +199,10 @@ try {
     $chk_rr = $conn->query("SHOW COLUMNS FROM recommendation_approval_links LIKE 'reject_reason'");
     if (!$chk_rr || $chk_rr->num_rows === 0) {
         $conn->query("ALTER TABLE recommendation_approval_links ADD COLUMN reject_reason VARCHAR(255) DEFAULT NULL");
+    }
+    $chk_group = $conn->query("SHOW COLUMNS FROM recommendation_approval_links LIKE 'group_ids'");
+    if (!$chk_group || $chk_group->num_rows === 0) {
+        $conn->query("ALTER TABLE recommendation_approval_links ADD COLUMN group_ids TEXT NULL");
     }
 
     // 檢查是否有 recommender 和 recommended 表
@@ -248,6 +253,9 @@ try {
     $red_has_email = $has_recommended_table ? $table_has('recommended', 'email') : false;
     $red_has_line = $has_recommended_table ? $table_has('recommended', 'line_id') : false;
 
+    $table_check_approval = $conn->query("SHOW TABLES LIKE 'recommendation_approval_links'");
+    $has_approval_links_table = $table_check_approval && $table_check_approval->num_rows > 0;
+
     $select = "SELECT ar.id,
         " . ($ar_has_status ? "COALESCE(ar.status,'')" : "''") . " AS status,
         " . ($ar_has_student_name ? "COALESCE(ar.student_name,'')" : "''") . " AS ar_student_name,
@@ -263,6 +271,11 @@ try {
         " . ($ar_has_additional_info ? "COALESCE(ar.additional_info,'')" : "''") . " AS ar_additional_info,
         " . ($ar_has_proof_evidence ? "COALESCE(ar.proof_evidence,'')" : "''") . " AS ar_proof_evidence,
         " . ($ar_has_created_at ? "ar.created_at" : "NULL") . " AS ar_created_at";
+    if ($has_approval_links_table) {
+        $select .= ", COALESCE(ral.status,'') AS director_review_status";
+    } else {
+        $select .= ", '' AS director_review_status";
+    }
 
     if ($has_recommender_table) {
         $select .= ",
@@ -307,6 +320,17 @@ try {
     if ($has_recommender_table) {
         $from .= " LEFT JOIN recommender rec ON ar.id = rec.recommendations_id ";
     }
+    if ($has_approval_links_table) {
+        $from .= " LEFT JOIN (
+            SELECT r1.*
+            FROM recommendation_approval_links r1
+            INNER JOIN (
+                SELECT recommendation_id, MAX(id) AS max_id
+                FROM recommendation_approval_links
+                GROUP BY recommendation_id
+            ) r2 ON r1.id = r2.max_id
+        ) ral ON ral.recommendation_id = ar.id ";
+    }
 
     $stmt = $conn->prepare($select . $from . " WHERE ar.id = ? LIMIT 1");
 
@@ -315,6 +339,7 @@ try {
     $errors = [];
     $groups = [];
     $preview_emails = [];
+    $single_mail = (string)($_POST['single_mail'] ?? '') === '1';
 
     foreach ($id_list as $recommendation_id) {
         $stmt->bind_param("i", $recommendation_id);
@@ -328,13 +353,19 @@ try {
 
         $status_code = trim((string)($recommendation['status'] ?? ''));
         $status_code_norm = strtolower($status_code);
-        $is_rejected = in_array($status_code_norm, ['re', 'rejected', '不通過'], true);
-        $is_approved = in_array($status_code_norm, ['ap', 'approved', '通過'], true);
-        if (!$is_approved && mb_strpos($status_code, '通過') !== false) {
+        $director_status = trim((string)($recommendation['director_review_status'] ?? ''));
+
+        $is_approved = in_array($status_code_norm, ['ap', 'approved'], true);
+        $is_rejected = in_array($status_code_norm, ['mc', 'manual'], true);
+        if (!$is_approved && mb_strpos($status_code, '已通過初審') !== false) {
             $is_approved = true;
         }
-        if (!$is_rejected && mb_strpos($status_code, '不通過') !== false) {
+        if (!$is_rejected && (mb_strpos($status_code, '初審未通過（待科主任審核）') !== false || mb_strpos($status_code, '需人工審查') !== false)) {
             $is_rejected = true;
+        }
+        if ($director_status !== '') {
+            $skipped++;
+            continue;
         }
 
         if (!$is_rejected && !$is_approved) {
@@ -405,6 +436,12 @@ try {
             'additional_info' => $additional_info,
             'proof_evidence' => $proof_evidence,
             'created_at' => $created_at,
+            'rec_name' => $rec_name,
+            'rec_sid' => $rec_sid,
+            'rec_dept' => $rec_dept,
+            'rec_grade' => $rec_grade,
+            'rec_phone' => $rec_phone,
+            'rec_email' => $rec_email,
         ];
 
         if ($is_approved) {
@@ -420,49 +457,132 @@ try {
 
     if ($stmt) $stmt->close();
 
-    // 取得主任姓名（user 表 name）
-    $director_name = '';
-    $has_director_table = false;
-    $has_user_table = false;
-    $td = $conn->query("SHOW TABLES LIKE 'director'");
-    if ($td && $td->num_rows > 0) $has_director_table = true;
-    $tu = $conn->query("SHOW TABLES LIKE 'user'");
-    if ($tu && $tu->num_rows > 0) $has_user_table = true;
-    if ($has_director_table && $has_user_table) {
-        $stmt_dir = $conn->prepare("SELECT u.name FROM director d JOIN user u ON d.user_id = u.id WHERE d.department = ? LIMIT 1");
-        if ($stmt_dir) {
-            $department_account = 'IMD';
-            $stmt_dir->bind_param('s', $department_account);
-            if ($stmt_dir->execute()) {
-                $res_dir = $stmt_dir->get_result();
-                if ($res_dir && ($row_dir = $res_dir->fetch_assoc())) {
-                    $director_name = trim((string)($row_dir['name'] ?? ''));
+    if ($single_mail && !empty($groups)) {
+        $merged = [
+            'rec_name' => '推薦人彙整',
+            'rec_sid' => '',
+            'rec_dept' => '',
+            'rec_grade' => '',
+            'rec_phone' => '',
+            'rec_email' => '',
+            'items' => [],
+            'has_approved' => false,
+            'has_rejected' => false,
+            'first_approved_id' => 0,
+            'rec_list' => [],
+        ];
+        $seen_rec = [];
+        foreach ($groups as $g) {
+            if (!empty($g['rec_name']) || !empty($g['rec_sid'])) {
+                $rk = mb_strtolower(trim((string)$g['rec_name']) . '|' . trim((string)$g['rec_sid']), 'UTF-8');
+                if (!isset($seen_rec[$rk])) {
+                    $seen_rec[$rk] = true;
+                    $merged['rec_list'][] = [
+                        'name' => (string)($g['rec_name'] ?? ''),
+                        'sid' => (string)($g['rec_sid'] ?? ''),
+                    ];
                 }
             }
-            $stmt_dir->close();
-        }
-    }
-    if ($director_name === '' && $has_user_table) {
-        $stmt_dir = $conn->prepare("SELECT name FROM user WHERE role IN ('DI','主任','資管科主任') AND (username = ? OR username = ?) LIMIT 1");
-        if ($stmt_dir) {
-            $u1 = 'IMD';
-            $u2 = 'IM';
-            $stmt_dir->bind_param('ss', $u1, $u2);
-            if ($stmt_dir->execute()) {
-                $res_dir = $stmt_dir->get_result();
-                if ($res_dir && ($row_dir = $res_dir->fetch_assoc())) {
-                    $director_name = trim((string)($row_dir['name'] ?? ''));
+            $merged['items'] = array_merge($merged['items'], $g['items'] ?? []);
+            if (!empty($g['has_approved'])) {
+                $merged['has_approved'] = true;
+                if ((int)$merged['first_approved_id'] <= 0 && (int)($g['first_approved_id'] ?? 0) > 0) {
+                    $merged['first_approved_id'] = (int)$g['first_approved_id'];
                 }
             }
-            $stmt_dir->close();
+            if (!empty($g['has_rejected'])) {
+                $merged['has_rejected'] = true;
+            }
         }
-    }
-    $greeting = ($director_name !== '') ? ($director_name . '主任您好：') : '主任您好：';
+        $groups = ['__single__' => $merged];
+        }
+
+        // 取得主任姓名（user 表 name）
+        $director_name = '';
+        $has_director_table = false;
+        $has_user_table = false;
+        $td = $conn->query("SHOW TABLES LIKE 'director'");
+        if ($td && $td->num_rows > 0) $has_director_table = true;
+        $tu = $conn->query("SHOW TABLES LIKE 'user'");
+        if ($tu && $tu->num_rows > 0) $has_user_table = true;
+        if ($has_director_table && $has_user_table) {
+            $stmt_dir = $conn->prepare("SELECT u.name FROM director d JOIN user u ON d.user_id = u.id WHERE d.department = ? LIMIT 1");
+            if ($stmt_dir) {
+                $department_account = 'IMD';
+                $stmt_dir->bind_param('s', $department_account);
+                if ($stmt_dir->execute()) {
+                    $res_dir = $stmt_dir->get_result();
+                    if ($res_dir && ($row_dir = $res_dir->fetch_assoc())) {
+                        $director_name = trim((string)($row_dir['name'] ?? ''));
+                    }
+                }
+                $stmt_dir->close();
+            }
+        }
+        if ($director_name === '' && $has_user_table) {
+            $stmt_dir = $conn->prepare("SELECT name FROM user WHERE role IN ('DI','主任','資管科主任') AND (username = ? OR username = ?) LIMIT 1");
+            if ($stmt_dir) {
+                $u1 = 'IMD';
+                $u2 = 'IM';
+                $stmt_dir->bind_param('ss', $u1, $u2);
+                if ($stmt_dir->execute()) {
+                    $res_dir = $stmt_dir->get_result();
+                    if ($res_dir && ($row_dir = $res_dir->fetch_assoc())) {
+                        $director_name = trim((string)($row_dir['name'] ?? ''));
+                    }
+                }
+                $stmt_dir->close();
+            }
+        }
+        $greeting = ($director_name !== '') ? ($director_name . '主任您好：') : '主任您好：';
 
     $to_email = '110534236@stu.ukn.edu.tw';
     $dept_label = '資管科';
 
     $xlsx_supported = class_exists('ZipArchive');
+    $build_rec_summary = function($group) {
+        $lines = [];
+        $rows = [];
+        if (!empty($group['rec_list']) && is_array($group['rec_list'])) {
+            foreach ($group['rec_list'] as $r) {
+                $nm = trim((string)($r['name'] ?? ''));
+                $sid = trim((string)($r['sid'] ?? ''));
+                if ($nm !== '' || $sid !== '') {
+                    if ($nm !== '') $lines[] = '• 推薦人姓名：' . $nm;
+                    if ($sid !== '') $lines[] = '• 推薦人學號：' . $sid;
+                    $rows[] = [
+                        htmlspecialchars($nm, ENT_QUOTES, 'UTF-8'),
+                        htmlspecialchars($sid, ENT_QUOTES, 'UTF-8'),
+                    ];
+                }
+            }
+        } else {
+            $nm = trim((string)($group['rec_name'] ?? ''));
+            $sid = trim((string)($group['rec_sid'] ?? ''));
+            if ($nm !== '') $lines[] = '• 推薦人姓名：' . $nm;
+            if ($sid !== '') $lines[] = '• 推薦人學號：' . $sid;
+            if ($nm !== '' || $sid !== '') {
+                $rows[] = [
+                    htmlspecialchars($nm, ENT_QUOTES, 'UTF-8'),
+                    htmlspecialchars($sid, ENT_QUOTES, 'UTF-8'),
+                ];
+            }
+        }
+        $text = implode("\n", $lines);
+        $html = '';
+        if (!empty($rows)) {
+            $html_rows = '';
+            foreach ($rows as $row) {
+                $html_rows .= '<tr><td style="border:1px solid #d9d9d9;padding:6px 10px;">' . $row[0] . '</td><td style="border:1px solid #d9d9d9;padding:6px 10px;">' . $row[1] . '</td></tr>';
+            }
+            $html = '<table style="border-collapse:collapse;width:100%;max-width:520px;">'
+                . '<thead><tr><th style="border:1px solid #d9d9d9;padding:6px 10px;text-align:left;background:#fafafa;">推薦人姓名</th>'
+                . '<th style="border:1px solid #d9d9d9;padding:6px 10px;text-align:left;background:#fafafa;">推薦人學號</th></tr></thead>'
+                . '<tbody>' . $html_rows . '</tbody></table>';
+        }
+        return [$text, $html];
+    };
+
     if ($action === 'preview') {
         $emails = [];
         foreach ($groups as $rec_key => $group) {
@@ -471,25 +591,34 @@ try {
 
             $rec_name = $group['rec_name'];
             $rec_sid = $group['rec_sid'];
-            $rec_dept = $group['rec_dept'];
-            $rec_grade = $group['rec_grade'];
-
-            $rec_identity = '教師';
-            if ($rec_sid !== '' || preg_match('/^F[1-5]$/', $rec_grade)) {
-                $rec_identity = '在校生';
-            }
-
-            $recHtml = "<p>• 推薦人科系：{$rec_dept}</p><p>• 推薦人學號：{$rec_sid}</p><p>• 推薦人姓名：{$rec_name}</p>";
-            $recText = "• 推薦人科系：{$rec_dept}\n• 推薦人學號：{$rec_sid}\n• 推薦人姓名：{$rec_name}";
+            [$recText, $recHtml] = $build_rec_summary($group);
 
             if (!empty($group['has_approved'])) {
                 $subject = '推薦學生審核通過通知';
-            $body = "{$greeting}\n本信件為招生中心通知\n近日收到一筆以上「招生推薦」資料，該批資料已由招生中心完成初步審核並確認無誤，現需再請主任協助進行最終資訊確認並完成線上簽名\n推薦人資料摘要如下：\n{$recText}\n• 推薦科系：{$dept_label}\n• 推薦人身分：{$rec_identity}\n推薦內容相關資訊已整理於附件（Excel）。\n請主任點擊下方連結進行線上審核與簽核：\n【網頁連結】\n若資料無誤，請於系統中完成線上簽核；如資料有誤，可於系統中填寫不通過原因退回。\n本審核結果將回傳至招生中心，作為後續獎金核發與招生統計之依據。\n感謝主任的協助與配合。\n\n敬祝\n教安\n招生中心組長 高惠玲\n聯絡電話：0900123123\n分機：310\n（本信件為系統自動發送，請勿直接回覆）";
-            $altBody = $body;
+                $body = "{$greeting}\n本信件為招生中心通知\n近日收到一筆以上「招生推薦」資料，該批資料已由招生中心完成初步審核並確認無誤，現需再請主任協助進行最終資訊確認並完成線上簽名\n推薦人資料摘要如下：\n{$recText}\n推薦內容相關資訊已整理於附件（Excel）。\n請主任點擊下方連結進行線上審核與簽核：\n【網頁連結】\n若資料無誤，請於系統中完成線上簽核；如資料有誤，可於系統中填寫不通過原因退回。\n本審核結果將回傳至招生中心，作為後續獎金核發與招生統計之依據。\n感謝主任的協助與配合。\n\n敬祝\n教安\n招生中心組長 高惠玲\n聯絡電話：0900123123\n分機：310\n（本信件為系統自動發送，請勿直接回覆）";
+                $body_html = '<p>' . htmlspecialchars($greeting, ENT_QUOTES, 'UTF-8') . '</p>'
+                    . '<p>本信件為招生中心通知</p>'
+                    . '<p>近日收到一筆以上「招生推薦」資料，該批資料已由招生中心完成初步審核並確認無誤，現需再請主任協助進行最終資訊確認並完成線上簽名</p>'
+                    . '<p>推薦人資料摘要如下：</p>'
+                    . $recHtml
+                    . '<p>推薦內容相關資訊已整理於附件（Excel）。</p>'
+                    . '<p>請主任點擊下方連結進行線上審核與簽核：<br>【網頁連結】</p>'
+                    . '<p>若資料無誤，請於系統中完成線上簽核；如資料有誤，可於系統中填寫不通過原因退回。</p>'
+                    . '<p>本審核結果將回傳至招生中心，作為後續獎金核發與招生統計之依據。</p>'
+                    . '<p>感謝主任的協助與配合。</p>'
+                    . '<p>敬祝<br>教安<br>招生中心組長 高惠玲<br>聯絡電話：0900123123<br>分機：310<br>（本信件為系統自動發送，請勿直接回覆）</p>';
+                $altBody = $body;
+                $body = $body_html;
             } else {
                 $subject = '推薦學生重複推薦提醒';
-            $body = "以下推薦人之推薦資料被判定為不通過/重複推薦，還請您確認後再告知我。\n推薦人資料摘要如下：\n{$recText}\n推薦內容相關資訊已整理於附件（Excel）。\n\n招生中心組長 高惠玲\n聯絡電話：0900123123\n分機：310\nshirly02@g.ukn.edu.tw";
-            $altBody = $body;
+                $body = "以下推薦人之推薦資料被判定為不通過/重複推薦，還請您確認後再告知我。\n推薦人資料摘要如下：\n{$recText}\n推薦內容相關資訊已整理於附件（Excel）。\n\n招生中心組長 高惠玲\n聯絡電話：0900123123\n分機：310\nshirly02@g.ukn.edu.tw";
+                $body_html = '<p>以下推薦人之推薦資料被判定為不通過/重複推薦，還請您確認後再告知我。</p>'
+                    . '<p>推薦人資料摘要如下：</p>'
+                    . $recHtml
+                    . '<p>推薦內容相關資訊已整理於附件（Excel）。</p>'
+                    . '<p>招生中心組長 高惠玲<br>聯絡電話：0900123123<br>分機：310<br>shirly02@g.ukn.edu.tw</p>';
+                $altBody = $body;
+                $body = $body_html;
             }
 
             $safe_name = preg_replace('/[^\w\-]+/u', '_', $rec_name ?: '推薦人');
@@ -534,6 +663,7 @@ try {
             $subject = (string)($payload['subject'] ?? '');
             $body = (string)($payload['body'] ?? '');
             $altBody = (string)($payload['alt_body'] ?? '');
+            $body_is_html = ($body !== '' && preg_match('/<[^>]+>/', $body));
             if ($altBody === '') {
                 $altBody = html_to_text($body);
             }
@@ -590,12 +720,12 @@ try {
                             $it['additional_info'],
                             $it['proof_evidence'],
                             $it['created_at'],
-                            $rec_name,
-                            $rec_sid,
-                            $rec_dept,
-                            $rec_grade,
-                            $rec_phone,
-                            $rec_email,
+                            $it['rec_name'] ?? $rec_name,
+                            $it['rec_sid'] ?? $rec_sid,
+                            $it['rec_dept'] ?? $rec_dept,
+                            $it['rec_grade'] ?? $rec_grade,
+                            $it['rec_phone'] ?? $rec_phone,
+                            $it['rec_email'] ?? $rec_email,
                         ];
                     }
                     $built = $xlsx_supported ? build_simple_xlsx($rows, $attachment_path) : build_simple_csv($rows, $attachment_path);
@@ -625,10 +755,20 @@ try {
                         } else {
                             $token = bin2hex(uniqid('', true));
                         }
-                        $ins = $conn->prepare("INSERT INTO recommendation_approval_links (recommendation_id, token, confirmed_by_email) VALUES (?, ?, ?)");
+                        $group_ids = '';
+                        if (!empty($group['items'])) {
+                            $id_vals = [];
+                            foreach ($group['items'] as $it) {
+                                $idv = (int)($it['id'] ?? 0);
+                                if ($idv > 0) $id_vals[] = $idv;
+                            }
+                            $id_vals = array_values(array_unique($id_vals));
+                            $group_ids = !empty($id_vals) ? implode(',', $id_vals) : '';
+                        }
+                        $ins = $conn->prepare("INSERT INTO recommendation_approval_links (recommendation_id, token, confirmed_by_email, group_ids) VALUES (?, ?, ?, ?)");
                         $confirm_email = $to_email;
                         if ($ins) {
-                            $ins->bind_param('iss', $recommendation_id, $token, $confirm_email);
+                            $ins->bind_param('isss', $recommendation_id, $token, $confirm_email, $group_ids);
                             @$ins->execute();
                             $ins->close();
                         }
@@ -637,14 +777,19 @@ try {
                         $approval_link = $protocol . '://' . $host . '/Topics-frontend/frontend/recommendation_approval.php?token=' . urlencode($token);
                     }
                     if ($approval_link !== '') {
+                        $link_html = '<a href="' . htmlspecialchars($approval_link, ENT_QUOTES, 'UTF-8') . '">' . htmlspecialchars($approval_link, ENT_QUOTES, 'UTF-8') . '</a>';
                         if (mb_strpos($body, '【網頁連結】') !== false) {
-                            $body = str_replace('【網頁連結】', '【網頁連結】' . $approval_link, $body);
+                            $body = str_replace(
+                                '【網頁連結】',
+                                '【網頁連結】' . ($body_is_html ? $link_html : $approval_link),
+                                $body
+                            );
                         } else {
-                            $body .= "\n【網頁連結】" . $approval_link;
+                            $body .= $body_is_html ? '<br>【網頁連結】' . $link_html : "\n【網頁連結】" . $approval_link;
                         }
                     }
                 }
-                $body_html = text_to_html_with_links($body);
+                $body_html = $body_is_html ? $body : text_to_html_with_links($body);
                 @sendEmail($to_email, $subject, $body_html, $altBody, $attachments);
                 $sent++;
             }
@@ -670,13 +815,7 @@ try {
         $rec_phone = $group['rec_phone'];
         $rec_email = $group['rec_email'];
 
-        $rec_identity = '教師';
-        if ($rec_sid !== '' || preg_match('/^F[1-5]$/', $rec_grade)) {
-            $rec_identity = '在校生';
-        }
-
-        $recHtml = "<p>• 推薦人科系：{$rec_dept}</p><p>• 推薦人學號：{$rec_sid}</p><p>• 推薦人姓名：{$rec_name}</p>";
-        $recText = "• 推薦人科系：{$rec_dept}\n• 推薦人學號：{$rec_sid}\n• 推薦人姓名：{$rec_name}";
+        [$recText, $recHtml] = $build_rec_summary($group);
 
         $attachment_path = '';
         $attachment_name = '';
@@ -722,12 +861,12 @@ try {
                         $it['additional_info'],
                         $it['proof_evidence'],
                         $it['created_at'],
-                        $rec_name,
-                        $rec_sid,
-                        $rec_dept,
-                        $rec_grade,
-                        $rec_phone,
-                        $rec_email,
+                        $it['rec_name'] ?? $rec_name,
+                        $it['rec_sid'] ?? $rec_sid,
+                        $it['rec_dept'] ?? $rec_dept,
+                        $it['rec_grade'] ?? $rec_grade,
+                        $it['rec_phone'] ?? $rec_phone,
+                        $it['rec_email'] ?? $rec_email,
                     ];
                 }
                 $built = $xlsx_supported ? build_simple_xlsx($rows, $attachment_path) : build_simple_csv($rows, $attachment_path);
@@ -764,10 +903,20 @@ try {
                 } else {
                     $token = bin2hex(uniqid('', true));
                 }
-                $ins = $conn->prepare("INSERT INTO recommendation_approval_links (recommendation_id, token, confirmed_by_email) VALUES (?, ?, ?)");
+                $group_ids = '';
+                if (!empty($group['items'])) {
+                    $id_vals = [];
+                    foreach ($group['items'] as $it) {
+                        $idv = (int)($it['id'] ?? 0);
+                        if ($idv > 0) $id_vals[] = $idv;
+                    }
+                    $id_vals = array_values(array_unique($id_vals));
+                    $group_ids = !empty($id_vals) ? implode(',', $id_vals) : '';
+                }
+                $ins = $conn->prepare("INSERT INTO recommendation_approval_links (recommendation_id, token, confirmed_by_email, group_ids) VALUES (?, ?, ?, ?)");
                 $confirm_email = $to_email;
                 if ($ins) {
-                    $ins->bind_param('iss', $recommendation_id, $token, $confirm_email);
+                    $ins->bind_param('isss', $recommendation_id, $token, $confirm_email, $group_ids);
                     @$ins->execute();
                     $ins->close();
                 }
@@ -784,8 +933,6 @@ try {
                     <p>近日收到一筆以上「招生推薦」資料，該批資料已由招生中心完成初步審核並確認無誤，現需再請主任協助進行最終資訊確認並完成線上簽名</p>
                     <p>推薦人資料摘要如下：</p>
                     {$recHtml}
-                    <p>• 推薦科系：{$dept_label}</p>
-                    <p>• 推薦人身分：{$rec_identity}</p>
                     <p>推薦內容相關資訊已整理於附件（Excel）。</p>
                     <p>請主任點擊下方連結進行線上審核與簽核：</p>
                     <p><a href='{$approval_link}' target='_blank' rel='noopener'>【網頁連結】</a></p>
@@ -801,7 +948,7 @@ try {
                     <p>（本信件為系統自動發送，請勿直接回覆）</p>
                 </div>
             ";
-            $altBody = "{$greeting}\n本信件為招生中心通知\n近日收到一筆以上「招生推薦」資料，該批資料已由招生中心完成初步審核並確認無誤，現需再請主任協助進行最終資訊確認並完成線上簽名\n推薦人資料摘要如下：\n{$recText}\n• 推薦科系：{$dept_label}\n• 推薦人身分：{$rec_identity}\n推薦內容相關資訊已整理於附件（Excel）。\n請主任點擊下方連結進行線上審核與簽核：\n【網頁連結】{$approval_link}\n若資料無誤，請於系統中完成線上簽核；如資料有誤，可於系統中填寫不通過原因退回。\n本審核結果將回傳至招生中心，作為後續獎金核發與招生統計之依據。\n感謝主任的協助與配合。\n\n敬祝\n教安\n招生中心組長 高惠玲\n聯絡電話：0900123123\n分機：310\n（本信件為系統自動發送，請勿直接回覆）";
+            $altBody = "{$greeting}\n本信件為招生中心通知\n近日收到一筆以上「招生推薦」資料，該批資料已由招生中心完成初步審核並確認無誤，現需再請主任協助進行最終資訊確認並完成線上簽名\n推薦人資料摘要如下：\n{$recText}\n推薦內容相關資訊已整理於附件（Excel）。\n請主任點擊下方連結進行線上審核與簽核：\n【網頁連結】{$approval_link}\n若資料無誤，請於系統中完成線上簽核；如資料有誤，可於系統中填寫不通過原因退回。\n本審核結果將回傳至招生中心，作為後續獎金核發與招生統計之依據。\n感謝主任的協助與配合。\n\n敬祝\n教安\n招生中心組長 高惠玲\n聯絡電話：0900123123\n分機：310\n（本信件為系統自動發送，請勿直接回覆）";
         } else {
             $subject = '推薦學生重複推薦提醒';
             $body = "
@@ -821,7 +968,8 @@ try {
         }
 
         if (function_exists('sendEmail')) {
-            $body_html = text_to_html_with_links($body);
+            $body_is_html = ($body !== '' && preg_match('/<[^>]+>/', $body));
+            $body_html = $body_is_html ? $body : text_to_html_with_links($body);
             @sendEmail($to_email, $subject, $body_html, $altBody, $attachments);
         }
         if (!empty($attachment_path) && file_exists($attachment_path)) {
