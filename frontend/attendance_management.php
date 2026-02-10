@@ -612,12 +612,29 @@ $current_year = date('Y');
 $online_check_ins = [];
 $check_table_exists = $conn->query("SHOW TABLES LIKE 'online_check_in_records'");
 if ($check_table_exists && $check_table_exists->num_rows > 0) {
+    // 若 online_check_in_records 有 school, grade 欄位則選出；並以 school_data 顯示學校名稱
+    $oc_has_school = false;
+    $oc_has_grade = false;
+    $oc_cols = $conn->query("SHOW COLUMNS FROM online_check_in_records");
+    if ($oc_cols) {
+        while ($c = $oc_cols->fetch_assoc()) {
+            if (($c['Field'] ?? '') === 'school') $oc_has_school = true;
+            if (($c['Field'] ?? '') === 'grade') $oc_has_grade = true;
+        }
+        $oc_cols->free();
+    }
+    $school_grade_select = ($oc_has_school ? 'oc.school,' : '') . ($oc_has_grade ? 'oc.grade,' : '');
+    $school_join = $oc_has_school ? ' LEFT JOIN school_data sd_oc ON oc.school = sd_oc.school_code' : '';
+    $school_name_select = $oc_has_school ? 'COALESCE(sd_oc.name, oc.school) AS school_display,' : '';
+    $grade_join = $oc_has_grade ? ' LEFT JOIN identity_options io_oc ON oc.grade = io_oc.code' : '';
+    $grade_display_select = $oc_has_grade ? 'COALESCE(io_oc.name, oc.grade) AS grade_display,' : '';
     $check_in_stmt = $conn->prepare("
         SELECT 
             oc.id,
             oc.name,
             oc.email,
             oc.phone,
+            " . $school_grade_select . $school_name_select . $grade_display_select . "
             oc.is_registered,
             oc.application_id,
             oc.notes,
@@ -628,6 +645,7 @@ if ($check_table_exists && $check_table_exists->num_rows > 0) {
             aa.contact_phone as registered_phone,
             aa.notes as application_notes
         FROM online_check_in_records oc
+        " . $school_join . $grade_join . "
         LEFT JOIN admission_applications aa ON oc.application_id = aa.id
         LEFT JOIN attendance_records ar ON oc.session_id = ar.session_id 
             AND oc.application_id = ar.application_id
@@ -1111,6 +1129,8 @@ $page_title = '出席紀錄管理 - ' . htmlspecialchars($session['session_name'
                                     <th>姓名</th>
                                     <th>Email</th>
                                     <th>電話</th>
+                                    <th>就讀學校</th>
+                                    <th>年級</th>
                                     <th>報名狀態</th>
                                     <th>簽到時間</th>
                                     <th>備註</th>
@@ -1127,6 +1147,12 @@ $page_title = '出席紀錄管理 - ' . htmlspecialchars($session['session_name'
                                     </td>
                                     <td>
                                         <?php echo htmlspecialchars($check_in['phone'] ?: '-'); ?>
+                                    </td>
+                                    <td>
+                                        <?php echo htmlspecialchars(isset($check_in['school_display']) ? ($check_in['school_display'] ?: '-') : (isset($check_in['school']) ? ($check_in['school'] ?: '-') : '-')); ?>
+                                    </td>
+                                    <td>
+                                        <?php echo htmlspecialchars(isset($check_in['grade_display']) ? ($check_in['grade_display'] ?: '-') : (isset($check_in['grade']) ? ($check_in['grade'] ?: '-') : '-')); ?>
                                     </td>
                                     <td>
                                         <?php 

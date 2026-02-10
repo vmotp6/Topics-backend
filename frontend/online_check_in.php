@@ -66,14 +66,88 @@ if ($config_result->num_rows > 0) {
 }
 $config_stmt->close();
 
-// 如果沒有配置，使用預設配置
-if (!$form_config) {
+// 就讀學校選項（從 school_data 取得，若無表則為空）
+$school_options = [];
+$school_table = $conn->query("SHOW TABLES LIKE 'school_data'");
+if ($school_table && $school_table->num_rows > 0) {
+    $school_result = $conn->query("SELECT school_code, name FROM school_data ORDER BY name");
+    if ($school_result) {
+        while ($row = $school_result->fetch_assoc()) {
+            $school_options[] = ['value' => $row['school_code'], 'label' => $row['name']];
+        }
+        $school_result->free();
+    }
+}
+// 年級選項：從 identity_options 取得（grade 欄位 FK 至 identity_options.code，須存 code）
+$grade_options = [['value' => '', 'label' => '請選擇']];
+$io_table = $conn->query("SHOW TABLES LIKE 'identity_options'");
+if ($io_table && $io_table->num_rows > 0) {
+    $io_result = $conn->query("SELECT code, name FROM identity_options ORDER BY name");
+    if ($io_result) {
+        while ($row = $io_result->fetch_assoc()) {
+            $grade_options[] = ['value' => $row['code'], 'label' => $row['name']];
+        }
+        $io_result->free();
+    }
+}
+if (count($grade_options) <= 1) {
+    $grade_options = [['value' => '', 'label' => '請選擇'], ['value' => '國一', 'label' => '國一'], ['value' => '國二', 'label' => '國二'], ['value' => '國三', 'label' => '國三']];
+}
+
+// 如果沒有配置，使用預設配置（含就讀學校、年級）
+if (!$form_config || !is_array($form_config)) {
     $form_config = [
         ['name' => 'name', 'label' => '姓名', 'type' => 'text', 'required' => true, 'placeholder' => '請輸入您的姓名'],
         ['name' => 'email', 'label' => 'Email', 'type' => 'email', 'required' => false, 'placeholder' => '請輸入您的Email（選填）'],
         ['name' => 'phone', 'label' => '電話', 'type' => 'tel', 'required' => true, 'placeholder' => '請輸入您的電話號碼'],
+        ['name' => 'school', 'label' => '就讀學校', 'type' => 'school_autocomplete', 'required' => false, 'placeholder' => '請輸入學校名稱關鍵字，由系統顯示符合的學校供選擇'],
+        ['name' => 'grade', 'label' => '年級', 'type' => 'select', 'required' => false, 'placeholder' => '請選擇', 'options' => $grade_options],
         ['name' => 'notes', 'label' => '備註', 'type' => 'textarea', 'required' => false, 'placeholder' => '如有其他需要說明的事項，請在此填寫（選填）']
     ];
+} else {
+    // 已有配置時：若缺少「就讀學校」「年級」，在「電話」後面插入（讓舊場次也會顯示這兩欄）
+    $has_school = false;
+    $has_grade = false;
+    foreach ($form_config as $f) {
+        if (isset($f['name']) && $f['name'] === 'school') $has_school = true;
+        if (isset($f['name']) && $f['name'] === 'grade') $has_grade = true;
+    }
+    if (!$has_school || !$has_grade) {
+        $new_fields = [];
+        $school_field = ['name' => 'school', 'label' => '就讀學校', 'type' => 'school_autocomplete', 'required' => false, 'placeholder' => '請輸入學校名稱關鍵字，由系統顯示符合的學校供選擇'];
+        $grade_field = ['name' => 'grade', 'label' => '年級', 'type' => 'select', 'required' => false, 'placeholder' => '請選擇', 'options' => $grade_options];
+        foreach ($form_config as $f) {
+            $new_fields[] = $f;
+            if (isset($f['name']) && $f['name'] === 'phone') {
+                if (!$has_school) { $new_fields[] = $school_field; $has_school = true; }
+                if (!$has_grade) { $new_fields[] = $grade_field; $has_grade = true; }
+            }
+        }
+        $form_config = $new_fields;
+    }
+    // 就讀學校改為自動完成；年級維持下拉並注入選項
+    foreach ($form_config as &$f) {
+        if (isset($f['name']) && $f['name'] === 'school') {
+            $f['type'] = 'school_autocomplete';
+            if (empty($f['placeholder'])) $f['placeholder'] = '請輸入學校名稱關鍵字，由系統顯示符合的學校供選擇';
+        }
+        if (isset($f['name']) && $f['name'] === 'grade' && ($f['type'] ?? '') === 'select' && empty($f['options'])) {
+            $f['options'] = $grade_options;
+        }
+    }
+    unset($f);
+}
+
+// 確保 online_check_in_records 表有 school、grade 欄位（頁面載入時即更新，不需等簽到送出）
+$oc_table = $conn->query("SHOW TABLES LIKE 'online_check_in_records'");
+if ($oc_table && $oc_table->num_rows > 0) {
+    foreach (['school' => "varchar(255) DEFAULT NULL COMMENT '就讀學校（學校代碼或名稱）'", 'grade' => "varchar(20) DEFAULT NULL COMMENT '年級：國一/國二/國三'"] as $col => $def) {
+        $col_check = $conn->query("SHOW COLUMNS FROM online_check_in_records LIKE '" . $conn->real_escape_string($col) . "'");
+        if (!$col_check || $col_check->num_rows === 0) {
+            $after = $col === 'school' ? 'phone' : 'school';
+            $conn->query("ALTER TABLE `online_check_in_records` ADD COLUMN `" . $conn->real_escape_string($col) . "` " . $def . " AFTER `" . $conn->real_escape_string($after) . "`");
+        }
+    }
 }
 
 // 生成簽到連結（如果還沒有）
@@ -156,6 +230,41 @@ $page_title = $is_admission_center ? '編輯簽到表單 - ' . htmlspecialchars(
         
         .form-group {
             margin-bottom: 24px;
+        }
+        
+        .school-autocomplete-wrap {
+            position: relative;
+        }
+        .school-autocomplete-dropdown {
+            position: absolute;
+            left: 0;
+            right: 0;
+            top: 100%;
+            margin-top: 2px;
+            max-height: 220px;
+            overflow-y: auto;
+            background: #fff;
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.12);
+            z-index: 1000;
+            display: none;
+        }
+        .school-autocomplete-dropdown.show { display: block; }
+        .school-autocomplete-item {
+            padding: 10px 14px;
+            cursor: pointer;
+            font-size: 15px;
+            border-bottom: 1px solid #f0f0f0;
+        }
+        .school-autocomplete-item:last-child { border-bottom: none; }
+        .school-autocomplete-item:hover {
+            background: #f5f9ff;
+        }
+        .school-autocomplete-empty {
+            padding: 12px 14px;
+            color: var(--text-secondary-color);
+            font-size: 14px;
         }
         
         .form-label {
@@ -613,9 +722,11 @@ $page_title = $is_admission_center ? '編輯簽到表單 - ' . htmlspecialchars(
                 { value: 'email', label: 'Email' },
                 { value: 'tel', label: '電話' },
                 { value: 'textarea', label: '多行文字' },
-                { value: 'number', label: '數字' }
+                { value: 'number', label: '數字' },
+                { value: 'select', label: '下拉選單' },
+                { value: 'school_autocomplete', label: '就讀學校（輸入關鍵字自動帶出）' }
             ];
-            
+            const optionsText = (field.options || []).map(o => (o.value || '') + '|' + (o.label || o.value || '')).join('\n');
             fieldEditor.innerHTML = `
                 <div class="field-editor-header">
                     <h4>欄位 ${index + 1}</h4>
@@ -625,11 +736,11 @@ $page_title = $is_admission_center ? '編輯簽到表單 - ' . htmlspecialchars(
                 </div>
                 <div class="form-group">
                     <label class="form-label">欄位名稱（英文，用於資料庫）</label>
-                    <input type="text" class="form-control field-name" value="${field.name || ''}" placeholder="例如：name, email, phone">
+                    <input type="text" class="form-control field-name" value="${(field.name || '').replace(/"/g, '&quot;')}" placeholder="例如：name, email, phone">
                 </div>
                 <div class="form-group">
                     <label class="form-label">欄位標籤（顯示名稱）</label>
-                    <input type="text" class="form-control field-label" value="${field.label || ''}" placeholder="例如：姓名, Email, 電話">
+                    <input type="text" class="form-control field-label" value="${(field.label || '').replace(/"/g, '&quot;')}" placeholder="例如：姓名, Email, 電話">
                 </div>
                 <div class="form-group">
                     <label class="form-label">欄位類型</label>
@@ -639,15 +750,25 @@ $page_title = $is_admission_center ? '編輯簽到表單 - ' . htmlspecialchars(
                         ).join('')}
                     </select>
                 </div>
+                <div class="form-group field-options-group" style="${field.type === 'select' ? '' : 'display:none;'}">
+                    <label class="form-label">選項（每行一個，格式：值|顯示名稱，例如：國一|國一）</label>
+                    <textarea class="form-control field-options" rows="4" placeholder="國一|國一\n國二|國二\n國三|國三">${(optionsText || '').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</textarea>
+                </div>
                 <div class="form-group">
                     <label class="form-label">提示文字</label>
-                    <input type="text" class="form-control field-placeholder" value="${field.placeholder || ''}" placeholder="例如：請輸入您的姓名">
+                    <input type="text" class="form-control field-placeholder" value="${(field.placeholder || '').replace(/"/g, '&quot;')}" placeholder="例如：請輸入您的姓名">
                 </div>
                 <div class="checkbox-group">
                     <input type="checkbox" class="field-required" ${field.required ? 'checked' : ''} id="required_${index}">
                     <label for="required_${index}">必填欄位</label>
                 </div>
             `;
+            fieldsContainer.appendChild(fieldEditor);
+            const typeSelect = fieldEditor.querySelector('.field-type');
+            const optionsGroup = fieldEditor.querySelector('.field-options-group');
+            typeSelect.addEventListener('change', function() {
+                optionsGroup.style.display = (this.value === 'select') ? '' : 'none';
+            });
             
             fieldsContainer.appendChild(fieldEditor);
         }
@@ -671,15 +792,23 @@ $page_title = $is_admission_center ? '編輯簽到表單 - ' . htmlspecialchars(
                 const type = editor.querySelector('.field-type').value;
                 const placeholder = editor.querySelector('.field-placeholder').value.trim();
                 const required = editor.querySelector('.field-required').checked;
-                
+                let options = [];
+                if (type === 'select') {
+                    const optsEl = editor.querySelector('.field-options');
+                    if (optsEl) {
+                        const lines = optsEl.value.trim().split('\n');
+                        lines.forEach(line => {
+                            const part = line.split('|').map(s => s.trim());
+                            const val = part[0] || '';
+                            const lab = part[1] || val;
+                            if (val || lab) options.push({ value: val, label: lab });
+                        });
+                    }
+                }
                 if (name && label) {
-                    config.push({
-                        name: name,
-                        label: label,
-                        type: type,
-                        required: required,
-                        placeholder: placeholder
-                    });
+                    const item = { name, label, type: (name === 'school' ? 'school_autocomplete' : type), required, placeholder };
+                    if (type === 'select' && options.length && name !== 'school') item.options = options;
+                    config.push(item);
                 }
             });
             
@@ -936,13 +1065,19 @@ $page_title = $is_admission_center ? '編輯簽到表單 - ' . htmlspecialchars(
                             ${field.label} ${field.required ? '<span class="required">*</span>' : ''}
                         </label>
                 `;
-                
                 if (field.type === 'textarea') {
                     html += `<textarea name="${field.name}" class="form-control" rows="3" ${field.required ? 'required' : ''} placeholder="${(field.placeholder || '').replace(/"/g, '&quot;')}"></textarea>`;
+                } else if (field.type === 'school_autocomplete') {
+                    html += `<input type="text" class="form-control" placeholder="${(field.placeholder || '請輸入學校名稱關鍵字，由系統顯示符合的學校供選擇').replace(/"/g, '&quot;')}" readonly style="background:#f5f5f5;">`;
+                } else if (field.type === 'select' && (field.options || []).length) {
+                    html += `<select name="${field.name}" class="form-control" ${field.required ? 'required' : ''}>`;
+                    field.options.forEach(opt => {
+                        html += `<option value="${(opt.value || '').replace(/"/g, '&quot;')}">${(opt.label || opt.value || '').replace(/</g, '&lt;')}</option>`;
+                    });
+                    html += `</select>`;
                 } else {
-                    html += `<input type="${field.type}" name="${field.name}" class="form-control" ${field.required ? 'required' : ''} placeholder="${(field.placeholder || '').replace(/"/g, '&quot;')}">`;
+                    html += `<input type="${field.type || 'text'}" name="${field.name}" class="form-control" ${field.required ? 'required' : ''} placeholder="${(field.placeholder || '').replace(/"/g, '&quot;')}">`;
                 }
-                
                 html += `</div>`;
             });
             
@@ -1124,6 +1259,115 @@ $page_title = $is_admission_center ? '編輯簽到表單 - ' . htmlspecialchars(
             document.body.removeChild(textarea);
         }
         
+        // 就讀學校自動完成：輸入關鍵字後顯示符合的學校供選擇
+        function initSchoolAutocompleteAll() {
+            document.querySelectorAll('.school-autocomplete-wrap').forEach(wrap => {
+                const visibleInput = wrap.querySelector('input[type="text"]');
+                const hiddenInput = wrap.querySelector('input[type="hidden"]');
+                const dropdown = wrap.querySelector('.school-autocomplete-dropdown');
+                if (!visibleInput || !hiddenInput || !dropdown) return;
+                
+                let debounceTimer = null;
+                visibleInput.addEventListener('input', function() {
+                    hiddenInput.value = '';
+                    const q = this.value.trim();
+                    clearTimeout(debounceTimer);
+                    if (q.length < 1) {
+                        dropdown.classList.remove('show');
+                        dropdown.innerHTML = '';
+                        return;
+                    }
+                    debounceTimer = setTimeout(function() {
+                        fetch('search_schools.php?q=' + encodeURIComponent(q) + '&limit=20')
+                            .then(r => r.json())
+                            .then(function(list) {
+                                dropdown.innerHTML = '';
+                                if (list.length === 0) {
+                                    dropdown.innerHTML = '<div class="school-autocomplete-empty">找不到符合的學校</div>';
+                                } else {
+                                    list.forEach(function(item) {
+                                        const div = document.createElement('div');
+                                        div.className = 'school-autocomplete-item';
+                                        div.textContent = item.name;
+                                        div.dataset.code = item.school_code || '';
+                                        div.dataset.name = item.name || '';
+                                        div.addEventListener('click', function() {
+                                            hiddenInput.value = this.dataset.code;
+                                            visibleInput.value = this.dataset.name;
+                                            dropdown.classList.remove('show');
+                                        });
+                                        dropdown.appendChild(div);
+                                    });
+                                }
+                                dropdown.classList.add('show');
+                            })
+                            .catch(function() {
+                                dropdown.innerHTML = '<div class="school-autocomplete-empty">搜尋失敗，請稍後再試</div>';
+                                dropdown.classList.add('show');
+                            });
+                    }, 300);
+                });
+                visibleInput.addEventListener('focus', function() {
+                    if (this.value.trim().length > 0 && dropdown.children.length > 0) dropdown.classList.add('show');
+                });
+                visibleInput.addEventListener('blur', function() {
+                    setTimeout(function() { dropdown.classList.remove('show'); }, 200);
+                });
+            });
+        }
+        
+        // 依姓名、電話自動帶入報名資料的學校與年級（有報名才帶入，沒有就維持空白）
+        function initCheckInSuggestion() {
+            const form = document.getElementById('checkInForm');
+            if (!form) return;
+            const nameInput = form.querySelector('input[name="name"]');
+            const phoneInput = form.querySelector('input[name="phone"]');
+            const sessionId = form.querySelector('input[name="session_id"]');
+            if (!nameInput || !phoneInput || !sessionId) return;
+            let suggestTimer = null;
+            function trySuggest() {
+                const name = (nameInput.value || '').trim();
+                const phone = (phoneInput.value || '').trim();
+                if (name.length < 1 || phone.length < 1) return;
+                const params = new URLSearchParams({ session_id: sessionId.value, name: name, phone: phone });
+                fetch('get_check_in_suggestion.php?' + params.toString())
+                    .then(function(r) { return r.json(); })
+                    .then(function(data) {
+                        if (!data.found) return;
+                        if (data.school_display || data.school) {
+                            const wrap = form.querySelector('.school-autocomplete-wrap');
+                            if (wrap) {
+                                const visible = wrap.querySelector('input[type="text"]');
+                                const hidden = wrap.querySelector('input[type="hidden"]');
+                                if (visible && hidden && (visible.value === '' || hidden.value === '')) {
+                                    visible.value = data.school_display || data.school || '';
+                                    hidden.value = data.school || '';
+                                }
+                            }
+                        }
+                        if (data.grade || data.grade_display) {
+                            const gradeSelect = form.querySelector('select[name="grade"]');
+                            if (gradeSelect && (gradeSelect.value === '' || gradeSelect.value === null)) {
+                                let opt = Array.from(gradeSelect.options).find(function(o) { return o.value === data.grade; });
+                                if (!opt && data.grade_display) {
+                                    opt = Array.from(gradeSelect.options).find(function(o) { return o.textContent.trim() === data.grade_display || o.value === data.grade_display; });
+                                }
+                                if (opt) gradeSelect.value = opt.value;
+                            }
+                        }
+                    })
+                    .catch(function() {});
+            }
+            function onNameOrPhoneInput() {
+                clearTimeout(suggestTimer);
+                suggestTimer = setTimeout(trySuggest, 500);
+            }
+            nameInput.addEventListener('input', onNameOrPhoneInput);
+            nameInput.addEventListener('blur', onNameOrPhoneInput);
+            phoneInput.addEventListener('input', onNameOrPhoneInput);
+            phoneInput.addEventListener('blur', onNameOrPhoneInput);
+        }
+        
         // 填寫模式初始化
         function initFillMode() {
             const formFieldsContainer = document.getElementById('formFieldsContainer');
@@ -1138,25 +1382,56 @@ $page_title = $is_admission_center ? '編輯簽到表單 - ' . htmlspecialchars(
                 label.innerHTML = field.label + (field.required ? ' <span class="required">*</span>' : '');
                 
                 let input;
-                if (field.type === 'textarea') {
+                if (field.type === 'school_autocomplete') {
+                    const wrap = document.createElement('div');
+                    wrap.className = 'school-autocomplete-wrap';
+                    const visibleInput = document.createElement('input');
+                    visibleInput.type = 'text';
+                    visibleInput.className = 'form-control';
+                    visibleInput.placeholder = field.placeholder || '請輸入學校名稱關鍵字，由系統顯示符合的學校供選擇';
+                    visibleInput.autocomplete = 'off';
+                    const hiddenInput = document.createElement('input');
+                    hiddenInput.type = 'hidden';
+                    hiddenInput.name = field.name;
+                    const dropdown = document.createElement('div');
+                    dropdown.className = 'school-autocomplete-dropdown';
+                    wrap.appendChild(visibleInput);
+                    wrap.appendChild(hiddenInput);
+                    wrap.appendChild(dropdown);
+                    wrap.dataset.fieldName = field.name;
+                    formGroup.appendChild(label);
+                    formGroup.appendChild(wrap);
+                    input = null;
+                } else if (field.type === 'textarea') {
                     input = document.createElement('textarea');
                     input.rows = 3;
+                } else if (field.type === 'select') {
+                    input = document.createElement('select');
+                    const opts = field.options || [];
+                    opts.forEach(opt => {
+                        const option = document.createElement('option');
+                        option.value = opt.value || '';
+                        option.textContent = opt.label || opt.value || '';
+                        input.appendChild(option);
+                    });
                 } else {
                     input = document.createElement('input');
-                    input.type = field.type;
+                    input.type = field.type || 'text';
                 }
                 
-                input.name = field.name;
-                input.className = 'form-control';
-                input.placeholder = field.placeholder || '';
-                if (field.required) {
-                    input.required = true;
+                if (input) {
+                    input.name = field.name;
+                    input.className = 'form-control';
+                    if (field.type !== 'select') input.placeholder = field.placeholder || '';
+                    if (field.required) input.required = true;
+                    formGroup.appendChild(label);
+                    formGroup.appendChild(input);
                 }
-                
-                formGroup.appendChild(label);
-                formGroup.appendChild(input);
                 formFieldsContainer.appendChild(formGroup);
             });
+            
+            initSchoolAutocompleteAll();
+            initCheckInSuggestion();
             
             // 表單提交
             document.getElementById('checkInForm').addEventListener('submit', function(e) {
@@ -1173,6 +1448,12 @@ $page_title = $is_admission_center ? '編輯簽到表單 - ' . htmlspecialchars(
                 loading.style.display = 'block';
                 submitBtn.disabled = true;
                 
+                // 就讀學校：若未從清單選擇，則以輸入框內容送出
+                form.querySelectorAll('.school-autocomplete-wrap').forEach(wrap => {
+                    const visible = wrap.querySelector('input[type="text"]');
+                    const hidden = wrap.querySelector('input[type="hidden"]');
+                    if (visible && hidden && !hidden.value && visible.value.trim()) hidden.value = visible.value.trim();
+                });
                 const formData = new FormData(form);
                 
                 fetch('process_online_check_in.php', {

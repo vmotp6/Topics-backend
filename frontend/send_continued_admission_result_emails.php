@@ -42,18 +42,32 @@ if ($is_cli) {
 } else {
     $limit = isset($_GET['limit']) ? max(1, (int)$_GET['limit']) : 50;
 }
+// 是否忽略排程時間、立即發送所有待發信（僅供測試，用 ?ignore_schedule=1）
+$ignore_schedule = isset($_GET['ignore_schedule']) && $_GET['ignore_schedule'] === '1';
+
 $now = date('Y-m-d H:i:s');
 
-echo "[{$now}] 開始發送到期續招錄取結果郵件（limit={$limit}）...\n";
-
-$stmt = $conn->prepare("
-    SELECT id, to_email, to_name, subject, body
-    FROM continued_admission_email_queue
-    WHERE status = 'pending' AND scheduled_at <= ?
-    ORDER BY scheduled_at ASC, id ASC
-    LIMIT ?
-");
-$stmt->bind_param("si", $now, $limit);
+if ($ignore_schedule) {
+    echo "[{$now}] 立即發送模式（忽略 scheduled_at）limit={$limit}...\n";
+    $stmt = $conn->prepare("
+        SELECT id, to_email, to_name, subject, body
+        FROM continued_admission_email_queue
+        WHERE status = 'pending'
+        ORDER BY id ASC
+        LIMIT ?
+    ");
+    $stmt->bind_param("i", $limit);
+} else {
+    echo "[{$now}] 開始發送到期續招錄取結果郵件（僅發送 scheduled_at 已到者，limit={$limit}）...\n";
+    $stmt = $conn->prepare("
+        SELECT id, to_email, to_name, subject, body
+        FROM continued_admission_email_queue
+        WHERE status = 'pending' AND scheduled_at <= ?
+        ORDER BY scheduled_at ASC, id ASC
+        LIMIT ?
+    ");
+    $stmt->bind_param("si", $now, $limit);
+}
 $stmt->execute();
 $rs = $stmt->get_result();
 
