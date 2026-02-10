@@ -144,9 +144,9 @@ try {
     $student_name = trim((string)($row['student_name'] ?? ''));
     $created_at = (string)($row['created_at'] ?? '');
 
-    // 只允許「通過」(AP) 發送（向後相容 approved）
-    if (!in_array($status, ['AP', 'approved', 'APPROVED'], true)) {
-        echo json_encode(['success' => false, 'message' => '僅通過名單可發送獎金'], JSON_UNESCAPED_UNICODE);
+    // 只允許「審核完成（可發獎金）」(APD) 發送
+    if (!in_array($status, ['APD'], true)) {
+        echo json_encode(['success' => false, 'message' => '僅審核完成名單可發送獎金'], JSON_UNESCAPED_UNICODE);
         exit;
     }
 
@@ -180,7 +180,7 @@ try {
             $q = $conn->prepare("SELECT ar.id
                 FROM admission_recommendations ar
                 LEFT JOIN recommended red ON ar.id = red.recommendations_id
-                WHERE red.name = ? AND ar.status IN ('AP','approved','APPROVED')
+            WHERE red.name = ? AND ar.status IN ('APD')
                 ORDER BY ar.id ASC");
             if ($q) {
                 $q->bind_param('s', $student_name);
@@ -197,7 +197,7 @@ try {
             // 向後相容：若沒有 recommended 表，改用 admission_recommendations.student_name
             $q = $conn->prepare("SELECT ar.id
                 FROM admission_recommendations ar
-                WHERE ar.student_name = ? AND ar.status IN ('AP','approved','APPROVED')
+                WHERE ar.student_name = ? AND ar.status IN ('APD')
                 ORDER BY ar.id ASC");
             if ($q) {
                 $q->bind_param('s', $student_name);
