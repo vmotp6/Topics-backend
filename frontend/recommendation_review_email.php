@@ -173,12 +173,12 @@ function compute_bonus_amount_for_recommendation($conn, $recommendation_id) {
         $q = $conn->prepare("SELECT ar.id
             FROM admission_recommendations ar
             LEFT JOIN recommended red ON ar.id = red.recommendations_id
-            WHERE red.name = ? AND ar.status IN ('AP','approved','APPROVED')
+            WHERE red.name = ? AND ar.status IN ('APD')
             ORDER BY ar.id ASC");
     } else {
         $q = $conn->prepare("SELECT ar.id
             FROM admission_recommendations ar
-            WHERE ar.student_name = ? AND ar.status IN ('AP','approved','APPROVED')
+            WHERE ar.student_name = ? AND ar.status IN ('APD')
             ORDER BY ar.id ASC");
     }
 
