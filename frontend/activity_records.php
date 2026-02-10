@@ -940,6 +940,7 @@ if ($teacher_id > 0) {
             }
             
             // 查詢學校來源統計（按 previous_school 分組，包含科系信息）
+            // 修正：只按 previous_school 分組，避免重複行
             $school_stats_sql = "
                 SELECT 
                     COALESCE(sd.name, ns.previous_school, '未填寫') AS school_name,
@@ -948,7 +949,7 @@ if ($teacher_id > 0) {
                 FROM new_student_basic_info ns
                 LEFT JOIN school_data sd ON ns.previous_school = sd.school_code
                 $where_condition
-                GROUP BY ns.previous_school, sd.name
+                GROUP BY ns.previous_school
                 ORDER BY student_count DESC, school_name ASC
             ";
             $school_stmt = $conn->prepare($school_stats_sql);
@@ -961,9 +962,40 @@ if ($teacher_id > 0) {
                 if ($school_stats_result) {
                     $schools_data = $school_stats_result->fetch_all(MYSQLI_ASSOC);
                     
-                    // 為每個學校查詢科系分布
-                    foreach ($schools_data as &$school) {
-                        $school_code = $school['school_code'];
+                    // 調試：記錄查詢結果
+                    error_log('主查詢返回學校數: ' . count($schools_data) . ' 筆');
+                    foreach ($schools_data as $school) {
+                        error_log('  - 學校: ' . $school['school_name'] . ' (代碼: ' . $school['school_code'] . ') 學生數: ' . $school['student_count']);
+                    }
+                    
+                    // 去重：確保每個學校只出現一次（按 school_code）
+                    $schools_unique = [];
+                    foreach ($schools_data as $school) {
+                        $school_code = $school['school_code'] ?? '';
+                        if ($school_code !== '' && !isset($schools_unique[$school_code])) {
+                            $schools_unique[$school_code] = $school;
+                        }
+                    }
+                    $schools_data = array_values($schools_unique);
+                    
+                    // 調試：記錄去重後結果
+                    error_log('去重後學校數: ' . count($schools_data) . ' 筆');
+                    error_log('去重後的數據結構: ' . json_encode($schools_data));
+                    
+                    // 為每個學校查詢科系分布（修正：只按 department_id 分組）
+                    foreach ($schools_data as $idx => &$school) {
+                        $school_code = $school['school_code'] ?? null;
+                        error_log("[$idx] 學校 school_code: " . ($school_code ? "存在 ($school_code)" : "NULL"));
+                        error_log("[$idx] 完整學校數據: " . json_encode($school));
+                        
+                        if ($school_code === null || $school_code === '') {
+                            error_log("[$idx] 警告：school_code 為空，跳過此學校");
+                            continue;
+                        }
+                        
+                        error_log('正在查詢學校科系: ' . $school['school_name'] . ' (代碼: ' . $school_code . ')');
+                        
+                        // 重置參數（每次循環都要重置）
                         $dept_where_params = [$school_code];
                         $dept_where_types = 's';
                         $dept_base_where = "WHERE ns.previous_school = ?
@@ -998,7 +1030,7 @@ if ($teacher_id > 0) {
                             FROM new_student_basic_info ns
                             LEFT JOIN departments d ON ns.department_id = d.code
                             $dept_base_where
-                            GROUP BY ns.department_id, d.name
+                            GROUP BY ns.department_id
                             ORDER BY student_count DESC, department_name ASC
                         ";
                         $dept_stmt = $conn->prepare($dept_sql);
@@ -1007,18 +1039,33 @@ if ($teacher_id > 0) {
                             $dept_stmt->execute();
                             $dept_result = $dept_stmt->get_result();
                             $school['departments'] = $dept_result->fetch_all(MYSQLI_ASSOC);
+                            error_log('  科系數: ' . count($school['departments']) . ' 個');
                             $dept_stmt->close();
                         } else {
                             $school['departments'] = [];
+                            error_log('  科系查詢失敗: ' . $conn->error);
                         }
                     }
+                    unset($school);  // 重要：清除引用
+                    
+                    // 🔴 關鍵調試：在賦值前檢查 $schools_data
+                    error_log('【賦值前】$schools_data 內容:');
+                    error_log('  數量: ' . count($schools_data));
+                    error_log('  JSON: ' . json_encode($schools_data, JSON_UNESCAPED_UNICODE | JSON_PARTIAL_OUTPUT_ON_ERROR));
                     
                     $new_student_school_stats = $schools_data;
+                    error_log('最終保存的學校數: ' . count($new_student_school_stats) . ' 筆');
+                    
+                    // 🔴 關鍵調試：在賦值後檢查 $new_student_school_stats
+                    error_log('【賦值後】$new_student_school_stats 內容:');
+                    error_log('  數量: ' . count($new_student_school_stats));
+                    error_log('  JSON: ' . json_encode($new_student_school_stats, JSON_UNESCAPED_UNICODE | JSON_PARTIAL_OUTPUT_ON_ERROR));
                 }
                 $school_stmt->close();
             }
             
             // 查詢科系分布統計（按 department_id 分組）- 保留用於單獨顯示
+            // 修正：只按 department_id 分組，避免重複行
             $dept_stats_sql = "
                 SELECT 
                     COALESCE(d.name, ns.department_id, '未填寫') AS department_name,
@@ -1027,7 +1074,7 @@ if ($teacher_id > 0) {
                 FROM new_student_basic_info ns
                 LEFT JOIN departments d ON ns.department_id = d.code
                 $where_condition_dept
-                GROUP BY ns.department_id, d.name
+                GROUP BY ns.department_id
                 ORDER BY student_count DESC, department_name ASC
             ";
             $dept_stmt = $conn->prepare($dept_stats_sql);
@@ -1060,6 +1107,17 @@ if ($teacher_id > 0) {
     // - 科主任（科系層級）：看該國中來「本科系」的人數
     $new_students_total_by_school = [];
     $new_students_by_school_dept = [];
+    
+    // 🔍 詳細調試：在合併前檢查兩個陣列
+    error_log('【關鍵調試】合併前的 new_student_school_stats:');
+    error_log('  數量: ' . count($new_student_school_stats));
+    error_log('  類型: ' . gettype($new_student_school_stats));
+    error_log('  JSON: ' . json_encode($new_student_school_stats, JSON_UNESCAPED_UNICODE));
+    
+    error_log('【關鍵調試】$school_summary_list:');
+    error_log('  數量: ' . count($school_summary_list));
+    error_log('  類型: ' . gettype($school_summary_list));
+    
     if (!empty($new_student_school_stats) && is_array($new_student_school_stats)) {
         foreach ($new_student_school_stats as $srow) {
             $sc = (string)($srow['school_code'] ?? '');
@@ -1949,8 +2007,8 @@ $conn->close();
                                 <div class="table-wrapper" style="padding: 16px;">
                                     <div style="font-weight: 600; margin-bottom: 8px;">2️⃣ 各國中「就讀意願平均」— 長條圖（Bar Chart）</div>
                                     <div style="font-size: 12px; color: #666; margin-bottom: 8px;">
-                                        資料來源：同上「1️⃣ 學校 × 熱度（排序表格）」同一筆資料，Y 軸對應表格「教師主觀評分」欄之平均意願分數。<br>
-                                        用途：快速看哪間國中熱、哪間冷。X 軸：國中名稱；Y 軸：平均意願分數（熱烈=3、普通=2、意願較低=1）。<?php echo $is_stam ? '招生中心：全校資料。' : '各科老師：僅顯示各國中來本科的活動數據。'; ?>
+                                        資料來源：同上「1️⃣ 學校 × 熱度（排序表格）」同一筆資料，Y 軸對應表格「熱度指數」欄之數值。<br>
+                                        用途：快速看哪間國中熱、哪間冷。X 軸：國中名稱；Y 軸：熱度指數（熱烈≥8、普通4-7、較低1-3、冷淡0）。<?php echo $is_stam ? '招生中心：全校資料。' : '各科老師：僅顯示各國中來本科的活動數據。'; ?>
                                     </div>
                                     <canvas id="schoolFeedbackScoreChart" height="140"></canvas>
                                 </div>
@@ -2028,19 +2086,69 @@ $conn->close();
                                 }
 
                                 function renderFeedbackChart() {
-                                    // 與「1️⃣ 學校 × 熱度（排序表格）」同一筆資料、同一順序，長條圖化表格「教師主觀評分」欄之平均意願分數
+                                    // 與「1️⃣ 學校 × 熱度（排序表格）」同一筆資料、同一順序，長條圖化表格「熱度指數」欄之數值
                                     const data = Array.isArray(window.__schoolSummaryList) ? window.__schoolSummaryList : [];
                                     if (!data.length) return;
                                     const labels = data.map(s => s.school_name);
-                                    // Y 軸：表格「教師主觀評分」之平均（feedback_avg），熱烈=3、普通=2、意願較低=1
-                                    const avgScores = data.map(s => parseFloat(s.feedback_avg) || 0);
+                                    // Y 軸：表格「熱度指數」（heat_index）
+                                    const heatValues = data.map(s => parseFloat(s.heat_index) || 0);
+                                    const heatValuesMapped = heatValues.map(v => {
+                                        const heat_int = Math.round(v);
+                                        if (heat_int >= 8) return 3;      // 熱烈
+                                        else if (heat_int >= 4) return 2; // 普通
+                                        else if (heat_int >= 1) return 1; // 較低
+                                        else return 0;                    // 冷淡
+                                    });
+                                    const heatLabels = heatValuesMapped.map(v => {
+                                        const labelMap = { 3: '熱烈', 2: '普通', 1: '較低', 0: '冷淡' };
+                                        return labelMap[v];
+                                    });
                                     if (window.__schoolCharts.feedbackScore) window.__schoolCharts.feedbackScore.destroy();
                                     const ctx = document.getElementById('schoolFeedbackScoreChart')?.getContext('2d');
                                     if (!ctx) return;
                                     window.__schoolCharts.feedbackScore = new Chart(ctx, {
                                         type: 'bar',
-                                        data: { labels, datasets: [{ label: '平均意願分數（熱烈=3、普通=2、意願較低=1）', data: avgScores, backgroundColor: '#667eea' }] },
-                                        options: { responsive: true, plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true, max: 3 } } }
+                                        data: { 
+                                            labels, 
+                                            datasets: [{ 
+                                                label: '熱度指數',
+                                                data: heatValues,
+                                                backgroundColor: heatValuesMapped.map(v => {
+                                                    const colorMap = { 3: '#28a745', 2: '#17a2b8', 1: '#fd7e14', 0: '#6c757d' };
+                                                    return colorMap[v];
+                                                })
+                                            }] 
+                                        },
+                                        options: { 
+                                            responsive: true, 
+                                            plugins: { 
+                                                legend: { display: false },
+                                                tooltip: {
+                                                    callbacks: {
+                                                        label: function(context) {
+                                                            const value = context.parsed.y;
+                                                            const heat_int = Math.round(value);
+                                                            let label = '';
+                                                            if (heat_int >= 8) label = '熱烈';
+                                                            else if (heat_int >= 4) label = '普通';
+                                                            else if (heat_int >= 1) label = '較低';
+                                                            else label = '冷淡';
+                                                            return '熱度指數: ' + value.toFixed(1) + ' (' + label + ')';
+                                                        }
+                                                    }
+                                                }
+                                            }, 
+                                            scales: { 
+                                                y: { 
+                                                    beginAtZero: true,
+                                                    ticks: {
+                                                        callback: function(value) {
+                                                            return value;
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
                                     });
                                 }
 
@@ -3435,7 +3543,49 @@ $conn->close();
         console.log('showNewStudentSchoolStats 被調用');
         sessionStorage.setItem('lastNewStudentChartType', 'schoolStats');
         
-        const schoolStats = <?php echo json_encode($new_student_school_stats); ?>;
+        // 🔴 關鍵：在客戶端直接印出 PHP 傳來的原始 JSON
+        console.log('%c🚨 PHP $new_student_school_stats (原始):', 'color: red; font-weight: bold;');
+        const rawJSON = <?php echo json_encode($new_student_school_stats, JSON_UNESCAPED_UNICODE); ?>;
+        console.log('陣列長度:', rawJSON.length);
+        console.log('元素 0 的鍵:', Object.keys(rawJSON[0] || {}));
+        console.log('元素 1 的鍵:', Object.keys(rawJSON[1] || {}));
+        console.log('完整原始數據:', rawJSON);
+        
+        const schoolStats = rawJSON;
+        
+        // 逐一檢查每個元素
+        for (let i = 0; i < schoolStats.length; i++) {
+            const item = schoolStats[i];
+            console.log(`\n【${i}】元素詳細檢查:`, {
+                '有無 school_name': 'school_name' in item,
+                '有無 school_code': 'school_code' in item,
+                '有無 student_count': 'student_count' in item,
+                '有無 heat_index': 'heat_index' in item,
+                '有無 feedback_avg': 'feedback_avg' in item,
+                '有無 total_activities': 'total_activities' in item,
+                '有無 departments': 'departments' in item,
+                '元素的鍵': Object.keys(item)
+            });
+            
+            if (item.feedback_avg !== undefined || item.heat_index !== undefined) {
+                console.warn(`⚠️ 元素 [${i}] 看起來來自 school_summary_list（有 feedback_avg/heat_index）！`);
+            }
+        }
+        console.log('=== 結束 ===\n');
+        
+        // 調試信息：直接顯示在頁面上
+        console.log('======================== 調試信息 ========================');
+        console.log('總學校數:', schoolStats.length);
+        console.log('完整數據:', schoolStats);
+        schoolStats.forEach((school, idx) => {
+            console.log(`[${idx}] 學校: ${school.school_name} (代碼: ${school.school_code}) 學生: ${school.student_count} 科系: ${school.departments?.length || 0}`);
+            if (school.departments) {
+                school.departments.forEach((dept, deptIdx) => {
+                    console.log(`    [${deptIdx}] ${dept.department_name} (${dept.department_id}): ${dept.student_count}`);
+                });
+            }
+        });
+        console.log('====================================================');
         
         if (!schoolStats || schoolStats.length === 0) {
             document.getElementById('newstudentAnalyticsContent').innerHTML = `
@@ -3451,6 +3601,92 @@ $conn->close();
         const totalStudents = schoolStats.reduce((sum, item) => sum + parseInt(item.student_count || 0), 0);
         
         const content = `
+            <div style="background:  border-radius: 10px; padding: 20px; margin-bottom: 20px;">
+
+                <div id="debugInfo" style="background: white; border: 1px solid #dee2e6; border-radius: 8px; padding: 15px; font-family: monospace; font-size: 12px; color: #333; display: none; max-height: 600px; overflow-y: auto;">
+                    <div style="margin-bottom: 15px; padding-bottom: 15px; border-bottom: 2px solid #dee2e6;">
+                        <div style="margin-bottom: 10px;"><strong>🚨 PHP 數據來源檢查</strong></div>
+                        <div style="background: #f8f9fa; padding: 10px; border-radius: 6px; margin-bottom: 10px;">
+                            <div style="margin-bottom: 8px; padding: 8px; background: white; border-left: 4px solid #dc3545;">
+                                <strong>⚠️ 警告:</strong> 如果下方所有元素都顯示有「feedback_avg」或「heat_index」欄位，
+                                表示 PHP 誤將「就讀意願統計」(school_summary_list) 的數據傳給了 JavaScript
+                            </div>
+                        </div>
+                        <div style="background: #f0f0f0; padding: 10px; border-radius: 6px; line-height: 1.8;">
+                            ${schoolStats.map((item, idx) => `
+                                <div style="margin-bottom: 8px; padding: 8px; background: white; border-radius: 4px; border-left: 4px solid ${(item.feedback_avg !== undefined || item.heat_index !== undefined) ? '#dc3545' : '#28a745'};">
+                                    <strong>[${idx}] 數據來源判定:</strong>
+                                    <div style="margin-left: 15px; font-size: 11px;">
+                                        ${(() => {
+                                            const keys = Object.keys(item);
+                                            const isNewStudent = 'student_count' in item && 'departments' in item;
+                                            const isSchoolSummary = 'feedback_avg' in item || 'heat_index' in item;
+                                            
+                                            if (isSchoolSummary && !isNewStudent) {
+                                                return `<span style="color: #dc3545;">❌ 來自 school_summary_list（不該在這裡！）</span><br/>鍵: ${keys.join(', ')}`;
+                                            } else if (isNewStudent) {
+                                                return `<span style="color: #28a745;">✓ 來自 new_student_school_stats（正確）</span><br/>鍵: ${keys.join(', ')}`;
+                                            } else {
+                                                return `<span style="color: #ffc107;">⚠️ 不明的數據來源</span><br/>鍵: ${keys.join(', ')}`;
+                                            }
+                                        })()}
+                                    </div>
+                                </div>
+                            `).join('')}
+                        </div>
+                    </div>
+                    
+                    <div style="margin-bottom: 15px; padding-bottom: 15px; border-bottom: 2px solid #dee2e6;">
+                        <div style="margin-bottom: 10px;"><strong>⚠️ PHP 數據結構檢查</strong></div>
+                        <div style="background: #f8f9fa; padding: 10px; border-radius: 6px; margin-bottom: 10px; line-height: 1.6; color: #dc3545;">
+                            <strong>注意:</strong> 如果下方顯示 null、undefined 或結構異常，表示 PHP 端有問題
+                        </div>
+                        <div style="background: #f0f0f0; padding: 10px; border-radius: 6px; line-height: 1.8;">
+                            <div><strong>schoolStats.length:</strong> <span style="color: #667eea;">${schoolStats.length}</span></div>
+                            <div><strong>第一個元素:</strong> <span style="color: #28a745;">${schoolStats[0] ? '✓ 存在' : '✗ NULL'}</span></div>
+                            <div><strong>第二個元素:</strong> <span style="color: ${schoolStats[1] ? '#28a745' : '#dc3545;'}">${schoolStats[1] ? '✓ 存在' : '✗ NULL 或 undefined'}</span></div>
+                            <div style="margin-top: 10px; padding: 10px; background: white; border-radius: 4px; border-left: 4px solid #dc3545;">
+                                <strong>完整 JSON (Raw):</strong><br/>
+                                <pre style="margin: 5px 0; white-space: pre-wrap; word-break: break-all; max-height: 150px; overflow-y: auto;">${JSON.stringify(schoolStats, null, 2)}</pre>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div style="margin-bottom: 10px;"><strong>🔍 查詢結果摘要</strong></div>
+                    <div style="background: #f8f9fa; padding: 10px; border-radius: 6px; margin-bottom: 10px; line-height: 1.6;">
+                        <div>📊 返回學校數: <strong style="color: #dc3545;">${schoolStats.length}</strong> 所</div>
+                        <div>👥 總學生人數: <strong style="color: #28a745;">${totalStudents}</strong> 人</div>
+                    </div>
+                    
+                    <div style="margin-bottom: 10px;"><strong>🏫 各校詳細資訊</strong></div>
+                    ${schoolStats.map((school, idx) => `
+                        <div style="background: #f8f9fa; padding: 10px; margin-bottom: 8px; border-left: 4px solid #667eea; border-radius: 4px;">
+                            <div><strong>[${idx + 1}]</strong> <span style="color: #667eea;">${school?.school_name || '❌ NULL'}</span></div>
+                            <div style="margin-left: 20px; font-size: 11px; color: #666;">
+                                <div>• 代碼: <code style="background: white; padding: 2px 6px; border-radius: 3px; color: #e83e8c;">${school?.school_code || 'NULL'}</code></div>
+                                <div>• 學生: <strong style="color: #28a745;">${school?.student_count !== undefined ? school.student_count : '❌ undefined'}</strong> 人</div>
+                                <div>• 科系: <strong>${school?.departments?.length !== undefined ? school.departments.length : '❌ undefined'}</strong> 個</div>
+                                <div style="margin-top: 6px; padding: 6px; background: white; border-radius: 3px; border-left: 2px solid #ffc107;">
+                                    <strong>元素鍵:</strong> <code>${Object.keys(school).join(', ')}</code>
+                                </div>
+                                ${school?.departments && school.departments.length > 0 ? `
+                                    <div style="margin-top: 6px; margin-left: 10px;">
+                                        ${school.departments.map(dept => `<div>- ${dept?.department_name || '❌ NULL'} (${dept?.department_id || 'NULL'}): ${dept?.student_count !== undefined ? dept.student_count : '❌ undefined'}人</div>`).join('')}
+                                    </div>
+                                ` : ''}
+                            </div>
+                        </div>
+                    `).join('')}
+                    
+                    <div style="margin-top: 15px; padding: 10px; background: #e8f4f8; border-radius: 6px; font-size: 11px; color: #333;">
+                        <strong>💡 診斷提示:</strong><br/>
+                        • 如果元素顯示 null 或 undefined，表示 PHP 端構建的 JSON 有問題<br/>
+                        • 如果所有元素都有 feedback_avg/heat_index，說明 PHP 傳錯數據來源<br/>
+                        • 請檢查瀏覽器開發者工具的 Console 標籤查看完整診斷
+                    </div>
+                </div>
+            </div>
+            
             <div style="margin-bottom: 20px;">
                 <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; flex-wrap: wrap; gap: 10px;">
                     <h4 style="color: #667eea; margin: 0;">
