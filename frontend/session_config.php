@@ -53,8 +53,26 @@ function checkBackendLogin() {
                   (isset($_SESSION['logged_in']) && $_SESSION['logged_in'] === true);
 
     if (!$isLoggedIn) {
-        header("Location: login.php");
-        exit;
+        // 檢測是否為 API 請求（根據請求路徑或 Content-Type）
+        $isApiRequest = (
+            strpos($_SERVER['REQUEST_URI'], '/api/') !== false ||
+            strpos($_SERVER['SCRIPT_NAME'], '/api/') !== false ||
+            (isset($_SERVER['HTTP_ACCEPT']) && strpos($_SERVER['HTTP_ACCEPT'], 'application/json') !== false)
+        );
+        
+        if ($isApiRequest) {
+            // API 請求返回 JSON 錯誤
+            header('Content-Type: application/json; charset=utf-8');
+            echo json_encode([
+                'success' => false,
+                'message' => '未登入或登入已過期'
+            ]);
+            exit;
+        } else {
+            // 一般頁面請求重定向到登入頁
+            header("Location: login.php");
+            exit;
+        }
     }
 
     // 驗證角色
@@ -64,8 +82,25 @@ function checkBackendLogin() {
     if (!in_array($user_role, $allowed_backend_roles)) {
         $_SESSION['admin_logged_in'] = false;
         session_destroy();
-        header("Location: login.php");
-        exit;
+        
+        // 檢測是否為 API 請求
+        $isApiRequest = (
+            strpos($_SERVER['REQUEST_URI'], '/api/') !== false ||
+            strpos($_SERVER['SCRIPT_NAME'], '/api/') !== false ||
+            (isset($_SERVER['HTTP_ACCEPT']) && strpos($_SERVER['HTTP_ACCEPT'], 'application/json') !== false)
+        );
+        
+        if ($isApiRequest) {
+            header('Content-Type: application/json; charset=utf-8');
+            echo json_encode([
+                'success' => false,
+                'message' => '權限不足'
+            ]);
+            exit;
+        } else {
+            header("Location: login.php");
+            exit;
+        }
     }
 }
 

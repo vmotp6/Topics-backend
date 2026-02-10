@@ -145,8 +145,8 @@ if ($view_mode === 'history') {
     // 注意：filter_year 在 history 模式下已經確保不是今年
     $status_condition = " AND LEFT(ca.apply_no, 4) = ? ";
 } else {
-    // 目前名單：只看非錄取，且 apply_no 前四碼 = 今年（強制使用 current_year）
-    $status_condition = " AND (ca.status IS NULL OR (ca.status <> 'approved' AND ca.status <> 'AP')) AND LEFT(ca.apply_no, 4) = ? ";
+    // 目前名單：顯示今年的所有學生（包含正取），apply_no 前四碼 = 今年（強制使用 current_year）
+    $status_condition = " AND LEFT(ca.apply_no, 4) = ? ";
 }
 
 // 檢查是否使用正規化分配表
