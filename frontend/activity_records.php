@@ -1731,7 +1731,7 @@ $conn->close();
                                     1️⃣ 學校 × 熱度（排序表格）
                                 </button>
                                 <button type="button" class="btn-view" id="btnSchoolViewFeedback" onclick="showSchoolView('feedback')">
-                                    2️⃣ 學校別活動回饋（長條圖）
+                                    2️⃣ 各國中就讀意願平均（長條圖）
                                 </button>
                                 <button type="button" class="btn-view" id="btnSchoolViewGrade" onclick="showSchoolView('grade')">
                                     3️⃣ 學校 × 年級學期（堆疊長條圖）
@@ -1944,10 +1944,14 @@ $conn->close();
                             </div>
                             </div>
 
-                            <!-- 2️⃣ 學校別活動回饋（長條圖） -->
+                            <!-- 2️⃣ 各國中就讀意願平均（長條圖）— 依上方「學校 × 熱度」表格同一筆資料繪製 -->
                             <div class="school-view" id="schoolView-feedback" style="display:none; margin-top: 12px;">
                                 <div class="table-wrapper" style="padding: 16px;">
-                                    <div style="font-weight: 600; margin-bottom: 8px;">2️⃣ 學校別活動回饋（分數）— 長條圖</div>
+                                    <div style="font-weight: 600; margin-bottom: 8px;">2️⃣ 各國中「就讀意願平均」— 長條圖（Bar Chart）</div>
+                                    <div style="font-size: 12px; color: #666; margin-bottom: 8px;">
+                                        資料來源：同上「1️⃣ 學校 × 熱度（排序表格）」同一筆資料，Y 軸對應表格「教師主觀評分」欄之平均意願分數。<br>
+                                        用途：快速看哪間國中熱、哪間冷。X 軸：國中名稱；Y 軸：平均意願分數（熱烈=3、普通=2、意願較低=1）。<?php echo $is_stam ? '招生中心：全校資料。' : '各科老師：僅顯示各國中來本科的活動數據。'; ?>
+                                    </div>
                                     <canvas id="schoolFeedbackScoreChart" height="140"></canvas>
                                 </div>
                             </div>
@@ -2024,20 +2028,19 @@ $conn->close();
                                 }
 
                                 function renderFeedbackChart() {
+                                    // 與「1️⃣ 學校 × 熱度（排序表格）」同一筆資料、同一順序，長條圖化表格「教師主觀評分」欄之平均意願分數
                                     const data = Array.isArray(window.__schoolSummaryList) ? window.__schoolSummaryList : [];
                                     if (!data.length) return;
                                     const labels = data.map(s => s.school_name);
-                                    const feedbackScore = data.map(s => {
-                                        const fc = s.feedback_count || {};
-                                        return (fc['熱烈'] || 0) * 3 + (fc['普通'] || 0) * 2 + (fc['冷淡'] || 0) * 1;
-                                    });
+                                    // Y 軸：表格「教師主觀評分」之平均（feedback_avg），熱烈=3、普通=2、意願較低=1
+                                    const avgScores = data.map(s => parseFloat(s.feedback_avg) || 0);
                                     if (window.__schoolCharts.feedbackScore) window.__schoolCharts.feedbackScore.destroy();
                                     const ctx = document.getElementById('schoolFeedbackScoreChart')?.getContext('2d');
                                     if (!ctx) return;
                                     window.__schoolCharts.feedbackScore = new Chart(ctx, {
                                         type: 'bar',
-                                        data: { labels, datasets: [{ label: '回饋分數（熱烈=3、普通=2、冷淡=1、其他=0）', data: feedbackScore, backgroundColor: '#667eea' }] },
-                                        options: { responsive: true, plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true } } }
+                                        data: { labels, datasets: [{ label: '平均意願分數（熱烈=3、普通=2、意願較低=1）', data: avgScores, backgroundColor: '#667eea' }] },
+                                        options: { responsive: true, plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true, max: 3 } } }
                                     });
                                 }
 
