@@ -6,6 +6,7 @@
 
 require_once __DIR__ . '/session_config.php';
 require_once __DIR__ . '/includes/webauthn_helpers.php';
+require_once __DIR__ . '/../../Topics-frontend/frontend/includes/email_functions.php';
 
 header('Content-Type: application/json; charset=utf-8');
 
@@ -27,6 +28,13 @@ try {
     $action = $input['action'] ?? '';
     
     if ($action === 'start') {
+        // 檢查是否已通過 2FA 驗證（5分鐘內有效）
+        if (!isset($_SESSION['webauthn_2fa_verified']) || 
+            !isset($_SESSION['webauthn_2fa_verified_time']) ||
+            (time() - $_SESSION['webauthn_2fa_verified_time']) > 300) {
+            throw new Exception('請先完成郵件驗證碼驗證');
+        }
+        
         // 開始註冊流程：生成 challenge 和註冊選項
         // 生成 32 字節的隨機 challenge
         $challenge = random_bytes(32);
@@ -71,15 +79,13 @@ try {
                 ['type' => 'public-key', 'alg' => -257] // RS256
             ],
             'authenticatorSelection' => [
-                // 不限制 authenticatorAttachment，允許平台和跨平台認證器
-                // 平台認證器：手機內建的指紋/臉部辨識、Windows Hello
-                // 跨平台認證器：USB 金鑰等外部設備
-                'userVerification' => 'preferred', // preferred 允許更多選項（PIN、生物驗證等）
-                'requireResidentKey' => true, // 改為 true，Passkey 需要 resident key 才能跨設備同步
-                // 不設置 authenticatorAttachment，讓用戶選擇
-                // 如果設置為 'platform'，會強制使用平台認證器（Passkey）
+                // 支持 Android 設備上的生物驗證
+                // Android 支持：平台認證器（通過 Google Play 服務）、跨平台認證器
+                'authenticatorAttachment' => 'platform', // 優先使用平台認證器（手機內建生物驗證）
+                'userVerification' => 'preferred',      // 允許生物驗證、PIN、密碼等驗證方式
+                'requireResidentKey' => false,          // 不要求 resident key，提高 Android 兼容性
             ],
-            'timeout' => 120000, // 增加到 120 秒，給用戶更多時間
+            'timeout' => 120000, // 120 秒，給用戶充足時間
             'attestation' => 'none' // 不需要 attestation
         ];
         
@@ -184,32 +190,82 @@ try {
                 $device_name = 'Windows 設備';
             } else if (preg_match('/Mac/', $user_agent)) {
                 $device_name = 'Mac 設備';
-            } else {
-                $device_name = '桌面設備';
+        } else {
+            $device_name = '桌面設備';
             }
         }
         
-        // 儲存憑證
-        $success = saveWebAuthnCredential(
-            $user_id,
-            base64UrlEncode($raw_id),
-            $public_key,
-            $device_name,
-            $device_type
-        );
+        // 直接保存設備到 webauthn_credentials 表（跳過郵件確認）
+        $conn = getDatabaseConnection();
         
-        if (!$success) {
-            throw new Exception('憑證儲存失敗');
+        // 確保 webauthn_credentials 表存在
+        $ensure_table = $conn->query("
+            CREATE TABLE IF NOT EXISTS webauthn_credentials (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                user_id INT NOT NULL,
+                credential_id VARCHAR(512) NOT NULL UNIQUE,
+                public_key TEXT NOT NULL,
+                sign_count INT DEFAULT 0,
+                device_name VARCHAR(255) NULL,
+                device_type VARCHAR(50) NULL,
+                transports JSON NULL,
+                ip_address VARCHAR(45) NULL,
+                user_agent TEXT NULL,
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                last_used_at DATETIME NULL,
+                INDEX idx_user_id (user_id),
+                INDEX idx_created (created_at)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        ");
+        
+        // 添加缺失的欄位（如果表已存在）
+        $conn->query("ALTER TABLE webauthn_credentials ADD COLUMN IF NOT EXISTS sign_count INT DEFAULT 0");
+        $conn->query("ALTER TABLE webauthn_credentials ADD COLUMN IF NOT EXISTS ip_address VARCHAR(45) NULL");
+        $conn->query("ALTER TABLE webauthn_credentials ADD COLUMN IF NOT EXISTS user_agent TEXT NULL");
+        $conn->query("ALTER TABLE webauthn_credentials ADD COLUMN IF NOT EXISTS transports JSON NULL");
+        $conn->query("ALTER TABLE webauthn_credentials ADD COLUMN IF NOT EXISTS last_used_at DATETIME NULL");
+        
+        $credential_id_encoded = base64UrlEncode($raw_id);
+        $ip_address = $_SERVER['REMOTE_ADDR'] ?? null;
+        $user_agent = $_SERVER['HTTP_USER_AGENT'] ?? null;
+        $transports = isset($input['response']['transports']) ? json_encode($input['response']['transports']) : null;
+        
+        // 檢查是否已存在此設備
+        $check_stmt = $conn->prepare("SELECT id FROM webauthn_credentials WHERE user_id = ? AND credential_id = ? LIMIT 1");
+        $check_stmt->bind_param("is", $user_id, $credential_id_encoded);
+        $check_stmt->execute();
+        $check_result = $check_stmt->get_result();
+        if ($check_result->num_rows > 0) {
+            $conn->close();
+            throw new Exception('此設備已註冊過，無需重複註冊。');
         }
+        $check_stmt->close();
         
-        // 清除 session 中的 challenge
+        // 直接保存設備到 webauthn_credentials 表（不指定 sign_count，讓 DEFAULT 值自動設置）
+        $ins = $conn->prepare("
+            INSERT INTO webauthn_credentials (user_id, credential_id, public_key, device_name, device_type, ip_address, user_agent, transports)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ");
+        $ins->bind_param("isssssss", $user_id, $credential_id_encoded, $public_key, $device_name, $device_type, $ip_address, $user_agent, $transports);
+        if (!$ins->execute()) {
+            $conn->close();
+            throw new Exception('設備註冊失敗，請重試。');
+        }
+        $ins->close();
+        
+        $conn->close();
+        
+        // 清除 session 中的 2FA 驗證標誌
         unset($_SESSION['webauthn_register_challenge']);
         unset($_SESSION['webauthn_register_timestamp']);
+        unset($_SESSION['webauthn_2fa_verified']);
+        unset($_SESSION['webauthn_2fa_verified_time']);
         
         echo json_encode([
             'success' => true,
-            'message' => '憑證註冊成功',
-            'credential_id' => base64UrlEncode($raw_id),
+            'email_verification_required' => false,
+            'message' => '設備註冊成功！',
+            'credential_id' => $credential_id_encoded,
             'device_name' => $device_name
         ], JSON_UNESCAPED_UNICODE);
         

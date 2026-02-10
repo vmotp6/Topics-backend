@@ -323,14 +323,54 @@ $current_page = 'signature';
                         <!-- 註冊設備模態框 -->
                         <div id="registerModal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 10000; align-items: center; justify-content: center;">
                             <div style="background: white; padding: 30px; border-radius: 8px; max-width: 500px; width: 90%;">
-                                <h3 style="margin-top: 0;">註冊生物驗證設備</h3>
-                                <p style="color: #666; margin-bottom: 20px;">請按照提示完成設備註冊，之後即可使用生物驗證進行簽名。</p>
-                                <div id="registerStatus" style="margin-bottom: 20px;"></div>
-                                <div style="display: flex; gap: 12px; justify-content: flex-end;">
-                                    <button class="btn btn-secondary" onclick="closeRegisterModal()">取消</button>
-                                    <button class="btn btn-primary" onclick="startWebAuthnRegister()" id="startRegisterBtn">
-                                        <i class="fas fa-fingerprint"></i> 開始註冊
+                                <h3 style="margin-top: 0;"><i class="fas fa-shield-alt"></i> 註冊生物驗證設備</h3>
+                                
+                                <!-- 步驟 1: 郵件驗證 -->
+                                <div id="step1EmailVerification" style="display: block;">
+                                    <div style="background: #e6f7ff; border: 1px solid #91d5ff; padding: 16px; border-radius: 6px; margin-bottom: 20px;">
+                                        <p style="margin: 0; color: #0050b3; font-size: 14px;">
+                                            <i class="fas fa-info-circle"></i> 為了確保您的帳號安全，註冊新設備前需要先進行郵件驗證。
+                                        </p>
+                                    </div>
+                                    <p style="color: #666; margin-bottom: 16px;">點擊下方按鈕，我們將發送驗證碼到您的註冊信箱。</p>
+                                    <div id="emailDisplay" style="background: #f5f5f5; padding: 12px; border-radius: 4px; margin-bottom: 16px; text-align: center; font-family: monospace;">
+                                        載入中...
+                                    </div>
+                                    <button class="btn btn-primary" onclick="sendWebAuthn2FA()" id="send2FABtn" style="width: 100%; margin-bottom: 12px;">
+                                        <i class="fas fa-envelope"></i> 發送驗證碼
                                     </button>
+                                    <div id="verificationCodeInput" style="display: none; margin-top: 16px;">
+                                        <label style="display: block; margin-bottom: 8px; color: #666; font-weight: 500;">請輸入 6 位數驗證碼</label>
+                                        <input type="text" id="verification2FACode" maxlength="6" placeholder="000000" autocomplete="off"
+                                               style="width: 100%; padding: 12px; border: 1px solid #d9d9d9; border-radius: 6px; font-size: 24px; text-align: center; letter-spacing: 8px; font-family: monospace; margin-bottom: 12px;"
+                                               oninput="this.value = this.value.replace(/[^0-9]/g, '')"
+                                               onkeypress="if(event.key === 'Enter') verifyWebAuthn2FA()">
+                                        <button class="btn btn-primary" onclick="verifyWebAuthn2FA()" id="verify2FABtn" style="width: 100%;">
+                                            <i class="fas fa-check"></i> 驗證並繼續
+                                        </button>
+                                        <p style="font-size: 13px; color: #999; text-align: center; margin-top: 12px;">
+                                            沒收到驗證碼？<a href="#" onclick="sendWebAuthn2FA(); return false;" style="color: #1890ff;">重新發送</a>
+                                        </p>
+                                    </div>
+                                </div>
+                                
+                                <!-- 步驟 2: WebAuthn 註冊 -->
+                                <div id="step2WebAuthnRegister" style="display: none;">
+                                    <div style="background: #f6ffed; border: 1px solid #b7eb8f; padding: 16px; border-radius: 6px; margin-bottom: 20px;">
+                                        <p style="margin: 0; color: #389e0d; font-size: 14px;">
+                                            <i class="fas fa-check-circle"></i> 郵件驗證成功！現在可以開始註冊設備。
+                                        </p>
+                                    </div>
+                                    <p style="color: #666; margin-bottom: 20px;">請按照瀏覽器提示完成生物驗證設備註冊。</p>
+                                    <button class="btn btn-primary" onclick="startWebAuthnRegister()" id="startRegisterBtn" style="width: 100%;">
+                                        <i class="fas fa-fingerprint"></i> 開始註冊設備
+                                    </button>
+                                </div>
+                                
+                                <div id="registerStatus" style="margin-top: 16px;"></div>
+                                
+                                <div style="display: flex; gap: 12px; justify-content: flex-end; margin-top: 20px; padding-top: 20px; border-top: 1px solid #f0f0f0;">
+                                    <button class="btn btn-secondary" onclick="closeRegisterModal()">取消</button>
                                 </div>
                             </div>
                         </div>
@@ -818,12 +858,183 @@ $current_page = 'signature';
         // 顯示註冊模態框
         function showRegisterModal() {
             document.getElementById('registerModal').style.display = 'flex';
+            // 重置為第一步
+            document.getElementById('step1EmailVerification').style.display = 'block';
+            document.getElementById('step2WebAuthnRegister').style.display = 'none';
+            document.getElementById('verificationCodeInput').style.display = 'none';
+            document.getElementById('verification2FACode').value = '';
+            document.getElementById('registerStatus').innerHTML = '';
+            // 載入用戶 Email
+            loadUserEmail();
         }
         
         // 關閉註冊模態框
         function closeRegisterModal() {
             document.getElementById('registerModal').style.display = 'none';
             document.getElementById('registerStatus').innerHTML = '';
+            // 重置所有欄位
+            document.getElementById('step1EmailVerification').style.display = 'block';
+            document.getElementById('step2WebAuthnRegister').style.display = 'none';
+            document.getElementById('verificationCodeInput').style.display = 'none';
+            document.getElementById('verification2FACode').value = '';
+        }
+        
+        // 載入用戶 Email
+        async function loadUserEmail() {
+            try {
+                const response = await fetch('get_user_info.php', {
+                    headers: { 'Accept': 'application/json' }
+                });
+                
+                // 檢查響應內容類型
+                const contentType = response.headers.get('content-type');
+                if (!contentType || !contentType.includes('application/json')) {
+                    const text = await response.text();
+                    console.error('非 JSON 響應:', text);
+                    document.getElementById('emailDisplay').textContent = '載入失敗';
+                    return;
+                }
+                
+                const data = await response.json();
+                if (data.success && data.user && data.user.email) {
+                    document.getElementById('emailDisplay').textContent = maskEmail(data.user.email);
+                } else {
+                    document.getElementById('emailDisplay').textContent = '未設定 Email';
+                }
+            } catch (error) {
+                console.error('載入 Email 失敗:', error);
+                document.getElementById('emailDisplay').textContent = '載入失敗';
+            }
+        }
+        
+        // 遮罩 Email
+        function maskEmail(email) {
+            const parts = email.split('@');
+            if (parts.length !== 2) return email;
+            const local = parts[0];
+            const domain = parts[1];
+            const showChars = Math.min(2, Math.floor(local.length / 2));
+            const masked = local.substring(0, showChars) + '*'.repeat(local.length - showChars);
+            return masked + '@' + domain;
+        }
+        
+        // 發送 2FA 驗證碼
+        async function sendWebAuthn2FA() {
+            const sendBtn = document.getElementById('send2FABtn');
+            const statusDiv = document.getElementById('registerStatus');
+            
+            sendBtn.disabled = true;
+            sendBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 發送中...';
+            statusDiv.innerHTML = '';
+            
+            try {
+                const response = await fetch('api/send_webauthn_2fa.php', {
+                    method: 'POST',
+                    headers: { 
+                        'Content-Type': 'application/json',
+                        'Accept': 'application/json'
+                    }
+                });
+                
+                // 檢查響應內容類型
+                const contentType = response.headers.get('content-type');
+                if (!contentType || !contentType.includes('application/json')) {
+                    const text = await response.text();
+                    console.error('非 JSON 響應:', text);
+                    throw new Error('伺服器返回了無效的響應格式');
+                }
+                
+                const data = await response.json();
+                
+                if (!data.success) {
+                    throw new Error(data.message || '發送驗證碼失敗');
+                }
+                
+                statusDiv.innerHTML = '<p style="color: #52c41a;"><i class="fas fa-check-circle"></i> ' + data.message + '</p>';
+                showToast(data.message, 'success');
+                
+                // 顯示驗證碼輸入框
+                document.getElementById('verificationCodeInput').style.display = 'block';
+                document.getElementById('send2FABtn').style.display = 'none';
+                
+                // 聚焦到驗證碼輸入框
+                setTimeout(() => {
+                    document.getElementById('verification2FACode').focus();
+                }, 100);
+                
+            } catch (error) {
+                console.error('發送驗證碼失敗:', error);
+                let errorMessage = error.message;
+                if (error.message.includes('JSON')) {
+                    errorMessage = '系統錯誤，請稍後再試或聯繫管理員';
+                }
+                statusDiv.innerHTML = '<p style="color: #f5222d;"><i class="fas fa-exclamation-circle"></i> ' + errorMessage + '</p>';
+                showToast(errorMessage, 'error');
+                sendBtn.disabled = false;
+                sendBtn.innerHTML = '<i class="fas fa-envelope"></i> 發送驗證碼';
+            }
+        }
+        
+        // 驗證 2FA 驗證碼
+        async function verifyWebAuthn2FA() {
+            const code = document.getElementById('verification2FACode').value.trim();
+            const verifyBtn = document.getElementById('verify2FABtn');
+            const statusDiv = document.getElementById('registerStatus');
+            
+            if (!/^\d{6}$/.test(code)) {
+                statusDiv.innerHTML = '<p style="color: #f5222d;"><i class="fas fa-exclamation-circle"></i> 請輸入 6 位數驗證碼</p>';
+                return;
+            }
+            
+            verifyBtn.disabled = true;
+            verifyBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 驗證中...';
+            statusDiv.innerHTML = '';
+            
+            try {
+                const response = await fetch('api/verify_webauthn_2fa.php', {
+                    method: 'POST',
+                    headers: { 
+                        'Content-Type': 'application/json',
+                        'Accept': 'application/json'
+                    },
+                    body: JSON.stringify({ code: code })
+                });
+                
+                // 檢查響應內容類型
+                const contentType = response.headers.get('content-type');
+                if (!contentType || !contentType.includes('application/json')) {
+                    const text = await response.text();
+                    console.error('非 JSON 響應:', text);
+                    throw new Error('伺服器返回了無效的響應格式');
+                }
+                
+                const data = await response.json();
+                
+                if (!data.success) {
+                    throw new Error(data.message || '驗證失敗');
+                }
+                
+                statusDiv.innerHTML = '<p style="color: #52c41a;"><i class="fas fa-check-circle"></i> ' + data.message + '</p>';
+                showToast(data.message, 'success');
+                
+                // 延遲後切換到第二步
+                setTimeout(() => {
+                    document.getElementById('step1EmailVerification').style.display = 'none';
+                    document.getElementById('step2WebAuthnRegister').style.display = 'block';
+                    statusDiv.innerHTML = '';
+                }, 1000);
+                
+            } catch (error) {
+                console.error('驗證失敗:', error);
+                let errorMessage = error.message;
+                if (error.message.includes('JSON')) {
+                    errorMessage = '系統錯誤，請稍後再試或聯繫管理員';
+                }
+                statusDiv.innerHTML = '<p style="color: #f5222d;"><i class="fas fa-exclamation-circle"></i> ' + errorMessage + '</p>';
+                showToast(errorMessage, 'error');
+                verifyBtn.disabled = false;
+                verifyBtn.innerHTML = '<i class="fas fa-check"></i> 驗證並繼續';
+            }
         }
         
         // Base64 URL 解碼並轉換為 ArrayBuffer
@@ -900,16 +1111,34 @@ $current_page = 'signature';
                     userIdLength: options.user.id.byteLength,
                     userName: options.user.name,
                     userDisplayName: options.user.displayName,
-                    userVerification: options.authenticatorSelection?.userVerification
+                    userVerification: options.authenticatorSelection?.userVerification,
+                    authenticatorAttachment: options.authenticatorSelection?.authenticatorAttachment
                 });
                 
                 // 3. 調用 WebAuthn API
                 statusDiv.innerHTML = '<p style="color: #666;">請使用您的生物驗證設備進行註冊...</p>';
-                statusDiv.innerHTML += '<p style="color: #999; font-size: 12px; margin-top: 8px;">您可以選擇：Windows Hello、手機生物驗證、或 USB 金鑰</p>';
+                statusDiv.innerHTML += '<p style="color: #999; font-size: 12px; margin-top: 8px;">如果是 Android 手機，請確保已安裝最新版 Chrome 並已設定生物驗證。</p>';
                 
-                const credential = await navigator.credentials.create({
-                    publicKey: options
-                });
+                let credential = null;
+                try {
+                    credential = await navigator.credentials.create({
+                        publicKey: options
+                    });
+                    
+                    if (!credential) {
+                        throw new Error('使用者取消或設備不支援生物驗證');
+                    }
+                } catch (webauthError) {
+                    console.error('WebAuthn 建立失敗詳情:', {
+                        message: webauthError.message,
+                        name: webauthError.name,
+                        code: webauthError.code,
+                        options: options,
+                        platform: navigator.platform,
+                        userAgent: navigator.userAgent
+                    });
+                    throw new Error('生物驗證失敗: ' + webauthError.message + '\n\n建議：\n1. 確保已設定指紋或臉部辨識\n2. 更新瀏覽器到最新版本\n3. 如為 Android，請使用 Chrome 並更新到最新版本');
+                }
                 
                 // 3. 發送註冊結果到後端
                 const registerResponse = await fetch('webauthn_register.php', {
@@ -922,7 +1151,8 @@ $current_page = 'signature';
                             rawId: arrayBufferToBase64(credential.rawId),
                             response: {
                                 attestationObject: arrayBufferToBase64(credential.response.attestationObject),
-                                clientDataJSON: arrayBufferToBase64(credential.response.clientDataJSON)
+                                clientDataJSON: arrayBufferToBase64(credential.response.clientDataJSON),
+                                transports: credential.response.getTransports?.() || []
                             },
                             type: credential.type
                         }
@@ -935,12 +1165,14 @@ $current_page = 'signature';
                     throw new Error(registerData.message || '註冊失敗');
                 }
                 
-                statusDiv.innerHTML = '<p style="color: #52c41a;"><i class="fas fa-check-circle"></i> 設備註冊成功！</p>';
-                showToast('設備註冊成功！現在可以使用生物驗證進行簽名', 'success');
-                
-                setTimeout(() => {
-                    closeRegisterModal();
-                }, 2000);
+                if (registerData.email_verification_required) {
+                    statusDiv.innerHTML = '<p style="color: #1890ff;"><i class="fas fa-envelope"></i> ' + (registerData.message || '已寄送驗證信，請點擊信中連結完成設備註冊。') + '</p>';
+                    showToast(registerData.message || '請至信箱點擊連結完成設備註冊', 'success');
+                } else {
+                    statusDiv.innerHTML = '<p style="color: #52c41a;"><i class="fas fa-check-circle"></i> 設備註冊成功！</p>';
+                    showToast('設備註冊成功！現在可以使用生物驗證進行簽名', 'success');
+                    setTimeout(() => { closeRegisterModal(); }, 2000);
+                }
                 
             } catch (error) {
                 console.error('WebAuthn 註冊錯誤:', error);
