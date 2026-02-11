@@ -270,6 +270,7 @@ if ($is_director && $user_id > 0) {
 // 判斷是否為招生中心/行政人員
 $is_admission_center = $is_admin_or_staff && !$is_department_user;
 $can_show_review_result_column = ($can_view_review_result || $is_teacher_user);
+$can_use_bulk_gmail_send = !$is_teacher_user;
 
 // 檢查是否有 recommender 和 recommended 表
 $has_recommender_table = false;
@@ -1974,6 +1975,7 @@ try {
                             rsort($year_options);
                         ?>
 
+                        <?php if (!$is_teacher_user): ?>
                         <span class="search-label">科系篩選</span>
                         <select id="interestFilter" class="search-select" title="依學生興趣(科系)篩選">
                             <option value="">全部科系</option>
@@ -1981,6 +1983,7 @@ try {
                                 <option value="<?php echo htmlspecialchars((string)$code); ?>"><?php echo htmlspecialchars((string)$name); ?></option>
                             <?php endforeach; ?>
                         </select>
+                        <?php endif; ?>
 
                         <span class="search-label">年度篩選</span>
                         <select id="academicYearFilter" class="search-select" title="依學年度篩選">
@@ -2033,6 +2036,7 @@ try {
                             // view_mode：下拉選單顯示用（空字串視同 all，向後相容）
                             $view_mode_ui = ($view_mode === '' || $view_mode === null) ? 'all' : (string)$view_mode;
                         ?>
+                        <?php if (!$is_teacher_user): ?>
                         <div style="display:flex; align-items:center; gap:12px; margin-bottom:12px; margin-left: 55px; margin-top: 15px; flex-wrap: wrap;">
                             <span class="search-label">審核狀態</span>
                             <select id="viewModeSelect" class="search-select" title="審核狀態篩選">
@@ -2050,6 +2054,7 @@ try {
                             <button type="button" class="btn-view" id="gmailSendConfirm" style="display:none;">發送</button>
                             <button type="button" class="btn-view" id="gmailSendCancel" style="display:none;">取消</button>
                         </div>
+                        <?php endif; ?>
                         <?php if (empty($recommendations)): ?>
                             <div class="empty-state" style="margin-left:55px; margin-top:24px; text-align:center;">
                                 <i class="fas fa-inbox fa-3x" style="color:#8c8c8c; display:block; margin:0 auto 10px;"></i>
