@@ -51,6 +51,82 @@ function isAllReviewersScored($conn, $application_id) {
 }
 
 /**
+ * 計算報名人員的平均分數
+ * 
+ * @param mysqli $conn 資料庫連接
+ * @param int $application_id 報名ID
+ * @return array 包含平均分數、總分和評審數量的數組
+ */
+function calculateAverageScore($conn, $application_id) {
+    $score_stmt = $conn->prepare("
+        SELECT 
+            cas.reviewer_user_id,
+            cas.self_intro_score,
+            cas.skills_score,
+            cas.assignment_order,
+            u.name as reviewer_name
+        FROM continued_admission_scores cas
+        LEFT JOIN user u ON cas.reviewer_user_id = u.id
+        WHERE cas.application_id = ?
+          AND cas.self_intro_score IS NOT NULL
+          AND cas.skills_score IS NOT NULL
+          AND cas.self_intro_score > 0
+          AND cas.skills_score > 0
+        ORDER BY cas.assignment_order ASC
+    ");
+    
+    if (!$score_stmt) {
+        error_log("準備查詢評分時出錯: " . $conn->error);
+        return [
+            'average_score' => 0,
+            'total_score' => 0,
+            'reviewer_count' => 0,
+            'scores' => []
+        ];
+    }
+    
+    $score_stmt->bind_param("i", $application_id);
+    $score_stmt->execute();
+    $score_result = $score_stmt->get_result();
+    
+    $total_self_intro = 0;
+    $total_skills = 0;
+    $reviewer_count = 0;
+    $scores = [];
+    
+    while ($row = $score_result->fetch_assoc()) {
+        $reviewer_count++;
+        $self_intro = (float)($row['self_intro_score'] ?? 0);
+        $skills = (float)($row['skills_score'] ?? 0);
+        $reviewer_total = $self_intro + $skills;
+        
+        $total_self_intro += $self_intro;
+        $total_skills += $skills;
+        
+        $scores[] = [
+            'reviewer_id' => $row['reviewer_user_id'],
+            'reviewer_name' => $row['reviewer_name'] ?? '',
+            'assignment_order' => $row['assignment_order'] ?? 0,
+            'self_intro_score' => $self_intro,
+            'skills_score' => $skills,
+            'total' => $reviewer_total
+        ];
+    }
+    $score_stmt->close();
+    
+    // 計算平均分數
+    $total_score = $total_self_intro + $total_skills;
+    $average_score = $reviewer_count > 0 ? ($total_score / $reviewer_count) : 0;
+    
+    return [
+        'average_score' => round($average_score, 2),
+        'total_score' => $total_score,
+        'reviewer_count' => $reviewer_count,
+        'scores' => $scores
+    ];
+}
+
+/**
  * 獲取所有已完成評分的報名（按科系分組）
  * 
  * @param mysqli $conn 資料庫連接

@@ -216,7 +216,11 @@ class WebAuthnSignature {
             }
             
             if (this.onSuccess) {
-                this.onSuccess({ type: 'register', data: registerData });
+                this.onSuccess({
+                    type: 'register',
+                    data: registerData,
+                    emailVerificationRequired: !!registerData.email_verification_required
+                });
             }
             return true;
             
