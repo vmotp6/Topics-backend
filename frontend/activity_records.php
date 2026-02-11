@@ -111,6 +111,12 @@ if ($is_director && $user_id) {
         // 優先從 director 表獲取部門代碼
         $table_check = $conn_dept->query("SHOW TABLES LIKE 'director'");
         if ($table_check && $table_check->num_rows > 0) {
+            // 檢查 new_student_basic_info 是否有 department_id 欄位
+            $has_new_student_department_id = false;
+            $dept_col_check = $conn->query("SHOW COLUMNS FROM new_student_basic_info LIKE 'department_id'");
+            if ($dept_col_check && $dept_col_check->num_rows > 0) {
+                $has_new_student_department_id = true;
+            }
             $stmt_dept = $conn_dept->prepare("SELECT department FROM director WHERE user_id = ?");
         } else {
             $stmt_dept = $conn_dept->prepare("SELECT department FROM teacher WHERE user_id = ?");
@@ -246,7 +252,7 @@ if ($teacher_id > 0) {
                     LEFT JOIN user u ON t.user_id = u.id
                     LEFT JOIN user u2 ON ar.teacher_id = u2.id
                     LEFT JOIN activity_types at ON ar.activity_type = at.ID
-                    LEFT JOIN school_data sd ON ar.school = sd.school_code
+                    LEFT JOIN school_data sd ON ar.school COLLATE utf8mb4_unicode_ci = sd.school_code COLLATE utf8mb4_unicode_ci
                     WHERE ar.teacher_id = ?
                       AND ar.activity_date >= ?
                       AND ar.activity_date <= ?
@@ -271,7 +277,7 @@ if ($teacher_id > 0) {
                      FROM teacher t
                      JOIN activity_records ar ON t.user_id = ar.teacher_id
                      LEFT JOIN user u ON t.user_id = u.id
-                     LEFT JOIN departments d ON t.department = d.code
+                     LEFT JOIN departments d ON t.department COLLATE utf8mb4_unicode_ci = d.code COLLATE utf8mb4_unicode_ci
                      WHERE 1=1
                        AND ar.activity_date >= ?
                        AND ar.activity_date <= ?
@@ -292,11 +298,11 @@ if ($teacher_id > 0) {
     $all_records_sql = "SELECT ar.*, COALESCE(u.name, u2.name) AS teacher_name, COALESCE(d.name, t.department) AS teacher_department, at.name AS activity_type_name, COALESCE(sd.name, ar.school) AS school_name
                         FROM activity_records ar
                         LEFT JOIN teacher t ON ar.teacher_id = t.user_id
-                        LEFT JOIN departments d ON t.department = d.code
+                        LEFT JOIN departments d ON t.department COLLATE utf8mb4_unicode_ci = d.code COLLATE utf8mb4_unicode_ci
                         LEFT JOIN user u ON t.user_id = u.id
                         LEFT JOIN user u2 ON ar.teacher_id = u2.id
                         LEFT JOIN activity_types at ON ar.activity_type = at.ID
-                        LEFT JOIN school_data sd ON ar.school = sd.school_code
+                        LEFT JOIN school_data sd ON ar.school COLLATE utf8mb4_unicode_ci = sd.school_code COLLATE utf8mb4_unicode_ci
                         WHERE 1=1
                           AND ar.activity_date >= ?
                           AND ar.activity_date <= ?
@@ -337,9 +343,9 @@ if ($teacher_id > 0) {
                             COALESCE(d.name, t.department) AS department_name,
                             COALESCE(u.name, u2.name) AS teacher_name
                         FROM activity_records ar
-                        LEFT JOIN school_data sd ON ar.school = sd.school_code
+                        LEFT JOIN school_data sd ON ar.school COLLATE utf8mb4_unicode_ci = sd.school_code COLLATE utf8mb4_unicode_ci
                         LEFT JOIN teacher t ON ar.teacher_id = t.user_id
-                        LEFT JOIN departments d ON t.department = d.code
+                        LEFT JOIN departments d ON t.department COLLATE utf8mb4_unicode_ci = d.code COLLATE utf8mb4_unicode_ci
                         LEFT JOIN user u ON t.user_id = u.id
                         LEFT JOIN user u2 ON ar.teacher_id = u2.id
                         WHERE 1=1
@@ -571,7 +577,7 @@ if ($teacher_id > 0) {
             FROM admission_applications aa
             INNER JOIN admission_sessions s ON aa.session_id = s.id
             LEFT JOIN attendance_records ar ON ar.application_id = aa.id AND ar.session_id = s.id
-            LEFT JOIN school_data sd ON aa.school = sd.school_code
+            LEFT JOIN school_data sd ON aa.school COLLATE utf8mb4_unicode_ci = sd.school_code COLLATE utf8mb4_unicode_ci
             WHERE s.session_date >= ? AND s.session_date <= ?
         ";
         // 主任（科系層級）：只看自己科系場次；招生中心（全校層級）：看全部場次
@@ -677,6 +683,13 @@ if ($teacher_id > 0) {
         $has_department_id = true;
     }
     
+    // 檢查 admission_sessions 表是否有 session_end_date 欄位
+    $has_session_end_date = false;
+    $end_date_check = $conn->query("SHOW COLUMNS FROM admission_sessions LIKE 'session_end_date'");
+    if ($end_date_check && $end_date_check->num_rows > 0) {
+        $has_session_end_date = true;
+    }
+    
     // 使用最簡單的查詢，確保能獲取所有場次
     // 先獲取所有場次的基本資訊（不依賴子查詢）
     // 統一使用 session_id 作為欄位名稱，確保與後續處理一致
@@ -687,11 +700,11 @@ if ($teacher_id > 0) {
                 s.id,
                 s.session_name,
                 s.session_date,
-                s.session_end_date,
+                " . ($has_session_end_date ? "s.session_end_date" : "NULL") . " as session_end_date,
                 s.department_id,
                 COALESCE(d.name, '未指定') as department_name
             FROM admission_sessions s
-            LEFT JOIN departments d ON s.department_id = d.code
+            LEFT JOIN departments d ON s.department_id COLLATE utf8mb4_unicode_ci = d.code COLLATE utf8mb4_unicode_ci
             ORDER BY s.session_date DESC
         ";
     } else {
@@ -701,7 +714,7 @@ if ($teacher_id > 0) {
                 s.id,
                 s.session_name,
                 s.session_date,
-                s.session_end_date,
+                " . ($has_session_end_date ? "s.session_end_date" : "NULL") . " as session_end_date,
                 NULL as department_id,
                 '未指定' as department_name
             FROM admission_sessions s
@@ -777,7 +790,7 @@ if ($teacher_id > 0) {
     } else {
         error_log('簡單查詢失敗: ' . $conn->error);
         // 如果查詢失敗，至少嘗試獲取場次列表
-        $fallback_sql = "SELECT id as session_id, session_name, session_date, session_end_date FROM admission_sessions ORDER BY session_date DESC";
+        $fallback_sql = "SELECT id as session_id, session_name, session_date, " . ($has_session_end_date ? "session_end_date" : "NULL as session_end_date") . " FROM admission_sessions ORDER BY session_date DESC";
         $fallback_result = $conn->query($fallback_sql);
         if ($fallback_result) {
             $all_sessions_list = $fallback_result->fetch_all(MYSQLI_ASSOC);
@@ -811,7 +824,7 @@ if ($teacher_id > 0) {
                     s.department_id,
                     COALESCE(d.name, '未指定') as department_name
                 FROM admission_sessions s
-                LEFT JOIN departments d ON s.department_id = d.code
+                LEFT JOIN departments d ON s.department_id COLLATE utf8mb4_unicode_ci = d.code COLLATE utf8mb4_unicode_ci
                 WHERE YEAR(s.session_date) = ?
                 ORDER BY s.session_date DESC
             ";
@@ -859,6 +872,7 @@ if ($teacher_id > 0) {
     // 獲取新生基本資料統計（學校來源和科系分布）
     $new_student_school_stats = [];
     $new_student_department_stats = [];
+    $has_new_student_department_id = false;
     
     try {
         // 檢查表是否存在
@@ -926,15 +940,19 @@ if ($teacher_id > 0) {
                 }
                 
                 $where_condition = $base_where . " AND ns.previous_school IS NOT NULL AND ns.previous_school != ''";
-                $where_condition_dept = $base_where . " AND ns.department_id IS NOT NULL AND ns.department_id != ''";
+                $where_condition_dept = $has_new_student_department_id
+                    ? ($base_where . " AND ns.department_id IS NOT NULL AND ns.department_id != ''")
+                    : null;
             } else {
                 // 新生：當學年度新生
                 $where_condition = " WHERE CURDATE() <= $graduateExpr
                     AND created_at BETWEEN ? AND ?
                     AND ns.previous_school IS NOT NULL AND ns.previous_school != ''";
-                $where_condition_dept = " WHERE CURDATE() <= $graduateExpr
+                $where_condition_dept = $has_new_student_department_id
+                    ? (" WHERE CURDATE() <= $graduateExpr
                     AND created_at BETWEEN ? AND ?
-                    AND ns.department_id IS NOT NULL AND ns.department_id != ''";
+                    AND ns.department_id IS NOT NULL AND ns.department_id != ''")
+                    : null;
                 $where_params = [$academic_year['start'], $academic_year['end']];
                 $where_types = 'ss';
             }
@@ -947,7 +965,7 @@ if ($teacher_id > 0) {
                     ns.previous_school AS school_code,
                     COUNT(*) AS student_count
                 FROM new_student_basic_info ns
-                LEFT JOIN school_data sd ON ns.previous_school = sd.school_code
+                LEFT JOIN school_data sd ON ns.previous_school COLLATE utf8mb4_unicode_ci = sd.school_code COLLATE utf8mb4_unicode_ci
                 $where_condition
                 GROUP BY ns.previous_school
                 ORDER BY student_count DESC, school_name ASC
@@ -995,6 +1013,11 @@ if ($teacher_id > 0) {
                         
                         error_log('正在查詢學校科系: ' . $school['school_name'] . ' (代碼: ' . $school_code . ')');
                         
+                        if (!$has_new_student_department_id) {
+                            $school['departments'] = [];
+                            error_log('  科系欄位不存在，略過科系查詢');
+                            continue;
+                        }
                         // 重置參數（每次循環都要重置）
                         $dept_where_params = [$school_code];
                         $dept_where_types = 's';
@@ -1028,7 +1051,7 @@ if ($teacher_id > 0) {
                                 ns.department_id,
                                 COUNT(*) AS student_count
                             FROM new_student_basic_info ns
-                            LEFT JOIN departments d ON ns.department_id = d.code
+                            LEFT JOIN departments d ON ns.department_id COLLATE utf8mb4_unicode_ci = d.code COLLATE utf8mb4_unicode_ci
                             $dept_base_where
                             GROUP BY ns.department_id
                             ORDER BY student_count DESC, department_name ASC
@@ -1066,28 +1089,32 @@ if ($teacher_id > 0) {
             
             // 查詢科系分布統計（按 department_id 分組）- 保留用於單獨顯示
             // 修正：只按 department_id 分組，避免重複行
-            $dept_stats_sql = "
-                SELECT 
-                    COALESCE(d.name, ns.department_id, '未填寫') AS department_name,
-                    ns.department_id,
-                    COUNT(*) AS student_count
-                FROM new_student_basic_info ns
-                LEFT JOIN departments d ON ns.department_id = d.code
-                $where_condition_dept
-                GROUP BY ns.department_id
-                ORDER BY student_count DESC, department_name ASC
-            ";
-            $dept_stmt = $conn->prepare($dept_stats_sql);
-            if ($dept_stmt) {
-                if (!empty($where_params)) {
-                    $dept_stmt->bind_param($where_types, ...$where_params);
+            if ($has_new_student_department_id && $where_condition_dept) {
+                $dept_stats_sql = "
+                    SELECT 
+                        COALESCE(d.name, ns.department_id, '未填寫') AS department_name,
+                        ns.department_id,
+                        COUNT(*) AS student_count
+                    FROM new_student_basic_info ns
+                    LEFT JOIN departments d ON ns.department_id COLLATE utf8mb4_unicode_ci = d.code COLLATE utf8mb4_unicode_ci
+                    $where_condition_dept
+                    GROUP BY ns.department_id
+                    ORDER BY student_count DESC, department_name ASC
+                ";
+                $dept_stmt = $conn->prepare($dept_stats_sql);
+                if ($dept_stmt) {
+                    if (!empty($where_params)) {
+                        $dept_stmt->bind_param($where_types, ...$where_params);
+                    }
+                    $dept_stmt->execute();
+                    $dept_stats_result = $dept_stmt->get_result();
+                    if ($dept_stats_result) {
+                        $new_student_department_stats = $dept_stats_result->fetch_all(MYSQLI_ASSOC);
+                    }
+                    $dept_stmt->close();
                 }
-                $dept_stmt->execute();
-                $dept_stats_result = $dept_stmt->get_result();
-                if ($dept_stats_result) {
-                    $new_student_department_stats = $dept_stats_result->fetch_all(MYSQLI_ASSOC);
-                }
-                $dept_stmt->close();
+            } else {
+                $new_student_department_stats = [];
             }
             
             // 獲取所有科系列表（用於科系選擇下拉選單）
@@ -1148,6 +1175,9 @@ if ($teacher_id > 0) {
         $teachers_with_records = $result->fetch_all(MYSQLI_ASSOC);
     }
 }
+
+// 續招錄取統計已移除，後續將重做
+
 $conn->close();
 ?>
 <!DOCTYPE html>
@@ -2039,7 +2069,7 @@ $conn->close();
                                     isDirector: <?php echo $is_director ? 'true' : 'false'; ?>, 
                                     isStaff: <?php echo $is_staff ? 'true' : 'false'; ?> 
                                 };
-
+                                
                                 window.__schoolCharts = window.__schoolCharts || {};
                                 window.__schoolChartsRendered = window.__schoolChartsRendered || { feedback:false, grade:false, matrix:false };
 
@@ -2348,6 +2378,9 @@ $conn->close();
                                 </button>
                                 <button class="btn-view" onclick="showContinuedAdmissionStatusStats()">
                                     <i class="fas fa-clipboard-check"></i> 審核狀態分析
+                                </button>
+                                <button class="btn-view" onclick="showContinuedAdmissionQuotaStats()">
+                                    <i class="fas fa-chart-bar"></i> 錄取名額分析
                                 </button>
                                 <button class="btn-view" onclick="clearContinuedAdmissionCharts()" style="background: #dc3545; color: white; border-color: #dc3545;">
                                     <i class="fas fa-arrow-up"></i> 收回圖表
@@ -7043,6 +7076,146 @@ function showContinuedAdmissionChoicesStats() {
                 `;
             });
     }
+
+    // 續招報名統計 - 科系名額與錄取狀態分析
+    function showContinuedAdmissionQuotaStats() {
+        console.log('showContinuedAdmissionQuotaStats 被調用');
+
+        fetch(buildApiUrl('../../Topics-frontend/frontend/api/continued_admission_stats_api.php', 'department_quota_status'))
+            .then(response => response.json())
+            .then(data => {
+                if (data.error) {
+                    document.getElementById('continuedAdmissionAnalyticsContent').innerHTML = `
+                        <div style="text-align: center; padding: 40px; color: #dc3545;">
+                            <i class="fas fa-exclamation-triangle fa-3x" style="margin-bottom: 16px;"></i>
+                            <h4>數據載入失敗</h4>
+                            <p>${data.error}</p>
+                        </div>
+                    `;
+                    return;
+                }
+
+                if (!Array.isArray(data) || data.length === 0) {
+                    document.getElementById('continuedAdmissionAnalyticsContent').innerHTML = `
+                        <div style="text-align: center; padding: 40px; color: #666;">
+                            <i class="fas fa-info-circle fa-3x" style="margin-bottom: 16px;"></i>
+                            <h4>目前沒有科系名額資料</h4>
+                            <p>請先在名額管理中設定各科系錄取名額</p>
+                        </div>
+                    `;
+                    return;
+                }
+
+                const content = `
+                    <div style="margin-bottom: 20px;">
+                        <h4 style="color: #667eea; margin-bottom: 15px;">
+                            <i class="fas fa-chart-bar"></i> 錄取名額與錄取狀態分析
+                        </h4>
+
+                        <div class="chart-card">
+                            <div class="chart-title">各科系名額與錄取結果</div>
+                            <div class="chart-container">
+                                <canvas id="continuedAdmissionQuotaChart"></canvas>
+                            </div>
+                        </div>
+
+                        <div style="background: #f8f9fa; padding: 20px; border-radius: 10px; margin-top: 20px;">
+                            <h5 style="color: #333; margin-bottom: 15px;">科系詳細統計</h5>
+                            <div style="background: white; border-radius: 8px; overflow: hidden;">
+                                <table style="width: 100%; border-collapse: collapse;">
+                                    <thead>
+                                        <tr style="background: #f8f9fa;">
+                                            <th style="padding: 12px; text-align: left; border-bottom: 1px solid #dee2e6; font-weight: 600; color: #495057;">科系</th>
+                                            <th style="padding: 12px; text-align: center; border-bottom: 1px solid #dee2e6; font-weight: 600; color: #495057;">錄取名額</th>
+                                            <th style="padding: 12px; text-align: center; border-bottom: 1px solid #dee2e6; font-weight: 600; color: #495057;">正取</th>
+                                            <th style="padding: 12px; text-align: center; border-bottom: 1px solid #dee2e6; font-weight: 600; color: #495057;">備取</th>
+                                            <th style="padding: 12px; text-align: center; border-bottom: 1px solid #dee2e6; font-weight: 600; color: #495057;">不錄取</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        ${data.map(item => `
+                                            <tr style="border-bottom: 1px solid #dee2e6;">
+                                                <td style="padding: 12px; font-weight: 500; color: #333;">${item.department_name}</td>
+                                                <td style="padding: 12px; text-align: center; font-weight: bold; color: #667eea;">${item.total_quota}</td>
+                                                <td style="padding: 12px; text-align: center; color: #28a745; font-weight: 600;">${item.approved_count}</td>
+                                                <td style="padding: 12px; text-align: center; color: #17a2b8; font-weight: 600;">${item.waitlist_count}</td>
+                                                <td style="padding: 12px; text-align: center; color: #dc3545; font-weight: 600;">${item.rejected_count}</td>
+                                            </tr>
+                                        `).join('')}
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                `;
+
+                document.getElementById('continuedAdmissionAnalyticsContent').innerHTML = content;
+
+                setTimeout(() => {
+                    const canvasElement = document.getElementById('continuedAdmissionQuotaChart');
+                    if (!canvasElement) return;
+
+                    const ctx = canvasElement.getContext('2d');
+                    new Chart(ctx, {
+                        type: 'bar',
+                        data: {
+                            labels: data.map(item => item.department_name),
+                            datasets: [
+                                {
+                                    label: '錄取名額',
+                                    data: data.map(item => item.total_quota),
+                                    backgroundColor: 'rgba(102, 126, 234, 0.35)',
+                                    borderColor: '#667eea',
+                                    borderWidth: 1
+                                },
+                                {
+                                    label: '正取',
+                                    data: data.map(item => item.approved_count),
+                                    backgroundColor: '#28a745'
+                                },
+                                {
+                                    label: '備取',
+                                    data: data.map(item => item.waitlist_count),
+                                    backgroundColor: '#17a2b8'
+                                },
+                                {
+                                    label: '不錄取',
+                                    data: data.map(item => item.rejected_count),
+                                    backgroundColor: '#dc3545'
+                                }
+                            ]
+                        },
+                        options: {
+                            responsive: true,
+                            maintainAspectRatio: false,
+                            plugins: {
+                                legend: {
+                                    position: 'bottom'
+                                }
+                            },
+                            scales: {
+                                y: {
+                                    beginAtZero: true,
+                                    ticks: {
+                                        precision: 0
+                                    }
+                                }
+                            }
+                        }
+                    });
+                }, 100);
+            })
+            .catch(error => {
+                console.error('載入科系名額統計數據失敗:', error);
+                document.getElementById('continuedAdmissionAnalyticsContent').innerHTML = `
+                    <div style="text-align: center; padding: 40px; color: #dc3545;">
+                        <i class="fas fa-exclamation-triangle fa-3x" style="margin-bottom: 16px;"></i>
+                        <h4>數據載入失敗</h4>
+                        <p>無法連接到統計API</p>
+                    </div>
+                `;
+            });
+    }
     
     function clearContinuedAdmissionCharts() {
         console.log('clearContinuedAdmissionCharts 被調用');
@@ -7052,7 +7225,8 @@ function showContinuedAdmissionChoicesStats() {
             if (instance.canvas.id.includes('continuedAdmissionGenderChart') || 
                 instance.canvas.id.includes('continuedAdmissionCityChart') ||
                 instance.canvas.id.includes('continuedAdmissionMonthlyChart') ||
-                instance.canvas.id.includes('continuedAdmissionStatusChart')) {
+                instance.canvas.id.includes('continuedAdmissionStatusChart') ||
+                instance.canvas.id.includes('continuedAdmissionQuotaChart')) {
                 instance.destroy();
             }
         });
