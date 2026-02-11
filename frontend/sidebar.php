@@ -292,8 +292,8 @@ function hasPermission($permission_code, $user_role, $permissions_array) {
                 <span>電子簽章</span>
             </a>
 
-            <!-- 招生推薦 - 僅學校行政和管理員，STAM和AS需要權限 -->
-            <?php if (($is_staff || $is_admin || $is_director) || ($is_stam && hasPermission('admission_recommend_list', $user_role, $stam_permissions)) || ($is_as && hasPermission('admission_recommend_list', $user_role, $as_permissions))): ?>
+            <!-- 招生推薦 - 學校行政/管理員/主任/老師可見，STAM和AS需要權限 -->
+            <?php if (($is_staff || $is_admin || $is_director || $is_teacher) || ($is_stam && hasPermission('admission_recommend_list', $user_role, $stam_permissions)) || ($is_as && hasPermission('admission_recommend_list', $user_role, $as_permissions))): ?>
                 <a href="admission_recommend_list.php" class="menu-item <?php echo $current_page === 'admission_recommend_list' ? 'active' : ''; ?>">
                     <i class="fas fa-user-friends"></i>
                     <span>招生推薦</span>
@@ -321,6 +321,14 @@ function hasPermission($permission_code, $user_role, $permissions_array) {
                 <a href="teacher_activity_records.php" class="menu-item <?php echo in_array($current_page, ['teacher_activity_records','teacher_activity_records_detail']) ?'active' : ''; ?>">
                     <i class="fas fa-clipboard-list"></i>
                     <span>教師活動紀錄</span>
+                </a>
+            <?php endif; ?>
+            
+            <!-- 學生大學與成就榮譽填寫 - 僅教師 -->
+            <?php if ($is_teacher): ?>
+                <a href="teacher_student_university_info.php" class="menu-item <?php echo $current_page === 'teacher_student_university_info' ? 'active' : ''; ?>">
+                    <i class="fas fa-graduation-cap"></i>
+                    <span>學生大學與榮譽</span>
                 </a>
             <?php endif; ?>
             
