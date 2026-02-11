@@ -324,6 +324,14 @@ function hasPermission($permission_code, $user_role, $permissions_array) {
                 </a>
             <?php endif; ?>
             
+            <!-- 學生大學與成就榮譽填寫 - 僅教師 -->
+            <?php if ($is_teacher): ?>
+                <a href="teacher_student_university_info.php" class="menu-item <?php echo $current_page === 'teacher_student_university_info' ? 'active' : ''; ?>">
+                    <i class="fas fa-graduation-cap"></i>
+                    <span>學生大學與榮譽</span>
+                </a>
+            <?php endif; ?>
+            
             <!-- AI模型管理 - 僅管理員 -->
             <?php if ($is_admin): ?>
                 <a href="ollama_admin.php" class="menu-item <?php echo $current_page === 'ollama_admin' ? 'active' : ''; ?>">
