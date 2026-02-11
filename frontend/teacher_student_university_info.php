@@ -15,12 +15,18 @@ $role_map = [
     '老師' => 'TEA',
     'teacher' => 'TEA',
     'TEA' => 'TEA',
+    '主任' => 'DI',
+    'di' => 'DI',
+    'DI' => 'DI',
 ];
 $normalized_role = $role_map[$session_role] ?? $session_role;
 
-if ($normalized_role !== 'TEA') {
+$is_teacher = ($normalized_role === 'TEA');
+$is_director = ($normalized_role === 'DI');
+
+if (!($is_teacher || $is_director)) {
     http_response_code(403);
-    echo '權限不足：僅教師(TEA)可使用此功能。';
+    echo '權限不足：僅教師(TEA)或主任(DI)可使用此功能。';
     exit;
 }
 
@@ -75,10 +81,17 @@ try {
             $teacher_stmt->close();
         }
     }
-
-    if (empty($teacher_department)) {
-        throw new Exception('無法取得您的科系資訊，請聯絡管理員。');
+    // ===== 取得使用者科系（老師 / 主任分流）=====
+    if ($is_teacher) {
+        if (empty($teacher_department)) {
+            throw new Exception('無法取得您的科系資訊，請聯絡管理員。');
+        }
+    } elseif ($is_director) {
+        // 主任允許沒有 teacher.department
+        // 科系會在 send_to_center 時再取 director / teacher fallback
+        $teacher_department = ''; 
     }
+
 
     // 偵測資料庫中第一個存在的科系欄位（需在提交前取得以供驗證使用）
     $dept_col = detectFirstExistingColumn($conn, 'new_student_basic_info', [
@@ -108,13 +121,17 @@ try {
     // 處理表單提交
     if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
         if ($_POST['action'] === 'save') {
-            $student_id = (int)($_POST['student_id'] ?? 0);
-            $university = trim($_POST['university'] ?? '');
-            $achievements = trim($_POST['achievements'] ?? '');
-
-            if ($student_id <= 0) {
-                $error_message = '無效的學生 ID';
+            // 僅允許教師執行儲存動作，主任為唯讀
+            if (!$is_teacher) {
+                $error_message = '您沒有編輯權限（僅教師可編輯）。';
             } else {
+                $student_id = (int)($_POST['student_id'] ?? 0);
+                $university = trim($_POST['university'] ?? '');
+                $achievements = trim($_POST['achievements'] ?? '');
+
+                if ($student_id <= 0) {
+                    $error_message = '無效的學生 ID';
+                } else {
                 // 驗證學生是否屬於該科系（容錯：比對欄位值或 departments.name）
                 $verify_sql = "SELECT s.id FROM new_student_basic_info s " . $dept_join . " WHERE s.id = ? AND (s.`$dept_col` = ?";
                 if ($dept_join !== '') {
@@ -145,13 +162,286 @@ try {
                     $stmt = $conn->prepare($update_sql);
                     if (!$stmt) throw new Exception('SQL準備失敗: ' . $conn->error);
 
-                    $stmt->bind_param('ssi', $university, $achievements, $student_id);
+                            $stmt->bind_param('ssi', $university, $achievements, $student_id);
                     if ($stmt->execute()) {
                         $success_message = '已成功保存學生資料';
                     } else {
                         $error_message = '保存失敗: ' . $stmt->error;
                     }
                     $stmt->close();
+                }
+                }
+            }
+        }
+
+        // 主任發起寄送至招生中心（由主任執行）
+        if ($_POST['action'] === 'send_to_center' && $is_director) {
+            try {
+                // 取得主任所屬科系（優先 director 表）
+                $director_dept = '';
+                $dchk = $conn->query("SHOW TABLES LIKE 'director'");
+                if ($dchk && $dchk->num_rows > 0) {
+                    $dq = $conn->prepare("SELECT department FROM director WHERE user_id = ? LIMIT 1");
+                    if ($dq) {
+                        $dq->bind_param('i', $session_user_id);
+                        $dq->execute();
+                        $dr = $dq->get_result();
+                        if ($dr && ($drw = $dr->fetch_assoc())) $director_dept = trim((string)$drw['department']);
+                        $dq->close();
+                    }
+                }
+                if ($director_dept === '') {
+                    // fallback to teacher table
+                    $tq = $conn->prepare("SELECT t.department FROM teacher t WHERE t.user_id = ? LIMIT 1");
+                    if ($tq) {
+                        $tq->bind_param('i', $session_user_id);
+                        $tq->execute();
+                        $tr = $tq->get_result();
+                        if ($tr && ($trw = $tr->fetch_assoc())) $director_dept = trim((string)$trw['department']);
+                        $tq->close();
+                    }
+                }
+                if ($director_dept === '') throw new Exception('無法取得您的科系，無法寄送');
+
+                // 確保有 submission 記錄且兩班皆已提交（從資料表檢查）
+                $grad_year_west = (int)date('Y');
+                $roc_enroll_year = $grad_year_west - 1916;
+                $year_range = getAcademicYearRangeByRoc($roc_enroll_year);
+                $graduation_roc_year = $roc_enroll_year + 5;
+                
+                // 檢查資料表中孝班和忠班是否都已提交
+                $chk = $conn->prepare("SELECT class_name FROM graduated_class_submissions WHERE graduation_roc_year = ? AND department_code = ? AND class_name IN ('孝班', '忠班') GROUP BY class_name");
+                $submitted_classes = [];
+                if ($chk) {
+                    $chk->bind_param('is', $graduation_roc_year, $director_dept);
+                    $chk->execute(); $cr = $chk->get_result();
+                    while ($r = $cr->fetch_assoc()) $submitted_classes[] = $r['class_name'];
+                    $chk->close();
+                }
+                
+                // 檢查必須兩班都存在
+                $has_xiao = in_array('孝班', $submitted_classes, true);
+                $has_zhong = in_array('忠班', $submitted_classes, true);
+                if (!($has_xiao && $has_zhong)) {
+                    if (!$has_xiao && !$has_zhong) {
+                        throw new Exception('資料表中未見任何班級提交記錄');
+                    } elseif ($has_xiao && !$has_zhong) {
+                        throw new Exception('孝班已提交，但忠班尚未提交，無法寄送');
+                    } else {
+                        throw new Exception('忠班已提交，但孝班尚未提交，無法寄送');
+                    }
+                }
+
+                // 檢查是否已寄送過
+                ensureGraduatedDirectorEmailLogTable($conn);
+                $chk2 = $conn->prepare("SELECT COUNT(*) AS cnt FROM graduated_director_email_log WHERE graduation_roc_year = ? AND department_code = ?");
+                if ($chk2) {
+                    $chk2->bind_param('is', $graduation_roc_year, $director_dept);
+                    $chk2->execute(); $r2 = $chk2->get_result();
+                    $already_sent = false;
+                    if ($r2 && ($rw2 = $r2->fetch_assoc())) $already_sent = ((int)$rw2['cnt'] > 0);
+                    $chk2->close();
+                    if ($already_sent) throw new Exception('本年度已由主任寄送過給招生中心，若要再次寄出請先在資料庫移除紀錄或聯絡管理員。');
+                }
+
+                // 取得學生資料（孝班與忠班）
+                $kw1 = '%孝%'; $kw2 = '%忠%';
+                $students_sql = "SELECT s.student_no, s.student_name, s.class_name, s.university, s.achievements FROM new_student_basic_info s " . $dept_join . " WHERE (s.`$dept_col` = ?";
+                if ($dept_join !== '') $students_sql .= " OR COALESCE(d.name,'') = ?";
+                $students_sql .= " ) AND (s.class_name LIKE ? OR s.class_name LIKE ?) AND s.created_at >= ? AND s.created_at <= ? ORDER BY s.student_no ASC";
+
+                $stmt2 = $conn->prepare($students_sql);
+                $rows = [];
+                if ($stmt2) {
+                    if ($dept_join !== '') {
+                        $stmt2->bind_param('ssssss', $director_dept, $director_dept, $kw1, $kw2, $year_range['start'], $year_range['end']);
+                    } else {
+                        $stmt2->bind_param('sssss', $director_dept, $kw1, $kw2, $year_range['start'], $year_range['end']);
+                    }
+                    $stmt2->execute(); $res2 = $stmt2->get_result();
+                    while ($rr = $res2->fetch_assoc()) {
+                        $rows[] = [$rr['student_no'] ?? '', $rr['student_name'] ?? '', $rr['class_name'] ?? '', $rr['university'] ?? '', $rr['achievements'] ?? ''];
+                    }
+                    $stmt2->close();
+                }
+                if (empty($rows)) throw new Exception('查無學生資料，無法產生 Excel');
+
+                // 產生 xlsx
+                $excel_rows = array_merge([['學號','姓名','班級','大學','成就']], $rows);
+                $tmp = tempnam(sys_get_temp_dir(), 'grad_send_');
+                if ($tmp === false) throw new Exception('無法建立暫存檔');
+                $excel_path = $tmp . '.xlsx'; @rename($tmp, $excel_path);
+                if (!build_graduated_xlsx_custom($excel_rows, $excel_path)) throw new Exception('產生 Excel 失敗');
+
+                // 找出招生中心收件者（多個備援搜尋方式）
+                $center_emails = [];
+                
+                // 方案1: 搜尋 user 表的 STA/STAM 角色
+                if (hasColumn($conn, 'user', 'email') && hasColumn($conn, 'user', 'role')) {
+                    $qe = $conn->prepare("SELECT email FROM user WHERE (role IN ('STA','STAM') OR role LIKE '%STA%') AND email <> '' AND email IS NOT NULL");
+                    if ($qe) { 
+                        $qe->execute(); 
+                        $rqe = $qe->get_result(); 
+                        while ($re = $rqe->fetch_assoc()) { 
+                            $email = trim((string)($re['email'] ?? ''));
+                            if ($email !== '' && filter_var($email, FILTER_VALIDATE_EMAIL)) {
+                                $center_emails[] = $email;
+                            }
+                        } 
+                        $qe->close(); 
+                    }
+                }
+                
+                // 方案2: 若無收件者，嘗試搜尋 admissions_email 或相似欄位
+                if (empty($center_emails) && hasColumn($conn, 'user', 'admissions_email')) {
+                    $qe2 = $conn->prepare("SELECT admissions_email FROM user WHERE admissions_email <> '' AND admissions_email IS NOT NULL LIMIT 5");
+                    if ($qe2) { 
+                        $qe2->execute(); 
+                        $rqe2 = $qe2->get_result(); 
+                        while ($re2 = $rqe2->fetch_assoc()) { 
+                            $email = trim((string)($re2['admissions_email'] ?? ''));
+                            if ($email !== '' && filter_var($email, FILTER_VALIDATE_EMAIL)) {
+                                $center_emails[] = $email;
+                            }
+                        } 
+                        $qe2->close(); 
+                    }
+                }
+                
+                // 方案3: 若仍無收件者，試試 admin 表或其他職務表
+                if (empty($center_emails) && hasColumn($conn, 'admin', 'email')) {
+                    $qe3 = $conn->prepare("SELECT email FROM admin WHERE email <> '' AND email IS NOT NULL LIMIT 5");
+                    if ($qe3) { 
+                        $qe3->execute(); 
+                        $rqe3 = $qe3->get_result(); 
+                        while ($re3 = $rqe3->fetch_assoc()) { 
+                            $email = trim((string)($re3['email'] ?? ''));
+                            if ($email !== '' && filter_var($email, FILTER_VALIDATE_EMAIL)) {
+                                $center_emails[] = $email;
+                            }
+                        } 
+                        $qe3->close(); 
+                    }
+                }
+
+                // 移除重複
+                $center_emails = array_unique($center_emails);
+
+                // 載入郵件函數
+                $email_loaded = false;
+                $email_paths = [__DIR__ . '/includes/email_functions.php', dirname(__DIR__) . '/../Topics-frontend/frontend/includes/email_functions.php', __DIR__ . '/../../Topics-frontend/frontend/includes/email_functions.php'];
+                foreach ($email_paths as $ep) { if (file_exists($ep)) { require_once $ep; $email_loaded = function_exists('sendEmail'); break; } }
+
+                $subject = '【畢業資料】' . ($teacher_department_name ?: $director_dept) . ' - 孝班與忠班';
+                $body = '<!DOCTYPE html><html><head><meta charset="UTF-8"></head><body><p>科系：' . htmlspecialchars($teacher_department_name ?: $director_dept) . '</p><p>主任已將孝班與忠班之畢業資料彙整（附件 Excel）。</p><p>此信由系統自動發送，請勿直接回覆。</p></body></html>';
+                $altBody = '主任已將畢業資料彙整，詳見附件。';
+                $attachments = [['path'=>$excel_path,'name'=>'畢業資料_' . preg_replace('/[^\p{L}\p{N}\-_]/u','_',$director_dept) . '_' . date('Ymd') . '.xlsx','mime'=>'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet']];
+
+                $sent = 0;
+                $send_errors = [];
+                
+                if (!$email_loaded) {
+                    $send_errors[] = '【警告】郵件函式未載入 sendEmail()';
+                }
+                
+                if (empty($center_emails)) {
+                    $send_errors[] = '【警告】未找到招生中心收件者（應搜尋 STA/STAM 角色或 admin 表）';
+                } else {
+                    foreach (array_unique($center_emails) as $to) {
+                        if ($to === '') continue;
+                        try {
+                            $ok = @sendEmail($to, $subject, $body, $altBody, $attachments);
+                            if ($ok) {
+                                $sent++;
+                            } else {
+                                $send_errors[] = "寄送至 {$to} 失敗（sendEmail 回傳 false）";
+                            }
+                        } catch (Exception $sendEx) {
+                            $send_errors[] = "寄送至 {$to} 發生例外: " . $sendEx->getMessage();
+                        }
+                    }
+                }
+
+                if (file_exists($excel_path)) @unlink($excel_path);
+
+                if ($sent > 0) {
+                    // 寄送成功時，立即紀錄已寄送到資料表（防重複寄送）
+                    ensureGraduatedDirectorEmailLogTable($conn);
+                    $ins = $conn->prepare("INSERT INTO graduated_director_email_log (graduation_roc_year, department_code, sent_at) VALUES (?, ?, NOW()) ON DUPLICATE KEY UPDATE sent_at = NOW()");
+                    if ($ins) { 
+                        $ins->bind_param('is', $graduation_roc_year, $director_dept); 
+                        if ($ins->execute()) {
+                            $success_message = '✓ 已成功寄送給招生中心，共 ' . $sent . ' 封';
+                        } else {
+                            $success_message = '✓ 已寄送給招生中心(' . $sent . '封)，但記錄保存失敗：' . $ins->error;
+                        }
+                        $ins->close(); 
+                    } else {
+                        $success_message = '✓ 已寄送給招生中心(' . $sent . '封)，但無法準備記錄語句';
+                    }
+                    if (!empty($send_errors)) {
+                        $success_message .= ' [偵錯: ' . implode('; ', $send_errors) . ']';
+                    }
+                } else {
+                    // 未能寄送任何郵件時，不記錄（允許重新嘗試）
+                    $error_message = '寄送失敗：' . (empty($send_errors) ? '未知原因' : implode('; ', $send_errors));
+                }
+
+            } catch (Exception $e) {
+                $error_message = $e->getMessage();
+            }
+        }
+        // 教師提交整班畢業資料
+        if ($_POST['action'] === 'submit_class') {
+            $submit_class = trim($_POST['class_name'] ?? '');
+            if ($submit_class === '') {
+                $error_message = '缺少班級名稱';
+            } else {
+                // 建立紀錄表
+                ensureGraduatedClassSubmissionTable($conn);
+
+                // 計算畢業民國年與學年度範圍（同上）
+                $grad_year_west = (int)date('Y');
+                $roc_enroll_year = $grad_year_west - 1916;
+                $graduation_roc_year = $roc_enroll_year + 5;
+
+                // 決定科系 key（儲存 department 代碼或名稱）
+                $dept_code_val = $teacher_department;
+
+                $ins = $conn->prepare("INSERT INTO graduated_class_submissions (graduation_roc_year, department_code, class_name, submitted_by_user_id, submitted_at) VALUES (?, ?, ?, ?, NOW()) ON DUPLICATE KEY UPDATE submitted_by_user_id = VALUES(submitted_by_user_id), submitted_at = VALUES(submitted_at)");
+                if ($ins) {
+                    $ins->bind_param('issi', $graduation_roc_year, $dept_code_val, $submit_class, $session_user_id);
+                    if ($ins->execute()) {
+                        $success_message = '已提交本班畢業資料';
+                    } else {
+                        $error_message = '提交失敗：' . $ins->error;
+                    }
+                    $ins->close();
+                } else {
+                    $error_message = '準備提交失敗：' . $conn->error;
+                }
+
+                // 檢查是否兩班皆已提交（孝班與忠班）
+                $check = $conn->prepare("SELECT class_name FROM graduated_class_submissions WHERE graduation_roc_year = ? AND (class_name = '孝班' OR class_name = '忠班') AND department_code = ? GROUP BY class_name");
+                if ($check) {
+                    $check->bind_param('is', $graduation_roc_year, $dept_code_val);
+                    $check->execute();
+                    $cr = $check->get_result();
+                    $submitted_classes = [];
+                    while ($r = $cr->fetch_assoc()) { $submitted_classes[] = $r['class_name']; }
+                    $check->close();
+
+                    if (in_array('孝班', $submitted_classes, true) && in_array('忠班', $submitted_classes, true)) {
+                        // 兩班皆已提交：僅記錄，改由主任審查後由主任送出給招生中心
+                        $success_message .= '；✓ 孝班與忠班皆已提交，請主任審查並按「提交至招生中心」。';
+                    } else {
+                        // 只有一班已提交
+                        if (in_array('孝班', $submitted_classes, true)) {
+                            $success_message .= '；孝班已提交，等待忠班提交。';
+                        } elseif (in_array('忠班', $submitted_classes, true)) {
+                            $success_message .= '；忠班已提交，等待孝班提交。';
+                        }
+                    }
                 }
             }
         }
@@ -185,6 +475,35 @@ try {
             if (!in_array($selected_class, $available_classes)) {
                 $error_message = '無效的班級選擇';
             } else {
+                // ===== 決定查詢時使用的科系（教師用 teacher_department，主任需動態取得）=====
+                $query_dept = $teacher_department; // 預設為教師科系
+                if ($is_director && empty($query_dept)) {
+                    // 主任需要動態取得其所屬科系
+                    $director_dept_query = '';
+                    $dchk_s = $conn->query("SHOW TABLES LIKE 'director'");
+                    if ($dchk_s && $dchk_s->num_rows > 0) {
+                        $dq_s = $conn->prepare("SELECT department FROM director WHERE user_id = ? LIMIT 1");
+                        if ($dq_s) {
+                            $dq_s->bind_param('i', $session_user_id);
+                            $dq_s->execute();
+                            $dr_s = $dq_s->get_result();
+                            if ($dr_s && ($drw_s = $dr_s->fetch_assoc())) $director_dept_query = trim((string)$drw_s['department']);
+                            $dq_s->close();
+                        }
+                    }
+                    if ($director_dept_query === '') {
+                        $tq_s = $conn->prepare("SELECT t.department FROM teacher t WHERE t.user_id = ? LIMIT 1");
+                        if ($tq_s) {
+                            $tq_s->bind_param('i', $session_user_id);
+                            $tq_s->execute();
+                            $tr_s = $tq_s->get_result();
+                            if ($tr_s && ($trw_s = $tr_s->fetch_assoc())) $director_dept_query = trim((string)$trw_s['department']);
+                            $tq_s->close();
+                        }
+                    }
+                    $query_dept = $director_dept_query;
+                }
+                
                 // 依類別轉換為關鍵字 (孝 -> %孝% ; 忠 -> %忠%)
                 $kw = (mb_strpos($selected_class, '孝') !== false) ? '%孝%' : '%忠%';
 
@@ -199,9 +518,9 @@ try {
                 if (!$stmt) throw new Exception('查詢準備失敗: ' . $conn->error);
 
                 if ($dept_join !== '') {
-                    $stmt->bind_param('sssss', $teacher_department, $teacher_department, $kw, $year_range['start'], $year_range['end']);
+                    $stmt->bind_param('sssss', $query_dept, $query_dept, $kw, $year_range['start'], $year_range['end']);
                 } else {
-                    $stmt->bind_param('ssss', $teacher_department, $kw, $year_range['start'], $year_range['end']);
+                    $stmt->bind_param('ssss', $query_dept, $kw, $year_range['start'], $year_range['end']);
                 }
                 $stmt->execute();
                 $result = $stmt->get_result();
@@ -238,6 +557,70 @@ function ensureTablesExist($conn) {
             $conn->query($alter_sql);
         }
     }
+}
+
+// 建立教師提交班級畢業資料的紀錄表
+function ensureGraduatedClassSubmissionTable($conn) {
+    $sql = "CREATE TABLE IF NOT EXISTS graduated_class_submissions (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        graduation_roc_year INT NOT NULL,
+        department_code VARCHAR(100) NOT NULL,
+        class_name VARCHAR(50) NOT NULL,
+        submitted_by_user_id VARCHAR(50) DEFAULT NULL,
+        submitted_at DATETIME DEFAULT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE KEY uk_year_dept_class (graduation_roc_year, department_code, class_name)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4";
+    $conn->query($sql);
+}
+
+// 輕量 xlsx 產生器（簡易版，僅輸出一個 sheet）
+function build_graduated_xlsx_custom($rows, $output_path) {
+    if (!class_exists('ZipArchive')) return false;
+    $zip = new ZipArchive();
+    if ($zip->open($output_path, ZipArchive::CREATE | ZipArchive::OVERWRITE) !== true) return false;
+    $esc = function ($v) {
+        $v = (string)$v;
+        return str_replace(['&','<','>','"',"'"], ['&amp;','&lt;','&gt;','&quot;','&apos;'], $v);
+    };
+    $col_letter = function ($i) {
+        $i = (int)$i + 1;
+        $letters = '';
+        while ($i > 0) { $mod = ($i - 1) % 26; $letters = chr(65 + $mod) . $letters; $i = (int)(($i - 1) / 26); }
+        return $letters;
+    };
+    $sheet_rows = '';
+    $row_num = 1;
+    foreach ($rows as $row) {
+        $sheet_rows .= '<row r="' . $row_num . '">';
+        foreach ($row as $col_num => $cell) {
+            $sheet_rows .= '<c r="' . $col_letter($col_num) . $row_num . '" t="inlineStr"><is><t xml:space="preserve">' . $esc($cell) . '</t></is></c>';
+        }
+        $sheet_rows .= '</row>';
+        $row_num++;
+    }
+    $sheet_xml = '<?xml version="1.0" encoding="UTF-8"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>' . $sheet_rows . '</sheetData></worksheet>';
+    $wb_xml = '<?xml version="1.0" encoding="UTF-8"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Sheet1" sheetId="1" r:id="rId1"/></sheets></workbook>';
+    $zip->addFromString('[Content_Types].xml', '<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>');
+    $zip->addFromString('_rels/.rels', '<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>');
+    $zip->addFromString('xl/workbook.xml', $wb_xml);
+    $zip->addFromString('xl/_rels/workbook.xml.rels', '<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/></Relationships>');
+    $zip->addFromString('xl/worksheets/sheet1.xml', $sheet_xml);
+    $zip->close();
+    return file_exists($output_path);
+}
+
+// 紀錄主任寄送給招生中心的表（避免重複寄送）
+function ensureGraduatedDirectorEmailLogTable($conn) {
+    $sql = "CREATE TABLE IF NOT EXISTS graduated_director_email_log (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        graduation_roc_year INT NOT NULL,
+        department_code VARCHAR(50) NOT NULL,
+        sent_at DATETIME NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE KEY uk_year_dept (graduation_roc_year, department_code)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4";
+    $conn->query($sql);
 }
 
 function hasColumn($conn, $table, $column) {
@@ -614,10 +997,6 @@ function getAcademicYearRangeByRoc($roc_year) {
                         <i class="fas fa-graduation-cap"></i>
                         <?php echo htmlspecialchars($page_title); ?>
                     </div>
-                    <div class="panel-description">
-                        科系：<?php echo htmlspecialchars($teacher_department_name ?: $teacher_department); ?><br>
-                        請選擇班級（孝班或忠班）查看畢業生，並填寫大學錄取及成就榮譽資訊
-                    </div>
                 </div>
 
                                 <?php if (isset($_GET['debug']) && $_GET['debug'] === '1'): ?>
@@ -668,12 +1047,107 @@ function getAcademicYearRangeByRoc($roc_year) {
                     </div>
                 </div>
 
+                <!-- 主任審核與寄送面板（常駐，不含在學生列表內） -->
+                <?php if ($is_director):
+                    $dir_panel_html = '';
+                    try {
+                        $connd = getDatabaseConnection();
+                        $director_dept = '';
+                        if ($connd) {
+                            $dchk = $connd->query("SHOW TABLES LIKE 'director'");
+                            if ($dchk && $dchk->num_rows > 0) {
+                                $dq = $connd->prepare("SELECT department FROM director WHERE user_id = ? LIMIT 1");
+                                if ($dq) { $dq->bind_param('i', $session_user_id); $dq->execute(); $dr = $dq->get_result(); if ($dr && ($drw = $dr->fetch_assoc())) $director_dept = trim((string)$drw['department']); $dq->close(); }
+                            }
+                            if ($director_dept === '') {
+                                $tq = $connd->prepare("SELECT t.department FROM teacher t WHERE t.user_id = ? LIMIT 1");
+                                if ($tq) { $tq->bind_param('i', $session_user_id); $tq->execute(); $tr = $tq->get_result(); if ($tr && ($trw = $tr->fetch_assoc())) $director_dept = trim((string)$trw['department']); $tq->close(); }
+                            }
+                            $grad_year_west = (int)date('Y');
+                            $roc_enroll_year = $grad_year_west - 1916;
+                            $graduation_roc_year = $roc_enroll_year + 5;
+                            $submissions = [];
+                            // 只查詢孝班和忠班的提交狀態
+                            $stmtc = $connd->prepare("SELECT class_name, submitted_by_user_id, submitted_at FROM graduated_class_submissions WHERE graduation_roc_year = ? AND department_code = ? AND class_name IN ('孝班', '忠班')");
+                            if ($stmtc) { $stmtc->bind_param('is', $graduation_roc_year, $director_dept); $stmtc->execute(); $rc = $stmtc->get_result(); while ($rw = $rc->fetch_assoc()) $submissions[$rw['class_name']] = $rw; $stmtc->close(); }
+                            ensureGraduatedDirectorEmailLogTable($connd);
+                            $chk3 = $connd->prepare("SELECT sent_at FROM graduated_director_email_log WHERE graduation_roc_year = ? AND department_code = ? ORDER BY sent_at DESC LIMIT 1");
+                            $already_sent = false;
+                            $last_sent_time = '';
+                            if ($chk3) { $chk3->bind_param('is', $graduation_roc_year, $director_dept); $chk3->execute(); $r3 = $chk3->get_result(); if ($r3 && ($rw3 = $r3->fetch_assoc())) { $already_sent = true; $last_sent_time = $rw3['sent_at']; } $chk3->close(); }
+                            $connd->close();
+                        }
+                    } catch (Exception $e) { }
+                ?>
+                    <div class="panel">
+                        <div class="panel-header"><i class="fas fa-user-tie"></i> 主任：審核與寄送至招生中心</div>
+                        <div class="panel-description">科系：<?php echo htmlspecialchars($teacher_department_name ?: $director_dept ?? $teacher_department); ?>；檢視教師提交狀態與寄送操作。</div>
+                        <div style="margin-top:8px;">
+                            <ul>
+                                <li>孝班：<?php echo isset($submissions['孝班']) ? ('已提交（' . htmlspecialchars($submissions['孝班']['submitted_at']) . '）') : '未提交'; ?></li>
+                                <li>忠班：<?php echo isset($submissions['忠班']) ? ('已提交（' . htmlspecialchars($submissions['忠班']['submitted_at']) . '）') : '未提交'; ?></li>
+                            </ul>
+                            <?php $can_send = (isset($submissions['孝班']) && isset($submissions['忠班']) && !$already_sent); ?>
+                            <form method="post" style="margin-top:12px; display:inline;" onsubmit="return confirm('確定要將本科系之畢業資料送出給招生中心（會附上 Excel）嗎？');">
+                                <input type="hidden" name="action" value="send_to_center">
+                                <button type="submit" class="btn btn-primary" <?php echo $can_send ? '' : 'disabled'; ?>>提交至招生中心並寄送 Excel</button>
+                            </form>
+                            <?php if ($already_sent): ?>
+                                <div style="margin-top:8px;color:#52c41a;"><i class="fas fa-check"></i> 已寄送給招生中心（本年度）<?php echo $last_sent_time ? '：' . htmlspecialchars($last_sent_time) : ''; ?></div>
+                            <?php else: ?>
+                                <div style="margin-top:8px;color:#999;font-size:13px;">
+                                    <?php if (!isset($submissions['孝班']) && !isset($submissions['忠班'])): ?>
+                                        未收到任何班級提交
+                                    <?php elseif (!isset($submissions['孝班'])): ?>
+                                        缺少孝班提交
+                                    <?php elseif (!isset($submissions['忠班'])): ?>
+                                        缺少忠班提交
+                                    <?php endif; ?>
+                                </div>
+                            <?php endif; ?>
+                        </div>
+                    </div>
+                <?php endif; ?>
+
                 <!-- 學生列表 -->
                 <?php if (!empty($selected_class)): ?>
                     <div class="panel">
                         <div class="panel-header">
                             <i class="fas fa-list"></i>
                             <?php echo htmlspecialchars($selected_class); ?> (共 <?php echo $total_students; ?> 人)
+                        </div>
+
+                        <div style="margin-top:8px; display:flex; gap:12px; align-items:center;">
+                            <?php
+                                // 檢查此班是否已提交（僅教師需要顯示）
+$class_submitted = false;
+if ($is_teacher && $selected_class !== '') {
+    $conn_chk = getDatabaseConnection();
+    if ($conn_chk) {
+        $graduation_roc_year = $roc_enroll_year + 5;
+        $stmt_chk = $conn_chk->prepare("SELECT 1 FROM graduated_class_submissions WHERE graduation_roc_year = ? AND department_code = ? AND class_name = ? LIMIT 1");
+        if ($stmt_chk) {
+            $stmt_chk->bind_param('iss', $graduation_roc_year, $teacher_department, $selected_class);
+            $stmt_chk->execute();
+            $stmt_chk->store_result();
+            $class_submitted = ($stmt_chk->num_rows > 0);
+            $stmt_chk->close();
+        }
+        $conn_chk->close();
+    }
+}
+                            ?>
+
+                            <!-- 只在教師身分顯示狀態與提交按鈕 -->
+                            <?php if ($is_teacher): ?>
+                                <div style="flex:1; color:#666;">狀態：<?php echo $class_submitted ? '<span style="color:#52c41a;">已提交</span>' : '<span style="color:#999;">未提交</span>'; ?></div>
+                                <div>
+                                    <?php $btn_label = $class_submitted ? '已提交（等待主任送出）' : '提交本班畢業資料'; ?>
+                                    <button class="btn btn-primary" id="submitClassBtn" onclick="submitClass('<?php echo htmlspecialchars(addslashes($selected_class)); ?>')" <?php echo $class_submitted ? 'disabled' : ''; ?>><?php echo htmlspecialchars($btn_label); ?></button>
+                                </div>
+                            <?php endif; ?>
+                            
+                            <!-- 主任不顯示狀態，只有查看按鈕 -->
                         </div>
 
                         <?php if ($total_students === 0): ?>
@@ -709,10 +1183,11 @@ function getAcademicYearRangeByRoc($roc_year) {
                                                 </div>
                                             </td>
                                             <td>
-                                                <button class="btn btn-primary"
-                                                        onclick="openEditModal(<?php echo (int)$student['id']; ?>, '<?php echo htmlspecialchars(addslashes($student['student_no'])); ?>', '<?php echo htmlspecialchars(addslashes($student['student_name'])); ?>', '<?php echo htmlspecialchars(addslashes($student['university'] ?? '')); ?>', '<?php echo htmlspecialchars(addslashes($student['achievements'] ?? '')); ?>')">
-                                                    編輯
-                                                </button>
+                                                <?php if ($is_director): ?>
+                                                    <button class="btn btn-primary" onclick="openEditModal(<?php echo (int)$student['id']; ?>, '<?php echo htmlspecialchars(addslashes($student['student_no'])); ?>', '<?php echo htmlspecialchars(addslashes($student['student_name'])); ?>', '<?php echo htmlspecialchars(addslashes($student['university'] ?? '')); ?>', '<?php echo htmlspecialchars(addslashes($student['achievements'] ?? '')); ?>', true)">查看</button>
+                                                <?php else: ?>
+                                                    <button class="btn btn-primary" onclick="openEditModal(<?php echo (int)$student['id']; ?>, '<?php echo htmlspecialchars(addslashes($student['student_no'])); ?>', '<?php echo htmlspecialchars(addslashes($student['student_name'])); ?>', '<?php echo htmlspecialchars(addslashes($student['university'] ?? '')); ?>', '<?php echo htmlspecialchars(addslashes($student['achievements'] ?? '')); ?>', false)">編輯</button>
+                                                <?php endif; ?>
                                             </td>
                                         </tr>
                                     <?php endforeach; ?>
@@ -729,7 +1204,7 @@ function getAcademicYearRangeByRoc($roc_year) {
     <div id="editModal" class="modal">
         <div class="modal-content">
             <div class="modal-header">
-                <span>編輯學生資訊</span>
+                <span id="modalTitle">編輯學生資訊</span>
                 <button class="modal-close" onclick="closeEditModal()">&times;</button>
             </div>
 
@@ -760,8 +1235,8 @@ function getAcademicYearRangeByRoc($roc_year) {
                 </div>
 
                 <div class="button-group">
-                    <button type="button" class="btn btn-secondary" onclick="closeEditModal()">取消</button>
-                    <button type="submit" class="btn btn-primary">保存</button>
+                    <button type="button" id="modalCancelBtn" class="btn btn-secondary" onclick="closeEditModal()">取消</button>
+                    <button type="submit" id="modalSaveBtn" class="btn btn-primary">保存</button>
                 </div>
             </form>
         </div>
@@ -774,12 +1249,31 @@ function getAcademicYearRangeByRoc($roc_year) {
             window.location.href = url.toString();
         }
 
-        function openEditModal(studentId, studentNo, studentName, university, achievements) {
+        function openEditModal(studentId, studentNo, studentName, university, achievements, readOnly) {
+            const form = document.getElementById('editForm');
             document.getElementById('studentId').value = studentId;
             document.getElementById('studentNoDisplay').textContent = studentNo;
             document.getElementById('studentNameDisplay').textContent = studentName;
             document.getElementById('universityInput').value = university;
             document.getElementById('achievementsInput').value = achievements;
+            // set readonly/disabled state
+            const uni = document.getElementById('universityInput');
+            const ach = document.getElementById('achievementsInput');
+            const saveBtn = document.getElementById('modalSaveBtn');
+            const title = document.getElementById('modalTitle');
+            if (readOnly) {
+                uni.disabled = true;
+                ach.disabled = true;
+                saveBtn.style.display = 'none';
+                title.textContent = '查看學生資訊';
+                form.dataset.readonly = '1';
+            } else {
+                uni.disabled = false;
+                ach.disabled = false;
+                saveBtn.style.display = '';
+                title.textContent = '編輯學生資訊';
+                form.dataset.readonly = '0';
+            }
             document.getElementById('editModal').classList.add('active');
         }
 
@@ -796,6 +1290,8 @@ function getAcademicYearRangeByRoc($roc_year) {
 
         // 表單提交後重新載入
         document.getElementById('editForm').addEventListener('submit', function(e) {
+            // prevent submitting in readonly mode
+            if (this.dataset.readonly === '1') { e.preventDefault(); return false; }
             e.preventDefault();
             const formData = new FormData(this);
             fetch(window.location.href, {
@@ -812,6 +1308,22 @@ function getAcademicYearRangeByRoc($roc_year) {
                 alert('保存失敗，請重試');
             });
         });
+
+        // 提交整班畢業資料
+        function submitClass(className) {
+            if (!confirm('確定要提交「' + className + '」的畢業資料嗎？提交後等待主任確認。')) return;
+            const btn = document.getElementById('submitClassBtn');
+            btn.disabled = true;
+            const orig = btn.innerHTML;
+            btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 提交中...';
+            const form = new FormData();
+            form.append('action', 'submit_class');
+            form.append('class_name', className);
+            fetch(window.location.href, { method: 'POST', body: form })
+            .then(r => r.text())
+            .then(() => { window.location.reload(); })
+            .catch(err => { console.error(err); alert('提交失敗'); btn.disabled = false; btn.innerHTML = orig; });
+        }
     </script>
 </body>
 </html>
