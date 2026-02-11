@@ -292,8 +292,8 @@ function hasPermission($permission_code, $user_role, $permissions_array) {
                 <span>電子簽章</span>
             </a>
 
-            <!-- 招生推薦 - 僅學校行政和管理員，STAM和AS需要權限 -->
-            <?php if (($is_staff || $is_admin || $is_director) || ($is_stam && hasPermission('admission_recommend_list', $user_role, $stam_permissions)) || ($is_as && hasPermission('admission_recommend_list', $user_role, $as_permissions))): ?>
+            <!-- 招生推薦 - 學校行政/管理員/主任/老師可見，STAM和AS需要權限 -->
+            <?php if (($is_staff || $is_admin || $is_director || $is_teacher) || ($is_stam && hasPermission('admission_recommend_list', $user_role, $stam_permissions)) || ($is_as && hasPermission('admission_recommend_list', $user_role, $as_permissions))): ?>
                 <a href="admission_recommend_list.php" class="menu-item <?php echo $current_page === 'admission_recommend_list' ? 'active' : ''; ?>">
                     <i class="fas fa-user-friends"></i>
                     <span>招生推薦</span>

@@ -237,6 +237,7 @@ function ensure_application_status_codes($conn, $needed) {
 // 判斷用戶角色（使用 session_config.php helper，支援中文/代碼角色）
 $is_admin_or_staff = (isAdmin() || isStaff());
 $is_director = isDirector();
+$is_teacher_user = isTeacher();
 $user_department_code = null;
 $is_department_user = false;
 
@@ -268,6 +269,7 @@ if ($is_director && $user_id > 0) {
 
 // 判斷是否為招生中心/行政人員
 $is_admission_center = $is_admin_or_staff && !$is_department_user;
+$can_show_review_result_column = ($can_view_review_result || $is_teacher_user);
 
 // 檢查是否有 recommender 和 recommended 表
 $has_recommender_table = false;
@@ -538,22 +540,21 @@ try {
         }
         $sql .= " ORDER BY ar.created_at DESC";
     } else {
-        // 如果沒有 recommender 和 recommended 表，只查詢主表
-        // 仍然需要 JOIN departments 來獲取 student_interest 的名稱
+        // 若 recommender/recommended 其中一張表不存在，改用 admission_recommendations 主表欄位（向後相容）
         $sql = "SELECT 
             ar.id,
-            '' as recommender_name,
-            '' as recommender_student_id,
-            '' as recommender_grade,
-            '' as recommender_department,
-            '' as recommender_phone,
-            '' as recommender_email,
-            '' as student_name,
-            '' as student_school,
-            '' as student_grade,
-            '' as student_phone,
-            '' as student_email,
-            '' as student_line_id,
+            " . ($ar_has_recommender_name ? "COALESCE(ar.recommender_name,'')" : "''") . " as recommender_name,
+            " . ($ar_has_recommender_student_id ? "COALESCE(ar.recommender_student_id,'')" : "''") . " as recommender_student_id,
+            " . ($ar_has_recommender_grade ? "COALESCE(ar.recommender_grade,'')" : ($ar_has_recommender_grade_code ? "COALESCE(ar.recommender_grade_code,'')" : "''")) . " as recommender_grade,
+            " . ($ar_has_recommender_department ? "COALESCE(ar.recommender_department,'')" : ($ar_has_recommender_department_code ? "COALESCE(ar.recommender_department_code,'')" : "''")) . " as recommender_department,
+            " . ($ar_has_recommender_phone ? "COALESCE(ar.recommender_phone,'')" : "''") . " as recommender_phone,
+            " . ($ar_has_recommender_email ? "COALESCE(ar.recommender_email,'')" : "''") . " as recommender_email,
+            " . ($ar_has_student_name ? "COALESCE(ar.student_name,'')" : "''") . " as student_name,
+            " . ($ar_has_student_school ? "COALESCE(ar.student_school,'')" : ($ar_has_student_school_code ? "COALESCE(ar.student_school_code,'')" : "''")) . " as student_school,
+            " . ($ar_has_student_grade ? "COALESCE(ar.student_grade,'')" : ($ar_has_student_grade_code ? "COALESCE(ar.student_grade_code,'')" : "''")) . " as student_grade,
+            " . ($ar_has_student_phone ? "COALESCE(ar.student_phone,'')" : "''") . " as student_phone,
+            " . ($ar_has_student_email ? "COALESCE(ar.student_email,'')" : "''") . " as student_email,
+            " . ($ar_has_student_line_id ? "COALESCE(ar.student_line_id,'')" : "''") . " as student_line_id,
             ar.recommendation_reason,
             COALESCE(ar.student_interest, '') as student_interest_code,
             COALESCE(interest_dept.name, '') as student_interest,
@@ -613,6 +614,70 @@ try {
     
     $result = $stmt->get_result();
     $recommendations = $result->fetch_all(MYSQLI_ASSOC);
+
+    // 教師僅可查看「自己推薦」的資料
+    // 比對來源：session username/name + teacher 表常見識別欄位（若存在）
+    if ($is_teacher_user) {
+        $teacher_identity_candidates = [];
+        $teacher_identity_candidates[] = trim((string)$username);
+        $teacher_identity_candidates[] = trim((string)($_SESSION['name'] ?? ''));
+
+        try {
+            if ($user_id > 0) {
+                $teacher_cols = [];
+                $tc = $conn->query("SHOW COLUMNS FROM teacher");
+                if ($tc) {
+                    while ($crow = $tc->fetch_assoc()) {
+                        $teacher_cols[] = (string)$crow['Field'];
+                    }
+                }
+                if (!empty($teacher_cols)) {
+                    $pick = [];
+                    $common = ['name', 'teacher_id', 'employee_no', 'teacher_no', 'number', 'username', 'id', 'user_id'];
+                    foreach ($common as $c) {
+                        if (in_array($c, $teacher_cols, true)) $pick[] = $c;
+                    }
+                    if (!empty($pick)) {
+                        $sql_pick = "SELECT " . implode(', ', $pick) . " FROM teacher WHERE user_id = ? LIMIT 1";
+                        $stmt_teacher = $conn->prepare($sql_pick);
+                        if ($stmt_teacher) {
+                            $stmt_teacher->bind_param("i", $user_id);
+                            if ($stmt_teacher->execute()) {
+                                $res_teacher = $stmt_teacher->get_result();
+                                if ($res_teacher && ($teacher_row = $res_teacher->fetch_assoc())) {
+                                    foreach ($pick as $k) {
+                                        $v = trim((string)($teacher_row[$k] ?? ''));
+                                        if ($v !== '') $teacher_identity_candidates[] = $v;
+                                    }
+                                }
+                            }
+                            $stmt_teacher->close();
+                        }
+                    }
+                }
+            }
+        } catch (Exception $e) {
+            error_log('讀取 teacher 身分資訊失敗: ' . $e->getMessage());
+        }
+
+        $teacher_identity_norm = [];
+        foreach ($teacher_identity_candidates as $v) {
+            $nv = normalize_text($v);
+            if ($nv !== '') $teacher_identity_norm[$nv] = true;
+        }
+
+        $filtered_teacher = [];
+        foreach ($recommendations as $rec_item) {
+            $rec_sid_text = normalize_text((string)($rec_item['recommender_student_id'] ?? ''));
+            $rec_name_text = normalize_text((string)($rec_item['recommender_name'] ?? ''));
+            $match_sid = ($rec_sid_text !== '' && isset($teacher_identity_norm[$rec_sid_text]));
+            $match_name = ($rec_name_text !== '' && isset($teacher_identity_norm[$rec_name_text]));
+            if ($match_sid || $match_name) {
+                $filtered_teacher[] = $rec_item;
+            }
+        }
+        $recommendations = $filtered_teacher;
+    }
 
     // 取得 departments 對照（用於 student_interest CSV 顯示成名稱）
     $departments_map = [];
@@ -965,9 +1030,8 @@ try {
     }
     
     // --- 根據 view_mode 在 PHP 層級過濾資料 ---
-    $get_review_label = function($status_code, $director_status) {
+    $get_review_label = function($status_code) {
         $st = trim((string)$status_code);
-        $ds = trim((string)$director_status);
         if ($st === '' || $st === 'pending') return '尚未審核';
         if (mb_strpos($st, '審核完成') !== false) return '審核完成（可發獎金）';
         if (mb_strpos($st, '科主任審核未通過') !== false) return '科主任審核未通過';
@@ -978,17 +1042,21 @@ try {
         if (mb_strpos($st, '尚未審核') !== false) return '尚未審核';
         if ($st === 'APD') return '審核完成（可發獎金）';
         if ($st === 'APDR') return '科主任審核未通過';
-        if ($ds === 'rejected') return '科主任審核未通過';
-        if ($ds === 'pending') return '科主任審核中';
         if ($st === 'AP') return '已通過初審（待科主任審核）';
         if ($st === 'MC') return '初審未通過（待科主任審核）';
         if ($st === 'RE') return '初審未通過';
         return '尚未審核';
     };
+    $get_teacher_final_review_label = function($review_label) {
+        $lbl = trim((string)$review_label);
+        if ($lbl === '審核完成（可發獎金）') return '通過';
+        if ($lbl === '科主任審核未通過' || $lbl === '初審未通過') return '不通過';
+        return '審核中';
+    };
     if (isset($view_mode) && $view_mode !== 'all') {
         $filtered = [];
         foreach ($recommendations as $rec) {
-            $label = $get_review_label($rec['status'] ?? '', $rec['director_review_status'] ?? '');
+            $label = $get_review_label($rec['status'] ?? '');
 
             if ($view_mode === 'unreviewed' && $label === '尚未審核') $filtered[] = $rec;
             if ($view_mode === 'director_pending' && ($label === '已通過初審（待科主任審核）' || $label === '初審未通過（待科主任審核）')) $filtered[] = $rec;
@@ -1024,7 +1092,7 @@ try {
         foreach ($recommendations as $rec) {
             $rows[] = [
                 (string)($rec['id'] ?? ''),
-                $get_review_label($rec['status'] ?? '', $rec['director_review_status'] ?? ''),
+                $get_review_label($rec['status'] ?? ''),
                 (string)($rec['student_name'] ?? ''),
                 (string)($rec['student_school'] ?? ''),
                 (string)($rec['student_grade'] ?? ''),
@@ -1999,12 +2067,12 @@ try {
                                         <th>學校</th>
                                         <th>年級</th>
                                         <th>學生興趣</th>
-                                        <?php if ($can_view_review_result): ?>
+                                        <?php if ($can_show_review_result_column): ?>
                                             <th>審核結果</th>
                                         <?php endif; ?>
                                         <!-- <th>狀態</th> -->
                                         <!-- <th>入學狀態</th> -->
-                                        <?php if ($is_admission_center): ?>
+                                        <?php if ($is_admission_center && !$is_teacher_user): ?>
                                         <th>分配部門</th>
                                         <th>操作</th>
                                         <?php elseif ($is_department_user): ?>
@@ -2019,7 +2087,7 @@ try {
                                     <?php foreach ($recommendations as $item): ?>
                                     <?php
                                         $current_status_code = isset($item['status']) ? trim((string)$item['status']) : '';
-                                        $row_review = $get_review_label($current_status_code, $item['director_review_status'] ?? '');
+                                        $row_review = $get_review_label($current_status_code);
                                     ?>
                                     <tr data-review-result="<?php echo htmlspecialchars($row_review); ?>"
                                         data-student-interest="<?php echo htmlspecialchars((string)($item['student_interest_code'] ?? '')); ?>"
@@ -2053,11 +2121,14 @@ try {
                                             }
                                             ?>
                                         </td>
-                                        <?php if ($can_view_review_result): ?>
+                                        <?php if ($can_show_review_result_column): ?>
                                             <td>
                                                 <?php
                                                     $current_status = isset($item['status']) ? trim((string)$item['status']) : '';
-                                                    $display_review = $get_review_label($current_status, $item['director_review_status'] ?? '');
+                                                    $display_review = $get_review_label($current_status);
+                                                    if ($is_teacher_user && !$can_view_review_result) {
+                                                        $display_review = $get_teacher_final_review_label($display_review);
+                                                    }
                                                     $is_unset_status = ($display_review === '尚未審核');
 
                                                     $dup_count = (int)($item['duplicate_count'] ?? 1);
@@ -2069,33 +2140,35 @@ try {
                                                     <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
                                                         <?php
                                                             $badge_class = 'review-badge';
-                                                            if ($display_review === '審核完成（可發獎金）' || $display_review === '已通過初審（待科主任審核）') $badge_class .= ' pass';
-                                                            elseif ($display_review === '初審未通過' || $display_review === '科主任審核未通過') $badge_class .= ' fail';
-                                                            elseif ($display_review === '初審未通過（待科主任審核）' || $display_review === '科主任審核中') $badge_class .= ' manual';
+                                                            if ($display_review === '審核完成（可發獎金）' || $display_review === '已通過初審（待科主任審核）' || $display_review === '通過') $badge_class .= ' pass';
+                                                            elseif ($display_review === '初審未通過' || $display_review === '科主任審核未通過' || $display_review === '不通過') $badge_class .= ' fail';
+                                                            elseif ($display_review === '初審未通過（待科主任審核）' || $display_review === '科主任審核中' || $display_review === '審核中') $badge_class .= ' manual';
                                                             else $badge_class .= ' empty';
                                                         ?>
                                                         <span class="<?php echo htmlspecialchars($badge_class); ?>"><?php echo htmlspecialchars($display_review); ?></span>
-                                                        <button
-                                                            type="button"
-                                                            class="btn-view"
-                                                            style="padding:6px 10px;"
-                                                            onclick="openReviewCriteriaModal(
-                                                                <?php echo (int)$item['id']; ?>,
-                                                                '<?php echo htmlspecialchars((string)$item['student_name']); ?>',
-                                                                '<?php echo htmlspecialchars($display_review); ?>',
-                                                                <?php echo ($dup_count > 1) ? 'true' : 'false'; ?>,
-                                                                <?php echo ($has_enroll ? 'true' : 'false'); ?>,
-                                                                '<?php echo htmlspecialchars($student_status); ?>',
-                                                                <?php echo ($no_bonus ? 'true' : 'false'); ?>,
-                                                                <?php echo (int)($item['nsbi_found'] ?? 0); ?>,
-                                                                <?php echo (int)($item['auto_review_match_name'] ?? 0); ?>,
-                                                                <?php echo (int)($item['auto_review_match_school'] ?? 0); ?>,
-                                                                <?php echo (int)($item['auto_review_match_phone'] ?? 0); ?>,
-                                                                <?php echo htmlspecialchars(json_encode((string)($item['proof_evidence'] ?? '')), ENT_QUOTES, 'UTF-8'); ?>
-                                                            )"
-                                                        >
-                                                            查看審核結果
-                                                        </button>
+                                                        <?php if ($can_view_review_result): ?>
+                                                            <button
+                                                                type="button"
+                                                                class="btn-view"
+                                                                style="padding:6px 10px;"
+                                                                onclick="openReviewCriteriaModal(
+                                                                    <?php echo (int)$item['id']; ?>,
+                                                                    '<?php echo htmlspecialchars((string)$item['student_name']); ?>',
+                                                                    '<?php echo htmlspecialchars($display_review); ?>',
+                                                                    <?php echo ($dup_count > 1) ? 'true' : 'false'; ?>,
+                                                                    <?php echo ($has_enroll ? 'true' : 'false'); ?>,
+                                                                    '<?php echo htmlspecialchars($student_status); ?>',
+                                                                    <?php echo ($no_bonus ? 'true' : 'false'); ?>,
+                                                                    <?php echo (int)($item['nsbi_found'] ?? 0); ?>,
+                                                                    <?php echo (int)($item['auto_review_match_name'] ?? 0); ?>,
+                                                                    <?php echo (int)($item['auto_review_match_school'] ?? 0); ?>,
+                                                                    <?php echo (int)($item['auto_review_match_phone'] ?? 0); ?>,
+                                                                    <?php echo htmlspecialchars(json_encode((string)($item['proof_evidence'] ?? '')), ENT_QUOTES, 'UTF-8'); ?>
+                                                                )"
+                                                            >
+                                                                查看審核結果
+                                                            </button>
+                                                        <?php endif; ?>
                                                     </div>
 
                                                 </div>
@@ -2111,7 +2184,7 @@ try {
                                                 <?php echo getEnrollmentStatusText($item['enrollment_status'] ?? '未入學'); ?>
                                             </span>
                                         </td> -->
-                                        <?php if ($is_admission_center): ?>
+                                        <?php if ($is_admission_center && !$is_teacher_user): ?>
                                         <td>
                                             <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
                                                 <?php if (!empty($item['assigned_department'])): ?>
@@ -2293,8 +2366,8 @@ try {
                                     </tr>
                                     <tr id="detail-<?php echo $item['id']; ?>" class="detail-row" style="display: none;">
                                         <?php
-                                            $detail_colspan = ($is_admission_center || $is_department_user) ? 9 : 8;
-                                            if (!$can_view_review_result) $detail_colspan -= 1;
+                                            $detail_colspan = (($is_admission_center && !$is_teacher_user) || $is_department_user) ? 9 : 8;
+                                            if (!$can_show_review_result_column) $detail_colspan -= 1;
                                         ?>
                                         <td colspan="<?php echo (int)$detail_colspan; ?>" style="padding: 20px; background: #f9f9f9; border: 2px solid #b3d9ff; border-radius: 4px;">
                                             <table style="width: 100%; border-collapse: collapse;">
@@ -2754,6 +2827,12 @@ try {
             });
         }
 
+        const isManualGmailEligibleRow = (row) => {
+            if (!row) return false;
+            const review = String((row.dataset && row.dataset.reviewResult) ? row.dataset.reviewResult : '').trim();
+            return review === '已通過初審（待科主任審核）' || review === '初審未通過（待科主任審核）';
+        };
+
         const setGmailMode = (enabled) => {
             const cells = document.querySelectorAll('.gmail-select-cell');
             cells.forEach(cell => {
@@ -2761,9 +2840,24 @@ try {
             });
             if (gmailSendConfirm) gmailSendConfirm.style.display = enabled ? 'inline-block' : 'none';
             if (gmailSendCancel) gmailSendCancel.style.display = enabled ? 'inline-block' : 'none';
+            if (enabled) {
+                const rows = allRows.filter(r => r.style.display !== 'none');
+                rows.forEach(row => {
+                    const chk = row.querySelector('.gmail-select-row');
+                    if (!chk) return;
+                    const canSend = isManualGmailEligibleRow(row);
+                    chk.disabled = !canSend;
+                    chk.checked = false;
+                    chk.title = canSend ? '' : '此狀態為系統自動寄送，不需人工寄送';
+                });
+            }
             if (!enabled) {
                 const rowChecks = document.querySelectorAll('.gmail-select-row');
-                rowChecks.forEach(chk => { chk.checked = false; });
+                rowChecks.forEach(chk => {
+                    chk.checked = false;
+                    chk.disabled = false;
+                    chk.title = '';
+                });
                 if (gmailSelectAll) gmailSelectAll.checked = false;
             }
         };
@@ -2797,7 +2891,7 @@ try {
                 const rows = allRows.filter(r => r.style.display !== 'none');
                 rows.forEach(row => {
                     const chk = row.querySelector('.gmail-select-row');
-                    if (chk) chk.checked = gmailSelectAll.checked;
+                    if (chk && !chk.disabled) chk.checked = gmailSelectAll.checked;
                 });
             });
         }
@@ -2805,21 +2899,21 @@ try {
         const collectVisibleGmailIds = () => {
             if (filteredRows && filteredRows.length > 0) {
                 return filteredRows
-                    .filter(r => r.style.display !== 'none')
+                    .filter(r => r.style.display !== 'none' && isManualGmailEligibleRow(r))
                     .map(r => (r.querySelector('.gmail-select-row') || {}).value || '')
                     .filter(Boolean);
             }
             if (!table) return [];
             const bodyRows = Array.from(table.querySelectorAll('tbody tr'));
             return bodyRows
-                .filter(r => !r.classList.contains('detail-row') && r.style.display !== 'none')
+                .filter(r => !r.classList.contains('detail-row') && r.style.display !== 'none' && isManualGmailEligibleRow(r))
                 .map(r => (r.querySelector('.gmail-select-row') || {}).value || '')
                 .filter(Boolean);
         };
 
         if (gmailSendConfirm) {
             gmailSendConfirm.addEventListener('click', function() {
-                const checked = Array.from(document.querySelectorAll('.gmail-select-row:checked'));
+                const checked = Array.from(document.querySelectorAll('.gmail-select-row:checked')).filter(chk => !chk.disabled);
                 const ids = checked.map(chk => String(chk.value)).filter(Boolean);
                 if (ids.length === 0) {
                     alert('請先勾選要寄送的資料');
@@ -2880,13 +2974,13 @@ try {
         includeCheckbox.className = 'gmail-include-generated';
         includeCheckbox.checked = !!email.include_generated;
         includeLabel.appendChild(includeCheckbox);
-        const attachmentExt = email.attachment_ext || (email.xlsx_supported === false ? 'csv' : 'xlsx');
+        const attachmentExt = email.attachment_ext || (email.xlsx_supported === false ? 'xls' : 'xlsx');
         includeLabel.appendChild(document.createTextNode(' 附加系統 ' + (attachmentExt.toUpperCase()) + '：' + (email.attachment_name || ('推薦內容.' + attachmentExt))));
         if (email.xlsx_supported === false) {
             const warn = document.createElement('span');
             warn.style.color = '#fa8c16';
             warn.style.marginLeft = '8px';
-            warn.textContent = '（伺服器未啟用 ZipArchive，改附 CSV）';
+            warn.textContent = '（伺服器未啟用 ZipArchive，改附 Excel .xls）';
             includeLabel.appendChild(warn);
         }
         attachWrap.appendChild(includeLabel);
@@ -2962,7 +3056,7 @@ try {
             list.innerHTML = '';
             const emails = data.emails || [];
             if (emails.length === 0) {
-                list.innerHTML = '<div style="color:#666;">沒有可寄送的資料（僅通過/不通過會寄送）。</div>';
+                list.innerHTML = '<div style="color:#666;">沒有可寄送的資料（僅待科主任審核可人工寄送）。審核完成（可發獎金）由系統自動寄送。</div>';
                 return;
             }
             emails.forEach((email, idx) => {
@@ -3479,6 +3573,11 @@ try {
             ];
             if ((statusLabel || '').trim() === '初審未通過') {
                 steps[1] = '初審不通過待科主任審核';
+            }
+            if ((statusLabel || '').trim() === '審核完成（可發獎金）') {
+                steps[3] = '科主任審核通過';
+            } else if ((statusLabel || '').trim() === '科主任審核未通過') {
+                steps[3] = '科主任審核不通過';
             }
             let activeIndex = 0;
             let doneIndex = -1;
