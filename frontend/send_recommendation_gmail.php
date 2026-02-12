@@ -140,6 +140,18 @@ function build_simple_xls($rows, $output_path) {
     return file_exists($output_path);
 }
 
+function build_simple_csv($rows, $output_path) {
+    $fh = @fopen($output_path, 'wb');
+    if (!$fh) return false;
+    // UTF-8 BOM，避免中文亂碼
+    fwrite($fh, "\xEF\xBB\xBF");
+    foreach ($rows as $row) {
+        fputcsv($fh, $row);
+    }
+    fclose($fh);
+    return file_exists($output_path);
+}
+
 function html_to_text($html) {
     $text = strip_tags((string)$html);
     $text = html_entity_decode($text, ENT_QUOTES | ENT_HTML5, 'UTF-8');
@@ -388,7 +400,12 @@ try {
             $rk = mb_strtolower(trim((string)$g['rec_name']) . '|' . trim((string)$g['rec_sid']), 'UTF-8');
             if (!isset($seen[$rk]) && (!empty($g['rec_name']) || !empty($g['rec_sid']))) {
                 $seen[$rk] = true;
-                $merged['rec_list'][] = ['name' => (string)$g['rec_name'], 'sid' => (string)$g['rec_sid']];
+                $merged['rec_list'][] = [
+                    'name' => (string)$g['rec_name'],
+                    'sid' => (string)$g['rec_sid'],
+                    'grade' => (string)($g['rec_grade'] ?? ''),
+                    'dept' => (string)($g['rec_dept'] ?? ''),
+                ];
             }
             $merged['items'] = array_merge($merged['items'], $g['items'] ?? []);
             if (!empty($g['has_approved'])) {
@@ -402,40 +419,88 @@ try {
 
     $to_email = '110534236@stu.ukn.edu.tw';
     $xlsx_supported = class_exists('ZipArchive');
-    $excel_attachment_ext = $xlsx_supported ? 'xlsx' : 'xls';
+    $excel_attachment_ext = $xlsx_supported ? 'xlsx' : 'csv';
     $excel_attachment_mime = $xlsx_supported
         ? 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-        : 'application/vnd.ms-excel';
+        : 'text/csv';
 
     $build_rec_summary = function($group) {
+        $is_student_recommender = function($sid, $grade) {
+            $g = strtoupper(trim((string)$grade));
+            if ($g !== '' && preg_match('/^F[1-5]$/', $g)) return true;
+            // 沒有年級時，若學號/教師編號以英文字母開頭，視為教師
+            $s = trim((string)$sid);
+            if ($g === '' && preg_match('/^[A-Za-z]/', $s)) return false;
+            return false;
+        };
+
         $lines = [];
-        $rows = [];
+        $student_rows = [];
+        $teacher_rows = [];
+
+        $push_row = function($nm, $sid, $grade, $dept) use (&$lines, &$student_rows, &$teacher_rows, $is_student_recommender) {
+            if ($nm === '' && $sid === '') return;
+            if ($is_student_recommender($sid, $grade)) {
+                $lines[] = '【學生推薦人】' . ($nm !== '' ? $nm : '未填寫') . '（' . ($sid !== '' ? $sid : '未填寫') . '）';
+                $student_rows[] = [
+                    htmlspecialchars($nm !== '' ? $nm : '未填寫', ENT_QUOTES, 'UTF-8'),
+                    htmlspecialchars($sid !== '' ? $sid : '未填寫', ENT_QUOTES, 'UTF-8'),
+                    htmlspecialchars($grade !== '' ? $grade : '未填寫', ENT_QUOTES, 'UTF-8'),
+                    htmlspecialchars($dept !== '' ? $dept : '未填寫', ENT_QUOTES, 'UTF-8'),
+                ];
+            } else {
+                $lines[] = '【教師推薦人】' . ($nm !== '' ? $nm : '未填寫') . '（' . ($sid !== '' ? $sid : '未填寫') . '）';
+                $teacher_rows[] = [
+                    htmlspecialchars($nm !== '' ? $nm : '未填寫', ENT_QUOTES, 'UTF-8'),
+                    htmlspecialchars($sid !== '' ? $sid : '未填寫', ENT_QUOTES, 'UTF-8'),
+                    htmlspecialchars($grade !== '' ? $grade : '未填寫', ENT_QUOTES, 'UTF-8'),
+                    htmlspecialchars($dept !== '' ? $dept : '未填寫', ENT_QUOTES, 'UTF-8'),
+                ];
+            }
+        };
+
         if (!empty($group['rec_list']) && is_array($group['rec_list'])) {
             foreach ($group['rec_list'] as $r) {
                 $nm = trim((string)($r['name'] ?? ''));
                 $sid = trim((string)($r['sid'] ?? ''));
-                if ($nm !== '' || $sid !== '') {
-                    if ($nm !== '') $lines[] = '• 推薦人姓名：' . $nm;
-                    if ($sid !== '') $lines[] = '• 推薦人學號：' . $sid;
-                    $rows[] = [htmlspecialchars($nm, ENT_QUOTES, 'UTF-8'), htmlspecialchars($sid, ENT_QUOTES, 'UTF-8')];
-                }
+                $grade = trim((string)($r['grade'] ?? ''));
+                $dept = trim((string)($r['dept'] ?? ''));
+                $push_row($nm, $sid, $grade, $dept);
             }
         } else {
             $nm = trim((string)($group['rec_name'] ?? ''));
             $sid = trim((string)($group['rec_sid'] ?? ''));
-            if ($nm !== '') $lines[] = '• 推薦人姓名：' . $nm;
-            if ($sid !== '') $lines[] = '• 推薦人學號：' . $sid;
-            if ($nm !== '' || $sid !== '') $rows[] = [htmlspecialchars($nm, ENT_QUOTES, 'UTF-8'), htmlspecialchars($sid, ENT_QUOTES, 'UTF-8')];
+            $grade = trim((string)($group['rec_grade'] ?? ''));
+            $dept = trim((string)($group['rec_dept'] ?? ''));
+            $push_row($nm, $sid, $grade, $dept);
         }
+
         $text = implode("\n", $lines);
         $html = '';
-        if (!empty($rows)) {
+        $build_table = function($title, $rows) {
+            if (empty($rows)) return '';
             $html_rows = '';
             foreach ($rows as $row) {
-                $html_rows .= '<tr><td style="border:1px solid #d9d9d9;padding:6px 10px;">' . $row[0] . '</td><td style="border:1px solid #d9d9d9;padding:6px 10px;">' . $row[1] . '</td></tr>';
+                $html_rows .= '<tr>'
+                    . '<td style="border:1px solid #d9d9d9;padding:6px 10px;">' . $row[0] . '</td>'
+                    . '<td style="border:1px solid #d9d9d9;padding:6px 10px;">' . $row[1] . '</td>'
+                    . '<td style="border:1px solid #d9d9d9;padding:6px 10px;">' . $row[2] . '</td>'
+                    . '<td style="border:1px solid #d9d9d9;padding:6px 10px;">' . $row[3] . '</td>'
+                    . '</tr>';
             }
-            $html = '<table style="border-collapse:collapse;width:100%;max-width:520px;"><thead><tr><th style="border:1px solid #d9d9d9;padding:6px 10px;text-align:left;background:#fafafa;">推薦人姓名</th><th style="border:1px solid #d9d9d9;padding:6px 10px;text-align:left;background:#fafafa;">推薦人學號</th></tr></thead><tbody>' . $html_rows . '</tbody></table>';
-        }
+            return '<div style="margin-top:8px; font-weight:600;">' . htmlspecialchars($title, ENT_QUOTES, 'UTF-8') . '</div>'
+                . '<table style="border-collapse:collapse;width:100%;max-width:760px;margin-top:6px;">'
+                . '<thead><tr>'
+                . '<th style="border:1px solid #d9d9d9;padding:6px 10px;text-align:left;background:#fafafa;">推薦人姓名</th>'
+                . '<th style="border:1px solid #d9d9d9;padding:6px 10px;text-align:left;background:#fafafa;">推薦人學號/編號</th>'
+                . '<th style="border:1px solid #d9d9d9;padding:6px 10px;text-align:left;background:#fafafa;">年級</th>'
+                . '<th style="border:1px solid #d9d9d9;padding:6px 10px;text-align:left;background:#fafafa;">科系</th>'
+                . '</tr></thead><tbody>' . $html_rows . '</tbody></table>';
+        };
+
+        $html .= $build_table('教師推薦人', $teacher_rows);
+        $html .= $build_table('學生推薦人', $student_rows);
+
         return [$text, $html];
     };
 
@@ -525,7 +590,7 @@ try {
                             $it['rec_grade'] ?? $rec_grade, $it['rec_phone'] ?? $rec_phone, $it['rec_email'] ?? $rec_email,
                         ];
                     }
-                    $built = $xlsx_supported ? build_simple_xlsx($rows, $attachment_path) : build_simple_xls($rows, $attachment_path);
+                    $built = $xlsx_supported ? build_simple_xlsx($rows, $attachment_path) : build_simple_csv($rows, $attachment_path);
                     if ($built) {
                         $safe_name = preg_replace('/[^\w\-]+/u', '_', $rec_name ?: '推薦人');
                         $attachments[] = [
