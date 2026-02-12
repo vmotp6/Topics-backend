@@ -79,14 +79,16 @@ try {
                 ['type' => 'public-key', 'alg' => -257] // RS256
             ],
             'authenticatorSelection' => [
-                // 支持 Android 設備上的生物驗證
-                // Android 支持：平台認證器（通過 Google Play 服務）、跨平台認證器
-                'authenticatorAttachment' => 'platform', // 優先使用平台認證器（手機內建生物驗證）
-                'userVerification' => 'preferred',      // 允許生物驗證、PIN、密碼等驗證方式
-                'requireResidentKey' => false,          // 不要求 resident key，提高 Android 兼容性
+                // 允許平台或跨平台認證器，支援手機跨裝置驗證
+                'userVerification' => 'required',       // 強制生物驗證或平台驗證
+                'residentKey' => 'preferred',           // localhost 優先但不強制 Discoverable
+                'requireResidentKey' => false,          // 相容舊版欄位
             ],
             'timeout' => 120000, // 120 秒，給用戶充足時間
-            'attestation' => 'none' // 不需要 attestation
+            'attestation' => 'none', // 不需要 attestation
+            'extensions' => [
+                'credProps' => true
+            ]
         ];
         
         // 調試資訊

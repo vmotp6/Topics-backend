@@ -855,6 +855,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_status'])) {
                                 $is_scored = $has_self_intro && $has_skills;
                                 error_log("從舊欄位檢查評分狀態 - 報名ID: {$application_id}, slot: {$teacher_slot}, 自傳: '{$current_self_intro_score}', 專長: '{$current_skills_score}', 已評分: " . ($is_scored ? '是' : '否'));
                             }
+
+                            // 未評分時，預設顯示 0 分（主任與老師一致）
+                            if (!$is_scored) {
+                                if ($current_self_intro_score === '' || $current_self_intro_score === null) {
+                                    $current_self_intro_score = 0;
+                                }
+                                if ($current_skills_score === '' || $current_skills_score === null) {
+                                    $current_skills_score = 0;
+                                }
+                            }
                             
                             // 獲取評分時間
                             $scored_at = '';
