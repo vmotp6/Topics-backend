@@ -1231,11 +1231,11 @@ try {
                                                             <i class="fas fa-address-book"></i> 新增聯絡紀錄
                                                         </button>
                                                         <?php else: ?>
-                                                        <button type="button" class="btn-view btn-contact-view"
+                                                            <button type="button" class="btn-view btn-contact-view"
                                                             data-student-id="<?php echo (int)$item['id']; ?>"
                                                             data-student-name="<?php echo htmlspecialchars($item['name'] ?? '', ENT_QUOTES, 'UTF-8'); ?>"
                                                             data-assigned-teacher-id="<?php echo (int)($item['assigned_teacher_id'] ?? 0); ?>"
-                                                            onclick="event.stopPropagation(); openContactLogsModal(this.dataset.studentId, this.dataset.studentName, this.dataset.assignedTeacherId)">
+                                                            onclick="event.stopPropagation(); openContactLogsModal(this.dataset.studentId, this.dataset.studentName, this.dataset.assignedTeacherId, true)">
                                                             <i class="fas fa-address-book"></i> 查看聯絡紀錄
                                                         </button>
                                                         <?php endif; ?>
@@ -1346,7 +1346,7 @@ try {
                                                             data-student-id="<?php echo (int)$item['id']; ?>"
                                                             data-student-name="<?php echo htmlspecialchars($item['name'] ?? '', ENT_QUOTES, 'UTF-8'); ?>"
                                                             data-assigned-teacher-id="<?php echo (int)($item['assigned_teacher_id'] ?? 0); ?>"
-                                                            onclick="event.stopPropagation(); openContactLogsModal(this.dataset.studentId, this.dataset.studentName, this.dataset.assignedTeacherId)">
+                                                            onclick="event.stopPropagation(); openContactLogsModal(this.dataset.studentId, this.dataset.studentName, this.dataset.assignedTeacherId, true)">
                                                             <i class="fas fa-address-book"></i> 查看聯絡紀錄
                                                         </button>
                                                         <?php endif; ?>
@@ -1502,32 +1502,89 @@ try {
                 <div id="addLogSection" style="margin-bottom: 20px; background: #f9f9f9; padding: 16px; border-radius: 8px; display: none;">
                     <h4 style="margin-bottom: 12px;">新增紀錄</h4>
                     <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; margin-bottom: 12px;">
-                        <div>
-                            <label style="display:block; font-size: 13px; color:#666; margin-bottom:6px; font-weight:600;">聯絡日期</label>
-                            <input type="date" id="newLogDate" class="form-control" style="width: 100%;">
-                        </div>
-                        <div>
-                            <label style="display:block; font-size: 13px; color:#666; margin-bottom:6px; font-weight:600;">聯絡方式</label>
-                            <select id="newLogMethod" class="form-control" style="width: 100%;">
-                                <option value="電話">電話</option>
-                                <option value="Line">Line</option>
-                                <option value="Email">Email</option>
-                                <option value="面談">面談</option>
-                                <option value="其他">其他</option>
-                            </select>
-                        </div>
-                        <div>
-                            <label style="display:block; font-size: 13px; color:#666; margin-bottom:6px; font-weight:600;">聯絡結果</label>
-                            <select id="newLogContactResult" class="form-control" style="width: 100%;">
-                                <option value="contacted">已聯絡</option>
-                                <option value="unreachable">聯絡不到</option>
-                            </select>
-                        </div>
-                    </div>
-                    <div>
-                        <label style="display:block; font-size: 13px; color:#666; margin-bottom:6px; font-weight:600;">聯絡紀錄</label>
-                        <textarea id="newLogContent" class="form-control" rows="4" placeholder="請輸入聯絡內容和結果..."></textarea>
-                    </div>
+    <div>
+        <label style="display:block; font-size: 13px; color:#666; margin-bottom:6px; font-weight:600;">聯絡日期</label>
+        <input type="date" id="newLogDate" class="form-control" style="width: 100%;">
+    </div>
+    <div>
+        <label style="display:block; font-size: 13px; color:#666; margin-bottom:6px; font-weight:600;">聯絡方式</label>
+        <select id="newLogMethod" class="form-control" style="width: 100%;">
+            <option value="電話">電話</option>
+            <option value="Line">Line</option>
+            <option value="Email">Email</option>
+            <option value="面談">面談</option>
+            <option value="其他">其他</option>
+        </select>
+    </div>
+    <div>
+        <label style="display:block; font-size: 13px; color:#666; margin-bottom:6px; font-weight:600;">聯絡結果</label>
+        <select id="newLogContactResult" class="form-control" style="width: 100%;">
+            <option value="contacted">已聯絡</option>
+            <option value="unreachable">聯絡不到</option>
+        </select>
+    </div>
+</div>
+
+<div>
+    <label style="display:block; font-size: 13px; color:#666; margin-bottom:6px; font-weight:600;">詳細紀錄 (可多選)</label>
+    <div style="background: #fff; border: 1px solid #d9d9d9; border-radius: 6px; padding: 12px; display: flex; flex-direction: column; gap: 10px;">
+        
+        <div>
+            <div style="font-size:12px; color:#1890ff; font-weight:bold; margin-bottom:4px;">【接聽與意願狀態】</div>
+            <div style="display: flex; flex-wrap: wrap; gap: 8px;">
+                <label style="cursor:pointer; font-size:13px; background:#e6f7ff; padding:2px 8px; border-radius:4px;"><input type="checkbox" name="logOptions" value="學生接聽"> 學生接聽</label>
+                <label style="cursor:pointer; font-size:13px; background:#e6f7ff; padding:2px 8px; border-radius:4px;"><input type="checkbox" name="logOptions" value="家長接聽"> 家長接聽</label>
+                <label style="cursor:pointer; font-size:13px; background:#f6ffed; padding:2px 8px; border-radius:4px;"><input type="checkbox" name="logOptions" value="學生有意願"> 學生有意願</label>
+                <label style="cursor:pointer; font-size:13px; background:#f6ffed; padding:2px 8px; border-radius:4px;"><input type="checkbox" name="logOptions" value="家長支持"> 家長支持</label>
+                <label style="cursor:pointer; font-size:13px; background:#fff2e8; padding:2px 8px; border-radius:4px;"><input type="checkbox" name="logOptions" value="學生無意願"> 學生無意願</label>
+                <label style="cursor:pointer; font-size:13px; background:#fff1f0; padding:2px 8px; border-radius:4px;"><input type="checkbox" name="logOptions" value="家長反對"> 家長反對</label>
+            </div>
+        </div>
+        
+        <div style="height:1px; background:#eee;"></div>
+
+        <div>
+            <div style="font-size:12px; color:#cf1322; font-weight:bold; margin-bottom:4px;">【主要抗性/困難】</div>
+            <div style="display: flex; flex-wrap: wrap; gap: 8px;">
+                <label style="cursor:pointer; font-size:13px;"><input type="checkbox" name="logOptions" value="距離太遠/交通不便"> 距離太遠/交通不便</label>
+                <label style="cursor:pointer; font-size:13px;"><input type="checkbox" name="logOptions" value="會考分數高/想讀高中"> 會考分數高/想讀高中</label>
+                <label style="cursor:pointer; font-size:13px;"><input type="checkbox" name="logOptions" value="學費/經濟考量"> 學費/經濟考量</label>
+                <label style="cursor:pointer; font-size:13px;"><input type="checkbox" name="logOptions" value="已決定他校"> 已決定他校</label>
+                <label style="cursor:pointer; font-size:13px;"><input type="checkbox" name="logOptions" value="志趣不合/沒興趣"> 志趣不合</label>
+            </div>
+        </div>
+
+        <div style="height:1px; background:#eee;"></div>
+
+        <div>
+            <div style="font-size:12px; color:#fa8c16; font-weight:bold; margin-bottom:4px;">【詢問重點/關心議題】</div>
+            <div style="display: flex; flex-wrap: wrap; gap: 8px;">
+                <label style="cursor:pointer; font-size:13px;"><input type="checkbox" name="logOptions" value="詢問獎學金/補助"> 詢問獎學金/補助</label>
+                <label style="cursor:pointer; font-size:13px;"><input type="checkbox" name="logOptions" value="詢問校車/住宿"> 詢問校車/住宿</label>
+                <label style="cursor:pointer; font-size:13px;"><input type="checkbox" name="logOptions" value="詢問升學/就業"> 詢問升學/就業</label>
+            </div>
+        </div>
+
+        <div style="height:1px; background:#eee;"></div>
+
+        <div>
+            <div style="font-size:12px; color:#52c41a; font-weight:bold; margin-bottom:4px;">【後續行動與狀態】</div>
+            <div style="display: flex; flex-wrap: wrap; gap: 8px;">
+                <label style="cursor:pointer; font-size:13px;"><input type="checkbox" name="logOptions" value="考慮中"> 考慮中</label>
+                <label style="cursor:pointer; font-size:13px;"><input type="checkbox" name="logOptions" value="已加LINE"> 已加LINE</label>
+                <label style="cursor:pointer; font-size:13px;"><input type="checkbox" name="logOptions" value="邀請參訪"> 邀請參訪</label>
+                <label style="cursor:pointer; font-size:13px;"><input type="checkbox" name="logOptions" value="寄送資料"> 寄送資料</label>
+                <label style="cursor:pointer; font-size:13px;"><input type="checkbox" name="logOptions" value="需再次聯絡"> 需再次聯絡</label>
+            </div>
+        </div>
+
+    </div>
+</div>
+
+<div style="margin-top: 12px;">
+    <label style="display:block; font-size: 13px; color:#666; margin-bottom:6px; font-weight:600;">詳細備註 (補充說明)</label>
+    <textarea id="newLogContent" class="form-control" rows="2" placeholder="詳細備註"></textarea>
+</div>
                     <div style="margin-top: 12px; text-align: right;">
                         <button class="assign-btn" onclick="submitContactLog()">
                             <i class="fas fa-paper-plane"></i> 新增
@@ -1983,83 +2040,111 @@ try {
         }
 
         // Contact Logs functions
-        function openContactLogsModal(studentId, studentName, assignedTeacherId, viewOnly) {
-            console.log('openContactLogsModal called:', studentId, studentName, assignedTeacherId, viewOnly);
-            // 確保 studentId 是數字
-            const id = parseInt(studentId) || 0;
-            if (!id) {
-                console.error('openContactLogsModal: studentId is missing or invalid:', studentId);
-                alert('錯誤：無法取得學生ID');
-                return;
-            }
-            currentStudentId = id;
-            const nameElement = document.getElementById('contactLogStudentName');
-            const modalElement = document.getElementById('contactLogsModal');
-            if (!nameElement || !modalElement) {
-                console.error('openContactLogsModal: Modal elements not found');
-                alert('錯誤：找不到聯絡紀錄視窗元素');
-                return;
-            }
-            nameElement.textContent = studentName || '未知';
-            modalElement.style.display = 'flex';
-            
-            // 如果是僅查看模式（從詳情頁面點擊），隱藏所有新增/修改相關區塊
-            const isViewOnly = viewOnly === true || viewOnly === 'true';
-            
-            const addLogSection = document.getElementById('addLogSection');
-            var closeSec = document.getElementById('closeCaseSection');
-            var changeIntentionSec = document.getElementById('changeIntentionSection');
-            var currentIntentionSec = document.getElementById('currentIntentionSection');
-            
-            if (isViewOnly) {
-                // 僅查看模式：隱藏所有新增/修改區塊
-                if (addLogSection) addLogSection.style.display = 'none';
-                if (closeSec) closeSec.style.display = 'none';
-                if (changeIntentionSec) changeIntentionSec.style.display = 'none';
-                if (currentIntentionSec) currentIntentionSec.style.display = 'none';
+function openContactLogsModal(studentId, studentName, assignedTeacherId, viewOnly) {
+    // 1. 基礎設定
+    const id = parseInt(studentId) || 0;
+    if (!id) {
+        alert('錯誤：無法取得學生ID');
+        return;
+    }
+    currentStudentId = id;
+    
+    // 設定標題
+    const nameElement = document.getElementById('contactLogStudentName');
+    const modalElement = document.getElementById('contactLogsModal');
+    if (nameElement) nameElement.textContent = studentName || '未知';
+    if (modalElement) modalElement.style.display = 'flex';
+    
+    // 2. 取得介面元素
+    const addLogSection = document.getElementById('addLogSection');
+    // 如果有其他區塊 (如結案/轉介)，也一併取得
+    var closeSec = document.getElementById('closeCaseSection'); 
+    var changeIntentionSec = document.getElementById('changeIntentionSection');
+    var currentIntentionSec = document.getElementById('currentIntentionSection');
+
+    // 3. 判斷是否為「僅查看」模式
+    const isViewOnly = viewOnly === true || viewOnly === 'true';
+
+    if (isViewOnly) {
+        // --- 僅查看模式：隱藏所有操作區塊 ---
+        if (addLogSection) addLogSection.style.display = 'none';
+        if (closeSec) closeSec.style.display = 'none';
+        if (changeIntentionSec) changeIntentionSec.style.display = 'none';
+        if (currentIntentionSec) currentIntentionSec.style.display = 'none';
+        
+    } else {
+        // --- 正常模式：進行權限驗證 ---
+        
+        // 取得 PHP 傳遞過來的角色與 ID 資訊
+        const isAdmissionCenter = <?php echo isset($is_admission_center) && $is_admission_center ? 'true' : 'false'; ?>;
+        const isDirector = <?php echo isset($is_director) && $is_director ? 'true' : 'false'; ?>;
+        const currentUserId = <?php echo isset($user_id) && is_numeric($user_id) ? (int)$user_id : 0; ?>;
+        const assignedTeacherIdInt = parseInt(assignedTeacherId) || 0;
+        
+        // 判斷是否允許新增紀錄
+        let canAddLog = false;
+
+        if (isAdmissionCenter) {
+            // 招生中心：一律不能寫紀錄
+            canAddLog = false;
+        } else if (isDirector) {
+            // 主任：
+            // 1. 如果學生已分配給其他老師 (ID > 0 且 != 主任ID)，主任只能看，不能寫
+            // 2. 如果學生未分配 (ID == 0) 或分配給主任自己 (ID == 主任ID)，主任可以寫
+            if (assignedTeacherIdInt > 0 && assignedTeacherIdInt !== currentUserId) {
+                canAddLog = false;
+                // console.log('主任權限限制：學生已分配給其他老師');
             } else {
-                // 正常模式：檢查是否顯示新增記錄區塊
-                const isAdmissionCenter = <?php echo isset($is_admission_center) && $is_admission_center ? 'true' : 'false'; ?>;
-                const isDirector = <?php echo isset($is_director) && $is_director ? 'true' : 'false'; ?>;
-                const currentUserId = <?php echo isset($user_id) && is_numeric($user_id) ? (int)$user_id : 0; ?>;
-                
-                // 招生中心不能寫記錄
-                if (isAdmissionCenter) {
-                    if (addLogSection) addLogSection.style.display = 'none';
-                } else if (isDirector) {
-                    // 主任：檢查學生是否已分配給其他老師
-                    const assignedTeacherIdInt = parseInt(assignedTeacherId) || 0;
-                    // 如果已分配給其他老師（assigned_teacher_id 不為空且不等於主任自己的ID），則不能寫記錄
-                    if (assignedTeacherIdInt > 0 && assignedTeacherIdInt !== currentUserId) {
-                        // 已分配給其他老師，主任只能查看
-                        if (addLogSection) addLogSection.style.display = 'none';
-                        console.log('Director cannot write log: student assigned to teacher', assignedTeacherIdInt);
-                    } else {
-                        // 未分配或分配給主任自己（自行聯絡），可以寫記錄
-                        if (addLogSection) addLogSection.style.display = 'block';
-                        const today = new Date().toISOString().split('T')[0];
-                        document.getElementById('newLogDate').value = today;
-                        document.getElementById('newLogMethod').value = '電話';
-                        var cr = document.getElementById('newLogContactResult');
-                        if (cr) cr.value = 'contacted';
-                        document.getElementById('newLogContent').value = '';
-                        if (typeof resetTrackingForm === 'function') resetTrackingForm();
-                        if (typeof toggleTrackingSection === 'function') toggleTrackingSection();
-                    }
-                } else {
-                    if (addLogSection) addLogSection.style.display = 'block';
-                    const today = new Date().toISOString().split('T')[0];
-                    document.getElementById('newLogDate').value = today;
-                    document.getElementById('newLogMethod').value = '電話';
-                    var cr = document.getElementById('newLogContactResult');
-                    if (cr) cr.value = 'contacted';
-                    document.getElementById('newLogContent').value = '';
-                }
-                if (closeSec) closeSec.style.display = 'none';
-                if (changeIntentionSec) changeIntentionSec.style.display = 'none';
+                canAddLog = true;
             }
-            loadContactLogs(studentId);
+        } else {
+            // 一般老師 (TEA)：
+            // 雖然列表已經過濾過，但這裡再做一次雙重驗證
+            // 只有當學生是分配給自己時，才能寫紀錄
+            if (assignedTeacherIdInt === currentUserId) {
+                canAddLog = true;
+            } else {
+                canAddLog = false;
+            }
         }
+
+        // 4. 根據權限顯示或隱藏「新增紀錄」區塊
+        if (addLogSection) {
+            if (canAddLog) {
+                addLogSection.style.display = 'block';
+                
+                // === [關鍵] 初始化表單與重置勾選框 ===
+                const today = new Date().toISOString().split('T')[0];
+                const dateInput = document.getElementById('newLogDate');
+                const methodInput = document.getElementById('newLogMethod');
+                const contentInput = document.getElementById('newLogContent');
+                const resultInput = document.getElementById('newLogContactResult');
+
+                if (dateInput) dateInput.value = today;
+                if (methodInput) methodInput.value = '電話';
+                if (resultInput) resultInput.value = 'contacted';
+                if (contentInput) contentInput.value = '';
+
+                // 重置所有勾選框 (這是新加的功能)
+                document.querySelectorAll('input[name="logOptions"]').forEach(cb => cb.checked = false);
+                
+                // 如果有其他追蹤表單重置函式
+                if (typeof resetTrackingForm === 'function') resetTrackingForm();
+                if (typeof toggleTrackingSection === 'function') toggleTrackingSection();
+
+            } else {
+                addLogSection.style.display = 'none';
+            }
+        }
+
+        // 隱藏其他不相關的區塊 (依需求調整)
+        if (closeSec) closeSec.style.display = 'none';
+        if (changeIntentionSec) changeIntentionSec.style.display = 'none';
+    }
+
+    // 5. 載入歷史紀錄
+    loadContactLogs(studentId);
+}
 
         function closeContactLogsModal() {
             document.getElementById('contactLogsModal').style.display = 'none';
@@ -2101,8 +2186,6 @@ try {
                 return res.json();
             })
             .then(data => {
-                var addSec = document.getElementById('addLogSection');
-                if (addSec) addSec.style.display = 'block';
                 if (data.success && data.logs && data.logs.length > 0) {
                     list.innerHTML = data.logs.map(log => {
                         const method = log.method || log.contact_method || '其他';
@@ -2160,75 +2243,74 @@ try {
             });
         }
 
-        function submitContactLog() {
-            const content = document.getElementById('newLogContent').value.trim();
-            const contactDate = document.getElementById('newLogDate').value;
-            const contactMethod = document.getElementById('newLogMethod').value;
-            
-            if (!content) {
-                alert('請輸入聯絡內容');
-                return;
-            }
-            
-            if (!contactDate) {
-                alert('請選擇聯絡日期');
-                return;
-            }
-            
-            if (!contactMethod) {
-                alert('請選擇聯絡方式');
-                return;
-            }
-            
-            const formData = new FormData();
-            formData.append('enrollment_id', currentStudentId);
-            formData.append('notes', content);
-            formData.append('method', contactMethod);
-            formData.append('contact_date', contactDate);
-            var crEl = document.getElementById('newLogContactResult');
-            formData.append('contact_result', (crEl && crEl.value) ? crEl.value : 'contacted');
+function submitContactLog() {
+    const content = document.getElementById('newLogContent').value.trim();
+    const contactDate = document.getElementById('newLogDate').value;
+    const contactMethod = document.getElementById('newLogMethod').value;
+    
+    // 取得所有勾選的項目
+    const checkboxes = document.querySelectorAll('input[name="logOptions"]:checked');
+    let selectedOpts = [];
+    checkboxes.forEach(cb => selectedOpts.push(cb.value));
+    
+    // 驗證
+    if (selectedOpts.length === 0 && !content) {
+        alert('請至少勾選一個狀況或輸入備註內容');
+        return;
+    }
+    
+    if (!contactDate) {
+        alert('請選擇聯絡日期');
+        return;
+    }
+    
+    // 組合文字
+    // 格式範例：【家長接聽、家長支持、學生無意願、學費/經濟考量】
+    //           備註：媽媽覺得學費太貴，但爸爸想讓孩子來...
+    let finalNotes = "";
+    if (selectedOpts.length > 0) {
+        finalNotes += "【" + selectedOpts.join('、') + "】";
+    }
+    
+    if (content) {
+        if (finalNotes) finalNotes += "\n";
+        finalNotes += content;
+    }
+    
+    const formData = new FormData();
+    formData.append('enrollment_id', currentStudentId);
+    formData.append('notes', finalNotes);
+    formData.append('method', contactMethod);
+    formData.append('contact_date', contactDate);
+    var crEl = document.getElementById('newLogContactResult');
+    formData.append('contact_result', (crEl && crEl.value) ? crEl.value : 'contacted');
 
-            fetch('../../Topics-frontend/frontend/api/contact_logs_api.php', {
-                method: 'POST',
-                body: formData
-            })
-            .then(res => {
-                if (!res.ok) {
-                    return res.text().then(text => {
-                        try {
-                            const data = JSON.parse(text);
-                            throw new Error(data.message || 'HTTP error! status: ' + res.status);
-                        } catch (e) {
-                            if (e instanceof Error && e.message) {
-                                throw e;
-                            }
-                            throw new Error('HTTP error! status: ' + res.status);
-                        }
-                    });
-                }
-                return res.json();
-            })
-            .then(data => {
-                if (data.success) {
-                    alert('聯絡紀錄已新增');
-                    var contentField = document.getElementById('newLogContent');
-                    var dateField = document.getElementById('newLogDate');
-                    var methodField = document.getElementById('newLogMethod');
-                    if (contentField) contentField.value = '';
-                    if (dateField) dateField.value = new Date().toISOString().split('T')[0];
-                    if (methodField) methodField.value = '電話';
-                    var crEl = document.getElementById('newLogContactResult');
-                    if (crEl) crEl.value = 'contacted';
-                    if (currentStudentId) loadContactLogs(currentStudentId);
-                } else {
-                    alert(data.message || '新增失敗');
-                }
-            })
-            .catch(err => {
-                console.error('Error submitting contact log:', err);
-                alert('提交失敗: ' + (err.message || '未知錯誤'));
-            });
+    // 發送請求
+    fetch('../../Topics-frontend/frontend/api/contact_logs_api.php', {
+        method: 'POST',
+        body: formData
+    })
+    .then(res => res.json())
+    .then(data => {
+        if (data.success) {
+            alert('聯絡紀錄已新增');
+            
+            // 重置表單
+            document.getElementById('newLogContent').value = '';
+            document.getElementById('newLogDate').value = new Date().toISOString().split('T')[0];
+            document.querySelectorAll('input[name="logOptions"]').forEach(cb => cb.checked = false);
+            
+            // 重新載入列表
+            if (currentStudentId) loadContactLogs(currentStudentId);
+        } else {
+            alert(data.message || '新增失敗');
         }
+    })
+    .catch(err => {
+        console.error('Error:', err);
+        alert('提交失敗');
+    });
+}
 
         // 報名提醒處理函數
         function handleRegistrationRemind(enrollmentId, stageName) {

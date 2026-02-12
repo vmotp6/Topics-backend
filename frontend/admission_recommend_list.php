@@ -2979,13 +2979,13 @@ try {
         includeCheckbox.className = 'gmail-include-generated';
         includeCheckbox.checked = !!email.include_generated;
         includeLabel.appendChild(includeCheckbox);
-        const attachmentExt = email.attachment_ext || (email.xlsx_supported === false ? 'xls' : 'xlsx');
+        const attachmentExt = email.attachment_ext || (email.xlsx_supported === false ? 'csv' : 'xlsx');
         includeLabel.appendChild(document.createTextNode(' 附加系統 ' + (attachmentExt.toUpperCase()) + '：' + (email.attachment_name || ('推薦內容.' + attachmentExt))));
         if (email.xlsx_supported === false) {
             const warn = document.createElement('span');
             warn.style.color = '#fa8c16';
             warn.style.marginLeft = '8px';
-            warn.textContent = '（伺服器未啟用 ZipArchive，改附 Excel .xls）';
+            warn.textContent = '（伺服器未啟用 ZipArchive，改附 CSV）';
             includeLabel.appendChild(warn);
         }
         attachWrap.appendChild(includeLabel);

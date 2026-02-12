@@ -113,7 +113,7 @@ if ($is_director && $user_id) {
         if ($table_check && $table_check->num_rows > 0) {
             // 檢查 new_student_basic_info 是否有 department_id 欄位
             $has_new_student_department_id = false;
-            $dept_col_check = $conn->query("SHOW COLUMNS FROM new_student_basic_info LIKE 'department_id'");
+            $dept_col_check = $conn_dept->query("SHOW COLUMNS FROM new_student_basic_info LIKE 'department_id'");
             if ($dept_col_check && $dept_col_check->num_rows > 0) {
                 $has_new_student_department_id = true;
             }
@@ -872,12 +872,22 @@ if ($teacher_id > 0) {
     // 獲取新生基本資料統計（學校來源和科系分布）
     $new_student_school_stats = [];
     $new_student_department_stats = [];
+    $new_student_total_count = 0;
+    $recommended_completed_count = 0;
+    $recommended_ratio_percent = 0.0;
+    $recommend_ratio_by_department = [];
+    $recommend_ratio_by_school = [];
     $has_new_student_department_id = false;
     
     try {
         // 檢查表是否存在
         $table_check = $conn->query("SHOW TABLES LIKE 'new_student_basic_info'");
         if ($table_check && $table_check->num_rows > 0) {
+            $dept_col_check = $conn->query("SHOW COLUMNS FROM new_student_basic_info LIKE 'department_id'");
+            if ($dept_col_check && $dept_col_check->num_rows > 0) {
+                $has_new_student_department_id = true;
+            }
+
             // 取得當前學年度範圍
             $academic_year = getCurrentAcademicYearRange();
             
@@ -943,6 +953,16 @@ if ($teacher_id > 0) {
                 $where_condition_dept = $has_new_student_department_id
                     ? ($base_where . " AND ns.department_id IS NOT NULL AND ns.department_id != ''")
                     : null;
+                $new_student_total_where = " WHERE CURDATE() <= $graduateExpr AND created_at NOT BETWEEN ? AND ?";
+                $new_student_total_params = [$academic_year['start'], $academic_year['end']];
+                $new_student_total_types = 'ss';
+                if ($selected_roc_year > 0) {
+                    $selected_year_range = getAcademicYearRangeByRocYear($selected_roc_year);
+                    $new_student_total_where .= " AND created_at >= ? AND created_at <= ?";
+                    $new_student_total_params[] = $selected_year_range['start'];
+                    $new_student_total_params[] = $selected_year_range['end'];
+                    $new_student_total_types .= 'ss';
+                }
             } else {
                 // 新生：當學年度新生
                 $where_condition = " WHERE CURDATE() <= $graduateExpr
@@ -955,6 +975,66 @@ if ($teacher_id > 0) {
                     : null;
                 $where_params = [$academic_year['start'], $academic_year['end']];
                 $where_types = 'ss';
+                $new_student_total_where = " WHERE CURDATE() <= $graduateExpr AND created_at BETWEEN ? AND ?";
+                $new_student_total_params = [$academic_year['start'], $academic_year['end']];
+                $new_student_total_types = 'ss';
+            }
+
+            // 新生總數（new_student_basic_info）
+            $new_student_total_sql = "SELECT COUNT(*) AS total_count FROM new_student_basic_info ns " . $new_student_total_where;
+            $new_student_total_stmt = $conn->prepare($new_student_total_sql);
+            if ($new_student_total_stmt) {
+                if (!empty($new_student_total_params)) {
+                    $new_student_total_stmt->bind_param($new_student_total_types, ...$new_student_total_params);
+                }
+                $new_student_total_stmt->execute();
+                $new_student_total_result = $new_student_total_stmt->get_result();
+                if ($new_student_total_result && ($new_student_total_row = $new_student_total_result->fetch_assoc())) {
+                    $new_student_total_count = (int)($new_student_total_row['total_count'] ?? 0);
+                }
+                $new_student_total_stmt->close();
+            }
+
+            // 招生推薦審核完成（可發獎金）人數
+            // 以 admission_recommendations.status = APD 或狀態文字包含「審核完成/可發獎金」計算
+            $recommend_where = '';
+            $recommend_params = [];
+            $recommend_types = '';
+            if ($new_student_view === 'previous') {
+                $recommend_where = " WHERE ar.created_at NOT BETWEEN ? AND ? ";
+                $recommend_params = [$academic_year['start'], $academic_year['end']];
+                $recommend_types = 'ss';
+                if ($selected_roc_year > 0) {
+                    $selected_year_range = getAcademicYearRangeByRocYear($selected_roc_year);
+                    $recommend_where .= " AND ar.created_at >= ? AND ar.created_at <= ? ";
+                    $recommend_params[] = $selected_year_range['start'];
+                    $recommend_params[] = $selected_year_range['end'];
+                    $recommend_types .= 'ss';
+                }
+            } else {
+                $recommend_where = " WHERE ar.created_at BETWEEN ? AND ? ";
+                $recommend_params = [$academic_year['start'], $academic_year['end']];
+                $recommend_types = 'ss';
+            }
+            $recommend_where .= " AND (ar.status = 'APD' OR ar.status LIKE '%審核完成%' OR ar.status LIKE '%可發獎金%')";
+            $recommend_sql = "SELECT COUNT(*) AS total_count FROM admission_recommendations ar " . $recommend_where;
+            $recommend_stmt = $conn->prepare($recommend_sql);
+            if ($recommend_stmt) {
+                if (!empty($recommend_params)) {
+                    $recommend_stmt->bind_param($recommend_types, ...$recommend_params);
+                }
+                $recommend_stmt->execute();
+                $recommend_result = $recommend_stmt->get_result();
+                if ($recommend_result && ($recommend_row = $recommend_result->fetch_assoc())) {
+                    $recommended_completed_count = (int)($recommend_row['total_count'] ?? 0);
+                }
+                $recommend_stmt->close();
+            }
+
+            if ($new_student_total_count > 0) {
+                $recommended_ratio_percent = round(($recommended_completed_count / $new_student_total_count) * 100, 2);
+            } else {
+                $recommended_ratio_percent = 0.0;
             }
             
             // 查詢學校來源統計（按 previous_school 分組，包含科系信息）
@@ -1115,6 +1195,232 @@ if ($teacher_id > 0) {
                 }
             } else {
                 $new_student_department_stats = [];
+            }
+
+            // 招生推薦比例（依新生基本資料所在科系）
+            // 以新生資料為分母，判斷該新生是否存在「審核完成（可發獎金）」推薦紀錄為分子
+            if ($has_new_student_department_id) {
+                $recommend_ratio_by_department = [];
+
+                $admission_table_exists = false;
+                $recommended_table_exists = false;
+                $ar_has_student_name = false;
+                $ar_has_student_phone = false;
+                $ar_has_student_school_code = false;
+                $ar_has_student_school = false;
+
+                $admission_table_check = $conn->query("SHOW TABLES LIKE 'admission_recommendations'");
+                if ($admission_table_check && $admission_table_check->num_rows > 0) {
+                    $admission_table_exists = true;
+                }
+                $recommended_table_check = $conn->query("SHOW TABLES LIKE 'recommended'");
+                if ($recommended_table_check && $recommended_table_check->num_rows > 0) {
+                    $recommended_table_exists = true;
+                }
+
+                if ($admission_table_exists) {
+                    $ar_cols_result = $conn->query("SHOW COLUMNS FROM admission_recommendations");
+                    if ($ar_cols_result) {
+                        $ar_cols = [];
+                        while ($col = $ar_cols_result->fetch_assoc()) {
+                            $ar_cols[(string)($col['Field'] ?? '')] = true;
+                        }
+                        $ar_has_student_name = isset($ar_cols['student_name']);
+                        $ar_has_student_phone = isset($ar_cols['student_phone']);
+                        $ar_has_student_school_code = isset($ar_cols['student_school_code']);
+                        $ar_has_student_school = isset($ar_cols['student_school']);
+                    }
+                }
+
+                if ($admission_table_exists) {
+                    $ar_name_expr = $ar_has_student_name ? "NULLIF(TRIM(ar.student_name COLLATE utf8mb4_unicode_ci), '')" : "NULL";
+                    $ar_phone_expr = $ar_has_student_phone ? "NULLIF(TRIM(ar.student_phone COLLATE utf8mb4_unicode_ci), '')" : "NULL";
+                    $ar_school_code_expr = $ar_has_student_school_code ? "NULLIF(TRIM(ar.student_school_code COLLATE utf8mb4_unicode_ci), '')" : "NULL";
+                    $ar_school_name_expr = $ar_has_student_school ? "NULLIF(TRIM(ar.student_school COLLATE utf8mb4_unicode_ci), '')" : "NULL";
+
+                    if ($recommended_table_exists) {
+                        $rec_name_expr = "COALESCE(NULLIF(TRIM(red.name COLLATE utf8mb4_unicode_ci), ''), $ar_name_expr, '')";
+                        $rec_phone_expr = "COALESCE(NULLIF(TRIM(red.phone COLLATE utf8mb4_unicode_ci), ''), $ar_phone_expr, '')";
+                        $rec_school_expr = "COALESCE(NULLIF(TRIM(red.school COLLATE utf8mb4_unicode_ci), ''), $ar_school_code_expr, $ar_school_name_expr, '')";
+                        $recommend_join = " LEFT JOIN recommended red ON red.recommendations_id = ar.id ";
+                    } else {
+                        $rec_name_expr = "COALESCE($ar_name_expr, '')";
+                        $rec_phone_expr = "COALESCE($ar_phone_expr, '')";
+                        $rec_school_expr = "COALESCE($ar_school_code_expr, $ar_school_name_expr, '')";
+                        $recommend_join = "";
+                    }
+
+                    $ns_phone_norm = "REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(TRIM(COALESCE(ns.mobile, '')), '-', ''), ' ', ''), '(', ''), ')', ''), '+886', '0'), '　', '')";
+                    $rec_phone_norm = "REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(TRIM($rec_phone_expr), '-', ''), ' ', ''), '(', ''), ')', ''), '+886', '0'), '　', '')";
+
+                    $ratio_sql = "
+                        SELECT
+                            ns.department_id,
+                            COALESCE(d.name, ns.department_id, '未填寫') AS department_name,
+                            COUNT(*) AS new_student_count,
+                            SUM(
+                                CASE
+                                    WHEN EXISTS (
+                                        SELECT 1
+                                        FROM admission_recommendations ar
+                                        $recommend_join
+                                        WHERE (
+                                            ar.status = 'APD'
+                                            OR ar.status LIKE '%審核完成%'
+                                            OR ar.status LIKE '%可發獎金%'
+                                        )
+                                        AND (
+                                            (
+                                                $ns_phone_norm <> ''
+                                                AND $rec_phone_norm <> ''
+                                                AND $ns_phone_norm = $rec_phone_norm
+                                            )
+                                            OR
+                                            (
+                                                TRIM(COALESCE(ns.student_name, '')) <> ''
+                                                AND TRIM(COALESCE(ns.previous_school, '')) <> ''
+                                                AND TRIM(COALESCE(ns.student_name, '')) COLLATE utf8mb4_unicode_ci = TRIM($rec_name_expr) COLLATE utf8mb4_unicode_ci
+                                                AND (
+                                                    TRIM(COALESCE(ns.previous_school, '')) COLLATE utf8mb4_unicode_ci = TRIM($rec_school_expr) COLLATE utf8mb4_unicode_ci
+                                                    OR EXISTS (
+                                                        SELECT 1
+                                                        FROM school_data sd2
+                                                        WHERE ns.previous_school COLLATE utf8mb4_unicode_ci = sd2.school_code COLLATE utf8mb4_unicode_ci
+                                                        AND TRIM(COALESCE(sd2.name, '')) COLLATE utf8mb4_unicode_ci = TRIM($rec_school_expr) COLLATE utf8mb4_unicode_ci
+                                                    )
+                                                )
+                                            )
+                                        )
+                                    ) THEN 1 ELSE 0
+                                END
+                            ) AS recommended_count
+                        FROM new_student_basic_info ns
+                        LEFT JOIN departments d ON ns.department_id COLLATE utf8mb4_unicode_ci = d.code COLLATE utf8mb4_unicode_ci
+                        $new_student_total_where
+                        AND ns.department_id IS NOT NULL
+                        AND ns.department_id != ''
+                        GROUP BY ns.department_id, d.name
+                        ORDER BY new_student_count DESC, department_name ASC
+                    ";
+
+                    $ratio_stmt = $conn->prepare($ratio_sql);
+                    if ($ratio_stmt) {
+                        if (!empty($new_student_total_params)) {
+                            $ratio_stmt->bind_param($new_student_total_types, ...$new_student_total_params);
+                        }
+                        $ratio_stmt->execute();
+                        $ratio_result = $ratio_stmt->get_result();
+                        if ($ratio_result) {
+                            while ($row = $ratio_result->fetch_assoc()) {
+                                $dept_new_students = (int)($row['new_student_count'] ?? 0);
+                                $dept_recommended = (int)($row['recommended_count'] ?? 0);
+                                if ($dept_recommended > $dept_new_students) {
+                                    $dept_recommended = $dept_new_students;
+                                }
+                                $dept_ratio = $dept_new_students > 0
+                                    ? round(($dept_recommended / $dept_new_students) * 100, 2)
+                                    : 0.0;
+
+                                $recommend_ratio_by_department[] = [
+                                    'department_id' => (string)($row['department_id'] ?? ''),
+                                    'department_name' => (string)($row['department_name'] ?? '未填寫'),
+                                    'new_student_count' => $dept_new_students,
+                                    'recommended_count' => $dept_recommended,
+                                    'ratio_percent' => $dept_ratio
+                                ];
+                            }
+                        }
+                        $ratio_stmt->close();
+                    }
+
+                    // 招生推薦比例（依新生學校）
+                    $school_ratio_sql = "
+                        SELECT
+                            ns.previous_school AS school_code,
+                            COALESCE(sd.name, ns.previous_school, '未填寫') AS school_name,
+                            COUNT(*) AS new_student_count,
+                            SUM(
+                                CASE
+                                    WHEN EXISTS (
+                                        SELECT 1
+                                        FROM admission_recommendations ar
+                                        $recommend_join
+                                        WHERE (
+                                            ar.status = 'APD'
+                                            OR ar.status LIKE '%審核完成%'
+                                            OR ar.status LIKE '%可發獎金%'
+                                        )
+                                        AND (
+                                            (
+                                                $ns_phone_norm <> ''
+                                                AND $rec_phone_norm <> ''
+                                                AND $ns_phone_norm = $rec_phone_norm
+                                            )
+                                            OR
+                                            (
+                                                TRIM(COALESCE(ns.student_name, '')) <> ''
+                                                AND TRIM(COALESCE(ns.previous_school, '')) <> ''
+                                                AND TRIM(COALESCE(ns.student_name, '')) COLLATE utf8mb4_unicode_ci = TRIM($rec_name_expr) COLLATE utf8mb4_unicode_ci
+                                                AND (
+                                                    TRIM(COALESCE(ns.previous_school, '')) COLLATE utf8mb4_unicode_ci = TRIM($rec_school_expr) COLLATE utf8mb4_unicode_ci
+                                                    OR TRIM(COALESCE(sd.name, '')) COLLATE utf8mb4_unicode_ci = TRIM($rec_school_expr) COLLATE utf8mb4_unicode_ci
+                                                )
+                                            )
+                                        )
+                                    ) THEN 1 ELSE 0
+                                END
+                            ) AS recommended_count
+                        FROM new_student_basic_info ns
+                        LEFT JOIN school_data sd ON ns.previous_school COLLATE utf8mb4_unicode_ci = sd.school_code COLLATE utf8mb4_unicode_ci
+                        $new_student_total_where
+                        AND ns.previous_school IS NOT NULL
+                        AND ns.previous_school != ''
+                        GROUP BY ns.previous_school, sd.name
+                        ORDER BY recommended_count DESC, new_student_count DESC, school_name ASC
+                    ";
+                    $school_ratio_stmt = $conn->prepare($school_ratio_sql);
+                    if ($school_ratio_stmt) {
+                        if (!empty($new_student_total_params)) {
+                            $school_ratio_stmt->bind_param($new_student_total_types, ...$new_student_total_params);
+                        }
+                        $school_ratio_stmt->execute();
+                        $school_ratio_result = $school_ratio_stmt->get_result();
+                        if ($school_ratio_result) {
+                            while ($srow = $school_ratio_result->fetch_assoc()) {
+                                $school_new_students = (int)($srow['new_student_count'] ?? 0);
+                                $school_recommended = (int)($srow['recommended_count'] ?? 0);
+                                if ($school_recommended > $school_new_students) {
+                                    $school_recommended = $school_new_students;
+                                }
+                                $school_ratio = $school_new_students > 0
+                                    ? round(($school_recommended / $school_new_students) * 100, 2)
+                                    : 0.0;
+                                $recommend_ratio_by_school[] = [
+                                    'school_code' => (string)($srow['school_code'] ?? ''),
+                                    'school_name' => (string)($srow['school_name'] ?? '未填寫'),
+                                    'new_student_count' => $school_new_students,
+                                    'recommended_count' => $school_recommended,
+                                    'ratio_percent' => $school_ratio
+                                ];
+                            }
+                        }
+                        $school_ratio_stmt->close();
+                    }
+                }
+
+                if (!empty($recommend_ratio_by_department)) {
+                    $sum_new_students = 0;
+                    $sum_recommended = 0;
+                    foreach ($recommend_ratio_by_department as $row) {
+                        $sum_new_students += (int)($row['new_student_count'] ?? 0);
+                        $sum_recommended += (int)($row['recommended_count'] ?? 0);
+                    }
+                    $new_student_total_count = $sum_new_students;
+                    $recommended_completed_count = $sum_recommended;
+                    $recommended_ratio_percent = $new_student_total_count > 0
+                        ? round(($recommended_completed_count / $new_student_total_count) * 100, 2)
+                        : 0.0;
+                }
             }
             
             // 獲取所有科系列表（用於科系選擇下拉選單）
@@ -2341,6 +2647,30 @@ $conn->close();
                                 <p>提供新生經營活動參與度、活動類型分布、時間趨勢等多維度統計</p>
                             </div>
                         </div>
+
+                        <div style="border-top: 1px solid #f0f0f0; padding-top: 20px; margin-top: 20px;">
+                            <h4 style="color: #667eea; margin-bottom: 15px; display: flex; align-items: center; gap: 10px;">
+                                <i class="fas fa-percentage"></i> 招生推薦統計分析
+                            </h4>
+                            <div style="display: flex; gap: 12px; margin-bottom: 24px; flex-wrap: wrap;">
+                                <button class="btn-view" onclick="showNewStudentRecommendRatioChart()">
+                                    <i class="fas fa-chart-pie"></i> 招生推薦比例
+                                </button>
+                                <button class="btn-view" onclick="showRecommendSchoolRatioChart()">
+                                    <i class="fas fa-school"></i> 推薦入學學校占比
+                                </button>
+                                <button class="btn-view" onclick="clearRecommendCharts()" style="background: #dc3545; color: white; border-color: #dc3545;">
+                                    <i class="fas fa-arrow-up"></i> 收回圖表
+                                </button>
+                            </div>
+                            <div id="recommendAnalyticsContent" style="min-height: 200px;">
+                                <div class="empty-state">
+                                    <i class="fas fa-chart-line fa-3x" style="margin-bottom: 16px;"></i>
+                                    <h4>選擇上方的統計類型來查看詳細分析</h4>
+                                    <p>提供招生推薦入學比例分析（依科系）</p>
+                                </div>
+                            </div>
+                        </div>
                     </div>
 
                         <h4 style="color: #667eea; margin-bottom: 15px; display: flex; align-items: center; gap: 10px;">
@@ -2644,28 +2974,59 @@ function resetEnrollmentTabs() {
         if (typeof fn === 'function') fn();
     }
     
+    // 取得目前學年度民國年（6 月為界：6 月及以後算當年，否則算前一年）
+    function getCurrentRocAcademicYear() {
+        const now = new Date();
+        const adYear = now.getFullYear();
+        const month = now.getMonth() + 1; // 1-12
+        const adAcademicYear = month >= 6 ? adYear : adYear - 1;
+        return adAcademicYear - 1911; // 民國年
+    }
+    
     function loadEnrollmentRocYearOptions() {
         const sel = document.getElementById('enrollmentRocYearSelect');
         if (!sel) return;
+        const currentRoc = getCurrentRocAcademicYear();
         const apiUrl = buildApiUrl('../../Topics-frontend/frontend/api/enrollment_stats_api.php', 'available_roc_years');
-        fetch(apiUrl).then(r => r.json()).then(years => {
-            if (!Array.isArray(years) || years.length === 0) return;
-            const keepFirst = sel.options.length > 0 ? sel.options[0].cloneNode(true) : null;
-            sel.innerHTML = '';
-            if (keepFirst) sel.appendChild(keepFirst);
-            let firstYear = null;
-            years.forEach(roc => {
+        fetch(apiUrl)
+            .then(r => {
+                if (!r.ok) return [];
+                return r.json();
+            })
+            .then(data => {
+                // API 可能回傳陣列或錯誤物件 { error: "..." }
+                let years = Array.isArray(data) ? data : [];
+                if (data && typeof data === 'object' && data.error) years = [];
+                if (years.length === 0) years = [currentRoc]; // 無資料時至少顯示目前屆
+                const keepFirst = sel.options.length > 0 ? sel.options[0].cloneNode(true) : null;
+                sel.innerHTML = '';
+                if (keepFirst) sel.appendChild(keepFirst);
+                let firstYear = null;
+                years.forEach(roc => {
+                    const opt = document.createElement('option');
+                    opt.value = roc;
+                    opt.textContent = roc + '學年';
+                    sel.appendChild(opt);
+                    if (firstYear === null) firstYear = String(roc);
+                });
+                // 預設選擇「目前屆」：若選單中有目前學年度就選它，否則選第一個屆別
+                const currentRocStr = String(currentRoc);
+                if (firstYear !== null) {
+                    const hasCurrent = Array.from(sel.options).some(o => o.value === currentRocStr);
+                    sel.value = hasCurrent ? currentRocStr : firstYear;
+                }
+            })
+            .catch(() => {
+                // 網路或 API 失敗時仍顯示目前屆
+                const keepFirst = sel.options.length > 0 ? sel.options[0].cloneNode(true) : null;
+                sel.innerHTML = '';
+                if (keepFirst) sel.appendChild(keepFirst);
                 const opt = document.createElement('option');
-                opt.value = roc;
-                opt.textContent = roc + '學年';
+                opt.value = currentRoc;
+                opt.textContent = currentRoc + '學年';
                 sel.appendChild(opt);
-                if (firstYear === null) firstYear = roc;
+                sel.value = String(currentRoc);
             });
-            // 預設選擇該學年（第一個年份）
-            if (firstYear !== null) {
-                sel.value = firstYear;
-            }
-        }).catch(() => {});
     }
     
     // ========== 簡化版測試函數 ==========
@@ -4324,6 +4685,177 @@ function resetEnrollmentTabs() {
             });
         }, 100);
     }
+
+    // 招生推薦入學比例（依新生基本資料所在科系）
+    function showNewStudentRecommendRatioChart() {
+        sessionStorage.setItem('lastNewStudentChartType', 'recommendRatio');
+
+        const deptRatioRaw = <?php echo json_encode($recommend_ratio_by_department, JSON_UNESCAPED_UNICODE); ?>;
+        const deptRatio = (Array.isArray(deptRatioRaw) ? deptRatioRaw : [])
+            .map(item => ({
+                department_name: item.department_name || '未填寫',
+                new_student_count: parseInt(item.new_student_count || 0, 10) || 0,
+                recommended_count: parseInt(item.recommended_count || 0, 10) || 0,
+                ratio_percent: parseFloat(item.ratio_percent || 0) || 0
+            }))
+            .filter(item => item.new_student_count > 0);
+
+        const totalNewStudents = deptRatio.reduce((sum, item) => sum + item.new_student_count, 0);
+        const recommendedCompleted = deptRatio.reduce((sum, item) => sum + item.recommended_count, 0);
+        const ratioPercent = totalNewStudents > 0
+            ? ((recommendedCompleted / totalNewStudents) * 100).toFixed(2)
+            : '0.00';
+
+        const content = `
+            <div style="margin-bottom: 20px;">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; flex-wrap: wrap; gap: 10px;">
+                    <h4 style="color: #667eea; margin: 0;">
+                        <i class="fas fa-percentage"></i> 招生推薦入學比例
+                    </h4>
+                    <div style="display: flex; gap: 10px; align-items: center;">
+                        <select id="newStudentViewSelect" onchange="changeNewStudentView(this.value)" style="padding: 8px 12px; border: 1px solid #d9d9d9; border-radius: 6px; background: #fff; color: #333; font-size: 14px; cursor: pointer;">
+                            <option value="active" <?php echo $new_student_view === 'active' ? 'selected' : ''; ?>>新生資料</option>
+                            <option value="previous" <?php echo $new_student_view === 'previous' ? 'selected' : ''; ?>>歷屆學生資料</option>
+                        </select>
+                        <?php if ($new_student_view === 'previous' && !empty($available_roc_years)): ?>
+                            <select id="rocYearSelect" onchange="changeRocYear(this.value)" style="padding: 8px 12px; border: 1px solid #d9d9d9; border-radius: 6px; background: #fff; color: #333; font-size: 14px; cursor: pointer;">
+                                <option value="0">全部學年</option>
+                                <?php foreach ($available_roc_years as $roc_year): ?>
+                                    <option value="<?php echo $roc_year; ?>" <?php echo $selected_roc_year == $roc_year ? 'selected' : ''; ?>>
+                                        <?php echo $roc_year; ?>學年
+                                    </option>
+                                <?php endforeach; ?>
+                            </select>
+                        <?php endif; ?>
+                    </div>
+                </div>
+
+                <div style="background: linear-gradient(135deg, #4facfe 0%, #00c6ff 100%); color: white; padding: 20px; border-radius: 10px; margin-bottom: 20px;">
+                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 16px; text-align: center;">
+                        <div>
+                            <div style="font-size: 2.2em; font-weight: bold;">${totalNewStudents}</div>
+                            <div style="opacity: 0.92;">新生總數</div>
+                        </div>
+                        <div>
+                            <div style="font-size: 2.2em; font-weight: bold;">${recommendedCompleted}</div>
+                            <div style="opacity: 0.92;">招生推薦（審核完成）</div>
+                        </div>
+                        <div>
+                            <div style="font-size: 2.2em; font-weight: bold;">${ratioPercent}%</div>
+                            <div style="opacity: 0.92;">推薦入學比例</div>
+                        </div>
+                    </div>
+                </div>
+
+                ${deptRatio.length <= 0 ? `
+                    <div style="text-align:center; color:#6c757d; padding: 30px 0;">
+                        <i class="fas fa-inbox fa-2x" style="margin-bottom: 10px;"></i>
+                        <div>目前沒有可用的科系新生資料</div>
+                    </div>
+                ` : `
+                    <div class="chart-card" style="padding: 20px;">
+                        <div class="chart-title" style="text-align:center; margin-bottom:16px;">各科系推薦入學比例（單獨顯示）</div>
+                        <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(240px, 1fr)); gap:16px;">
+                            ${deptRatio.map((item, index) => `
+                                <div style="border:1px solid #eef2f7; border-radius:12px; padding:14px; background:#fff;">
+                                    <div style="font-weight:700; color:#333; margin-bottom:8px; text-align:center;">${item.department_name}</div>
+                                    <div style="height: 190px; display:flex; justify-content:center; align-items:center;">
+                                        <canvas id="newStudentRecommendRatioChart_${index}"></canvas>
+                                    </div>
+                                    <div style="margin-top:8px; text-align:center; color:#4facfe; font-weight:700;">
+                                        比例：${item.ratio_percent.toFixed(2)}%（${item.recommended_count}/${item.new_student_count}）
+                                    </div>
+                                </div>
+                            `).join('')}
+                        </div>
+                    </div>
+                    <div style="margin-top:20px;">
+                        <table style="width:100%; border-collapse:collapse; background:#fff;">
+                            <thead>
+                                <tr style="background:#f8f9fa; border-bottom:2px solid #dee2e6;">
+                                    <th style="padding:12px; text-align:left;">科系</th>
+                                    <th style="padding:12px; text-align:center;">新生數</th>
+                                    <th style="padding:12px; text-align:center;">推薦入學數（審核完成）</th>
+                                    <th style="padding:12px; text-align:center;">比例</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                ${deptRatio.map((item, index) => `
+                                    <tr style="border-bottom:1px solid #e9ecef; ${index % 2 === 0 ? 'background:#fff;' : 'background:#f8f9fa;'}">
+                                        <td style="padding:12px; font-weight:500;">${item.department_name}</td>
+                                        <td style="padding:12px; text-align:center;">${item.new_student_count}</td>
+                                        <td style="padding:12px; text-align:center; color:#4facfe; font-weight:700;">${item.recommended_count}</td>
+                                        <td style="padding:12px; text-align:center;">${item.ratio_percent.toFixed(2)}%</td>
+                                    </tr>
+                                `).join('')}
+                            </tbody>
+                        </table>
+                    </div>
+                `}
+            </div>
+        `;
+
+        const recommendContainer = document.getElementById('recommendAnalyticsContent');
+        if (!recommendContainer) return;
+        recommendContainer.innerHTML = content;
+
+        if (Array.isArray(window.newStudentRecommendRatioChartInstances)) {
+            window.newStudentRecommendRatioChartInstances.forEach((ins) => {
+                if (ins) ins.destroy();
+            });
+            window.newStudentRecommendRatioChartInstances = [];
+        }
+        if (window.newStudentRecommendRatioChartInstance) {
+            window.newStudentRecommendRatioChartInstance.destroy();
+            window.newStudentRecommendRatioChartInstance = null;
+        }
+        if (deptRatio.length <= 0) return;
+
+        setTimeout(() => {
+            window.newStudentRecommendRatioChartInstances = [];
+            deptRatio.forEach((item, index) => {
+                const canvas = document.getElementById(`newStudentRecommendRatioChart_${index}`);
+                if (!canvas) return;
+                const ctx = canvas.getContext('2d');
+                const others = Math.max(item.new_student_count - item.recommended_count, 0);
+                const chart = new Chart(ctx, {
+                    type: 'doughnut',
+                    data: {
+                        labels: ['推薦入學（審核完成）', '其他來源'],
+                        datasets: [{
+                            data: [item.recommended_count, others],
+                            backgroundColor: ['#4facfe', '#e9edf5'],
+                            borderColor: '#ffffff',
+                            borderWidth: 2
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        cutout: '55%',
+                        plugins: {
+                            legend: {
+                                position: 'bottom',
+                                labels: { boxWidth: 12, font: { size: 11 } }
+                            },
+                            tooltip: {
+                                callbacks: {
+                                    label: function(context) {
+                                        const value = context.parsed || 0;
+                                        const pct = item.new_student_count > 0
+                                            ? ((value / item.new_student_count) * 100).toFixed(2)
+                                            : '0.00';
+                                        return `${context.label}: ${value} 人（${pct}%）`;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                });
+                window.newStudentRecommendRatioChartInstances.push(chart);
+            });
+        }, 80);
+    }
     
     // 清除新生統計圖表
     function clearNewStudentCharts() {
@@ -4348,6 +4880,198 @@ function resetEnrollmentTabs() {
                 <p>提供新生經營活動參與度、活動類型分布、時間趨勢等多維度統計</p>
             </div>
         `;
+    }
+
+    function clearRecommendCharts() {
+        if (window.newStudentRecommendRatioChartInstance) {
+            window.newStudentRecommendRatioChartInstance.destroy();
+            window.newStudentRecommendRatioChartInstance = null;
+        }
+        if (window.recommendSchoolRatioChartInstance) {
+            window.recommendSchoolRatioChartInstance.destroy();
+            window.recommendSchoolRatioChartInstance = null;
+        }
+        if (Array.isArray(window.newStudentRecommendRatioChartInstances)) {
+            window.newStudentRecommendRatioChartInstances.forEach((ins) => {
+                if (ins) ins.destroy();
+            });
+            window.newStudentRecommendRatioChartInstances = [];
+        }
+        const recommendContainer = document.getElementById('recommendAnalyticsContent');
+        if (!recommendContainer) return;
+        recommendContainer.innerHTML = `
+            <div class="empty-state">
+                <i class="fas fa-chart-line fa-3x" style="margin-bottom: 16px;"></i>
+                <h4>選擇上方的統計類型來查看詳細分析</h4>
+                <p>提供招生推薦入學比例分析（依科系）</p>
+            </div>
+        `;
+    }
+
+    function showRecommendSchoolRatioChart() {
+        sessionStorage.setItem('lastNewStudentChartType', 'recommendSchoolRatio');
+
+        const schoolRatioRaw = <?php echo json_encode($recommend_ratio_by_school, JSON_UNESCAPED_UNICODE); ?>;
+        const schoolRatio = (Array.isArray(schoolRatioRaw) ? schoolRatioRaw : [])
+            .map(item => ({
+                school_name: item.school_name || '未填寫',
+                new_student_count: parseInt(item.new_student_count || 0, 10) || 0,
+                recommended_count: parseInt(item.recommended_count || 0, 10) || 0,
+                ratio_percent: parseFloat(item.ratio_percent || 0) || 0
+            }))
+            .filter(item => item.new_student_count > 0)
+            .sort((a, b) => {
+                if (b.ratio_percent !== a.ratio_percent) return b.ratio_percent - a.ratio_percent;
+                if (b.recommended_count !== a.recommended_count) return b.recommended_count - a.recommended_count;
+                return b.new_student_count - a.new_student_count;
+            });
+
+        const topList = schoolRatio.slice(0, 12);
+        const totalSchools = schoolRatio.length;
+        const highestSchool = topList.length > 0 ? topList[0] : null;
+        const overallNewStudents = schoolRatio.reduce((sum, item) => sum + item.new_student_count, 0);
+        const overallRecommended = schoolRatio.reduce((sum, item) => sum + item.recommended_count, 0);
+        const overallRatio = overallNewStudents > 0 ? ((overallRecommended / overallNewStudents) * 100).toFixed(2) : '0.00';
+
+        const content = `
+            <div style="margin-bottom: 20px;">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; flex-wrap: wrap; gap: 10px;">
+                    <h4 style="color: #667eea; margin: 0;">
+                        <i class="fas fa-school"></i> 推薦入學學校占比（占比較高）
+                    </h4>
+                    <div style="display: flex; gap: 10px; align-items: center;">
+                        <select id="newStudentViewSelect" onchange="changeNewStudentView(this.value)" style="padding: 8px 12px; border: 1px solid #d9d9d9; border-radius: 6px; background: #fff; color: #333; font-size: 14px; cursor: pointer;">
+                            <option value="active" <?php echo $new_student_view === 'active' ? 'selected' : ''; ?>>新生資料</option>
+                            <option value="previous" <?php echo $new_student_view === 'previous' ? 'selected' : ''; ?>>歷屆學生資料</option>
+                        </select>
+                        <?php if ($new_student_view === 'previous' && !empty($available_roc_years)): ?>
+                            <select id="rocYearSelect" onchange="changeRocYear(this.value)" style="padding: 8px 12px; border: 1px solid #d9d9d9; border-radius: 6px; background: #fff; color: #333; font-size: 14px; cursor: pointer;">
+                                <option value="0">全部學年</option>
+                                <?php foreach ($available_roc_years as $roc_year): ?>
+                                    <option value="<?php echo $roc_year; ?>" <?php echo $selected_roc_year == $roc_year ? 'selected' : ''; ?>>
+                                        <?php echo $roc_year; ?>學年
+                                    </option>
+                                <?php endforeach; ?>
+                            </select>
+                        <?php endif; ?>
+                    </div>
+                </div>
+
+                <div style="background: linear-gradient(135deg, #36cfc9 0%, #13c2c2 100%); color: white; padding: 20px; border-radius: 10px; margin-bottom: 20px;">
+                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; text-align: center;">
+                        <div>
+                            <div style="font-size: 2.1em; font-weight: bold;">${totalSchools}</div>
+                            <div style="opacity: 0.92;">統計學校數</div>
+                        </div>
+                        <div>
+                            <div style="font-size: 2.1em; font-weight: bold;">${overallRatio}%</div>
+                            <div style="opacity: 0.92;">整體推薦入學比例</div>
+                        </div>
+                        <div>
+                            <div style="font-size: 1.3em; font-weight: bold;">${highestSchool ? highestSchool.school_name : '無資料'}</div>
+                            <div style="opacity: 0.92;">占比最高學校${highestSchool ? `（${highestSchool.ratio_percent.toFixed(2)}%）` : ''}</div>
+                        </div>
+                    </div>
+                </div>
+
+                ${topList.length <= 0 ? `
+                    <div style="text-align:center; color:#6c757d; padding: 30px 0;">
+                        <i class="fas fa-inbox fa-2x" style="margin-bottom: 10px;"></i>
+                        <div>目前沒有可用的學校資料</div>
+                    </div>
+                ` : `
+                    <div class="chart-card">
+                        <div class="chart-title">學校推薦入學比例排名（Top ${topList.length}）</div>
+                        <div class="chart-container" style="height: 420px;">
+                            <canvas id="recommendSchoolRatioChart"></canvas>
+                        </div>
+                    </div>
+                    <div style="margin-top:20px;">
+                        <table style="width:100%; border-collapse:collapse; background:#fff;">
+                            <thead>
+                                <tr style="background:#f8f9fa; border-bottom:2px solid #dee2e6;">
+                                    <th style="padding:12px; text-align:left;">學校</th>
+                                    <th style="padding:12px; text-align:center;">新生數</th>
+                                    <th style="padding:12px; text-align:center;">推薦入學數</th>
+                                    <th style="padding:12px; text-align:center;">比例</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                ${topList.map((item, index) => `
+                                    <tr style="border-bottom:1px solid #e9ecef; ${index % 2 === 0 ? 'background:#fff;' : 'background:#f8f9fa;'}">
+                                        <td style="padding:12px; font-weight:500;">${item.school_name}</td>
+                                        <td style="padding:12px; text-align:center;">${item.new_student_count}</td>
+                                        <td style="padding:12px; text-align:center; color:#13c2c2; font-weight:700;">${item.recommended_count}</td>
+                                        <td style="padding:12px; text-align:center;">${item.ratio_percent.toFixed(2)}%</td>
+                                    </tr>
+                                `).join('')}
+                            </tbody>
+                        </table>
+                    </div>
+                `}
+            </div>
+        `;
+
+        const recommendContainer = document.getElementById('recommendAnalyticsContent');
+        if (!recommendContainer) return;
+        recommendContainer.innerHTML = content;
+
+        if (window.recommendSchoolRatioChartInstance) {
+            window.recommendSchoolRatioChartInstance.destroy();
+            window.recommendSchoolRatioChartInstance = null;
+        }
+        if (topList.length <= 0) return;
+
+        setTimeout(() => {
+            const canvas = document.getElementById('recommendSchoolRatioChart');
+            if (!canvas) return;
+            const ctx = canvas.getContext('2d');
+            window.recommendSchoolRatioChartInstance = new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: topList.map(item => item.school_name),
+                    datasets: [{
+                        label: '推薦入學比例(%)',
+                        data: topList.map(item => Number(item.ratio_percent.toFixed(2))),
+                        backgroundColor: '#13c2c2',
+                        borderColor: '#13c2c2',
+                        borderWidth: 1,
+                        borderRadius: 8
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: { display: false },
+                        tooltip: {
+                            callbacks: {
+                                label: function(context) {
+                                    const idx = context.dataIndex;
+                                    const row = topList[idx];
+                                    return `比例：${row.ratio_percent.toFixed(2)}%（${row.recommended_count}/${row.new_student_count}）`;
+                                }
+                            }
+                        }
+                    },
+                    scales: {
+                        y: {
+                            beginAtZero: true,
+                            max: 100,
+                            ticks: {
+                                callback: function(value) { return `${value}%`; }
+                            }
+                        },
+                        x: {
+                            ticks: {
+                                maxRotation: 45,
+                                minRotation: 0
+                            }
+                        }
+                    }
+                }
+            });
+        }, 80);
     }
     
     // 變更新生視圖類型（新生或歷屆學生）
@@ -6198,14 +6922,14 @@ const detailContent = `
         </div>
 
         <div class="dept-tabs">
-            <button type="button" class="dept-tab-btn active" onclick="switchDeptTab(this, 'tab-overview')">
-                <i class="fas fa-chart-pie"></i> 目前招生狀況
-            </button>
             <button type="button" class="dept-tab-btn" onclick="switchDeptTab(this, 'tab-sources')">
                 <i class="fas fa-school"></i> 生源學校分析
             </button>
             <button type="button" class="dept-tab-btn" onclick="switchDeptTab(this, 'tab-grade')">
                 <i class="fas fa-school"></i> 年級分布圖
+            </button>
+            <button type="button" class="dept-tab-btn active" onclick="switchDeptTab(this, 'tab-overview')">
+                <i class="fas fa-chart-pie"></i> 目前招生狀況
             </button>
         </div>
 
@@ -6693,12 +7417,13 @@ window.showSourceDetail = function(schoolNameEnc, sourceDataEnc) {
     document.getElementById('sourceDetailModal').style.display = 'flex';
 };
 
-// 點擊 Modal 背景關閉
-document.getElementById('sourceDetailModal').addEventListener('click', function(e) {
-    if (e.target === this) {
-        this.style.display = 'none';
-    }
-});
+// 點擊 Modal 背景關閉（僅在元素存在時綁定，避免不同檢視下報錯）
+(function() {
+    const el = document.getElementById('sourceDetailModal');
+    if (el) el.addEventListener('click', function(e) {
+        if (e.target === this) this.style.display = 'none';
+    });
+})();
 
     // 生成模擬學生資料
     function generateMockStudents(departmentName) {
@@ -8127,6 +8852,10 @@ function showContinuedAdmissionChoicesStats() {
                     showNewStudentSchoolChart();
                 } else if (lastChartType === 'departmentStats' && typeof showNewStudentDepartmentStats === 'function') {
                     showNewStudentDepartmentStats();
+                } else if (lastChartType === 'recommendRatio' && typeof showNewStudentRecommendRatioChart === 'function') {
+                    showNewStudentRecommendRatioChart();
+                } else if (lastChartType === 'recommendSchoolRatio' && typeof showRecommendSchoolRatioChart === 'function') {
+                    showRecommendSchoolRatioChart();
                 } else if (lastChartType === 'schoolStats' && typeof showNewStudentSchoolStats === 'function') {
                     showNewStudentSchoolStats();
                 } else {
