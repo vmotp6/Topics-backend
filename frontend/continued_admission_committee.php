@@ -346,6 +346,11 @@ try {
 
 $page_title = "續招：招生委員會確認/公告/寄信";
 $current_page = 'continued_admission_committee';
+$current_tab = $_GET['tab'] ?? 'confirm';
+$allowed_tabs = ['confirm', 'announcement', 'email'];
+if (!in_array($current_tab, $allowed_tabs, true)) {
+  $current_tab = 'confirm';
+}
 ?>
 <!DOCTYPE html>
 <html lang="zh-TW">
@@ -357,80 +362,152 @@ $current_page = 'continued_admission_committee';
   <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
   <style>
     :root {
-      --primary:#1890ff;
+      --primary-color:#1890ff;
+      --success-color:#52c41a;
+      --warning-color:#faad14;
+      --danger-color:#f5222d;
+      --text-color:#262626;
+      --text-secondary-color:#8c8c8c;
+      --border-color:#f0f0f0;
+      --background-color:#f0f2f5;
+      --card-background-color:#ffffff;
+      --radius:8px;
+      --shadow:0 1px 2px rgba(0,0,0,0.03);
+      --primary:var(--primary-color);
       --primary-soft:#e6f4ff;
-      --bg:#f5f7fb;
-      --card:#ffffff;
-      --text:#262626;
-      --muted:#8c8c8c;
-      --border:#e5e7eb;
-      --ok:#52c41a;
-      --danger:#f5222d;
-      --warning:#faad14;
-      --radius:12px;
-      --shadow:0 12px 30px rgba(15, 23, 42, 0.08);
+      --bg:var(--background-color);
+      --card:var(--card-background-color);
+      --text:var(--text-color);
+      --muted:var(--text-secondary-color);
+      --border:var(--border-color);
+      --ok:var(--success-color);
+      --danger:var(--danger-color);
+      --warning:var(--warning-color);
     }
 
     * { box-sizing:border-box; }
 
     body {
       margin:0;
-      font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,'Microsoft JhengHei',sans-serif;
-      background:radial-gradient(circle at top left,#e0f2ff 0,#f5f7fb 45%,#f5f7fb 100%);
+      font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif;
+      background:var(--background-color);
       color:var(--text);
+      overflow-x:hidden;
     }
 
+    .dashboard { display:flex; min-height:100vh; }
+    .main-content { flex:1; min-width:0; }
+
     .content {
-      padding:32px 24px 40px;
-      max-width:1180px;
+      padding:24px;
+      width:100%;
+    }
+
+    .content-inner {
+      max-width:1200px;
       margin:0 auto;
     }
+
+    .breadcrumb {
+      margin-bottom:16px;
+      font-size:16px;
+      color:var(--text-secondary-color);
+    }
+
+    .breadcrumb a {
+      color:var(--primary-color);
+      text-decoration:none;
+    }
+
+    .breadcrumb a:hover { text-decoration:underline; }
 
     .card {
       background:var(--card);
       border-radius:var(--radius);
       border:1px solid var(--border);
-      padding:20px 20px 18px;
+      padding:20px;
       margin-bottom:18px;
-      box-shadow:0 4px 10px rgba(15, 23, 42, 0.04);
+      box-shadow:var(--shadow);
+      transition:box-shadow .2s ease, transform .2s ease;
+    }
+
+    .card:hover {
+      box-shadow:0 4px 12px rgba(0,0,0,0.06);
+      transform:translateY(-1px);
     }
 
     .page-header-card {
-      padding:22px 22px 20px;
-      border:none;
-      background:linear-gradient(120deg,#e6f4ff 0,#fdfbff 45%,#ffffff 100%);
-      box-shadow:var(--shadow);
+      padding:22px;
+      background:linear-gradient(135deg,#f8fbff 0%, #ffffff 60%);
+      border:1px solid #e6f0ff;
+      box-shadow:0 6px 16px rgba(24,144,255,0.08);
     }
 
     .page-title {
-      font-size:20px;
-      font-weight:800;
-      letter-spacing:0.02em;
+      font-size:18px;
+      font-weight:700;
+      letter-spacing:0.01em;
       display:flex;
       align-items:center;
       gap:10px;
+    }
+
+    .page-title i {
+      width:34px;
+      height:34px;
+      display:inline-flex;
+      align-items:center;
+      justify-content:center;
+      background:#e6f7ff;
+      color:#1890ff;
+      border-radius:10px;
+      font-size:16px;
     }
 
     .page-title span.badge-year {
       font-size:12px;
       padding:2px 10px;
       border-radius:999px;
-      background:#fff;
-      border:1px solid #d0e4ff;
-      color:#1d4ed8;
+      background:#f0f7ff;
+      border:1px solid #d6e4ff;
+      color:var(--primary-color);
     }
 
-    .row {
+    .tabs-bar {
       display:flex;
-      gap:18px;
-      flex-wrap:wrap;
-      align-items:flex-start;
+      gap:8px;
+      padding:6px;
+      background:#fff;
+      border:1px solid var(--border);
+      border-radius:8px;
+      margin-bottom:16px;
     }
 
-    .col {
-      flex:1;
-      min-width:340px;
+    .tab-link {
+      padding:8px 12px;
+      border-radius:6px;
+      color:var(--text-secondary-color);
+      text-decoration:none;
+      font-size:14px;
+      display:inline-flex;
+      align-items:center;
+      gap:6px;
+      transition:all .2s ease;
     }
+
+    .tab-link:hover {
+      background:#f5f5f5;
+      color:var(--text-color);
+    }
+
+    .tab-link.active {
+      background:#e6f4ff;
+      color:var(--primary-color);
+      font-weight:600;
+    }
+
+    .tab-panel { display:none; }
+    .tab-panel.active { display:block; }
 
     .step-title {
       font-weight:700;
@@ -438,7 +515,9 @@ $current_page = 'continued_admission_committee';
       display:flex;
       align-items:center;
       gap:8px;
-      margin-bottom:6px;
+      margin-bottom:10px;
+      padding-bottom:8px;
+      border-bottom:1px solid var(--border);
     }
 
     .step-index {
@@ -457,7 +536,7 @@ $current_page = 'continued_admission_committee';
     .hint {
       color:var(--muted);
       font-size:13px;
-      line-height:1.7;
+      line-height:1.75;
     }
 
     .field {
@@ -476,7 +555,7 @@ $current_page = 'continued_admission_committee';
     textarea {
       width:100%;
       border:1px solid #d9d9d9;
-      border-radius:8px;
+      border-radius:6px;
       padding:10px 12px;
       font-size:14px;
       box-sizing:border-box;
@@ -489,7 +568,7 @@ $current_page = 'continued_admission_committee';
     textarea:focus {
       outline:none;
       border-color:var(--primary);
-      box-shadow:0 0 0 2px rgba(24,144,255,.18);
+      box-shadow:0 0 0 2px rgba(24,144,255,0.2);
       background:#ffffff;
     }
 
@@ -501,14 +580,14 @@ $current_page = 'continued_admission_committee';
     .btn {
       border:none;
       border-radius:6px;
-      padding:9px 14px;
+      padding:8px 14px;
       cursor:pointer;
       font-size:14px;
       display:inline-flex;
       align-items:center;
       gap:6px;
-      transition:all .18s ease;
-      box-shadow:0 2px 4px rgba(15,23,42,0.08);
+      transition:all .2s ease;
+      text-decoration:none;
     }
 
     .btn.btn-sm {
@@ -518,31 +597,34 @@ $current_page = 'continued_admission_committee';
     }
 
     .btn-primary {
-      background:var(--primary);
+      background:var(--primary-color);
       color:#fff;
+      border:1px solid var(--primary-color);
+      box-shadow:0 2px 6px rgba(24,144,255,0.2);
     }
 
     .btn-primary:hover {
-      background:#1d5fd3;
-      transform:translateY(-1px);
-      box-shadow:0 6px 12px rgba(24,144,255,0.35);
+      background:#40a9ff;
+      border-color:#40a9ff;
+      box-shadow:0 6px 12px rgba(24,144,255,0.25);
     }
 
     .btn-secondary {
       background:#fff;
       border:1px solid #d9d9d9;
-      color:#262626;
+      color:#595959;
     }
 
     .btn-secondary:hover {
-      border-color:var(--primary);
-      color:var(--primary);
-      transform:translateY(-1px);
+      background:#f5f5f5;
+      border-color:#40a9ff;
+      color:#40a9ff;
     }
 
     .btn-danger {
       background:var(--danger);
       color:#fff;
+      border:1px solid var(--danger);
     }
 
     .btn[disabled] {
@@ -554,13 +636,14 @@ $current_page = 'continued_admission_committee';
 
     .msg {
       padding:12px 14px;
-      border-radius:8px;
+      border-radius:6px;
       margin-bottom:14px;
       border:1px solid;
       display:flex;
       align-items:flex-start;
       gap:8px;
       font-size:14px;
+      font-weight:500;
     }
 
     .msg.ok {
@@ -598,6 +681,7 @@ $current_page = 'continued_admission_committee';
     .link {
       color:var(--primary);
       text-decoration:none;
+      font-weight:600;
     }
 
     .link:hover {
@@ -609,6 +693,9 @@ $current_page = 'continued_admission_committee';
       width:100%;
       border-collapse:collapse;
       font-size:13px;
+      border:1px solid #ffe58f;
+      border-radius:8px;
+      overflow:hidden;
     }
 
     .pending-table th,
@@ -630,12 +717,8 @@ $current_page = 'continued_admission_committee';
     }
 
     @media (max-width: 768px) {
-      .content {
-        padding:20px 14px 28px;
-      }
-      .page-header-card {
-        padding:18px 16px;
-      }
+      .content { padding:20px; }
+      .page-header-card { padding:18px 16px; }
     }
 
     /* PDF 預覽區 */
@@ -643,7 +726,7 @@ $current_page = 'continued_admission_committee';
       margin-top: 14px;
       border: 1px dashed #91caff;
       background: #f0f7ff;
-      border-radius: 12px;
+      border-radius: 8px;
       padding: 12px;
       display: none;
     }
@@ -658,7 +741,7 @@ $current_page = 'continued_admission_committee';
     .pdf-preview-box {
       background:#fff;
       border:1px solid #e5e7eb;
-      border-radius: 10px;
+      border-radius: 8px;
       padding: 14px 16px;
       max-height: 420px;
       overflow: auto;
@@ -666,8 +749,16 @@ $current_page = 'continued_admission_committee';
   </style>
 </head>
 <body>
-  <div class="content">
-    <div class="card page-header-card">
+  <div class="dashboard">
+    <?php include 'sidebar.php'; ?>
+    <div class="main-content" id="mainContent">
+      <?php include 'header.php'; ?>
+      <div class="content">
+        <div class="breadcrumb">
+          <a href="index.php">首頁</a> / <a href="continued_admission_list.php">續招報名管理</a> / 招生委員會確認/公告
+        </div>
+        <div class="content-inner">
+          <div class="card page-header-card">
       <div style="display:flex; justify-content:space-between; align-items:center; gap:12px;">
         <div>
           <div class="page-title">
@@ -689,8 +780,20 @@ $current_page = 'continued_admission_committee';
       </div>
     <?php endif; ?>
 
-    <div class="row">
-      <div class="col">
+    <div class="tabs-bar">
+      <a class="tab-link <?php echo $current_tab === 'confirm' ? 'active' : ''; ?>" href="?tab=confirm">
+        <i class="fas fa-check-circle"></i> 確認錄取結果
+      </a>
+      <a class="tab-link <?php echo $current_tab === 'announcement' ? 'active' : ''; ?>" href="?tab=announcement">
+        <i class="fas fa-bullhorn"></i> 公告內容/附件
+      </a>
+      <a class="tab-link <?php echo $current_tab === 'email' ? 'active' : ''; ?>" href="?tab=email">
+        <i class="fas fa-envelope"></i> 寄信佇列
+      </a>
+    </div>
+
+    <div class="tab-panels">
+      <div class="tab-panel <?php echo $current_tab === 'confirm' ? 'active' : ''; ?>">
         <div class="card">
           <div class="step-title">
             <span class="step-index">1</span>
@@ -822,7 +925,7 @@ $current_page = 'continued_admission_committee';
         </div>
       </div>
 
-      <div class="col">
+      <div class="tab-panel <?php echo $current_tab === 'announcement' ? 'active' : ''; ?>">
         <div class="card">
           <div class="step-title">
             <span class="step-index">2</span>
@@ -877,28 +980,31 @@ $current_page = 'continued_admission_committee';
           </form>
         </div>
       </div>
+
+      <div class="tab-panel <?php echo $current_tab === 'email' ? 'active' : ''; ?>">
+        <div class="card">
+          <div class="step-title">
+            <span class="step-index">3</span>
+            <span>建立寄信佇列（到公告時間自動寄出）</span>
+          </div>
+          <div class="hint">
+            - 會把「已決定結果（正取/備取/不錄取）」且有 email 的學生加入佇列。<br>
+            - 寄送時間：以各科系的 <code>announce_time</code> 為準（未設定則使用統一公告時間或現在）。<br>
+            - 實際發送：請用工作排程器/cron 執行 `send_continued_admission_result_emails.php`。
+          </div>
+          <form method="post" style="margin-top:12px;">
+            <input type="hidden" name="action" value="queue_emails" />
+            <button class="btn btn-primary" type="submit"><i class="fas fa-envelope"></i> 建立寄信佇列</button>
+          </form>
+          <div class="hint" style="margin-top:10px;">
+            排程執行入口：<a class="link" href="send_continued_admission_result_emails.php" target="_blank">send_continued_admission_result_emails.php</a>
+          </div>
+        </div>
+      </div>
     </div>
-
-    <div class="card">
-      <div class="step-title">
-        <span class="step-index">3</span>
-        <span>建立寄信佇列（到公告時間自動寄出）</span>
-      </div>
-      <div class="hint">
-        - 會把「已決定結果（正取/備取/不錄取）」且有 email 的學生加入佇列。<br>
-        - 寄送時間：以各科系的 <code>announce_time</code> 為準（未設定則使用統一公告時間或現在）。<br>
-        - 實際發送：請用工作排程器/cron 執行 `send_continued_admission_result_emails.php`。
-      </div>
-      <form method="post" style="margin-top:12px;">
-        <input type="hidden" name="action" value="queue_emails" />
-        <button class="btn btn-primary" type="submit"><i class="fas fa-envelope"></i> 建立寄信佇列</button>
-      </form>
-      <div class="hint" style="margin-top:10px;">
-        排程執行入口：<a class="link" href="send_continued_admission_result_emails.php" target="_blank">send_continued_admission_result_emails.php</a>
+        </div>
       </div>
     </div>
-
-
   </div>
 
   <script>
