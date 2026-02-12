@@ -113,7 +113,7 @@ if ($is_director && $user_id) {
         if ($table_check && $table_check->num_rows > 0) {
             // 檢查 new_student_basic_info 是否有 department_id 欄位
             $has_new_student_department_id = false;
-            $dept_col_check = $conn->query("SHOW COLUMNS FROM new_student_basic_info LIKE 'department_id'");
+            $dept_col_check = $conn_dept->query("SHOW COLUMNS FROM new_student_basic_info LIKE 'department_id'");
             if ($dept_col_check && $dept_col_check->num_rows > 0) {
                 $has_new_student_department_id = true;
             }
@@ -2644,28 +2644,59 @@ function resetEnrollmentTabs() {
         if (typeof fn === 'function') fn();
     }
     
+    // 取得目前學年度民國年（6 月為界：6 月及以後算當年，否則算前一年）
+    function getCurrentRocAcademicYear() {
+        const now = new Date();
+        const adYear = now.getFullYear();
+        const month = now.getMonth() + 1; // 1-12
+        const adAcademicYear = month >= 6 ? adYear : adYear - 1;
+        return adAcademicYear - 1911; // 民國年
+    }
+    
     function loadEnrollmentRocYearOptions() {
         const sel = document.getElementById('enrollmentRocYearSelect');
         if (!sel) return;
+        const currentRoc = getCurrentRocAcademicYear();
         const apiUrl = buildApiUrl('../../Topics-frontend/frontend/api/enrollment_stats_api.php', 'available_roc_years');
-        fetch(apiUrl).then(r => r.json()).then(years => {
-            if (!Array.isArray(years) || years.length === 0) return;
-            const keepFirst = sel.options.length > 0 ? sel.options[0].cloneNode(true) : null;
-            sel.innerHTML = '';
-            if (keepFirst) sel.appendChild(keepFirst);
-            let firstYear = null;
-            years.forEach(roc => {
+        fetch(apiUrl)
+            .then(r => {
+                if (!r.ok) return [];
+                return r.json();
+            })
+            .then(data => {
+                // API 可能回傳陣列或錯誤物件 { error: "..." }
+                let years = Array.isArray(data) ? data : [];
+                if (data && typeof data === 'object' && data.error) years = [];
+                if (years.length === 0) years = [currentRoc]; // 無資料時至少顯示目前屆
+                const keepFirst = sel.options.length > 0 ? sel.options[0].cloneNode(true) : null;
+                sel.innerHTML = '';
+                if (keepFirst) sel.appendChild(keepFirst);
+                let firstYear = null;
+                years.forEach(roc => {
+                    const opt = document.createElement('option');
+                    opt.value = roc;
+                    opt.textContent = roc + '學年';
+                    sel.appendChild(opt);
+                    if (firstYear === null) firstYear = String(roc);
+                });
+                // 預設選擇「目前屆」：若選單中有目前學年度就選它，否則選第一個屆別
+                const currentRocStr = String(currentRoc);
+                if (firstYear !== null) {
+                    const hasCurrent = Array.from(sel.options).some(o => o.value === currentRocStr);
+                    sel.value = hasCurrent ? currentRocStr : firstYear;
+                }
+            })
+            .catch(() => {
+                // 網路或 API 失敗時仍顯示目前屆
+                const keepFirst = sel.options.length > 0 ? sel.options[0].cloneNode(true) : null;
+                sel.innerHTML = '';
+                if (keepFirst) sel.appendChild(keepFirst);
                 const opt = document.createElement('option');
-                opt.value = roc;
-                opt.textContent = roc + '學年';
+                opt.value = currentRoc;
+                opt.textContent = currentRoc + '學年';
                 sel.appendChild(opt);
-                if (firstYear === null) firstYear = roc;
+                sel.value = String(currentRoc);
             });
-            // 預設選擇該學年（第一個年份）
-            if (firstYear !== null) {
-                sel.value = firstYear;
-            }
-        }).catch(() => {});
     }
     
     // ========== 簡化版測試函數 ==========
@@ -6198,14 +6229,14 @@ const detailContent = `
         </div>
 
         <div class="dept-tabs">
-            <button type="button" class="dept-tab-btn active" onclick="switchDeptTab(this, 'tab-overview')">
-                <i class="fas fa-chart-pie"></i> 目前招生狀況
-            </button>
             <button type="button" class="dept-tab-btn" onclick="switchDeptTab(this, 'tab-sources')">
                 <i class="fas fa-school"></i> 生源學校分析
             </button>
             <button type="button" class="dept-tab-btn" onclick="switchDeptTab(this, 'tab-grade')">
                 <i class="fas fa-school"></i> 年級分布圖
+            </button>
+            <button type="button" class="dept-tab-btn active" onclick="switchDeptTab(this, 'tab-overview')">
+                <i class="fas fa-chart-pie"></i> 目前招生狀況
             </button>
         </div>
 
@@ -6693,12 +6724,13 @@ window.showSourceDetail = function(schoolNameEnc, sourceDataEnc) {
     document.getElementById('sourceDetailModal').style.display = 'flex';
 };
 
-// 點擊 Modal 背景關閉
-document.getElementById('sourceDetailModal').addEventListener('click', function(e) {
-    if (e.target === this) {
-        this.style.display = 'none';
-    }
-});
+// 點擊 Modal 背景關閉（僅在元素存在時綁定，避免不同檢視下報錯）
+(function() {
+    const el = document.getElementById('sourceDetailModal');
+    if (el) el.addEventListener('click', function(e) {
+        if (e.target === this) this.style.display = 'none';
+    });
+})();
 
     // 生成模擬學生資料
     function generateMockStudents(departmentName) {
