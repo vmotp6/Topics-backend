@@ -33,24 +33,52 @@ if (!($is_teacher || $is_director)) {
 $page_title = '畢業生資訊填寫';
 $error_message = '';
 $success_message = '';
+$achievement_options = [
+    'COM' => '競賽類',
+    'CER' => '證照類',
+    'HON' => '校內榮譽',
+    'SP' => '體育競賽',
+    'SK' => '技能檢定',
+    'OT' => '其他'
+];
 
 // 初始化變數（實際值稍後於 try 區段取得）
 $teacher_department = '';
 $teacher_department_name = '';
 $graduated_by_dept = [];
+$university_list = [];
+$achievement_list = [];
 
-$teacher_department = '';
-$teacher_department_name = '';
-$graduated_by_dept = [];
+$achievements = isset($_POST['achievements'])
+    ? implode(',', $_POST['achievements'])
+    : NULL;
 
-try {
+$achievement_note = $_POST['achievement_note'] ?? NULL;
+
+try {   
     $conn = getDatabaseConnection();
     if (!$conn) throw new Exception('資料庫連接失敗');
 
+    // 撈大學類型
+    $university_list = [];
+    $res = $conn->query("SELECT type_code as code, type_name as name FROM university_types ORDER BY id ASC");
+    if ($res) {
+        while ($row = $res->fetch_assoc()) {
+            $university_list[] = $row;
+        }
+    }
+
+    // 撈成就類型
+    $achievement_list = [];
+    $res = $conn->query("SELECT type_code as code, type_name as name FROM achievement_types ORDER BY id ASC");
+    if ($res) {
+        while ($row = $res->fetch_assoc()) {
+            $achievement_list[] = $row;
+        }
+    }
+
     // 確保相關資料表存在
     ensureTablesExist($conn);
-
-    // 獲取老師的科系資訊
     $dept_check = $conn->query("SHOW TABLES LIKE 'teacher'");
     if ($dept_check && $dept_check->num_rows > 0) {
         $teacher_sql = "SELECT t.department FROM teacher t WHERE t.user_id = ?";
@@ -119,63 +147,81 @@ try {
     }
 
     // 處理表單提交
-    if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
-        if ($_POST['action'] === 'save') {
-            // 僅允許教師執行儲存動作，主任為唯讀
-            if (!$is_teacher) {
-                $error_message = '您沒有編輯權限（僅教師可編輯）。';
-            } else {
-                $student_id = (int)($_POST['student_id'] ?? 0);
-                $university = trim($_POST['university'] ?? '');
-                $achievements = trim($_POST['achievements'] ?? '');
-
-                if ($student_id <= 0) {
-                    $error_message = '無效的學生 ID';
+    if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+        if (isset($_POST['action']) && $_POST['action'] === 'save') {
+            try {
+                // 僅允許教師執行儲存動作，主任為唯讀
+                if (!$is_teacher) {
+                    $error_message = '您沒有編輯權限（僅教師可編輯）。';
                 } else {
-                // 驗證學生是否屬於該科系（容錯：比對欄位值或 departments.name）
-                $verify_sql = "SELECT s.id FROM new_student_basic_info s " . $dept_join . " WHERE s.id = ? AND (s.`$dept_col` = ?";
-                if ($dept_join !== '') {
-                    $verify_sql .= " OR COALESCE(d.name,'') = ?";
-                }
-                $verify_sql .= ")";
-                $verify_stmt = $conn->prepare($verify_sql);
-                if (!$verify_stmt) throw new Exception('SQL準備失敗: ' . $conn->error);
+                    $student_id = (int)($_POST['student_id'] ?? 0);
+                    $university = trim($_POST['university'] ?? '');
+                    // 將多選的成就分別存入三個欄位，並重新索引以避免鍵值不連續
+                    $raw_achievements = $_POST['achievements'] ?? [];
+                    $achievements_array = array_values(array_filter(array_map('trim', (array)$raw_achievements)));
+                    $achievements = $achievements_array[0] ?? null;      // 第一個成就
+                    $achievements1 = $achievements_array[1] ?? null;     // 第二個成就
+                    $achievements2 = $achievements_array[2] ?? null;     // 第三個成就
+                    $achievement_note = trim($_POST['achievement_note'] ?? '');
 
-                // 綁定參數（id, department [, department])
-                if ($dept_join !== '') {
-                    $verify_stmt->bind_param('iss', $student_id, $teacher_department, $teacher_department);
-                } else {
-                    $verify_stmt->bind_param('is', $student_id, $teacher_department);
-                }
-                $verify_stmt->execute();
-                $verify_result = $verify_stmt->get_result();
+                    // 調試：記錄接收到的數據（包含三個成就欄位）
+                    error_log("DEBUG: 接收到的數據 - student_id={$student_id}, university={$university}, achievements={$achievements}, achievements1={$achievements1}, achievements2={$achievements2}, achievement_note={$achievement_note}");
 
-                if ($verify_result->num_rows === 0) {
-                    $error_message = '您無權編輯此學生的資訊。';
-                    $verify_stmt->close();
-                } else {
-                    $verify_stmt->close();
-                    // 更新學生資料
-                    $update_sql = "UPDATE new_student_basic_info 
-                                   SET university = ?, achievements = ?
-                                   WHERE id = ?";
-                    $stmt = $conn->prepare($update_sql);
-                    if (!$stmt) throw new Exception('SQL準備失敗: ' . $conn->error);
-
-                            $stmt->bind_param('ssi', $university, $achievements, $student_id);
-                    if ($stmt->execute()) {
-                        $success_message = '已成功保存學生資料';
+                    if ($student_id <= 0) {
+                        $error_message = '無效的學生 ID';
                     } else {
-                        $error_message = '保存失敗: ' . $stmt->error;
+                        // 驗證學生是否屬於該科系（容錯：比對欄位值或 departments.name）
+                        $verify_sql = "SELECT s.id FROM new_student_basic_info s " . $dept_join . " WHERE s.id = ? AND (s.`$dept_col` = ?";
+                        if ($dept_join !== '') {
+                            $verify_sql .= " OR COALESCE(d.name,'') = ?";
+                        }
+                        $verify_sql .= ")";
+                        $verify_stmt = $conn->prepare($verify_sql);
+                        if (!$verify_stmt) throw new Exception('SQL準備失敗: ' . $conn->error);
+
+                        // 綁定參數（id, department [, department])
+                        if ($dept_join !== '') {
+                            $verify_stmt->bind_param('iss', $student_id, $teacher_department, $teacher_department);
+                        } else {
+                            $verify_stmt->bind_param('is', $student_id, $teacher_department);
+                        }
+                        $verify_stmt->execute();
+                        $verify_result = $verify_stmt->get_result();
+
+                        if ($verify_result->num_rows === 0) {
+                            $error_message = '您無權編輯此學生的資訊。';
+                            $verify_stmt->close();
+                        } else {
+                            $verify_stmt->close();
+                            // 更新學生資料
+                            $update_sql = "UPDATE new_student_basic_info 
+                                           SET university = ?, achievements = ?, achievements1 = ?, achievements2 = ?, achievement_note = ?
+                                           WHERE id = ?";
+                            $stmt = $conn->prepare($update_sql);
+                            if (!$stmt) throw new Exception('SQL準備失敗: ' . $conn->error);
+
+                            error_log("DEBUG: 執行更新SQL - UPDATE new_student_basic_info SET university=?, achievements=?, achievements1=?, achievements2=?, achievement_note=? WHERE id=$student_id");
+                            
+                            $stmt->bind_param('sssssi', $university, $achievements, $achievements1, $achievements2, $achievement_note, $student_id);
+                            if ($stmt->execute()) {
+                                error_log("DEBUG: 更新成功，受影響行數=" . $stmt->affected_rows);
+                                $success_message = '已成功保存學生資料';
+                            } else {
+                                error_log("DEBUG: 更新失敗，錯誤=" . $stmt->error);
+                                $error_message = '保存失敗: ' . $stmt->error;
+                            }
+                            $stmt->close();
+                        }
                     }
-                    $stmt->close();
                 }
-                }
+            } catch (Exception $e) {
+                $error_message = '保存出錯: ' . $e->getMessage();
             }
         }
 
+
         // 主任發起寄送至招生中心（由主任執行）
-        if ($_POST['action'] === 'send_to_center' && $is_director) {
+        if (isset($_POST['action']) && $_POST['action'] === 'send_to_center' && $is_director) {
             try {
                 // 取得主任所屬科系（優先 director 表）
                 $director_dept = '';
@@ -246,24 +292,67 @@ try {
 
                 // 取得學生資料（孝班與忠班）
                 $kw1 = '%孝%'; $kw2 = '%忠%';
-                $students_sql = "SELECT s.student_no, s.student_name, s.class_name, s.university, s.achievements FROM new_student_basic_info s " . $dept_join . " WHERE (s.`$dept_col` = ?";
-                if ($dept_join !== '') $students_sql .= " OR COALESCE(d.name,'') = ?";
-                $students_sql .= " ) AND (s.class_name LIKE ? OR s.class_name LIKE ?) AND s.created_at >= ? AND s.created_at <= ? ORDER BY s.student_no ASC";
+$students_sql = "
+SELECT 
+    s.id,
+    s.student_no,
+    s.student_name,
+    s.class_name,
+    s.university,
+    u.type_name AS university_name,
+    s.achievements,
+    s.achievement_note,
+    s.created_at
+FROM new_student_basic_info s
+LEFT JOIN university_types u
+    ON TRIM(UPPER(s.university)) = TRIM(UPPER(u.type_code))
+" . $dept_join . "
+WHERE (s.`$dept_col` = ?" . ($dept_join !== '' ? " OR COALESCE(d.name,'') = ?" : "") . ")
+  AND (s.class_name LIKE ? OR s.class_name LIKE ?)
+  AND s.created_at >= ?
+  AND s.created_at <= ?
+ORDER BY s.student_no ASC
+";
 
-                $stmt2 = $conn->prepare($students_sql);
-                $rows = [];
-                if ($stmt2) {
-                    if ($dept_join !== '') {
-                        $stmt2->bind_param('ssssss', $director_dept, $director_dept, $kw1, $kw2, $year_range['start'], $year_range['end']);
-                    } else {
-                        $stmt2->bind_param('sssss', $director_dept, $kw1, $kw2, $year_range['start'], $year_range['end']);
-                    }
-                    $stmt2->execute(); $res2 = $stmt2->get_result();
-                    while ($rr = $res2->fetch_assoc()) {
-                        $rows[] = [$rr['student_no'] ?? '', $rr['student_name'] ?? '', $rr['class_name'] ?? '', $rr['university'] ?? '', $rr['achievements'] ?? ''];
-                    }
-                    $stmt2->close();
-                }
+$stmt2 = $conn->prepare($students_sql);
+if ($stmt2) {
+    if ($dept_join !== '') {
+        $stmt2->bind_param(
+            'ssssss',
+            $director_dept,
+            $director_dept,
+            $kw1,
+            $kw2,
+            $year_range['start'],
+            $year_range['end']
+        );
+    } else {
+        $stmt2->bind_param(
+            'sssss',
+            $director_dept,
+            $kw1,
+            $kw2,
+            $year_range['start'],
+            $year_range['end']
+        );
+    }
+
+    $stmt2->execute();
+    $res2 = $stmt2->get_result();
+    $rows = [];
+    while ($rr = $res2->fetch_assoc()) {
+        $achievement_text = convertAchievementsToText($rr['achievements'] ?? '', $achievement_options);
+        $rows[] = [
+            $rr['student_no'] ?? '',
+            $rr['student_name'] ?? '',
+            $rr['class_name'] ?? '',
+            $rr['university_name'] ?? $rr['university'] ?? '—', // <- 正確顯示中文名稱
+            $achievement_text
+        ];
+    }
+    $stmt2->close();
+}
+
                 if (empty($rows)) throw new Exception('查無學生資料，無法產生 Excel');
 
                 // 產生 xlsx
@@ -392,7 +481,7 @@ try {
             }
         }
         // 教師提交整班畢業資料
-        if ($_POST['action'] === 'submit_class') {
+        if (isset($_POST['action']) && $_POST['action'] === 'submit_class') {
             $submit_class = trim($_POST['class_name'] ?? '');
             if ($submit_class === '') {
                 $error_message = '缺少班級名稱';
@@ -507,8 +596,11 @@ try {
                 // 依類別轉換為關鍵字 (孝 -> %孝% ; 忠 -> %忠%)
                 $kw = (mb_strpos($selected_class, '孝') !== false) ? '%孝%' : '%忠%';
 
-                $students_sql = "SELECT s.id, s.student_no, s.student_name, s.university, s.achievements, s.created_at
-                                FROM new_student_basic_info s " . $dept_join . " WHERE (s.`$dept_col` = ?";
+                $students_sql = "SELECT s.id, s.student_no, s.student_name, s.university, u.type_name AS university_name, s.achievements, s.achievement_note, s.created_at
+                                FROM new_student_basic_info s
+                                LEFT JOIN university_types u
+                                    ON TRIM(UPPER(s.university)) = TRIM(UPPER(u.type_code))
+                                " . $dept_join . " WHERE (s.`$dept_col` = ?";
                 if ($dept_join !== '') {
                     $students_sql .= " OR COALESCE(d.name,'') = ?";
                 }
@@ -536,6 +628,22 @@ try {
     $error_message = $e->getMessage();
 }
 
+function convertAchievementsToText($codes_string, $achievement_options) {
+    if (empty($codes_string)) return '';
+
+    $codes = explode(',', $codes_string);
+    $texts = [];
+
+    foreach ($codes as $code) {
+        $code = trim($code);
+        if (isset($achievement_options[$code])) {
+            $texts[] = $achievement_options[$code];
+        }
+    }
+
+    return implode('、', $texts);
+}
+
 // 偵測資料庫中第一個存在的科系欄位
 function detectFirstExistingColumn($conn, $table, $candidates) {
     if (!is_array($candidates)) return '';
@@ -546,15 +654,40 @@ function detectFirstExistingColumn($conn, $table, $candidates) {
 }
 
 function ensureTablesExist($conn) {
-    // 檢查並添加必要的欄位
+    // 創建 university_types 表（如果不存在）
+    $sql_uni = "CREATE TABLE IF NOT EXISTS university_types (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        type_code VARCHAR(20) NOT NULL UNIQUE,
+        type_name VARCHAR(100) NOT NULL,
+        description TEXT NULL,
+        is_active TINYINT(1) DEFAULT 1,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4";
+    $conn->query($sql_uni);
+
+    // 創建 achievement_types 表（如果不存在）
+    $sql_ach = "CREATE TABLE IF NOT EXISTS achievement_types (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        type_code VARCHAR(20) NOT NULL UNIQUE,
+        type_name VARCHAR(100) NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4";
+    $conn->query($sql_ach);
+
+    // 檢查並添加必要的欄位到 new_student_basic_info
     $check_columns = [
         'university' => "ALTER TABLE new_student_basic_info ADD COLUMN university VARCHAR(100) DEFAULT NULL",
-        'achievements' => "ALTER TABLE new_student_basic_info ADD COLUMN achievements LONGTEXT DEFAULT NULL"
+        'achievements' => "ALTER TABLE new_student_basic_info ADD COLUMN achievements LONGTEXT DEFAULT NULL",
+        'achievement_note' => "ALTER TABLE new_student_basic_info ADD COLUMN achievement_note LONGTEXT DEFAULT NULL"
     ];
 
     foreach ($check_columns as $col => $alter_sql) {
         if (!hasColumn($conn, 'new_student_basic_info', $col)) {
-            $conn->query($alter_sql);
+            $result = $conn->query($alter_sql);
+            if ($result === false && strpos($conn->error, '1061') === false) {
+                // 1061 是 'Duplicate column name' 錯誤，可以忽略
+                // 其他錯誤會被記錄
+            }
         }
     }
 }
@@ -566,7 +699,7 @@ function ensureGraduatedClassSubmissionTable($conn) {
         graduation_roc_year INT NOT NULL,
         department_code VARCHAR(100) NOT NULL,
         class_name VARCHAR(50) NOT NULL,
-        submitted_by_user_id VARCHAR(50) DEFAULT NULL,
+        submitted_by_user_id INT DEFAULT NULL,
         submitted_at DATETIME DEFAULT NULL,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         UNIQUE KEY uk_year_dept_class (graduation_roc_year, department_code, class_name)
@@ -1143,7 +1276,7 @@ if ($is_teacher && $selected_class !== '') {
                                 <div style="flex:1; color:#666;">狀態：<?php echo $class_submitted ? '<span style="color:#52c41a;">已提交</span>' : '<span style="color:#999;">未提交</span>'; ?></div>
                                 <div>
                                     <?php $btn_label = $class_submitted ? '已提交（等待主任送出）' : '提交本班畢業資料'; ?>
-                                    <button class="btn btn-primary" id="submitClassBtn" onclick="submitClass('<?php echo htmlspecialchars(addslashes($selected_class)); ?>')" <?php echo $class_submitted ? 'disabled' : ''; ?>><?php echo htmlspecialchars($btn_label); ?></button>
+                                    <button class="btn btn-primary" style="margin-bottom:18px;" id="submitClassBtn" onclick="submitClass('<?php echo htmlspecialchars(addslashes($selected_class)); ?>')" <?php echo $class_submitted ? 'disabled' : ''; ?>><?php echo htmlspecialchars($btn_label); ?></button>
                                 </div>
                             <?php endif; ?>
                             
@@ -1173,10 +1306,17 @@ if ($is_teacher && $selected_class !== '') {
                                         <tr class="student-row">
                                             <td><?php echo htmlspecialchars($student['student_no']); ?></td>
                                             <td><?php echo htmlspecialchars($student['student_name']); ?></td>
-                                            <td><?php echo htmlspecialchars($student['university'] ?? '—'); ?></td>
+                                            <td><?php echo htmlspecialchars($student['university_name'] ?? '—'); ?></td>
                                             <td>
                                                 <div style="max-width: 200px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
-                                                    <?php echo htmlspecialchars(substr($student['achievements'] ?? '', 0, 30)); ?>
+                                                    <?php 
+                                                        echo htmlspecialchars(
+                                                    convertAchievementsToText(
+                                                $student['achievements'],
+                                         $achievement_options
+                                                            )
+                                                        ); 
+                                                    ?>
                                                     <?php if (!empty($student['achievements']) && strlen($student['achievements']) > 30): ?>
                                                         ...
                                                     <?php endif; ?>
@@ -1184,9 +1324,9 @@ if ($is_teacher && $selected_class !== '') {
                                             </td>
                                             <td>
                                                 <?php if ($is_director): ?>
-                                                    <button class="btn btn-primary" onclick="openEditModal(<?php echo (int)$student['id']; ?>, '<?php echo htmlspecialchars(addslashes($student['student_no'])); ?>', '<?php echo htmlspecialchars(addslashes($student['student_name'])); ?>', '<?php echo htmlspecialchars(addslashes($student['university'] ?? '')); ?>', '<?php echo htmlspecialchars(addslashes($student['achievements'] ?? '')); ?>', true)">查看</button>
+                                                    <button class="btn btn-primary" onclick="openEditModal(<?php echo (int)$student['id']; ?>, '<?php echo htmlspecialchars(addslashes($student['student_no'])); ?>', '<?php echo htmlspecialchars(addslashes($student['student_name'])); ?>', '<?php echo htmlspecialchars(addslashes($student['university'] ?? '')); ?>', '<?php echo htmlspecialchars(addslashes($student['achievements'] ?? '')); ?>', true, '<?php echo htmlspecialchars(addslashes($student['achievement_note'] ?? '')); ?>')">查看</button>
                                                 <?php else: ?>
-                                                    <button class="btn btn-primary" onclick="openEditModal(<?php echo (int)$student['id']; ?>, '<?php echo htmlspecialchars(addslashes($student['student_no'])); ?>', '<?php echo htmlspecialchars(addslashes($student['student_name'])); ?>', '<?php echo htmlspecialchars(addslashes($student['university'] ?? '')); ?>', '<?php echo htmlspecialchars(addslashes($student['achievements'] ?? '')); ?>', false)">編輯</button>
+                                                    <button class="btn btn-primary" onclick="openEditModal(<?php echo (int)$student['id']; ?>, '<?php echo htmlspecialchars(addslashes($student['student_no'])); ?>', '<?php echo htmlspecialchars(addslashes($student['student_name'])); ?>', '<?php echo htmlspecialchars(addslashes($student['university'] ?? '')); ?>', '<?php echo htmlspecialchars(addslashes($student['achievements'] ?? '')); ?>', false, '<?php echo htmlspecialchars(addslashes($student['achievement_note'] ?? '')); ?>')">編輯</button>
                                                 <?php endif; ?>
                                             </td>
                                         </tr>
@@ -1223,16 +1363,39 @@ if ($is_teacher && $selected_class !== '') {
                 </div>
 
                 <div class="form-group">
-                    <label class="form-label">大學名稱</label>
-                    <input type="text" name="university" id="universityInput" class="form-input"
-                           placeholder="例：台灣大學、清華大學">
+                    <label class="form-label">大學類型</label>
+                    <select name="university" id="universityInput" class="form-input">
+                        <option value="">請選擇</option>
+                        <?php foreach ($university_list as $u): ?>
+                            <option value="<?= htmlspecialchars($u['code']) ?>">
+                                <?= htmlspecialchars($u['name']) ?>
+                            </option>
+                        <?php endforeach; ?>
+                    </select>
                 </div>
 
-                <div class="form-group">
-                    <label class="form-label">成就與榮譽</label>
-                    <textarea name="achievements" id="achievementsInput" class="form-input"
-                              placeholder="填寫學生在大學期間的成就、獲得的獎項、榮譽等資訊"></textarea>
+               <div class="form-group">
+                <label class="form-label">成就與榮譽</label>
+
+                <div class="checkbox-group">
+                    <?php foreach ($achievement_list as $a): ?>
+                        <label>
+                            <input type="checkbox" name="achievements[]" value="<?= htmlspecialchars($a['code']) ?>">
+                            <?= htmlspecialchars($a['name']) ?>
+                        </label>
+                    <?php endforeach; ?>
                 </div>
+
+    <!-- 成就備註欄位 -->
+    <div style="margin-top:10px;">
+        <label class="form-label">成就備註</label>
+        <textarea name="achievement_note"
+                  id="achievementNoteInput"
+                  class="form-input"
+                  placeholder="例如：2025 亞洲機器人競賽勇奪第一名"></textarea>
+    </div>
+
+</div>
 
                 <div class="button-group">
                     <button type="button" id="modalCancelBtn" class="btn btn-secondary" onclick="closeEditModal()">取消</button>
@@ -1249,31 +1412,55 @@ if ($is_teacher && $selected_class !== '') {
             window.location.href = url.toString();
         }
 
-        function openEditModal(studentId, studentNo, studentName, university, achievements, readOnly) {
+        function openEditModal(studentId, studentNo, studentName, university, achievements, readOnly, achievementNote) {
             const form = document.getElementById('editForm');
             document.getElementById('studentId').value = studentId;
             document.getElementById('studentNoDisplay').textContent = studentNo;
             document.getElementById('studentNameDisplay').textContent = studentName;
             document.getElementById('universityInput').value = university;
-            document.getElementById('achievementsInput').value = achievements;
-            // set readonly/disabled state
+            
+            // 設置成就備註
+            const noteInput = document.getElementById('achievementNoteInput');
+            noteInput.value = achievementNote || '';
+            
+            // 取消全部勾選
+            document.querySelectorAll('input[name="achievements[]"]').forEach(cb => {
+                cb.checked = false;
+            });
+            
+            // 根據成就代碼設置勾選
+            if (achievements) {
+                let arr = achievements.split(',');
+                arr.forEach(code => {
+                    let checkbox = document.querySelector(
+                        'input[name="achievements[]"][value="' + code.trim() + '"]'
+                    );
+                    if (checkbox) checkbox.checked = true;
+                });
+            }
+            
+            // 設置讀寫狀態
             const uni = document.getElementById('universityInput');
-            const ach = document.getElementById('achievementsInput');
+            const checkboxes = document.querySelectorAll('input[name="achievements[]"]');
             const saveBtn = document.getElementById('modalSaveBtn');
             const title = document.getElementById('modalTitle');
+            
             if (readOnly) {
                 uni.disabled = true;
-                ach.disabled = true;
+                checkboxes.forEach(cb => cb.disabled = true);
+                noteInput.disabled = true;
                 saveBtn.style.display = 'none';
                 title.textContent = '查看學生資訊';
                 form.dataset.readonly = '1';
             } else {
                 uni.disabled = false;
-                ach.disabled = false;
+                checkboxes.forEach(cb => cb.disabled = false);
+                noteInput.disabled = false;
                 saveBtn.style.display = '';
                 title.textContent = '編輯學生資訊';
                 form.dataset.readonly = '0';
             }
+            
             document.getElementById('editModal').classList.add('active');
         }
 
@@ -1293,7 +1480,15 @@ if ($is_teacher && $selected_class !== '') {
             // prevent submitting in readonly mode
             if (this.dataset.readonly === '1') { e.preventDefault(); return false; }
             e.preventDefault();
+            
             const formData = new FormData(this);
+            
+            // 調試：輸出表單數據
+            console.log('提交的數據:');
+            for (let [key, value] of formData.entries()) {
+                console.log(key + ':', value);
+            }
+            
             fetch(window.location.href, {
                 method: 'POST',
                 body: formData

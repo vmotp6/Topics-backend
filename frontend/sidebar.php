@@ -322,7 +322,7 @@ function hasPermission($permission_code, $user_role, $permissions_array) {
             <?php if ($is_teacher ||$is_director): ?>
                 <a href="teacher_student_university_info.php" class="menu-item <?php echo $current_page === 'teacher_student_university_info' ? 'active' : ''; ?>">
                     <i class="fas fa-graduation-cap"></i>
-                    <span>學生大學與榮譽</span>
+                    <span>畢業學生資料填寫</span>
                 </a>
             <?php endif; ?>
             
