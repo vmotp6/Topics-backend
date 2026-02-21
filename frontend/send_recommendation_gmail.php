@@ -417,14 +417,95 @@ try {
         $groups = ['__single__' => $merged];
     }
 
+    // 若同一組同時含「已通過初審」與「初審未通過（待科主任審核）」，拆成兩封信
+    if (!empty($groups)) {
+        $build_rec_list_from_items = function($items) {
+            $list = [];
+            $seen = [];
+            if (!is_array($items)) return $list;
+            foreach ($items as $it) {
+                $nm = trim((string)($it['rec_name'] ?? ''));
+                $sid = trim((string)($it['rec_sid'] ?? ''));
+                $grade = trim((string)($it['rec_grade'] ?? ''));
+                $dept = trim((string)($it['rec_dept'] ?? ''));
+                if ($nm === '' && $sid === '') continue;
+                $k = mb_strtolower($nm . '|' . $sid, 'UTF-8');
+                if (isset($seen[$k])) continue;
+                $seen[$k] = true;
+                $list[] = ['name' => $nm, 'sid' => $sid, 'grade' => $grade, 'dept' => $dept];
+            }
+            return $list;
+        };
+
+        $split_groups = [];
+        foreach ($groups as $gk => $g) {
+            $items = isset($g['items']) && is_array($g['items']) ? $g['items'] : [];
+            if (empty($items)) continue;
+
+            $approved_items = [];
+            $rejected_items = [];
+            foreach ($items as $it) {
+                $st = trim((string)($it['status'] ?? ''));
+                if (mb_strpos($st, '已通過初審') !== false) {
+                    $approved_items[] = $it;
+                } elseif (mb_strpos($st, '初審未通過（待科主任審核）') !== false || mb_strpos($st, '需人工審查') !== false) {
+                    $rejected_items[] = $it;
+                }
+            }
+
+            // 僅單一類別：沿用原組
+            if (empty($approved_items) || empty($rejected_items)) {
+                $split_groups[$gk] = $g;
+                continue;
+            }
+
+            // 兩種狀態都有：拆成兩組
+            $g_approved = $g;
+            $g_approved['items'] = $approved_items;
+            $g_approved['has_approved'] = true;
+            $g_approved['has_rejected'] = false;
+            $g_approved['first_approved_id'] = (int)($approved_items[0]['id'] ?? ($g['first_approved_id'] ?? 0));
+            $g_approved['rec_list'] = $build_rec_list_from_items($approved_items);
+            $split_groups[$gk . '__approved'] = $g_approved;
+
+            $g_rejected = $g;
+            $g_rejected['items'] = $rejected_items;
+            $g_rejected['has_approved'] = false;
+            $g_rejected['has_rejected'] = true;
+            $g_rejected['first_approved_id'] = 0;
+            $g_rejected['rec_list'] = $build_rec_list_from_items($rejected_items);
+            $split_groups[$gk . '__rejected'] = $g_rejected;
+        }
+        $groups = $split_groups;
+    }
+
     $to_email = '110534236@stu.ukn.edu.tw';
     $xlsx_supported = class_exists('ZipArchive');
-    $excel_attachment_ext = $xlsx_supported ? 'xlsx' : 'csv';
+    $excel_attachment_ext = $xlsx_supported ? 'xlsx' : 'xls';
     $excel_attachment_mime = $xlsx_supported
         ? 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-        : 'text/csv';
+        : 'application/vnd.ms-excel';
 
-    $build_rec_summary = function($group) {
+    $department_name_map = [];
+    $dept_rs = $conn->query("SELECT code, name FROM departments");
+    if ($dept_rs) {
+        while ($dr = $dept_rs->fetch_assoc()) {
+            $c = trim((string)($dr['code'] ?? ''));
+            $n = trim((string)($dr['name'] ?? ''));
+            if ($c !== '' && $n !== '') $department_name_map[$c] = $n;
+        }
+    }
+    $to_department_name = function($dept) use ($department_name_map) {
+        $raw = trim((string)$dept);
+        if ($raw === '') return '';
+        if (isset($department_name_map[$raw])) return (string)$department_name_map[$raw];
+        if (preg_match('/^[A-Z]{2,5}$/', strtoupper($raw)) && isset($department_name_map[strtoupper($raw)])) {
+            return (string)$department_name_map[strtoupper($raw)];
+        }
+        return $raw;
+    };
+
+    $build_rec_summary = function($group) use ($to_department_name) {
         $is_student_recommender = function($sid, $grade) {
             $g = strtoupper(trim((string)$grade));
             if ($g !== '' && preg_match('/^F[1-5]$/', $g)) return true;
@@ -438,23 +519,22 @@ try {
         $student_rows = [];
         $teacher_rows = [];
 
-        $push_row = function($nm, $sid, $grade, $dept) use (&$lines, &$student_rows, &$teacher_rows, $is_student_recommender) {
+        $push_row = function($nm, $sid, $grade, $dept) use (&$lines, &$student_rows, &$teacher_rows, $is_student_recommender, $to_department_name) {
             if ($nm === '' && $sid === '') return;
+            $dept_name = $to_department_name($dept);
             if ($is_student_recommender($sid, $grade)) {
                 $lines[] = '【學生推薦人】' . ($nm !== '' ? $nm : '未填寫') . '（' . ($sid !== '' ? $sid : '未填寫') . '）';
                 $student_rows[] = [
                     htmlspecialchars($nm !== '' ? $nm : '未填寫', ENT_QUOTES, 'UTF-8'),
                     htmlspecialchars($sid !== '' ? $sid : '未填寫', ENT_QUOTES, 'UTF-8'),
-                    htmlspecialchars($grade !== '' ? $grade : '未填寫', ENT_QUOTES, 'UTF-8'),
-                    htmlspecialchars($dept !== '' ? $dept : '未填寫', ENT_QUOTES, 'UTF-8'),
+                    htmlspecialchars($dept_name !== '' ? $dept_name : '未填寫', ENT_QUOTES, 'UTF-8'),
                 ];
             } else {
                 $lines[] = '【教師推薦人】' . ($nm !== '' ? $nm : '未填寫') . '（' . ($sid !== '' ? $sid : '未填寫') . '）';
                 $teacher_rows[] = [
                     htmlspecialchars($nm !== '' ? $nm : '未填寫', ENT_QUOTES, 'UTF-8'),
                     htmlspecialchars($sid !== '' ? $sid : '未填寫', ENT_QUOTES, 'UTF-8'),
-                    htmlspecialchars($grade !== '' ? $grade : '未填寫', ENT_QUOTES, 'UTF-8'),
-                    htmlspecialchars($dept !== '' ? $dept : '未填寫', ENT_QUOTES, 'UTF-8'),
+                    htmlspecialchars($dept_name !== '' ? $dept_name : '未填寫', ENT_QUOTES, 'UTF-8'),
                 ];
             }
         };
@@ -485,7 +565,6 @@ try {
                     . '<td style="border:1px solid #d9d9d9;padding:6px 10px;">' . $row[0] . '</td>'
                     . '<td style="border:1px solid #d9d9d9;padding:6px 10px;">' . $row[1] . '</td>'
                     . '<td style="border:1px solid #d9d9d9;padding:6px 10px;">' . $row[2] . '</td>'
-                    . '<td style="border:1px solid #d9d9d9;padding:6px 10px;">' . $row[3] . '</td>'
                     . '</tr>';
             }
             return '<div style="margin-top:8px; font-weight:600;">' . htmlspecialchars($title, ENT_QUOTES, 'UTF-8') . '</div>'
@@ -493,7 +572,6 @@ try {
                 . '<thead><tr>'
                 . '<th style="border:1px solid #d9d9d9;padding:6px 10px;text-align:left;background:#fafafa;">推薦人姓名</th>'
                 . '<th style="border:1px solid #d9d9d9;padding:6px 10px;text-align:left;background:#fafafa;">推薦人學號/編號</th>'
-                . '<th style="border:1px solid #d9d9d9;padding:6px 10px;text-align:left;background:#fafafa;">年級</th>'
                 . '<th style="border:1px solid #d9d9d9;padding:6px 10px;text-align:left;background:#fafafa;">科系</th>'
                 . '</tr></thead><tbody>' . $html_rows . '</tbody></table>';
         };
@@ -517,8 +595,8 @@ try {
                 $altBody = "主任您好：\n本信件為招生中心通知，請點擊下方連結進行線上審核與簽核：\n【網頁連結】\n推薦人資料摘要如下：\n{$recText}\n推薦內容相關資訊已整理於附件（Excel）。";
             } else {
                 $subject = '推薦學生重複推薦提醒';
-                $body = '<p>以下推薦人之推薦資料被判定為不通過/重複推薦，還請您確認後再告知我。</p><p>推薦人資料摘要如下：</p>' . $recHtml . '<p>推薦內容相關資訊已整理於附件（Excel）。</p>';
-                $altBody = "以下推薦人之推薦資料被判定為不通過/重複推薦，還請您確認後再告知我。\n推薦人資料摘要如下：\n{$recText}\n推薦內容相關資訊已整理於附件（Excel）。";
+                $body = '<p>以下推薦人之推薦資料被判定為不通過/重複推薦，還請您確認後再告知我。</p><p>請點擊下方連結進行線上簽核：<br>【網頁連結】</p><p>推薦人資料摘要如下：</p>' . $recHtml . '<p>推薦內容相關資訊已整理於附件（Excel）。</p>';
+                $altBody = "以下推薦人之推薦資料被判定為不通過/重複推薦，還請您確認後再告知我。\n請點擊下方連結進行線上簽核：\n【網頁連結】\n推薦人資料摘要如下：\n{$recText}\n推薦內容相關資訊已整理於附件（Excel）。";
             }
 
             $safe_name = preg_replace('/[^\w\-]+/u', '_', (string)($group['rec_name'] ?: '推薦人'));
@@ -586,11 +664,11 @@ try {
                             $it['id'], $it['status'], $it['student_name'], $it['student_school'], $it['student_grade'],
                             $it['student_email'], $it['student_phone'], $it['student_line_id'], $it['student_interest'],
                             $it['recommendation_reason'], $it['additional_info'], $it['proof_evidence'], $it['created_at'],
-                            $it['rec_name'] ?? $rec_name, $it['rec_sid'] ?? $rec_sid, $it['rec_dept'] ?? $rec_dept,
+                            $it['rec_name'] ?? $rec_name, $it['rec_sid'] ?? $rec_sid, $to_department_name($it['rec_dept'] ?? $rec_dept),
                             $it['rec_grade'] ?? $rec_grade, $it['rec_phone'] ?? $rec_phone, $it['rec_email'] ?? $rec_email,
                         ];
                     }
-                    $built = $xlsx_supported ? build_simple_xlsx($rows, $attachment_path) : build_simple_csv($rows, $attachment_path);
+                    $built = $xlsx_supported ? build_simple_xlsx($rows, $attachment_path) : build_simple_xls($rows, $attachment_path);
                     if ($built) {
                         $safe_name = preg_replace('/[^\w\-]+/u', '_', $rec_name ?: '推薦人');
                         $attachments[] = [
@@ -603,9 +681,15 @@ try {
             }
 
             if (function_exists('sendEmail')) {
-                if (!empty($group['has_approved'])) {
+                if (!empty($group['has_approved']) || !empty($group['has_rejected'])) {
                     $approval_link = '';
-                    $recommendation_id = (int)($group['first_approved_id'] ?? 0);
+                    $recommendation_id = 0;
+                    if (!empty($group['has_approved'])) {
+                        $recommendation_id = (int)($group['first_approved_id'] ?? 0);
+                    }
+                    if ($recommendation_id <= 0 && !empty($group['items']) && is_array($group['items'])) {
+                        $recommendation_id = (int)($group['items'][0]['id'] ?? 0);
+                    }
                     if ($recommendation_id > 0) {
                         $token = function_exists('random_bytes') ? bin2hex(random_bytes(16)) : bin2hex(uniqid('', true));
                         $group_ids = '';

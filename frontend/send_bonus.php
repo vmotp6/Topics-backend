@@ -150,6 +150,31 @@ try {
         exit;
     }
 
+    // 需為已線上簽核（signed），若已放棄獎金（waived）則禁止發送
+    $approval_status = '';
+    $chk_approval = $conn->prepare("SELECT COALESCE(status,'') AS status
+        FROM recommendation_approval_links
+        WHERE recommendation_id = ?
+        ORDER BY id DESC
+        LIMIT 1");
+    if ($chk_approval) {
+        $chk_approval->bind_param('i', $recommendation_id);
+        $chk_approval->execute();
+        $approval_res = $chk_approval->get_result();
+        if ($approval_res && ($approval_row = $approval_res->fetch_assoc())) {
+            $approval_status = strtolower(trim((string)($approval_row['status'] ?? '')));
+        }
+        $chk_approval->close();
+    }
+    if ($approval_status === 'waived') {
+        echo json_encode(['success' => false, 'message' => '推薦人已放棄獎金，無法發送'], JSON_UNESCAPED_UNICODE);
+        exit;
+    }
+    if ($approval_status !== 'signed') {
+        echo json_encode(['success' => false, 'message' => '推薦人尚未線上簽核，暫不可發送獎金'], JSON_UNESCAPED_UNICODE);
+        exit;
+    }
+
     // 若已存在則拒絕重複發送
     $check = $conn->prepare("SELECT id, sent_at FROM bonus_send_logs WHERE recommendation_id = ? LIMIT 1");
     $check->bind_param('i', $recommendation_id);
