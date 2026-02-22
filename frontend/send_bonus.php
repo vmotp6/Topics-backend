@@ -88,7 +88,8 @@ try {
                 COALESCE(rec.id,'') AS recommender_student_id,
                 COALESCE(ar.status,'') AS status,
                 COALESCE(red.name,'') AS student_name,
-                COALESCE(ar.created_at,'') AS created_at
+                COALESCE(ar.created_at,'') AS created_at,
+                COALESCE(ar.updated_at,'') AS updated_at
             FROM admission_recommendations ar
             LEFT JOIN recommender rec ON ar.id = rec.recommendations_id
             LEFT JOIN recommended red ON ar.id = red.recommendations_id
@@ -99,7 +100,8 @@ try {
                 COALESCE(rec.id,'') AS recommender_student_id,
                 COALESCE(ar.status,'') AS status,
                 COALESCE(ar.student_name,'') AS student_name,
-                COALESCE(ar.created_at,'') AS created_at
+                COALESCE(ar.created_at,'') AS created_at,
+                COALESCE(ar.updated_at,'') AS updated_at
             FROM admission_recommendations ar
             LEFT JOIN recommender rec ON ar.id = rec.recommendations_id
             WHERE ar.id = ? LIMIT 1");
@@ -109,7 +111,8 @@ try {
                 COALESCE(ar.recommender_student_id,'') AS recommender_student_id,
                 COALESCE(ar.status,'') AS status,
                 COALESCE(red.name,'') AS student_name,
-                COALESCE(ar.created_at,'') AS created_at
+                COALESCE(ar.created_at,'') AS created_at,
+                COALESCE(ar.updated_at,'') AS updated_at
             FROM admission_recommendations ar
             LEFT JOIN recommended red ON ar.id = red.recommendations_id
             WHERE ar.id = ? LIMIT 1");
@@ -119,7 +122,8 @@ try {
                 COALESCE(ar.recommender_student_id,'') AS recommender_student_id,
                 COALESCE(ar.status,'') AS status,
                 COALESCE(ar.student_name,'') AS student_name,
-                COALESCE(ar.created_at,'') AS created_at
+                COALESCE(ar.created_at,'') AS created_at,
+                COALESCE(ar.updated_at,'') AS updated_at
             FROM admission_recommendations ar
             WHERE ar.id = ? LIMIT 1");
     }
@@ -143,6 +147,7 @@ try {
     $status = trim((string)($row['status'] ?? ''));
     $student_name = trim((string)($row['student_name'] ?? ''));
     $created_at = (string)($row['created_at'] ?? '');
+    $status_updated_at = trim((string)($row['updated_at'] ?? ''));
 
     // 只允許「審核完成（可發獎金）」(APD) 發送
     if (!in_array($status, ['APD'], true)) {
@@ -152,7 +157,8 @@ try {
 
     // 需為已線上簽核（signed），若已放棄獎金（waived）則禁止發送
     $approval_status = '';
-    $chk_approval = $conn->prepare("SELECT COALESCE(status,'') AS status
+    $approval_review_at = '';
+    $chk_approval = $conn->prepare("SELECT COALESCE(status,'') AS status, COALESCE(signed_at, created_at) AS review_at
         FROM recommendation_approval_links
         WHERE recommendation_id = ?
         ORDER BY id DESC
@@ -163,8 +169,16 @@ try {
         $approval_res = $chk_approval->get_result();
         if ($approval_res && ($approval_row = $approval_res->fetch_assoc())) {
             $approval_status = strtolower(trim((string)($approval_row['status'] ?? '')));
+            $approval_review_at = trim((string)($approval_row['review_at'] ?? ''));
         }
         $chk_approval->close();
+    }
+    $status_updated_ts = strtotime($status_updated_at);
+    $approval_review_ts = strtotime($approval_review_at);
+    $approval_is_stale = ($status_updated_ts !== false && $approval_review_ts !== false && $status_updated_ts > $approval_review_ts);
+    if ($approval_is_stale) {
+        // 狀態曾被重新調整（如 APD -> PE -> APD），舊簽核結果失效。
+        $approval_status = '';
     }
     if ($approval_status === 'waived') {
         echo json_encode(['success' => false, 'message' => '推薦人已放棄獎金，無法發送'], JSON_UNESCAPED_UNICODE);
@@ -194,17 +208,27 @@ try {
     $check->close();
 
     // -----------------------------
-    // 同名且通過者獎金平分
+    // 同名且通過者獎金平分（排除已放棄獎金者）
     // 不再依建立時間判斷誰先填；排序僅作為「不可整除」時的餘數分配用（以 id 由小到大）
     // -----------------------------
     $final_amount = $bonus_amount;
     $split_count = 1;
     if ($student_name !== '') {
         $rows_ap = [];
+        $approval_join = "LEFT JOIN (
+                SELECT r1.recommendation_id, COALESCE(r1.status,'') AS latest_status, COALESCE(r1.signed_at, r1.created_at) AS latest_review_at
+                FROM recommendation_approval_links r1
+                INNER JOIN (
+                    SELECT recommendation_id, MAX(id) AS max_id
+                    FROM recommendation_approval_links
+                    GROUP BY recommendation_id
+                ) r2 ON r1.id = r2.max_id
+            ) ral ON ral.recommendation_id = ar.id";
         if ($has_recommended_table) {
-            $q = $conn->prepare("SELECT ar.id
+            $q = $conn->prepare("SELECT ar.id, COALESCE(ar.updated_at,'') AS updated_at, COALESCE(ral.latest_status,'') AS latest_status, COALESCE(ral.latest_review_at,'') AS latest_review_at
                 FROM admission_recommendations ar
                 LEFT JOIN recommended red ON ar.id = red.recommendations_id
+                {$approval_join}
             WHERE red.name = ? AND ar.status IN ('APD')
                 ORDER BY ar.id ASC");
             if ($q) {
@@ -213,6 +237,11 @@ try {
                 $res2 = $q->get_result();
                 if ($res2) {
                     while ($r2 = $res2->fetch_assoc()) {
+                        $latest_status = strtolower(trim((string)($r2['latest_status'] ?? '')));
+                        $updated_ts = strtotime((string)($r2['updated_at'] ?? ''));
+                        $review_ts = strtotime((string)($r2['latest_review_at'] ?? ''));
+                        $is_stale = ($updated_ts !== false && $review_ts !== false && $updated_ts > $review_ts);
+                        if ($latest_status === 'waived' && !$is_stale) continue;
                         $rows_ap[] = ['id' => (int)$r2['id']];
                     }
                 }
@@ -220,8 +249,9 @@ try {
             }
         } else {
             // 向後相容：若沒有 recommended 表，改用 admission_recommendations.student_name
-            $q = $conn->prepare("SELECT ar.id
+            $q = $conn->prepare("SELECT ar.id, COALESCE(ar.updated_at,'') AS updated_at, COALESCE(ral.latest_status,'') AS latest_status, COALESCE(ral.latest_review_at,'') AS latest_review_at
                 FROM admission_recommendations ar
+                {$approval_join}
                 WHERE ar.student_name = ? AND ar.status IN ('APD')
                 ORDER BY ar.id ASC");
             if ($q) {
@@ -230,6 +260,11 @@ try {
                 $res2 = $q->get_result();
                 if ($res2) {
                     while ($r2 = $res2->fetch_assoc()) {
+                        $latest_status = strtolower(trim((string)($r2['latest_status'] ?? '')));
+                        $updated_ts = strtotime((string)($r2['updated_at'] ?? ''));
+                        $review_ts = strtotime((string)($r2['latest_review_at'] ?? ''));
+                        $is_stale = ($updated_ts !== false && $review_ts !== false && $updated_ts > $review_ts);
+                        if ($latest_status === 'waived' && !$is_stale) continue;
                         $rows_ap[] = ['id' => (int)$r2['id']];
                     }
                 }

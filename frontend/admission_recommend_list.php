@@ -453,7 +453,9 @@ try {
     $review_result_field = $has_review_result ? "COALESCE(ar.review_result, '')" : "''";
     $academic_year_field = $has_academic_year ? "ar.academic_year" : "NULL";
     
-    $approval_status_field = $has_approval_links_table ? "COALESCE(ral.status, '') as director_review_status," : "'' as director_review_status,";
+    $approval_status_field = $has_approval_links_table
+        ? "COALESCE(ral.status, '') as director_review_status, COALESCE(ral.signed_at, ral.created_at) as director_review_at,"
+        : "'' as director_review_status, NULL as director_review_at,";
     $approval_join = $has_approval_links_table
         ? "LEFT JOIN (
             SELECT r1.*
@@ -988,6 +990,16 @@ try {
         }
         $it['student_status'] = $nsbi_status;
         $director_review_status = strtolower(trim((string)($it['director_review_status'] ?? '')));
+        $director_review_at = trim((string)($it['director_review_at'] ?? ''));
+        $status_updated_at = trim((string)($it['updated_at'] ?? ''));
+        $status_updated_ts = strtotime($status_updated_at);
+        $review_ts = strtotime($director_review_at);
+        $is_stale_director_review = ($status_updated_ts !== false && $review_ts !== false && $status_updated_ts > $review_ts);
+        if ($is_stale_director_review) {
+            // 狀態被重新調整後（如 APD -> PE -> APD），舊簽核結果失效，需重新簽核。
+            $director_review_status = '';
+            $it['director_review_status'] = '';
+        }
         $is_bonus_waived = ($director_review_status === 'waived');
         $it['no_bonus'] = in_array($nsbi_status, ['休學', '退學'], true) ? 1 : 0;
         if ($is_bonus_waived) {
@@ -2145,7 +2157,6 @@ try {
                                         <!-- <th>狀態</th> -->
                                         <!-- <th>入學狀態</th> -->
                                         <?php if ($is_admission_center && !$is_teacher_user): ?>
-                                        <th>分配部門</th>
                                         <th>操作</th>
                                         <?php elseif ($is_department_user): ?>
                                         <th>分配狀態</th>
@@ -2271,27 +2282,6 @@ try {
                                         </td> -->
                                         <?php if ($is_admission_center && !$is_teacher_user): ?>
                                         <td>
-                                            <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
-                                                <?php if (!empty($item['assigned_department'])): ?>
-                                                    <span style="color: #52c41a;">
-                                                        <i class="fas fa-check-circle"></i> 已分配 - 
-                                                        <?php echo htmlspecialchars($item['assigned_department']); ?>
-                                                    </span>
-                                                <?php else: ?>
-                                                    <span style="color: #8c8c8c;">
-                                                        <i class="fas fa-clock"></i> 未分配
-                                                    </span>
-                                                <?php endif; ?>
-                                                <button
-                                                    class="btn-view"
-                                                    style="background: #1890ff; color: white; border-color: #1890ff;"
-                                                    onclick="openAssignRecommendationDepartmentModal(<?php echo $item['id']; ?>, '<?php echo htmlspecialchars($item['student_name']); ?>', '<?php echo htmlspecialchars($item['assigned_department'] ?? ''); ?>')"
-                                                >
-                                                    <i class="fas fa-building"></i> <?php echo !empty($item['assigned_department']) ? '重新分配' : '分配'; ?>
-                                                </button>
-                                            </div>
-                                        </td>
-                                        <td>
                                             <div style="display: flex; gap: 8px; flex-wrap: wrap;">
                                                 <button type="button" 
                                                    class="btn-view" 
@@ -2305,6 +2295,7 @@ try {
                                                     $no_bonus = ((int)($item['no_bonus'] ?? 0) === 1);
                                                     $is_approved_for_bonus = in_array($current_status, ['APD'], true);
                                                     $recommender_signed = (strtolower(trim((string)($item['director_review_status'] ?? ''))) === 'signed');
+                                                    $is_bonus_waived = (strtolower(trim((string)($item['director_review_status'] ?? ''))) === 'waived');
                                                     $bonus_sent = ($rid > 0 && isset($bonus_sent_map[$rid]));
                                                     $bonus_sent_amount = $bonus_sent ? (int)($bonus_sent_map[$rid]['amount'] ?? 1500) : 0;
                                                     $bonus_sent_at = $bonus_sent ? (string)($bonus_sent_map[$rid]['sent_at'] ?? '') : '';
@@ -2313,7 +2304,7 @@ try {
                                                 ?>
 
                                                 <?php if (!empty($can_send_bonus) && $is_approved_for_bonus && !$no_bonus): ?>
-                                                    <?php if ($bonus_sent): ?>
+                                                    <?php if ($bonus_sent && $recommender_signed): ?>
                                                         <span class="btn-view" style="background:#f6ffed; border-color:#b7eb8f; color:#389e0d; cursor: default;">
                                                             <i class="fas fa-check-circle"></i> 已發送 $<?php echo number_format((int)$bonus_sent_amount); ?>
                                                         </span>
@@ -2336,6 +2327,9 @@ try {
                                                 </button>
                                                 <?php endif; ?>
                                             </div>
+                                            <?php if ($is_bonus_waived): ?>
+                                                <div style="margin-top:6px; color:#cf1322; font-size:13px; font-weight:600;">推薦人放棄獎金</div>
+                                            <?php endif; ?>
                                         </td>
                                         <?php elseif ($is_department_user): ?>
                                         <td>
@@ -2366,6 +2360,7 @@ try {
                                                     if ($auto_review === '人工確認') $auto_review = '需人工確認';
                                                     $is_approved_for_bonus = in_array($current_status, ['APD'], true);
                                                     $recommender_signed = (strtolower(trim((string)($item['director_review_status'] ?? ''))) === 'signed');
+                                                    $is_bonus_waived = (strtolower(trim((string)($item['director_review_status'] ?? ''))) === 'waived');
                                                     $bonus_sent = ($rid > 0 && isset($bonus_sent_map[$rid]));
                                                     $bonus_sent_amount = $bonus_sent ? (int)($bonus_sent_map[$rid]['amount'] ?? 1500) : 0;
                                                     $no_bonus = ((int)($item['no_bonus'] ?? 0) === 1);
@@ -2374,7 +2369,7 @@ try {
                                                 ?>
 
                                                 <?php if (!empty($can_send_bonus) && $is_approved_for_bonus && !$no_bonus): ?>
-                                                    <?php if ($bonus_sent): ?>
+                                                    <?php if ($bonus_sent && $recommender_signed): ?>
                                                         <span class="btn-view" style="background:#f6ffed; border-color:#b7eb8f; color:#389e0d; cursor: default;">
                                                             <i class="fas fa-check-circle"></i> 已發送 $<?php echo number_format((int)$bonus_sent_amount); ?>
                                                         </span>
@@ -2400,6 +2395,9 @@ try {
                                                     <i class="fas fa-user-plus"></i> <?php echo !empty($item['assigned_teacher_id']) ? '重新分配' : '分配'; ?>
                                                 </button>
                                             </div>
+                                            <?php if ($is_bonus_waived): ?>
+                                                <div style="margin-top:6px; color:#cf1322; font-size:13px; font-weight:600;">推薦人放棄獎金</div>
+                                            <?php endif; ?>
                                         </td>
                                         <?php else: ?>
                                         <td>
@@ -2418,6 +2416,7 @@ try {
                                                     if ($auto_review === '人工確認') $auto_review = '需人工確認';
                                                     $is_approved_for_bonus = in_array($current_status, ['APD'], true);
                                                     $recommender_signed = (strtolower(trim((string)($item['director_review_status'] ?? ''))) === 'signed');
+                                                    $is_bonus_waived = (strtolower(trim((string)($item['director_review_status'] ?? ''))) === 'waived');
                                                     $bonus_sent = ($rid > 0 && isset($bonus_sent_map[$rid]));
                                                     $bonus_sent_amount = $bonus_sent ? (int)($bonus_sent_map[$rid]['amount'] ?? 1500) : 0;
                                                     $no_bonus = ((int)($item['no_bonus'] ?? 0) === 1);
@@ -2426,7 +2425,7 @@ try {
                                                 ?>
 
                                                 <?php if (!empty($can_send_bonus) && $is_approved_for_bonus && !$no_bonus): ?>
-                                                    <?php if ($bonus_sent): ?>
+                                                    <?php if ($bonus_sent && $recommender_signed): ?>
                                                         <span class="btn-view" style="background:#f6ffed; border-color:#b7eb8f; color:#389e0d; cursor: default;">
                                                             <i class="fas fa-check-circle"></i> 已發送 $<?php echo number_format((int)$bonus_sent_amount); ?>
                                                         </span>
@@ -2449,12 +2448,21 @@ try {
                                                 </button>
                                                 <?php endif; ?>
                                             </div>
+                                            <?php if ($is_bonus_waived): ?>
+                                                <div style="margin-top:6px; color:#cf1322; font-size:13px; font-weight:600;">推薦人放棄獎金</div>
+                                            <?php endif; ?>
                                         </td>
                                         <?php endif; ?>
                                     </tr>
                                     <tr id="detail-<?php echo $item['id']; ?>" class="detail-row" style="display: none;">
                                         <?php
-                                            $detail_colspan = (($is_admission_center && !$is_teacher_user) || $is_department_user) ? 9 : 8;
+                                            if ($is_admission_center && !$is_teacher_user) {
+                                                $detail_colspan = 8;
+                                            } elseif ($is_department_user) {
+                                                $detail_colspan = 9;
+                                            } else {
+                                                $detail_colspan = 8;
+                                            }
                                             if (!$can_show_review_result_column) $detail_colspan -= 1;
                                         ?>
                                         <td colspan="<?php echo (int)$detail_colspan; ?>" style="padding: 20px; background: #f9f9f9; border: 2px solid #b3d9ff; border-radius: 4px;">
@@ -3090,6 +3098,44 @@ try {
         return (div.textContent || div.innerText || '').trim();
     }
 
+    function escapeHtml(text) {
+        return String(text || '')
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+    }
+
+    function getEditableTextNodes(root) {
+        const nodes = [];
+        const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, null);
+        let node = walker.nextNode();
+        while (node) {
+            if ((node.nodeValue || '').trim() !== '') nodes.push(node);
+            node = walker.nextNode();
+        }
+        return nodes;
+    }
+
+    function extractEditableTextFromHtml(html) {
+        const div = document.createElement('div');
+        div.innerHTML = html || '';
+        const lines = getEditableTextNodes(div).map(n => (n.nodeValue || '').trim());
+        return lines.join('\n');
+    }
+
+    function applyEditedTextToHtmlTemplate(templateHtml, editedText) {
+        const div = document.createElement('div');
+        div.innerHTML = templateHtml || '';
+        const nodes = getEditableTextNodes(div);
+        const lines = String(editedText || '').split(/\r?\n/);
+        for (let i = 0; i < nodes.length; i++) {
+            if (i < lines.length) nodes[i].nodeValue = lines[i];
+        }
+        return div.innerHTML;
+    }
+
     function renderGmailPreviewItem(container, email, index) {
         const item = document.createElement('div');
         item.className = 'gmail-preview-item';
@@ -3115,10 +3161,18 @@ try {
 
         const bodyWrap = document.createElement('div');
         bodyWrap.className = 'gmail-preview-field';
-        bodyWrap.innerHTML = '<label>信件內容（HTML）</label>';
+        bodyWrap.innerHTML = '<label>信件內容（純文字預覽）</label>';
         const bodyInput = document.createElement('textarea');
         bodyInput.className = 'gmail-body';
-        bodyInput.value = email.body || '';
+        const originalHtml = String(email.body || '');
+        const previewText = extractEditableTextFromHtml(originalHtml);
+        bodyInput.value = previewText;
+        bodyInput.dataset.originalHtml = originalHtml;
+        bodyInput.dataset.originalText = previewText;
+        bodyInput.dataset.isDirty = '0';
+        bodyInput.addEventListener('input', () => {
+            bodyInput.dataset.isDirty = '1';
+        });
         bodyWrap.appendChild(bodyInput);
         item.appendChild(bodyWrap);
 
@@ -3249,9 +3303,15 @@ try {
                 const idx = parseInt(item.dataset.index, 10);
                 const recKey = item.dataset.recKey || '';
                 const subject = (item.querySelector('.gmail-subject') || {}).value || '';
-                const body = (item.querySelector('.gmail-body') || {}).value || '';
+                const bodyEl = item.querySelector('.gmail-body');
+                const bodyText = (bodyEl || {}).value || '';
+                const originalHtml = (bodyEl && bodyEl.dataset && bodyEl.dataset.originalHtml) ? bodyEl.dataset.originalHtml : '';
+                const isDirty = (bodyEl && bodyEl.dataset && bodyEl.dataset.isDirty === '1');
+                const body = (!isDirty)
+                    ? originalHtml
+                    : applyEditedTextToHtmlTemplate(originalHtml, bodyText);
                 const includeGenerated = (item.querySelector('.gmail-include-generated') || {}).checked;
-                const altBody = body;
+                const altBody = bodyText;
                 return {
                     rec_key: recKey,
                     subject,

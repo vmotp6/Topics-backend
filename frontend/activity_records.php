@@ -188,6 +188,10 @@ function getAcademicYearRangeByRocYear($roc_year) {
 // 獲取新生統計的視圖類型（新生或歷屆學生）
 $new_student_view = isset($_GET['new_student_view']) ? $_GET['new_student_view'] : 'active'; // 'active' 為新生，'previous' 為歷屆學生
 $selected_roc_year = isset($_GET['roc_year']) ? (int)$_GET['roc_year'] : 0; // 選中的學年度（民國年）
+$fixed_previous_roc_year = 113; // 與招生推薦名單年度邏輯對齊：歷屆固定查看 113 屆
+if ($new_student_view === 'previous') {
+    $selected_roc_year = $fixed_previous_roc_year;
+}
 
 // 建立資料庫連接
 $conn = getDatabaseConnection();
@@ -926,6 +930,8 @@ if ($teacher_id > 0) {
                     $yearStmt->close();
                 }
                 rsort($available_roc_years);
+                // 歷屆視圖固定看 113 屆
+                $available_roc_years = [$fixed_previous_roc_year];
             }
             
             // 構建 WHERE 條件和參數
@@ -4208,7 +4214,7 @@ function resetEnrollmentTabs() {
                     <div style="display: flex; gap: 10px; align-items: center;">
                         <select id="newStudentViewSelect" onchange="changeNewStudentView(this.value)" style="padding: 8px 12px; border: 1px solid #d9d9d9; border-radius: 6px; background: #fff; color: #333; font-size: 14px; cursor: pointer;">
                             <option value="active" <?php echo $new_student_view === 'active' ? 'selected' : ''; ?>>新生資料</option>
-                            <option value="previous" <?php echo $new_student_view === 'previous' ? 'selected' : ''; ?>>歷屆學生資料</option>
+                            <option value="previous" <?php echo $new_student_view === 'previous' ? 'selected' : ''; ?>>歷屆學生(113屆)</option>
                         </select>
                         <?php if ($new_student_view === 'previous' && !empty($available_roc_years)): ?>
                             <select id="rocYearSelect" onchange="changeRocYear(this.value)" style="padding: 8px 12px; border: 1px solid #d9d9d9; border-radius: 6px; background: #fff; color: #333; font-size: 14px; cursor: pointer;">
@@ -4339,7 +4345,7 @@ function resetEnrollmentTabs() {
                     <div style="display: flex; gap: 10px; align-items: center;">
                         <select id="newStudentViewSelect" onchange="changeNewStudentView(this.value)" style="padding: 8px 12px; border: 1px solid #d9d9d9; border-radius: 6px; background: #fff; color: #333; font-size: 14px; cursor: pointer;">
                             <option value="active" <?php echo $new_student_view === 'active' ? 'selected' : ''; ?>>新生資料</option>
-                            <option value="previous" <?php echo $new_student_view === 'previous' ? 'selected' : ''; ?>>歷屆學生資料</option>
+                            <option value="previous" <?php echo $new_student_view === 'previous' ? 'selected' : ''; ?>>歷屆學生(113屆)</option>
                         </select>
                         <?php if ($new_student_view === 'previous' && !empty($available_roc_years)): ?>
                             <select id="rocYearSelect" onchange="changeRocYear(this.value)" style="padding: 8px 12px; border: 1px solid #d9d9d9; border-radius: 6px; background: #fff; color: #333; font-size: 14px; cursor: pointer;">
@@ -4531,7 +4537,7 @@ function resetEnrollmentTabs() {
                     <div style="display: flex; gap: 10px; align-items: center;">
                         <select id="newStudentViewSelect" onchange="changeNewStudentView(this.value)" style="padding: 8px 12px; border: 1px solid #d9d9d9; border-radius: 6px; background: #fff; color: #333; font-size: 14px; cursor: pointer;">
                             <option value="active" <?php echo $new_student_view === 'active' ? 'selected' : ''; ?>>新生資料</option>
-                            <option value="previous" <?php echo $new_student_view === 'previous' ? 'selected' : ''; ?>>歷屆學生資料</option>
+                            <option value="previous" <?php echo $new_student_view === 'previous' ? 'selected' : ''; ?>>歷屆學生(113屆)</option>
                         </select>
                         <?php if ($new_student_view === 'previous' && !empty($available_roc_years)): ?>
                             <select id="rocYearSelect" onchange="changeRocYear(this.value)" style="padding: 8px 12px; border: 1px solid #d9d9d9; border-radius: 6px; background: #fff; color: #333; font-size: 14px; cursor: pointer;">
@@ -4700,12 +4706,6 @@ function resetEnrollmentTabs() {
             }))
             .filter(item => item.new_student_count > 0);
 
-        const totalNewStudents = deptRatio.reduce((sum, item) => sum + item.new_student_count, 0);
-        const recommendedCompleted = deptRatio.reduce((sum, item) => sum + item.recommended_count, 0);
-        const ratioPercent = totalNewStudents > 0
-            ? ((recommendedCompleted / totalNewStudents) * 100).toFixed(2)
-            : '0.00';
-
         const content = `
             <div style="margin-bottom: 20px;">
                 <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; flex-wrap: wrap; gap: 10px;">
@@ -4715,7 +4715,13 @@ function resetEnrollmentTabs() {
                     <div style="display: flex; gap: 10px; align-items: center;">
                         <select id="newStudentViewSelect" onchange="changeNewStudentView(this.value)" style="padding: 8px 12px; border: 1px solid #d9d9d9; border-radius: 6px; background: #fff; color: #333; font-size: 14px; cursor: pointer;">
                             <option value="active" <?php echo $new_student_view === 'active' ? 'selected' : ''; ?>>新生資料</option>
-                            <option value="previous" <?php echo $new_student_view === 'previous' ? 'selected' : ''; ?>>歷屆學生資料</option>
+                            <option value="previous" <?php echo $new_student_view === 'previous' ? 'selected' : ''; ?>>歷屆學生(113屆)</option>
+                        </select>
+                        <select id="recommendDeptFilterSelect" style="padding: 8px 12px; border: 1px solid #d9d9d9; border-radius: 6px; background: #fff; color: #333; font-size: 14px; cursor: pointer;">
+                            <option value="all">顯示全部科系</option>
+                            ${deptRatio.map(item => `
+                                <option value="${item.department_name}">${item.department_name}</option>
+                            `).join('')}
                         </select>
                         <?php if ($new_student_view === 'previous' && !empty($available_roc_years)): ?>
                             <select id="rocYearSelect" onchange="changeRocYear(this.value)" style="padding: 8px 12px; border: 1px solid #d9d9d9; border-radius: 6px; background: #fff; color: #333; font-size: 14px; cursor: pointer;">
@@ -4730,6 +4736,46 @@ function resetEnrollmentTabs() {
                     </div>
                 </div>
 
+                <div id="recommendRatioSummary"></div>
+                <div id="recommendRatioChartArea"></div>
+                <div id="recommendRatioTableArea" style="margin-top:20px;"></div>
+            </div>
+        `;
+
+        const recommendContainer = document.getElementById('recommendAnalyticsContent');
+        if (!recommendContainer) return;
+        recommendContainer.innerHTML = content;
+
+        const summaryEl = document.getElementById('recommendRatioSummary');
+        const chartAreaEl = document.getElementById('recommendRatioChartArea');
+        const tableAreaEl = document.getElementById('recommendRatioTableArea');
+        const deptFilterSelect = document.getElementById('recommendDeptFilterSelect');
+        if (!summaryEl || !chartAreaEl || !tableAreaEl || !deptFilterSelect) return;
+
+        const colorPalette = [
+            '#4facfe', '#ff9f43', '#10ac84', '#5f27cd', '#ee5253',
+            '#00d2d3', '#2e86de', '#e67e22', '#2ecc71', '#9b59b6',
+            '#f39c12', '#1abc9c'
+        ];
+        const deptColorMap = {};
+        deptRatio.forEach((item, idx) => {
+            if (!deptColorMap[item.department_name]) {
+                deptColorMap[item.department_name] = colorPalette[idx % colorPalette.length];
+            }
+        });
+
+        const renderRecommendRatioByDepartment = (deptFilterValue) => {
+            const filtered = deptFilterValue === 'all'
+                ? deptRatio
+                : deptRatio.filter(item => item.department_name === deptFilterValue);
+
+            const totalNewStudents = filtered.reduce((sum, item) => sum + item.new_student_count, 0);
+            const recommendedCompleted = filtered.reduce((sum, item) => sum + item.recommended_count, 0);
+            const ratioPercent = totalNewStudents > 0
+                ? ((recommendedCompleted / totalNewStudents) * 100).toFixed(2)
+                : '0.00';
+
+            summaryEl.innerHTML = `
                 <div style="background: linear-gradient(135deg, #4facfe 0%, #00c6ff 100%); color: white; padding: 20px; border-radius: 10px; margin-bottom: 20px;">
                     <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 16px; text-align: center;">
                         <div>
@@ -4746,85 +4792,86 @@ function resetEnrollmentTabs() {
                         </div>
                     </div>
                 </div>
+            `;
 
-                ${deptRatio.length <= 0 ? `
+            if (Array.isArray(window.newStudentRecommendRatioChartInstances)) {
+                window.newStudentRecommendRatioChartInstances.forEach((ins) => {
+                    if (ins) ins.destroy();
+                });
+            }
+            window.newStudentRecommendRatioChartInstances = [];
+
+            if (filtered.length <= 0) {
+                chartAreaEl.innerHTML = `
                     <div style="text-align:center; color:#6c757d; padding: 30px 0;">
                         <i class="fas fa-inbox fa-2x" style="margin-bottom: 10px;"></i>
                         <div>目前沒有可用的科系新生資料</div>
                     </div>
-                ` : `
-                    <div class="chart-card" style="padding: 20px;">
-                        <div class="chart-title" style="text-align:center; margin-bottom:16px;">各科系推薦入學比例（單獨顯示）</div>
-                        <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(240px, 1fr)); gap:16px;">
-                            ${deptRatio.map((item, index) => `
+                `;
+                tableAreaEl.innerHTML = '';
+                return;
+            }
+
+            const isSingleDept = filtered.length === 1;
+            chartAreaEl.innerHTML = `
+                <div class="chart-card" style="padding: 20px;">
+                    <div class="chart-title" style="text-align:center; margin-bottom:16px;">各科系推薦入學比例（單獨顯示）</div>
+                    <div style="display:grid; grid-template-columns:${isSingleDept ? 'minmax(380px, 560px)' : 'repeat(3, minmax(220px, 1fr))'}; gap:16px; justify-content:${isSingleDept ? 'center' : 'stretch'};">
+                        ${filtered.map((item, index) => {
+                            const color = deptColorMap[item.department_name] || colorPalette[index % colorPalette.length];
+                            return `
                                 <div style="border:1px solid #eef2f7; border-radius:12px; padding:14px; background:#fff;">
                                     <div style="font-weight:700; color:#333; margin-bottom:8px; text-align:center;">${item.department_name}</div>
-                                    <div style="height: 190px; display:flex; justify-content:center; align-items:center;">
+                                    <div style="height: ${isSingleDept ? '280px' : '190px'}; display:flex; justify-content:center; align-items:center;">
                                         <canvas id="newStudentRecommendRatioChart_${index}"></canvas>
                                     </div>
-                                    <div style="margin-top:8px; text-align:center; color:#4facfe; font-weight:700;">
+                                    <div style="margin-top:8px; text-align:center; color:${color}; font-weight:700;">
                                         比例：${item.ratio_percent.toFixed(2)}%（${item.recommended_count}/${item.new_student_count}）
                                     </div>
                                 </div>
-                            `).join('')}
-                        </div>
+                            `;
+                        }).join('')}
                     </div>
-                    <div style="margin-top:20px;">
-                        <table style="width:100%; border-collapse:collapse; background:#fff;">
-                            <thead>
-                                <tr style="background:#f8f9fa; border-bottom:2px solid #dee2e6;">
-                                    <th style="padding:12px; text-align:left;">科系</th>
-                                    <th style="padding:12px; text-align:center;">新生數</th>
-                                    <th style="padding:12px; text-align:center;">推薦入學數（審核完成）</th>
-                                    <th style="padding:12px; text-align:center;">比例</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                ${deptRatio.map((item, index) => `
-                                    <tr style="border-bottom:1px solid #e9ecef; ${index % 2 === 0 ? 'background:#fff;' : 'background:#f8f9fa;'}">
-                                        <td style="padding:12px; font-weight:500;">${item.department_name}</td>
-                                        <td style="padding:12px; text-align:center;">${item.new_student_count}</td>
-                                        <td style="padding:12px; text-align:center; color:#4facfe; font-weight:700;">${item.recommended_count}</td>
-                                        <td style="padding:12px; text-align:center;">${item.ratio_percent.toFixed(2)}%</td>
-                                    </tr>
-                                `).join('')}
-                            </tbody>
-                        </table>
-                    </div>
-                `}
-            </div>
-        `;
+                </div>
+            `;
 
-        const recommendContainer = document.getElementById('recommendAnalyticsContent');
-        if (!recommendContainer) return;
-        recommendContainer.innerHTML = content;
+            tableAreaEl.innerHTML = `
+                <table style="width:100%; border-collapse:collapse; background:#fff;">
+                    <thead>
+                        <tr style="background:#f8f9fa; border-bottom:2px solid #dee2e6;">
+                            <th style="padding:12px; text-align:left;">科系</th>
+                            <th style="padding:12px; text-align:center;">新生數</th>
+                            <th style="padding:12px; text-align:center;">推薦入學數（審核完成）</th>
+                            <th style="padding:12px; text-align:center;">比例</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        ${filtered.map((item, index) => `
+                            <tr style="border-bottom:1px solid #e9ecef; ${index % 2 === 0 ? 'background:#fff;' : 'background:#f8f9fa;'}">
+                                <td style="padding:12px; font-weight:500;">${item.department_name}</td>
+                                <td style="padding:12px; text-align:center;">${item.new_student_count}</td>
+                                <td style="padding:12px; text-align:center; color:#4facfe; font-weight:700;">${item.recommended_count}</td>
+                                <td style="padding:12px; text-align:center;">${item.ratio_percent.toFixed(2)}%</td>
+                            </tr>
+                        `).join('')}
+                    </tbody>
+                </table>
+            `;
 
-        if (Array.isArray(window.newStudentRecommendRatioChartInstances)) {
-            window.newStudentRecommendRatioChartInstances.forEach((ins) => {
-                if (ins) ins.destroy();
-            });
             window.newStudentRecommendRatioChartInstances = [];
-        }
-        if (window.newStudentRecommendRatioChartInstance) {
-            window.newStudentRecommendRatioChartInstance.destroy();
-            window.newStudentRecommendRatioChartInstance = null;
-        }
-        if (deptRatio.length <= 0) return;
-
-        setTimeout(() => {
-            window.newStudentRecommendRatioChartInstances = [];
-            deptRatio.forEach((item, index) => {
+            filtered.forEach((item, index) => {
                 const canvas = document.getElementById(`newStudentRecommendRatioChart_${index}`);
                 if (!canvas) return;
                 const ctx = canvas.getContext('2d');
                 const others = Math.max(item.new_student_count - item.recommended_count, 0);
+                const color = deptColorMap[item.department_name] || colorPalette[index % colorPalette.length];
                 const chart = new Chart(ctx, {
                     type: 'doughnut',
                     data: {
                         labels: ['推薦入學（審核完成）', '其他來源'],
                         datasets: [{
                             data: [item.recommended_count, others],
-                            backgroundColor: ['#4facfe', '#e9edf5'],
+                            backgroundColor: [color, '#e9edf5'],
                             borderColor: '#ffffff',
                             borderWidth: 2
                         }]
@@ -4854,7 +4901,13 @@ function resetEnrollmentTabs() {
                 });
                 window.newStudentRecommendRatioChartInstances.push(chart);
             });
-        }, 80);
+        };
+
+        deptFilterSelect.addEventListener('change', function() {
+            renderRecommendRatioByDepartment(this.value || 'all');
+        });
+
+        renderRecommendRatioByDepartment('all');
     }
     
     // 清除新生統計圖表
@@ -4942,7 +4995,7 @@ function resetEnrollmentTabs() {
                     <div style="display: flex; gap: 10px; align-items: center;">
                         <select id="newStudentViewSelect" onchange="changeNewStudentView(this.value)" style="padding: 8px 12px; border: 1px solid #d9d9d9; border-radius: 6px; background: #fff; color: #333; font-size: 14px; cursor: pointer;">
                             <option value="active" <?php echo $new_student_view === 'active' ? 'selected' : ''; ?>>新生資料</option>
-                            <option value="previous" <?php echo $new_student_view === 'previous' ? 'selected' : ''; ?>>歷屆學生資料</option>
+                            <option value="previous" <?php echo $new_student_view === 'previous' ? 'selected' : ''; ?>>歷屆學生(113屆)</option>
                         </select>
                         <?php if ($new_student_view === 'previous' && !empty($available_roc_years)): ?>
                             <select id="rocYearSelect" onchange="changeRocYear(this.value)" style="padding: 8px 12px; border: 1px solid #d9d9d9; border-radius: 6px; background: #fff; color: #333; font-size: 14px; cursor: pointer;">
@@ -5081,6 +5134,9 @@ function resetEnrollmentTabs() {
         // 清除學年度參數（如果從歷屆切換到新生）
         if (viewType === 'active') {
             url.searchParams.delete('roc_year');
+        } else {
+            // 歷屆視圖固定查看 113 屆
+            url.searchParams.set('roc_year', '113');
         }
         // 重新載入頁面以更新數據
         window.location.href = url.toString();
@@ -5090,11 +5146,8 @@ function resetEnrollmentTabs() {
     function changeRocYear(rocYear) {
         const url = new URL(window.location.href);
         url.searchParams.set('new_student_view', 'previous');
-        if (rocYear && rocYear !== '0') {
-            url.searchParams.set('roc_year', rocYear);
-        } else {
-            url.searchParams.delete('roc_year');
-        }
+        // 歷屆視圖固定查看 113 屆
+        url.searchParams.set('roc_year', '113');
         // 重新載入頁面以更新數據
         window.location.href = url.toString();
     }
