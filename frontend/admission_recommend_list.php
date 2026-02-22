@@ -2735,7 +2735,7 @@ try {
                         <option value="" selected>請選擇</option>
                         <option value="通過">通過</option>
                         <option value="不通過">不通過</option>
-                        <option value="需人工審查">需人工審查</option>
+                        <option value="需科主任審核">需科主任審核</option>
                     </select>
                 </div>
                 <div id="reviewCriteriaSelectedWrap" style="margin-top:16px; display:none;">
