@@ -454,8 +454,8 @@ try {
     $academic_year_field = $has_academic_year ? "ar.academic_year" : "NULL";
     
     $approval_status_field = $has_approval_links_table
-        ? "COALESCE(ral.status, '') as director_review_status, COALESCE(ral.signed_at, ral.created_at) as director_review_at,"
-        : "'' as director_review_status, NULL as director_review_at,";
+        ? "COALESCE(ral.status, '') as director_review_status, COALESCE(ral.signed_at, ral.created_at) as director_review_at, COALESCE(ral.reject_reason, '') as director_reject_reason,"
+        : "'' as director_review_status, NULL as director_review_at, '' as director_reject_reason,";
     $approval_join = $has_approval_links_table
         ? "LEFT JOIN (
             SELECT r1.*
@@ -999,6 +999,7 @@ try {
             // 狀態被重新調整後（如 APD -> PE -> APD），舊簽核結果失效，需重新簽核。
             $director_review_status = '';
             $it['director_review_status'] = '';
+            $it['director_reject_reason'] = '';
         }
         $is_bonus_waived = ($director_review_status === 'waived');
         $it['no_bonus'] = in_array($nsbi_status, ['休學', '退學'], true) ? 1 : 0;
@@ -2259,7 +2260,8 @@ try {
                                                                     <?php echo (int)($item['auto_review_match_name'] ?? 0); ?>,
                                                                     <?php echo (int)($item['auto_review_match_school'] ?? 0); ?>,
                                                                     <?php echo (int)($item['auto_review_match_phone'] ?? 0); ?>,
-                                                                    <?php echo htmlspecialchars(json_encode((string)($item['proof_evidence'] ?? '')), ENT_QUOTES, 'UTF-8'); ?>
+                                                                    <?php echo htmlspecialchars(json_encode((string)($item['proof_evidence'] ?? '')), ENT_QUOTES, 'UTF-8'); ?>,
+                                                                    <?php echo htmlspecialchars(json_encode((string)($item['director_reject_reason'] ?? '')), ENT_QUOTES, 'UTF-8'); ?>
                                                                 )"
                                                             >
                                                                 查看審核結果
@@ -2740,6 +2742,10 @@ try {
                 </div>
                 <div id="reviewCriteriaSelectedWrap" style="margin-top:16px; display:none;">
                     <span class="review-badge" id="reviewCriteriaSelectedBadge"></span>
+                </div>
+                <div id="reviewFailReasonWrap" style="margin-top:16px; display:none;">
+                    <div style="font-size:16px; color:#595959; margin-bottom:6px;">不通過原因</div>
+                    <div id="reviewFailReasonText" style="font-size:16px; color:#cf1322; white-space:pre-wrap; background:#fff1f0; border:1px solid #ffccc7; border-radius:8px; padding:10px 12px;"></div>
                 </div>
                 <div style="margin-top:16px; font-size:16px; color:#595959;">流程進度</div>
                 <div id="reviewProgressBar" class="review-progress" style="margin-top:8px;"></div>
@@ -3748,7 +3754,7 @@ try {
     // 查看審核結果（彈出視窗顯示三項條件 + 審核結果下拉）
     let currentReviewCriteriaId = null;
     let currentReviewCriteriaValue = '';
-    function openReviewCriteriaModal(recommendationId, studentName, currentReview, hasDuplicate, hasEnrollment, studentStatus, noBonus, nsbiFound, matchName, matchSchool, matchPhone, proofEvidence) {
+    function openReviewCriteriaModal(recommendationId, studentName, currentReview, hasDuplicate, hasEnrollment, studentStatus, noBonus, nsbiFound, matchName, matchSchool, matchPhone, proofEvidence, rejectReason) {
         const modal = document.getElementById('reviewCriteriaModal');
         const nameEl = document.getElementById('reviewCriteriaStudentName');
         const listEl = document.getElementById('reviewCriteriaList');
@@ -3757,13 +3763,17 @@ try {
         const selectWrap = document.getElementById('reviewCriteriaSelectWrap');
         const selectedWrap = document.getElementById('reviewCriteriaSelectedWrap');
         const selectedBadge = document.getElementById('reviewCriteriaSelectedBadge');
-        if (!modal || !nameEl || !listEl || !selectEl || !selectWrap || !selectedWrap || !selectedBadge) return;
+        const failReasonWrap = document.getElementById('reviewFailReasonWrap');
+        const failReasonText = document.getElementById('reviewFailReasonText');
+        if (!modal || !nameEl || !listEl || !selectEl || !selectWrap || !selectedWrap || !selectedBadge || !failReasonWrap || !failReasonText) return;
 
         currentReviewCriteriaId = recommendationId;
         currentReviewCriteriaValue = '';
         nameEl.textContent = studentName || '';
         listEl.innerHTML = '';
         if (progressEl) progressEl.innerHTML = '';
+        failReasonWrap.style.display = 'none';
+        failReasonText.textContent = '';
 
         const addLine = (text, isFail, colorOverride) => {
             const div = document.createElement('div');
@@ -3903,7 +3913,12 @@ try {
         }
 
         const normalized = (currentReview || '').trim();
+        const normalizedRejectReason = (rejectReason || '').trim();
         renderProgress(normalized);
+        if (normalized === '科主任審核未通過') {
+            failReasonText.textContent = normalizedRejectReason || '未填寫不通過原因';
+            failReasonWrap.style.display = 'block';
+        }
         if (normalized === '尚未審核') {
             // 僅尚未審核可調整
             currentReviewCriteriaValue = '';
