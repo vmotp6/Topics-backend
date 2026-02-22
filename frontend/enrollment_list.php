@@ -444,9 +444,11 @@ function getRegistrationStageStatusHtml($item, $current_registration_stage, $sta
     $reminded_col = $current_registration_stage . '_reminded';
     $registered_col = $current_registration_stage . '_registered';
     $declined_col = $current_registration_stage . '_declined';
+    $reason_col = $current_registration_stage . '_decline_reason';
     $is_reminded = ((int)($item[$reminded_col] ?? 0) === 1);
     $is_registered = ((int)($item[$registered_col] ?? 0) === 1);
     $is_declined = ((int)($item[$declined_col] ?? 0) === 1);
+    $decline_reason = trim((string)($item[$reason_col] ?? ''));
     if ($is_registered) {
         $status_text = '已報名';
         $status_style = 'color:#52c41a;font-weight:500;';
@@ -460,7 +462,11 @@ function getRegistrationStageStatusHtml($item, $current_registration_stage, $sta
         $status_text = '未提醒';
         $status_style = 'color:#faad14;font-weight:500;';
     }
-    return '<div style="margin-top:6px;font-size:12px;color:#666;"><span style="color:#8c8c8c;">報名階段：</span>' . htmlspecialchars($stage_name) . '　<span style="color:#8c8c8c;">狀態：</span><span style="' . $status_style . '">' . htmlspecialchars($status_text) . '</span></div>';
+    $out = '<div style="margin-top:6px;font-size:12px;color:#666;"><span style="color:#8c8c8c;">報名階段：</span>' . htmlspecialchars($stage_name) . '　<span style="color:#8c8c8c;">狀態：</span><span style="' . $status_style . '">' . htmlspecialchars($status_text) . '</span></div>';
+    if ($is_declined && $decline_reason !== '') {
+        $out .= '<div style="margin-top:4px;font-size:11px;color:#8c8c8c;"><span style="color:#8c8c8c;">不報名原因：</span>' . nl2br(htmlspecialchars($decline_reason)) . '</div>';
+    }
+    return $out;
 }
 
 /**
@@ -517,8 +523,12 @@ try {
         'continued_recruitment_reminded' => "TINYINT(1) NOT NULL DEFAULT 0 COMMENT '續招是否已提醒'",
         'continued_recruitment_registered' => "TINYINT(1) NOT NULL DEFAULT 0 COMMENT '續招是否已報名'",
         'continued_recruitment_declined' => "TINYINT(1) NOT NULL DEFAULT 0 COMMENT '續招本階段不報'",
+        'priority_exam_decline_reason' => "TEXT DEFAULT NULL COMMENT '優先免試本階段不報原因'",
+        'joint_exam_decline_reason' => "TEXT DEFAULT NULL COMMENT '聯合免試本階段不報原因'",
+        'continued_recruitment_decline_reason' => "TEXT DEFAULT NULL COMMENT '續招本階段不報原因'",
         'is_registered' => "TINYINT(1) NOT NULL DEFAULT 0 COMMENT '是否已報名（任一階段）'",
-        'check_in_status' => "VARCHAR(20) NOT NULL DEFAULT 'pending' COMMENT '報到流程: pending=待報到, reminded=已提醒報到, completed=已完成報到, declined=放棄報到'"
+        'check_in_status' => "VARCHAR(20) NOT NULL DEFAULT 'pending' COMMENT '報到流程: pending=待報到, reminded=已提醒報到, completed=已完成報到, declined=放棄報到'",
+        'check_in_decline_reason' => "TEXT DEFAULT NULL COMMENT '放棄報到原因'"
     ];
     foreach ($registration_cols as $name => $def) {
         $r = @$conn->query("SHOW COLUMNS FROM enrollment_intention LIKE '$name'");
@@ -1254,6 +1264,7 @@ try {
                                             <?php
                                                 $check_in_status = $item['check_in_status'] ?? 'pending';
                                                 $can_check_in = !$is_admission_center ? ($is_assigned_to_me || !$is_director) : true;
+                                                $check_in_decline_reason = trim((string)($item['check_in_decline_reason'] ?? ''));
                                             ?>
                                             <td><?php echo htmlspecialchars($item['name']); ?></td>
                                             <td><?php echo getSchoolName($item['junior_high'] ?? '', $school_data); ?></td>
@@ -1261,7 +1272,19 @@ try {
                                                 <td><?php echo $assignment_html; ?></td>
                                             <?php endif; ?>
                                             <td><?php echo htmlspecialchars(getRegisteredStageDisplay($item)); ?></td>
-                                            <td><?php echo getCheckInStatusBadgeHtml($check_in_status); ?></td>
+                                            <td><?php
+                                                if ($check_in_status === 'declined') {
+                                                    $reason_attr = htmlspecialchars($check_in_decline_reason, ENT_QUOTES, 'UTF-8');
+                                                    echo '<div>';
+                                                    echo '<button type="button" class="btn-view" style="border-color:#8c8c8c;color:#8c8c8c;background:#f5f5f5;cursor:pointer;padding:2px 8px;font-size:12px;" title="按一下顯示放棄報到原因" data-decline-reason="' . $reason_attr . '" onclick="event.stopPropagation(); showCheckInDeclineReason(this.getAttribute(\'data-decline-reason\'))"><i class="fas fa-times-circle" style="font-size:10px;"></i> 放棄報到</button>';
+                                                    if ($check_in_decline_reason !== '') {
+                                                        echo '<div style="margin-top:4px;font-size:11px;color:#8c8c8c;"><span style="color:#8c8c8c;">放棄報到原因：</span>' . nl2br(htmlspecialchars($check_in_decline_reason)) . '</div>';
+                                                    }
+                                                    echo '</div>';
+                                                } else {
+                                                    echo getCheckInStatusBadgeHtml($check_in_status);
+                                                }
+                                            ?></td>
                                             <td onclick="event.stopPropagation();">
                                                 <div style="display: flex; gap: 8px; flex-wrap: wrap;">
                                                     <button type="button"
@@ -1270,12 +1293,15 @@ try {
                                                         onclick="event.stopPropagation(); toggleDetail(<?php echo $item['id']; ?>)">
                                                         <i class="fas fa-eye"></i> <span class="btn-text">查看詳情</span>
                                                     </button>
+                                                    <?php if ($check_in_status === 'declined'): ?>
+                                                        <button type="button" class="btn-view" style="border-color:#8c8c8c;color:#8c8c8c;" title="放棄報到原因" data-decline-reason="<?php echo htmlspecialchars($check_in_decline_reason, ENT_QUOTES, 'UTF-8'); ?>" onclick="event.stopPropagation(); showCheckInDeclineReason(this.getAttribute('data-decline-reason'))"><i class="fas fa-comment-alt"></i> 查看原因</button>
+                                                    <?php endif; ?>
                                                     <?php if ($can_check_in): ?>
                                                         <?php if ($check_in_status === 'pending'): ?>
                                                             <button type="button" class="btn-view" style="border-color:#1890ff;color:#1890ff;" onclick="event.stopPropagation(); handleCheckInAction(<?php echo (int)$item['id']; ?>, 'check_in_remind', '已提醒報到')"><i class="fas fa-bell"></i> 已提醒報到</button>
                                                         <?php elseif ($check_in_status === 'reminded'): ?>
                                                             <button type="button" class="btn-view" style="border-color:#52c41a;color:#52c41a;" onclick="event.stopPropagation(); handleCheckInAction(<?php echo (int)$item['id']; ?>, 'check_in_complete', '已完成報到')"><i class="fas fa-check-circle"></i> 已完成報到</button>
-                                                            <button type="button" class="btn-view" style="border-color:#8c8c8c;color:#8c8c8c;" onclick="event.stopPropagation(); handleCheckInAction(<?php echo (int)$item['id']; ?>, 'check_in_decline', '放棄報到')"><i class="fas fa-times-circle"></i> 放棄報到</button>
+                                                            <button type="button" class="btn-view" style="border-color:#8c8c8c;color:#8c8c8c;" onclick="event.stopPropagation(); openCheckInDeclineModal(<?php echo (int)$item['id']; ?>)"><i class="fas fa-times-circle"></i> 放棄報到</button>
                                                         <?php endif; ?>
                                                     <?php endif; ?>
                                                 </div>
@@ -1295,6 +1321,8 @@ try {
                                                     'continued_recruitment' => '續招'
                                                 ];
                                                 $stage_name = $current_registration_stage ? ($stage_names[$current_registration_stage] ?? '') : '';
+                                                $reason_col = $current_registration_stage ? $current_registration_stage . '_decline_reason' : '';
+                                                $decline_reason_for_btn = ($reason_col !== '') ? trim((string)($item[$reason_col] ?? '')) : '';
 
                                                 // 是否允許此使用者對該學生做報名提醒動作：
                                                 // - 招生中心：一律不能提醒
@@ -1371,9 +1399,10 @@ try {
                                                             </button>
                                                         <?php else: ?>
                                                             <?php if ($is_declined): ?>
-                                                                <span class="btn-view" style="border-color: #d9d9d9; color: #8c8c8c; cursor: default; background: #f5f5f5;">
-                                                                    <i class="fas fa-minus-circle"></i> 本階段不報（已記錄）
-                                                                </span>
+                                                                <button type="button" class="btn-view" style="border-color: #d9d9d9; color: #8c8c8c; background: #f5f5f5; cursor: pointer;" title="按一下顯示不報名原因" data-decline-reason="<?php echo htmlspecialchars($decline_reason_for_btn, ENT_QUOTES, 'UTF-8'); ?>" onclick="event.stopPropagation(); showDeclineReason(this.getAttribute('data-decline-reason'))">
+                                                                    <i class="fas fa-minus-circle"></i> 本階段不報
+                                                                </button>
+                                                                <button type="button" class="btn-view" style="border-color: #8c8c8c; color: #8c8c8c;" title="不報名原因" data-decline-reason="<?php echo htmlspecialchars($decline_reason_for_btn, ENT_QUOTES, 'UTF-8'); ?>" onclick="event.stopPropagation(); showDeclineReason(this.getAttribute('data-decline-reason'))"><i class="fas fa-comment-alt"></i> 查看原因</button>
                                                             <?php else: ?>
                                                                 <button type="button"
                                                                     class="btn-view"
@@ -1388,7 +1417,7 @@ try {
                                                                     style="border-color: #faad14; color: #faad14; background: #fffbe6;"
                                                                     id="decline-btn-<?php echo $item['id']; ?>"
                                                                     data-enrollment-id="<?php echo (int)$item['id']; ?>"
-                                                                    onclick="event.stopPropagation(); handleRegistrationDeclineStage(<?php echo (int)$item['id']; ?>, '<?php echo htmlspecialchars($stage_name, ENT_QUOTES, 'UTF-8'); ?>')">
+                                                                    onclick="event.stopPropagation(); handleRegistrationDeclineStage(<?php echo (int)$item['id']; ?>, '<?php echo htmlspecialchars($current_registration_stage, ENT_QUOTES, 'UTF-8'); ?>')">
                                                                     <i class="fas fa-user-times"></i> 本階段不報
                                                                 </button>
                                                             <?php endif; ?>
@@ -1488,6 +1517,61 @@ try {
             <div class="modal-footer">
                 <button class="btn-cancel" onclick="closeAssignModal()">取消</button>
                 <button class="btn-confirm" onclick="confirmAssign()">確定分配</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 本階段不報名：填寫原因 -->
+    <div id="declineStageModal" class="modal" style="display: none;">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>本階段不報名</h3>
+                <span class="close" onclick="closeDeclineStageModal()">&times;</span>
+            </div>
+            <div class="modal-body">
+                <p id="declineStageModalStageName" style="margin-bottom: 12px; color: #666; font-size: 14px;"></p>
+                <p style="margin-bottom: 8px; font-size: 13px;">學生將回復為「持續聯絡追蹤」，仍留在當年度招生名單中，下一招生階段可再次提醒報名。</p>
+                <label style="display: block; font-size: 13px; color: #333; margin-bottom: 6px; font-weight: 600;">不報名原因</label>
+                <textarea id="declineStageReason" rows="4" class="form-control" placeholder="請填寫不報名原因" style="width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 4px; resize: vertical;"></textarea>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn-cancel" onclick="closeDeclineStageModal()">取消</button>
+                <button type="button" class="btn-confirm" onclick="confirmDeclineStage()">確定本階段不報名</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 放棄報到：填寫原因 -->
+    <div id="checkInDeclineModal" class="modal" style="display: none;">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>放棄報到</h3>
+                <span class="close" onclick="closeCheckInDeclineModal()">&times;</span>
+            </div>
+            <div class="modal-body">
+                <p style="margin-bottom: 8px; font-size: 13px;">標記後僅影響報到流程，不回到招生追蹤。</p>
+                <label style="display: block; font-size: 13px; color: #333; margin-bottom: 6px; font-weight: 600;">放棄報到原因 <span style="color: #999; font-weight: normal;">(選填)</span></label>
+                <textarea id="checkInDeclineReason" rows="4" class="form-control" placeholder="請填寫放棄報到原因" style="width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 4px; resize: vertical;"></textarea>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn-cancel" onclick="closeCheckInDeclineModal()">取消</button>
+                <button type="button" class="btn-confirm" onclick="confirmCheckInDecline()">確定放棄報到</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 查看原因（不報名原因 / 放棄報到原因） -->
+    <div id="declineReasonModal" class="modal" style="display: none;">
+        <div class="modal-content" style="max-width: 420px;">
+            <div class="modal-header">
+                <h3 id="declineReasonModalTitle">不報名原因</h3>
+                <span class="close" onclick="closeDeclineReasonModal()">&times;</span>
+            </div>
+            <div class="modal-body">
+                <p id="declineReasonText" style="margin: 0; white-space: pre-wrap; word-break: break-word; color: #333;"></p>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn-confirm" onclick="closeDeclineReasonModal()">關閉</button>
             </div>
         </div>
     </div>
@@ -2363,13 +2447,39 @@ function submitContactLog() {
             });
         }
 
-        function handleRegistrationDeclineStage(enrollmentId, stageName) {
-            if (!confirm('確定學生本招生階段不報名嗎？\n\n學生將回復為「持續聯絡追蹤」，仍留在當年度招生名單中，下一招生階段可再次提醒報名。')) return;
-            
+        var _declineStageEnrollmentId = 0;
+        var _declineStageStageName = '';
+
+        function openDeclineStageModal(enrollmentId, stageName) {
+            _declineStageEnrollmentId = enrollmentId;
+            _declineStageStageName = stageName || '';
+            var stageLabel = stageName === 'priority_exam' ? '優先免試' : (stageName === 'joint_exam' ? '聯合免試' : (stageName === 'continued_recruitment' ? '續招' : (stageName || '—')));
+            var el = document.getElementById('declineStageModalStageName');
+            if (el) el.textContent = '目前階段：' + stageLabel;
+            var reasonEl = document.getElementById('declineStageReason');
+            if (reasonEl) reasonEl.value = '';
+            var modal = document.getElementById('declineStageModal');
+            if (modal) modal.style.display = 'flex';
+        }
+
+        function closeDeclineStageModal() {
+            var modal = document.getElementById('declineStageModal');
+            if (modal) modal.style.display = 'none';
+            _declineStageEnrollmentId = 0;
+            _declineStageStageName = '';
+        }
+
+        function confirmDeclineStage() {
+            if (_declineStageEnrollmentId <= 0) return;
+            var reasonEl = document.getElementById('declineStageReason');
+            var reason = reasonEl ? reasonEl.value.trim() : '';
+
             var formData = new FormData();
             formData.append('action', 'decline_stage');
-            formData.append('enrollment_id', enrollmentId);
-            
+            formData.append('enrollment_id', _declineStageEnrollmentId);
+            if (_declineStageStageName) formData.append('stage', _declineStageStageName);
+            if (reason) formData.append('decline_reason', reason);
+
             fetch('../../Topics-frontend/frontend/api/registration_reminder_api.php', {
                 method: 'POST',
                 body: formData
@@ -2377,6 +2487,72 @@ function submitContactLog() {
             .then(function(response) { return response.json(); })
             .then(function(data) {
                 if (data.success) {
+                    closeDeclineStageModal();
+                    location.reload();
+                } else {
+                    alert(data.message || '操作失敗');
+                }
+            })
+            .catch(function(e) {
+                console.error(e);
+                alert('操作失敗，請稍後再試');
+            });
+        }
+
+        function handleRegistrationDeclineStage(enrollmentId, stageName) {
+            openDeclineStageModal(enrollmentId, stageName);
+        }
+
+        function showDeclineReason(reason) {
+            var titleEl = document.getElementById('declineReasonModalTitle');
+            if (titleEl) titleEl.textContent = '不報名原因';
+            var textEl = document.getElementById('declineReasonText');
+            var modal = document.getElementById('declineReasonModal');
+            if (textEl) textEl.textContent = (reason && reason.trim() !== '') ? reason.trim() : '未填寫原因';
+            if (modal) modal.style.display = 'flex';
+        }
+        function showCheckInDeclineReason(reason) {
+            var titleEl = document.getElementById('declineReasonModalTitle');
+            if (titleEl) titleEl.textContent = '放棄報到原因';
+            var textEl = document.getElementById('declineReasonText');
+            var modal = document.getElementById('declineReasonModal');
+            if (textEl) textEl.textContent = (reason && reason.trim() !== '') ? reason.trim() : '未填寫原因';
+            if (modal) modal.style.display = 'flex';
+        }
+        function closeDeclineReasonModal() {
+            var modal = document.getElementById('declineReasonModal');
+            if (modal) modal.style.display = 'none';
+        }
+
+        var _checkInDeclineEnrollmentId = 0;
+        function openCheckInDeclineModal(enrollmentId) {
+            _checkInDeclineEnrollmentId = enrollmentId;
+            var reasonEl = document.getElementById('checkInDeclineReason');
+            if (reasonEl) reasonEl.value = '';
+            var modal = document.getElementById('checkInDeclineModal');
+            if (modal) modal.style.display = 'flex';
+        }
+        function closeCheckInDeclineModal() {
+            var modal = document.getElementById('checkInDeclineModal');
+            if (modal) modal.style.display = 'none';
+            _checkInDeclineEnrollmentId = 0;
+        }
+        function confirmCheckInDecline() {
+            if (_checkInDeclineEnrollmentId <= 0) return;
+            var reasonEl = document.getElementById('checkInDeclineReason');
+            var reason = reasonEl ? reasonEl.value.trim() : '';
+            var formData = new FormData();
+            formData.append('action', 'check_in_decline');
+            formData.append('enrollment_id', _checkInDeclineEnrollmentId);
+            if (reason) formData.append('check_in_decline_reason', reason);
+            fetch('../../Topics-frontend/frontend/api/registration_reminder_api.php', {
+                method: 'POST',
+                body: formData
+            })
+            .then(function(response) { return response.json(); })
+            .then(function(data) {
+                if (data.success) {
+                    closeCheckInDeclineModal();
                     location.reload();
                 } else {
                     alert(data.message || '操作失敗');

@@ -5937,8 +5937,6 @@ function showEnrollmentSystemStats() {
                     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
                         <h4 style="color: #667eea; margin: 0;"><i class="fas fa-chart-bar"></i> 各科分配人數總覽</h4>
                         <div style="display: flex; gap: 8px;">
-                            <button onclick="toggleEnrollmentSystemView('table')" style="padding: 6px 12px; background: #667eea; color: white; border: none; border-radius: 4px; cursor: pointer;">表格</button>
-                            <button onclick="toggleEnrollmentSystemView('chart')" style="padding: 6px 12px; background: #e9ecef; color: #495057; border: none; border-radius: 4px; cursor: pointer;">圖表</button>
                         </div>
                     </div>
                     <div id="enrollmentSystemTableView" style="background: white; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 4px rgba(0,0,0,0.05); border: 1px solid #eee;">
@@ -6890,7 +6888,7 @@ function showEnrollmentSystemStats() {
     }
 
     // 顯示科系「招生詳情」圖表（展開在同一區塊，不使用視窗）
-    // 1. 科系招生總覽：已報名 / 已報到 / 放棄 / 尚在追蹤
+    // 1. 科系招生總覽：已報名（本階段已報名且未報到未放棄）/ 已報到 / 放棄 / 追蹤（本階段還沒報名）
     // 2. 這些國中有幾人分配到本系
     function showDepartmentStudents(departmentName) {
         console.log('顯示科系招生詳情 (展開):', departmentName);
@@ -6976,10 +6974,10 @@ const detailContent = `
 
         <div class="dept-tabs">
             <button type="button" class="dept-tab-btn" onclick="switchDeptTab(this, 'tab-sources')">
-                <i class="fas fa-school"></i> 生源學校分析
+                <i class="fas fa-school"></i> 來源學校分析
             </button>
-            <button type="button" class="dept-tab-btn" onclick="switchDeptTab(this, 'tab-grade')">
-                <i class="fas fa-school"></i> 年級分布圖
+            <button type="button" class="dept-tab-btn" onclick="switchDeptTab(this, 'tab-channels')">
+                <i class="fas fa-bullhorn"></i> 學生得知管道統計
             </button>
             <button type="button" class="dept-tab-btn active" onclick="switchDeptTab(this, 'tab-overview')">
                 <i class="fas fa-chart-pie"></i> 目前招生狀況
@@ -7006,55 +7004,62 @@ const detailContent = `
         <div id="tab-sources" class="dept-tab-content">
             <div class="chart-card">
                  <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
-                    <div class="chart-title" style="text-align: left; margin: 0; font-size: 20px; font-weight: bold;">生源學校分佈</div>
+                    <div class="chart-title" style="text-align: left; margin: 0; font-size: 20px; font-weight: bold;">來源學校分佈</div>
                     
                     ${(schools && schools.length > 0) ? `
                     <div style="display: inline-flex; gap: 10px;">
-                        <button id="deptSchoolChartBtn" type="button" style="padding: 8px 16px; border-radius: 4px; border: 1px solid #ccc; background: #fff; color: #333; font-size: 15px; cursor: pointer;">
+                        <button id="deptSchoolChartBtn" type="button" style="padding: 8px 16px; border-radius: 4px; border: 1px solid #333; background: #333; color: #fff; font-size: 15px; cursor: pointer;">
                             <i class="fas fa-chart-bar"></i> 圖表
                         </button>
-                        <button id="deptSchoolTableBtn" type="button" style="padding: 8px 16px; border-radius: 4px; border: 1px solid #333; background: #333; color: #fff; font-size: 15px; cursor: pointer;">
+                        <button id="deptSchoolTableBtn" type="button" style="padding: 8px 16px; border-radius: 4px; border: 1px solid #ccc; background: #fff; color: #333; font-size: 15px; cursor: pointer;">
                             <i class="fas fa-table"></i> 表格
                         </button>
                     </div>` : ''}
                 </div>
 
                 ${(schools && schools.length > 0) ? `
-                <div id="deptSchoolChartWrap" style="display: none;">
+                <div id="deptSchoolChartWrap" style="display: block;">
+                    ${(schools.some(s => s.grades && s.grades.length > 0)) ? `
+                    <div id="deptSchoolGradeFilterWrap" style="margin-bottom: 12px; display: flex; align-items: center; gap: 16px; flex-wrap: wrap;">
+                        <span style="font-weight: 600;">篩選年級：</span>
+                        <label style="cursor: pointer;"><input type="checkbox" id="deptGradeFilter1" class="dept-grade-filter" value="國一" checked> 國一</label>
+                        <label style="cursor: pointer;"><input type="checkbox" id="deptGradeFilter2" class="dept-grade-filter" value="國二" checked> 國二</label>
+                        <label style="cursor: pointer;"><input type="checkbox" id="deptGradeFilter3" class="dept-grade-filter" value="國三" checked> 國三</label>
+                    </div>
+                    ` : ''}
                     <div class="chart-container"><canvas id="deptSchoolChart"></canvas></div>
+                    <p style="margin: 8px 0 0; font-size: 14px; color: #888;">點擊長條區塊可查看該國中、該年級的來源明細</p>
                 </div>
 
-                <div id="deptSchoolTableWrap" style="display: block;">
+                <div id="deptSchoolTableWrap" style="display: none;">
                     <div style="overflow-x: auto;">
                         <table style="width: 100%; border-collapse: collapse; background: #fff;">
                             <thead>
                                 <tr style="border-bottom: 2px solid #333;">
-                                    <th style="padding: 15px 10px; text-align: left; font-size: 18px; color: #000; font-weight: bold; width: 60%;">國中名稱</th>
-                                    <th style="padding: 15px 10px; text-align: center; font-size: 18px; color: #000; font-weight: bold; width: 20%;">人數</th>
-                                    <th style="padding: 15px 10px; text-align: center; font-size: 18px; color: #000; font-weight: bold; width: 20%;">來源</th>
+                                    <th style="padding: 15px 10px; text-align: left; font-size: 18px; color: #000; font-weight: bold;">國中名稱</th>
+                                    <th style="padding: 15px 10px; text-align: center; font-size: 18px; color: #000; font-weight: bold;">國一</th>
+                                    <th style="padding: 15px 10px; text-align: center; font-size: 18px; color: #000; font-weight: bold;">國二</th>
+                                    <th style="padding: 15px 10px; text-align: center; font-size: 18px; color: #000; font-weight: bold;">國三</th>
+                                    <th style="padding: 15px 10px; text-align: center; font-size: 18px; color: #000; font-weight: bold;">人數</th>
+                                    <th style="padding: 15px 10px; text-align: center; font-size: 18px; color: #000; font-weight: bold;">來源</th>
                                 </tr>
                             </thead>
                             <tbody>
                                 ${schools.map(s => {
                                     const sourceData = encodeURIComponent(JSON.stringify(s.sources || []));
                                     const schoolNameEnc = encodeURIComponent(s.name);
-
+                                    const g1 = ((s.grades || []).find(gr => gr.grade === '國一') || {}).count || 0;
+                                    const g2 = ((s.grades || []).find(gr => gr.grade === '國二') || {}).count || 0;
+                                    const g3 = ((s.grades || []).find(gr => gr.grade === '國三') || {}).count || 0;
                                     return `
                                     <tr style="border-bottom: 1px solid #eee; height: 60px;">
-                                        <td style="padding: 10px; font-size: 18px; color: #333;">
-                                            ${(s.name || '未填寫')}
-                                        </td>
-                                        
-                                        <td style="padding: 10px; text-align: center; font-size: 20px; font-weight: bold; color: #000;">
-                                            ${s.count}
-                                        </td>
-                                        
+                                        <td style="padding: 10px; font-size: 18px; color: #333;">${(s.name || '未填寫')}</td>
+                                        <td style="padding: 10px; text-align: center; font-size: 18px; color: #000;">${g1}</td>
+                                        <td style="padding: 10px; text-align: center; font-size: 18px; color: #000;">${g2}</td>
+                                        <td style="padding: 10px; text-align: center; font-size: 18px; color: #000;">${g3}</td>
+                                        <td style="padding: 10px; text-align: center; font-size: 20px; font-weight: bold; color: #000;">${s.count}</td>
                                         <td style="padding: 10px; text-align: center;">
-                                            <button type="button" 
-                                                    onclick="showSourceDetail('${schoolNameEnc}', '${sourceData}')"
-                                                    style="border: none; background: transparent; color: #666; font-size: 18px; cursor: pointer; text-decoration: underline;">
-                                                查看
-                                            </button>
+                                            <button type="button" onclick="showSourceDetail('${schoolNameEnc}', '${sourceData}')" style="border: none; background: transparent; color: #666; font-size: 18px; cursor: pointer; text-decoration: underline;">查看</button>
                                         </td>
                                     </tr>`;
                                 }).join('')}
@@ -7102,47 +7107,26 @@ const detailContent = `
             </div>
         </div>
 
-        <div id="tab-grade" class="dept-tab-content">
+        <div id="channelDetailModal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 9999; justify-content: center; align-items: center;">
+            <div style="background: #fff; width: 90%; max-width: 480px; border-radius: 12px; padding: 0; box-shadow: 0 10px 25px rgba(0,0,0,0.2);">
+                <div style="padding: 16px 20px; border-bottom: 1px solid #eee; display: flex; justify-content: space-between; align-items: center;">
+                    <h5 id="channelDetailTitle" style="margin: 0; font-size: 18px; color: #333; font-weight: bold;"></h5>
+                    <button type="button" onclick="document.getElementById('channelDetailModal').style.display='none'" style="border: none; background: none; font-size: 24px; cursor: pointer; color: #999;">&times;</button>
+                </div>
+                <div id="channelDetailContent" style="padding: 20px; max-height: 400px; overflow-y: auto; font-size: 16px; line-height: 1.8;"></div>
+                <div style="padding: 12px 20px; border-top: 1px solid #eee; text-align: right;">
+                    <button type="button" onclick="document.getElementById('channelDetailModal').style.display='none'" style="padding: 8px 20px; background: #667eea; color: #fff; border: none; border-radius: 6px; cursor: pointer;">關閉</button>
+                </div>
+            </div>
+        </div>
+
+        <div id="tab-channels" class="dept-tab-content">
             <div class="chart-card">
-                <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">
-                    <div class="chart-title" style="text-align: left; margin-bottom: 0;">
-                        分配到本科學生的年級分布
-                    </div>
-                    ${(data.grades && data.grades.length > 0) ? `
-                    <div style="display: inline-flex; gap: 8px;">
-                    <button id="deptGradeTableBtn" type="button" style="padding: 6px 14px; border-radius: 6px; border: 1px solid #667eea; background: #667eea; color: #fff; font-size: 13px; cursor: pointer;">表格</button>    
-                    <button id="deptGradeChartBtn" type="button" style="padding: 6px 14px; border-radius: 6px; border: 1px solid #667eea; background: #fff; color: #667eea; font-size: 13px; cursor: pointer;">圖表</button>
-                        </div>
-                    ` : ''}
+                <div class="chart-title" style="text-align: left; margin-bottom: 16px; font-size: 20px; font-weight: bold;">學生得知管道統計</div>
+                <div class="chart-container" style="cursor: pointer;">
+                    <canvas id="deptChannelChart"></canvas>
                 </div>
-                
-                ${(data.grades && data.grades.length > 0) ? `
-                <div id="deptGradeChartWrap" style="display: none;">
-                    <div class="chart-container">
-                        <canvas id="deptGradeChart"></canvas>
-                    </div>
-                </div>
-                <div id="deptGradeTableWrap" style="display: block;">
-                    <div style="overflow-x: auto; margin-top: 10px;">
-                        <table style="width: 100%; border-collapse: collapse; background: #fff;">
-                            <thead>
-                                <tr style="background: #f8f9fa;">
-                                    <th style="padding: 12px 15px; text-align: left; border-bottom: 2px solid #dee2e6; font-weight: 600; color: #495057;">年級</th>
-                                    <th style="padding: 12px 15px; text-align: center; border-bottom: 2px solid #dee2e6; font-weight: 600; color: #495057;">分配人數</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                ${data.grades.map((g, i) => `
-                                <tr style="border-bottom: 1px solid #eee;">
-                                    <td style="padding: 12px 15px; color: #333;">${(g.grade || '未填寫')}</td>
-                                    <td style="padding: 12px 15px; text-align: center; font-weight: bold; color: #667eea;">${g.count || 0} 人</td>
-                                </tr>
-                                `).join('')}
-                            </tbody>
-                        </table>
-                    </div>
-                </div>
-                ` : '<div style="text-align: center; color: #999; padding: 20px;">目前沒有年級分布資料</div>'}
+                <p style="margin: 10px 0 0; font-size: 14px; color: #888;">點擊長條可查看該管道各國中人數明細</p>
             </div>
         </div>
     </div>
@@ -7156,87 +7140,13 @@ const detailContent = `
 
                 // 建立圖表
                 setTimeout(() => {
-                    // 年級分布圖表
-                    const gradeCanvas = document.getElementById('deptGradeChart');
-                    if (gradeCanvas && window.Chart && data.grades && data.grades.length > 0) {
-                        const ctx3 = gradeCanvas.getContext('2d');
-                        const labels3 = data.grades.map(g => g.grade || '未填寫');
-                        const values3 = data.grades.map(g => g.count || 0);
-                        const colors3 = ['#667eea', '#28a745', '#fa8c16', '#8c8c8c', '#ff7875'];
-
-                        new Chart(ctx3, {
-                            type: 'bar',
-                            data: {
-                                labels: labels3,
-                                datasets: [{
-                                    label: '分配人數',
-                                    data: values3,
-                                    backgroundColor: '#667eeaCC',
-                                    borderColor: '#667eea',
-                                    borderWidth: 1
-                                }]
-                            },
-                            options: {
-                                responsive: true,
-                                maintainAspectRatio: false,
-                                scales: {
-                                    x: {
-                                        ticks: {
-                                            font: { size: 12 }
-                                        }
-                                    },
-                                    y: {
-                                        beginAtZero: true,
-                                        ticks: { stepSize: 1, font: { size: 12 } }
-                                    }
-                                },
-                                plugins: {
-                                    legend: { display: false },
-                                    tooltip: {
-                                        callbacks: {
-                                            label: function(context) {
-                                                const label = context.label || '';
-                                                const value = context.parsed.y;
-                                                return `${label}: ${value}人`;
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        });
-                    }
-
-                    // 年級分布：圖表 / 表格切換
-                    const deptGradeTableWrap = document.getElementById('deptGradeTableWrap');
-                    const deptGradeChartWrap = document.getElementById('deptGradeChartWrap');
-                    
-                    const deptGradeChartBtn = document.getElementById('deptGradeChartBtn');
-                    const deptGradeTableBtn = document.getElementById('deptGradeTableBtn');
-                    if (deptGradeChartWrap && deptGradeTableWrap && deptGradeChartBtn && deptGradeTableBtn) {
-                        deptGradeChartBtn.addEventListener('click', () => {
-                            deptGradeChartWrap.style.display = 'block';
-                            deptGradeTableWrap.style.display = 'none';
-                            deptGradeChartBtn.style.background = '#667eea';
-                            deptGradeChartBtn.style.color = '#fff';
-                            deptGradeTableBtn.style.background = '#fff';
-                            deptGradeTableBtn.style.color = '#667eea';
-                        });
-                        deptGradeTableBtn.addEventListener('click', () => {
-                            deptGradeTableWrap.style.display = 'block';
-                            deptGradeChartWrap.style.display = 'none';
-                            deptGradeTableBtn.style.background = '#667eea';
-                            deptGradeTableBtn.style.color = '#fff';
-                            deptGradeChartBtn.style.background = '#fff';
-                            deptGradeChartBtn.style.color = '#667eea';
-                        });
-                    }
                     // 科系招生總覽圖表
                     const overviewCanvas = document.getElementById('deptOverviewChart');
                     if (overviewCanvas && window.Chart) {
                         const ctx = overviewCanvas.getContext('2d');
                         let overviewChart = null;
 
-                        const labels = ['已報名', '已報到', '放棄', '尚在追蹤'];
+                        const labels = ['已報名', '已報到', '放棄', '追蹤'];
                         const values = [applied, checkedIn, declined, tracking];
                         const colors = ['#667eea', '#28a745', '#8c8c8c', '#fa8c16'];
 
@@ -7312,56 +7222,115 @@ const detailContent = `
                         }
                     }
 
-                    // 來源國中分布圖表（顯示國中名稱，與其他統計圖一致大小）
+                    // 來源國中分布圖表：直式堆疊長條圖，X=各國中、Y=人數，國中名稱平行顯示，可篩選年級，點擊區塊顯示該國中該年級來源表格
                     const schoolCanvas = document.getElementById('deptSchoolChart');
                     if (schoolCanvas && window.Chart && schools && schools.length > 0) {
                         const ctx2 = schoolCanvas.getContext('2d');
                         const labels2 = schools.map(s => s.name || '未填寫');
-                        const values2 = schools.map(s => s.count || 0);
+                        const gradeOrder = ['國一', '國二', '國三'];
+                        const gradeColors = ['#667eea', '#28a745', '#fa8c16'];
+                        const hasGrades = schools.some(s => s.grades && s.grades.length > 0);
 
-                        new Chart(ctx2, {
-                            type: 'bar',
-                            data: {
-                                labels: labels2,
-                                datasets: [{
+                        function buildSchoolChartDatasets(selectedGrades) {
+                            if (!hasGrades || selectedGrades.length === 0) {
+                                return [{
                                     label: '分配人數',
-                                    data: values2,
+                                    data: schools.map(s => s.count || 0),
                                     backgroundColor: '#667eeaCC',
                                     borderColor: '#667eea',
                                     borderWidth: 1
-                                }]
+                                }];
+                            }
+                            return selectedGrades.map(function(gradeName) {
+                                const idx = gradeOrder.indexOf(gradeName);
+                                return {
+                                    label: gradeName,
+                                    data: schools.map(function(s) {
+                                        const g = (s.grades || []).find(function(gr) { return gr.grade === gradeName; });
+                                        return (g && g.count) ? g.count : 0;
+                                    }),
+                                    backgroundColor: gradeColors[idx],
+                                    borderColor: gradeColors[idx],
+                                    borderWidth: 1,
+                                    stack: 'stack0'
+                                };
+                            });
+                        }
+
+                        function getSelectedGrades() {
+                            var checkboxes = document.querySelectorAll('#deptSchoolChartWrap .dept-grade-filter:checked');
+                            if (!checkboxes || checkboxes.length === 0) return gradeOrder.slice();
+                            return Array.prototype.map.call(checkboxes, function(cb) { return cb.value; });
+                        }
+
+                        var deptSchoolChartInstance = new Chart(ctx2, {
+                            type: 'bar',
+                            data: {
+                                labels: labels2,
+                                datasets: buildSchoolChartDatasets(hasGrades ? gradeOrder.slice() : [])
                             },
                             options: {
                                 responsive: true,
                                 maintainAspectRatio: false,
+                                onClick: function(evt, elements) {
+                                    if (elements.length > 0 && window.showSourceDetail) {
+                                        var schoolIdx = elements[0].index;
+                                        var datasetIdx = elements[0].datasetIndex;
+                                        var school = schools[schoolIdx];
+                                        var gradeLabel = (this.data.datasets[datasetIdx] && this.data.datasets[datasetIdx].label) || '';
+                                        if (gradeLabel === '分配人數') gradeLabel = '';
+                                        var sourcesToShow = school.sources || [];
+                                        if (gradeLabel && school.sources_by_grade && school.sources_by_grade[gradeLabel]) {
+                                            sourcesToShow = school.sources_by_grade[gradeLabel];
+                                        }
+                                        var schoolNameEnc = encodeURIComponent(school.name || '未填寫');
+                                        var sourceDataEnc = encodeURIComponent(JSON.stringify(sourcesToShow));
+                                        window.showSourceDetail(schoolNameEnc, sourceDataEnc, gradeLabel);
+                                    }
+                                },
                                 scales: {
                                     x: {
+                                        stacked: true,
                                         ticks: {
                                             font: { size: 12 },
-                                            autoSkip: false,
-                                            maxRotation: 45,
-                                            minRotation: 45
+                                            maxRotation: 0,
+                                            minRotation: 0,
+                                            autoSkip: false
                                         }
                                     },
                                     y: {
+                                        stacked: true,
                                         beginAtZero: true,
                                         ticks: { stepSize: 1, font: { size: 12 } }
                                     }
                                 },
                                 plugins: {
-                                    legend: { display: false },
+                                    legend: { display: hasGrades },
                                     tooltip: {
                                         callbacks: {
                                             label: function(context) {
-                                                const label = context.label || '';
-                                                const value = context.parsed.y;
-                                                return `${label}: ${value}人`;
+                                                var label = context.dataset.label || '';
+                                                var value = context.parsed.y;
+                                                return value ? label + ': ' + value + '人（點擊查看來源）' : '';
                                             }
                                         }
                                     }
                                 }
                             }
                         });
+
+                        // 年級篩選：勾選變更時重繪圖表
+                        var filterWrap = document.getElementById('deptSchoolGradeFilterWrap');
+                        if (filterWrap && hasGrades) {
+                            filterWrap.querySelectorAll('.dept-grade-filter').forEach(function(cb) {
+                                cb.addEventListener('change', function() {
+                                    var selected = getSelectedGrades();
+                                    if (selected.length === 0) return;
+                                    deptSchoolChartInstance.data.datasets = buildSchoolChartDatasets(selected);
+                                    deptSchoolChartInstance.update();
+                                });
+                            });
+                        }
                     }
 
                     // 國中分布：圖表 / 表格切換
@@ -7387,6 +7356,87 @@ const detailContent = `
                             deptSchoolChartBtn.style.background = '#fff';
                             deptSchoolChartBtn.style.color = '#667eea';
                         });
+                    }
+
+                    // 學生得知管道統計：長條圖（管道排名），點擊長條顯示該管道各國中人數明細
+                    const channelCanvas = document.getElementById('deptChannelChart');
+                    if (channelCanvas && window.Chart && schools && schools.length > 0) {
+                        const channelMap = {};
+                        schools.forEach(function(s) {
+                            const schoolName = s.name || '未填寫';
+                            (s.sources || []).forEach(function(src) {
+                                const ch = (src.name || '未填寫').trim() || '未填寫';
+                                if (!channelMap[ch]) {
+                                    channelMap[ch] = { total: 0, bySchool: {} };
+                                }
+                                channelMap[ch].total += src.count || 0;
+                                channelMap[ch].bySchool[schoolName] = (channelMap[ch].bySchool[schoolName] || 0) + (src.count || 0);
+                            });
+                        });
+                        const channelLabels = Object.keys(channelMap).sort(function(a, b) {
+                            return channelMap[b].total - channelMap[a].total;
+                        });
+                        const channelValues = channelLabels.map(function(l) { return channelMap[l].total; });
+                        const channelDetails = channelLabels.map(function(l) {
+                            const bySchool = channelMap[l].bySchool;
+                            const list = Object.keys(bySchool).map(function(school) {
+                                return { school: school, count: bySchool[school] };
+                            }).sort(function(a, b) { return b.count - a.count; });
+                            return { name: l, total: channelMap[l].total, bySchool: list };
+                        });
+                        if (channelLabels.length > 0) {
+                            const ctxCh = channelCanvas.getContext('2d');
+                            new Chart(ctxCh, {
+                                type: 'bar',
+                                data: {
+                                    labels: channelLabels,
+                                    datasets: [{
+                                        label: '人數',
+                                        data: channelValues,
+                                        backgroundColor: '#667eeaCC',
+                                        borderColor: '#667eea',
+                                        borderWidth: 1
+                                    }]
+                                },
+                                options: {
+                                    responsive: true,
+                                    maintainAspectRatio: false,
+                                    onClick: function(evt, elements) {
+                                        if (elements.length > 0 && window.showChannelDetail) {
+                                            const idx = elements[0].index;
+                                            const d = channelDetails[idx];
+                                            window.showChannelDetail(d.name, d.total, d.bySchool);
+                                        }
+                                    },
+                                    scales: {
+                                        x: {
+                                            ticks: {
+                                                font: { size: 12 },
+                                                autoSkip: false,
+                                                maxRotation: 45,
+                                                minRotation: 45
+                                            }
+                                        },
+                                        y: {
+                                            beginAtZero: true,
+                                            ticks: { stepSize: 1, font: { size: 12 } }
+                                        }
+                                    },
+                                    plugins: {
+                                        legend: { display: false },
+                                        tooltip: {
+                                            callbacks: {
+                                                label: function(context) {
+                                                    const label = context.label || '';
+                                                    const value = context.parsed.y;
+                                                    return label + ': ' + value + '人（點擊查看各國中明細）';
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            });
+                        }
                     }
                 }, 100);
             })
@@ -7434,12 +7484,11 @@ window.switchDeptTab = function(btn, targetId) {
     }
 };
 // 顯示來源詳情 Modal
-window.showSourceDetail = function(schoolNameEnc, sourceDataEnc) {
+window.showSourceDetail = function(schoolNameEnc, sourceDataEnc, gradeLabel) {
     const schoolName = decodeURIComponent(schoolNameEnc);
     const sources = JSON.parse(decodeURIComponent(sourceDataEnc));
-    
-    // 設定標題
-    document.getElementById('modalSchoolName').innerText = schoolName;
+    const titleEl = document.getElementById('modalSchoolName');
+    if (titleEl) titleEl.innerText = (gradeLabel ? schoolName + ' － ' + gradeLabel : schoolName);
     
     let html = '';
     if (sources && sources.length > 0) {
@@ -7473,6 +7522,32 @@ window.showSourceDetail = function(schoolNameEnc, sourceDataEnc) {
 // 點擊 Modal 背景關閉（僅在元素存在時綁定，避免不同檢視下報錯）
 (function() {
     const el = document.getElementById('sourceDetailModal');
+    if (el) el.addEventListener('click', function(e) {
+        if (e.target === this) this.style.display = 'none';
+    });
+})();
+
+// 顯示「得知管道」明細：標題（共N人），內容以表格列出各國中人數
+window.showChannelDetail = function(channelName, total, bySchoolList) {
+    const titleEl = document.getElementById('channelDetailTitle');
+    const contentEl = document.getElementById('channelDetailContent');
+    if (!titleEl || !contentEl) return;
+    titleEl.textContent = channelName + '（共' + total + '人）';
+    var list = bySchoolList || [];
+    if (list.length === 0) {
+        contentEl.innerHTML = '<p style="color:#999; margin:0;">無國中明細</p>';
+    } else {
+        var rows = list.map(function(item) {
+            var school = (item.school || item.name || '未填寫').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+            var count = parseInt(item.count, 10) || 0;
+            return '<tr><td style="padding:10px 12px; border-bottom:1px solid #eee;">' + school + '</td><td style="padding:10px 12px; border-bottom:1px solid #eee; text-align:right; font-weight:bold;">' + count + ' 人</td></tr>';
+        }).join('');
+        contentEl.innerHTML = '<table style="width:100%; border-collapse:collapse;"><thead><tr style="border-bottom:2px solid #333;"><th style="padding:10px 12px; text-align:left;">國中名稱</th><th style="padding:10px 12px; text-align:right;">人數</th></tr></thead><tbody>' + rows + '</tbody></table>';
+    }
+    document.getElementById('channelDetailModal').style.display = 'flex';
+};
+(function() {
+    const el = document.getElementById('channelDetailModal');
     if (el) el.addEventListener('click', function(e) {
         if (e.target === this) this.style.display = 'none';
     });
