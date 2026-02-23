@@ -3,6 +3,108 @@
 
 require_once __DIR__ . '/../../Topics-frontend/frontend/config.php';
 require_once __DIR__ . '/../../Topics-frontend/frontend/config/email_notification_config.php';
+require_once __DIR__ . '/../../Topics-frontend/frontend/includes/email_functions.php';
+
+function rr_excel_col_letter($index) {
+    $index = (int)$index + 1;
+    $letters = '';
+    while ($index > 0) {
+        $mod = ($index - 1) % 26;
+        $letters = chr(65 + $mod) . $letters;
+        $index = (int)(($index - 1) / 26);
+    }
+    return $letters;
+}
+
+function rr_excel_xml_escape($value) {
+    $value = (string)$value;
+    return str_replace(['&', '<', '>', '"', "'"], ['&amp;', '&lt;', '&gt;', '&quot;', '&apos;'], $value);
+}
+
+function rr_build_simple_xlsx($rows, $output_path) {
+    if (!class_exists('ZipArchive')) return false;
+    $zip = new ZipArchive();
+    if ($zip->open($output_path, ZipArchive::CREATE | ZipArchive::OVERWRITE) !== true) return false;
+
+    $sheet_rows = '';
+    $row_num = 1;
+    foreach ($rows as $row) {
+        $sheet_rows .= '<row r="' . $row_num . '">';
+        $col_num = 0;
+        foreach ($row as $cell) {
+            $col = rr_excel_col_letter($col_num);
+            $cell_ref = $col . $row_num;
+            $text = rr_excel_xml_escape($cell);
+            $sheet_rows .= '<c r="' . $cell_ref . '" t="inlineStr"><is><t xml:space="preserve">' . $text . '</t></is></c>';
+            $col_num++;
+        }
+        $sheet_rows .= '</row>';
+        $row_num++;
+    }
+
+    $sheet_xml = '<?xml version="1.0" encoding="UTF-8"?>'
+        . '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+        . '<sheetData>' . $sheet_rows . '</sheetData>'
+        . '</worksheet>';
+
+    $workbook_xml = '<?xml version="1.0" encoding="UTF-8"?>'
+        . '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+        . 'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+        . '<sheets><sheet name="Sheet1" sheetId="1" r:id="rId1"/></sheets>'
+        . '</workbook>';
+
+    $rels_xml = '<?xml version="1.0" encoding="UTF-8"?>'
+        . '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+        . '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>'
+        . '</Relationships>';
+
+    $workbook_rels_xml = '<?xml version="1.0" encoding="UTF-8"?>'
+        . '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+        . '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>'
+        . '</Relationships>';
+
+    $content_types_xml = '<?xml version="1.0" encoding="UTF-8"?>'
+        . '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+        . '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+        . '<Default Extension="xml" ContentType="application/xml"/>'
+        . '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>'
+        . '<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>'
+        . '</Types>';
+
+    $zip->addFromString('[Content_Types].xml', $content_types_xml);
+    $zip->addFromString('_rels/.rels', $rels_xml);
+    $zip->addFromString('xl/workbook.xml', $workbook_xml);
+    $zip->addFromString('xl/_rels/workbook.xml.rels', $workbook_rels_xml);
+    $zip->addFromString('xl/worksheets/sheet1.xml', $sheet_xml);
+    $zip->close();
+    return file_exists($output_path);
+}
+
+function rr_build_simple_xls($rows, $output_path) {
+    $fh = @fopen($output_path, 'wb');
+    if (!$fh) return false;
+    $xml = '<?xml version="1.0" encoding="UTF-8"?>'
+        . '<?mso-application progid="Excel.Sheet"?>'
+        . '<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet"'
+        . ' xmlns:o="urn:schemas-microsoft-com:office:office"'
+        . ' xmlns:x="urn:schemas-microsoft-com:office:excel"'
+        . ' xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet">'
+        . '<Styles><Style ss:ID="Header"><Font ss:Bold="1"/><Interior ss:Color="#F2F2F2" ss:Pattern="Solid"/></Style></Styles>'
+        . '<Worksheet ss:Name="推薦內容"><Table>';
+    foreach ($rows as $ridx => $row) {
+        $xml .= '<Row>';
+        foreach ($row as $cell) {
+            $text = rr_excel_xml_escape((string)$cell);
+            if ($ridx === 0) $xml .= '<Cell ss:StyleID="Header"><Data ss:Type="String">' . $text . '</Data></Cell>';
+            else $xml .= '<Cell><Data ss:Type="String">' . $text . '</Data></Cell>';
+        }
+        $xml .= '</Row>';
+    }
+    $xml .= '</Table></Worksheet></Workbook>';
+    fwrite($fh, $xml);
+    fclose($fh);
+    return file_exists($output_path);
+}
 
 function get_current_academic_year_roc() {
     // 學年度切換：8 月起算新學年度（例：2026/01 屬於 114 學年度；2026/09 屬於 115 學年度）
@@ -215,6 +317,7 @@ function fetch_recommendation_recommender_contact($conn, $recommendation_id) {
         'student_name' => '',
         'student_school' => '',
         'student_grade' => '',
+        'student_phone' => '',
     ];
     if (!$conn || $recommendation_id <= 0) return $data;
 
@@ -252,7 +355,8 @@ function fetch_recommendation_recommender_contact($conn, $recommendation_id) {
         $select .= ",
             COALESCE(red.name,'') AS student_name,
             COALESCE(sd.name,'') AS student_school,
-            COALESCE(sg.name,'') AS student_grade";
+            COALESCE(sg.name,'') AS student_grade,
+            COALESCE(red.phone,'') AS student_phone";
         $joins .= " LEFT JOIN recommended red ON ar.id = red.recommendations_id";
         if ($has_school_data) $joins .= " LEFT JOIN school_data sd ON red.school = sd.school_code";
         if ($has_identity) $joins .= " LEFT JOIN identity_options sg ON red.grade = sg.code";
@@ -260,7 +364,8 @@ function fetch_recommendation_recommender_contact($conn, $recommendation_id) {
         $select .= ",
             COALESCE(ar.student_name,'') AS student_name,
             COALESCE(ar.student_school,'') AS student_school,
-            COALESCE(ar.student_grade,'') AS student_grade";
+            COALESCE(ar.student_grade,'') AS student_grade,
+            COALESCE(ar.student_phone,'') AS student_phone";
     }
 
     $sql = $select . $joins . " WHERE ar.id = ? LIMIT 1";
@@ -277,9 +382,37 @@ function fetch_recommendation_recommender_contact($conn, $recommendation_id) {
         $data['student_name'] = (string)($row['student_name'] ?? '');
         $data['student_school'] = (string)($row['student_school'] ?? '');
         $data['student_grade'] = (string)($row['student_grade'] ?? '');
+        $data['student_phone'] = (string)($row['student_phone'] ?? '');
     }
     $stmt->close();
     return $data;
+}
+
+function ensure_recommendation_approval_links_table($conn) {
+    if (!$conn) return;
+    try {
+        $conn->query("CREATE TABLE IF NOT EXISTS recommendation_approval_links (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            recommendation_id INT NOT NULL,
+            token VARCHAR(64) NOT NULL UNIQUE,
+            status VARCHAR(20) NOT NULL DEFAULT 'pending',
+            signature_path VARCHAR(255) DEFAULT NULL,
+            signer_name VARCHAR(100) DEFAULT NULL,
+            reject_reason VARCHAR(255) DEFAULT NULL,
+            confirmed_by_email VARCHAR(255) DEFAULT NULL,
+            group_ids TEXT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            signed_at TIMESTAMP NULL DEFAULT NULL,
+            INDEX idx_rec_id (recommendation_id),
+            INDEX idx_status (status)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
+        $chk_rr = $conn->query("SHOW COLUMNS FROM recommendation_approval_links LIKE 'reject_reason'");
+        if (!$chk_rr || $chk_rr->num_rows === 0) $conn->query("ALTER TABLE recommendation_approval_links ADD COLUMN reject_reason VARCHAR(255) DEFAULT NULL");
+        $chk_group = $conn->query("SHOW COLUMNS FROM recommendation_approval_links LIKE 'group_ids'");
+        if (!$chk_group || $chk_group->num_rows === 0) $conn->query("ALTER TABLE recommendation_approval_links ADD COLUMN group_ids TEXT NULL");
+    } catch (Exception $e) {
+        // ignore
+    }
 }
 
 function send_review_result_email_once($conn, $recommendation_id, $status_code, $sent_by = '') {
@@ -357,28 +490,37 @@ function send_review_result_email_once($conn, $recommendation_id, $status_code, 
     return ['sent' => $ok, 'message' => $ok ? 'sent' : 'failed', 'bonus_amount' => $bonus_amount];
 }
 
-function send_director_approved_email_once($conn, $recommendation_id, $sent_by = '') {
+function send_director_approved_email_once($conn, $recommendation_id, $sent_by = '', $status_updated_at = '') {
     if (!$conn || $recommendation_id <= 0) return ['sent' => false, 'message' => 'invalid'];
     $status_code = 'APD';
+    // 依需求先改為固定收件人，便於驗證自動寄信流程
+    $to_email = '110534236@stu.ukn.edu.tw';
 
     ensure_review_email_logs_table($conn);
 
-    $chk = $conn->prepare("SELECT send_status FROM recommendation_review_email_logs WHERE recommendation_id = ? AND status_code = ? LIMIT 1");
+    $chk = $conn->prepare("SELECT send_status, recipient_email, sent_at FROM recommendation_review_email_logs WHERE recommendation_id = ? AND status_code = ? LIMIT 1");
     if ($chk) {
         $chk->bind_param('is', $recommendation_id, $status_code);
         $chk->execute();
         $r = $chk->get_result();
         if ($r && $row = $r->fetch_assoc()) {
-            if (($row['send_status'] ?? '') === 'sent') {
-                $chk->close();
-                return ['sent' => false, 'message' => 'already_sent'];
+            $already_recipient = trim((string)($row['recipient_email'] ?? ''));
+            $already_sent = (($row['send_status'] ?? '') === 'sent' && strcasecmp($already_recipient, $to_email) === 0);
+            if ($already_sent) {
+                $status_ts = strtotime((string)$status_updated_at);
+                $sent_ts = strtotime((string)($row['sent_at'] ?? ''));
+                $status_has_newer_change = ($status_ts !== false && $sent_ts !== false && $status_ts > $sent_ts);
+                // 若 APD 狀態在上次寄信後有再更新（例如 PE -> APD），允許重寄一次。
+                if (!$status_has_newer_change) {
+                    $chk->close();
+                    return ['sent' => false, 'message' => 'already_sent'];
+                }
             }
         }
         $chk->close();
     }
 
     $info = fetch_recommendation_recommender_contact($conn, $recommendation_id);
-    $to_email = trim((string)($info['recommender_email'] ?? ''));
     if ($to_email === '') {
         return ['sent' => false, 'message' => 'no_email'];
     }
@@ -387,8 +529,28 @@ function send_director_approved_email_once($conn, $recommendation_id, $sent_by =
     $student_name = trim((string)($info['student_name'] ?? ''));
     $student_school = trim((string)($info['student_school'] ?? ''));
     $student_grade = trim((string)($info['student_grade'] ?? ''));
+    $student_phone = trim((string)($info['student_phone'] ?? ''));
+    $bonus_amount = compute_bonus_amount_for_recommendation($conn, $recommendation_id);
 
-    $subject = '推薦學生審核通過（主任已簽核）通知';
+    $approval_link = '';
+    ensure_recommendation_approval_links_table($conn);
+    try {
+        $token = function_exists('random_bytes') ? bin2hex(random_bytes(16)) : bin2hex(uniqid('', true));
+        $ins = $conn->prepare("INSERT INTO recommendation_approval_links (recommendation_id, token, confirmed_by_email, group_ids) VALUES (?, ?, ?, ?)");
+        if ($ins) {
+            $group_ids = (string)$recommendation_id;
+            $ins->bind_param('isss', $recommendation_id, $token, $to_email, $group_ids);
+            @$ins->execute();
+            $ins->close();
+            $protocol = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
+            $host = $_SERVER['HTTP_HOST'] ?? 'localhost';
+            $approval_link = $protocol . '://' . $host . '/Topics-frontend/frontend/recommendation_approval.php?token=' . urlencode($token);
+        }
+    } catch (Exception $e) {
+        // ignore
+    }
+
+    $subject = '推薦學生審核通過（可發放獎金）通知';
     $body_lines = [];
     $body_lines[] = ($recommender_name !== '') ? ($recommender_name . ' 您好：') : '您好：';
     $body_lines[] = '您推薦的學生資訊已經完成主任簽核並審核通過。';
@@ -397,16 +559,56 @@ function send_director_approved_email_once($conn, $recommendation_id, $sent_by =
         if ($student_name !== '') $body_lines[] = '學生姓名：' . $student_name;
         if ($student_school !== '') $body_lines[] = '就讀學校：' . $student_school;
         if ($student_grade !== '') $body_lines[] = '年級：' . $student_grade;
+        if ($student_phone !== '') $body_lines[] = '聯絡電話：' . $student_phone;
+    }
+    $body_lines[] = '可發放獎金金額：$' . number_format((int)$bonus_amount);
+    if ($approval_link !== '') {
+        $body_lines[] = '';
+        $body_lines[] = '線上簽核連結：';
+        $body_lines[] = $approval_link;
     }
     $body_lines[] = '';
     $body_lines[] = '感謝您的推薦與協助。';
     $body_text = implode("\n", $body_lines);
     $body_html = nl2br(htmlspecialchars($body_text, ENT_QUOTES, 'UTF-8'));
 
+    $xlsx_supported = class_exists('ZipArchive');
+    $excel_ext = $xlsx_supported ? 'xlsx' : 'xls';
+    $excel_mime = $xlsx_supported
+        ? 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+        : 'application/vnd.ms-excel';
+    $safe_name = preg_replace('/[^\w\-]+/u', '_', ($student_name !== '' ? $student_name : '被推薦人'));
+    $rows = [[
+        '被推薦人姓名', '聯絡電話', '學校', '可發放獎金金額', '線上簽核連結', '通知時間'
+    ], [
+        $student_name,
+        $student_phone,
+        $student_school,
+        (string)$bonus_amount,
+        $approval_link,
+        date('Y-m-d H:i:s')
+    ]];
+    $attachment_path = '';
+    $attachments = [];
+    $tmp = tempnam(sys_get_temp_dir(), 'apd_mail_');
+    if ($tmp !== false) {
+        $attachment_path = $tmp . '.' . $excel_ext;
+        @rename($tmp, $attachment_path);
+        $ok_build = $xlsx_supported ? rr_build_simple_xlsx($rows, $attachment_path) : rr_build_simple_xls($rows, $attachment_path);
+        if ($ok_build) {
+            $attachments[] = [
+                'path' => $attachment_path,
+                'name' => '推薦審核通過_' . $safe_name . '_' . date('Ymd_His') . '.' . $excel_ext,
+                'mime' => $excel_mime,
+            ];
+        }
+    }
+
     $ok = false;
     if (function_exists('sendEmail')) {
-        $ok = sendEmail($to_email, $subject, $body_html, $body_text);
+        $ok = sendEmail($to_email, $subject, $body_html, $body_text, $attachments);
     }
+    if ($attachment_path !== '' && file_exists($attachment_path)) @unlink($attachment_path);
     $send_status = $ok ? 'sent' : 'failed';
     $err = $ok ? null : 'email_send_failed';
 
@@ -426,7 +628,7 @@ function send_director_approved_email_once($conn, $recommendation_id, $sent_by =
         $sc = $status_code;
         $re = $to_email;
         $tn = 'director_approved_notification';
-        $ba = 0;
+        $ba = (int)$bonus_amount;
         $ss = $send_status;
         $em = $err;
         $sb = (string)$sent_by;

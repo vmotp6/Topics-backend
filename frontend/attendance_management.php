@@ -917,7 +917,7 @@ $page_title = '出席紀錄管理 - ' . htmlspecialchars($session['session_name'
                         <div class="value"><?php echo $absent_count; ?></div>
                     </div>
                 </div>
-                <div class="filter-group" style="margin-bottom:15px; margin-left:1275px;">
+                <div class="filter-group" style="margin-bottom:15px; margin-left:1265px;">
                         <select id="filterGrade" class="form-control" style="width: auto; padding: 8px 12px; margin: 0;" onchange="filterTable()">
                             <option value="">全部年級</option>
                             <option value="國三">國三</option>
@@ -935,6 +935,7 @@ $page_title = '出席紀錄管理 - ' . htmlspecialchars($session['session_name'
                             <option value="">全部狀態</option>
                             <option value="已到">已到</option>
                             <option value="未到">未到</option>
+                            <option value="未報名但有來">未報名但有來</option>
                         </select>
                 </div>
 
@@ -1300,11 +1301,21 @@ $page_title = '出席紀錄管理 - ' . htmlspecialchars($session['session_name'
                     }
                 }
                 
-                // 出席狀態篩選
+                // 出席狀態篩選（支援特殊篩選：未報名但有來）
                 if (show && attendanceFilter) {
                     const rowAttendance = row.getAttribute('data-attendance');
-                    if (rowAttendance !== attendanceFilter) {
-                        show = false;
+                    if (attendanceFilter === '未報名但有來') {
+                        // 視為「未報名但有來」：備註欄有實際內容且不是 '-'
+                        const cells = row.getElementsByTagName('td');
+                        const notesText = (cells && cells.length > 0) ? (cells[cells.length - 1].textContent || '') : '';
+                        const notesTrim = notesText.trim();
+                        if (notesTrim === '' || notesTrim === '-') {
+                            show = false;
+                        }
+                    } else {
+                        if (rowAttendance !== attendanceFilter) {
+                            show = false;
+                        }
                     }
                 }
                 

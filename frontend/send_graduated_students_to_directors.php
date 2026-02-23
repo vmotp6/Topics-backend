@@ -247,7 +247,7 @@ try {
     }
     $body = '<!DOCTYPE html><html><head><meta charset="UTF-8"></head><body style="font-family: sans-serif;">';
     $body .= '<h2>【畢業生彙整】' . htmlspecialchars($dept_name) . ' 畢業生名單</h2>';
-    $body .= '<p>以下為本屆畢業生（學年度 7/1～隔年 8/1 為一年，以建立時間判定），名單詳見附件 Excel，請主任協助找指導老師填寫：</p>';
+    $body .= '<p>以下為本屆畢業生，名單詳見附件 Excel，請主任協助找指導老師填寫：</p>';
     $body .= '<ul><li>榮譽成就</li><li>升學就讀大學</li></ul>';
     $body .= '<table border="1" cellpadding="8" cellspacing="0" style="border-collapse: collapse;"><thead><tr><th>學號</th><th>姓名</th><th>班級</th></tr></thead><tbody>' . $table_rows . '</tbody></table>';
     $body .= '<p style="margin-top:20px; color:#666;">此信由系統自動發送，請勿直接回覆。</p></body></html>';
@@ -361,7 +361,7 @@ try {
       <div class="content">
         <div class="card">
           <h2 style="margin-bottom:8px;"><i class="fas fa-graduation-cap"></i> <?php echo htmlspecialchars($page_title); ?></h2>
-          <p class="muted">學年度以<strong>7月1日～隔年8月1日</strong>為一年，以<strong>建立時間</strong>判定入學年度（最準確）；110年入學到今年8月才畢業。依科系彙整後以<strong>Excel 附件</strong>寄送給該科系主任，請主任找指導老師填寫榮譽成就或升學就讀大學。系統會記錄本年度是否已寄送，避免重複寄送。</p>
+          <p class="muted">學年度以110年入學到今年8月才畢業。依科系彙整後以<strong>Excel 附件</strong>寄送給該科系主任，請主任找指導老師填寫榮譽成就或升學就讀大學。系統會記錄本年度是否已寄送，避免重複寄送。</p>
         </div>
 
         <?php if ($error_message): ?>
@@ -379,7 +379,7 @@ try {
         <?php if (!empty($graduated_by_dept)): ?>
           <div class="card">
             <h3 style="margin-bottom:12px;">預覽：依科系彙整之畢業生</h3>
-            <p class="muted">以下為<strong>本屆畢業</strong>學生（建立時間落在民國 <?php echo $roc_enroll_year; ?> 學年度：<?php echo substr($year_range['start'], 0, 10); ?>～<?php echo substr($year_range['end'], 0, 10); ?>），按科系彙整。寄送時會附 Excel 名單；已寄送過的科系本年度不會重複寄送，可勾選「仍要再寄」強制重寄。</p>
+            <p class="muted">以下為<strong>本屆畢業</strong>學生，按科系彙整。寄送時會附 Excel 名單；已寄送過的科系本年度不會重複寄送，可勾選「仍要再寄」強制重寄。</p>
             <table border="1" cellpadding="10" cellspacing="0" style="border-collapse: collapse; width:100%; margin-top:12px;">
               <thead><tr><th>科系</th><th>畢業生人數</th><th>本年度寄送狀態</th></tr></thead>
               <tbody>

@@ -453,7 +453,9 @@ try {
     $review_result_field = $has_review_result ? "COALESCE(ar.review_result, '')" : "''";
     $academic_year_field = $has_academic_year ? "ar.academic_year" : "NULL";
     
-    $approval_status_field = $has_approval_links_table ? "COALESCE(ral.status, '') as director_review_status," : "'' as director_review_status,";
+    $approval_status_field = $has_approval_links_table
+        ? "COALESCE(ral.status, '') as director_review_status, COALESCE(ral.signed_at, ral.created_at) as director_review_at, COALESCE(ral.reject_reason, '') as director_reject_reason,"
+        : "'' as director_review_status, NULL as director_review_at, '' as director_reject_reason,";
     $approval_join = $has_approval_links_table
         ? "LEFT JOIN (
             SELECT r1.*
@@ -987,15 +989,50 @@ try {
             if ($nsbi_key !== '') $cache_nsbi_status[$nsbi_key] = $nsbi_status;
         }
         $it['student_status'] = $nsbi_status;
+        $director_review_status = strtolower(trim((string)($it['director_review_status'] ?? '')));
+        $director_review_at = trim((string)($it['director_review_at'] ?? ''));
+        $status_updated_at = trim((string)($it['updated_at'] ?? ''));
+        $status_updated_ts = strtotime($status_updated_at);
+        $review_ts = strtotime($director_review_at);
+        $is_stale_director_review = ($status_updated_ts !== false && $review_ts !== false && $status_updated_ts > $review_ts);
+        if ($is_stale_director_review) {
+            // 狀態被重新調整後（如 APD -> PE -> APD），舊簽核結果失效，需重新簽核。
+            $director_review_status = '';
+            $it['director_review_status'] = '';
+            $it['director_reject_reason'] = '';
+        }
+        $is_bonus_waived = ($director_review_status === 'waived');
         $it['no_bonus'] = in_array($nsbi_status, ['休學', '退學'], true) ? 1 : 0;
+        if ($is_bonus_waived) {
+            $it['no_bonus'] = 1;
+        }
         if ((int)$it['no_bonus'] === 1) {
-            $it['review_hints'][] = '學生狀態為' . $nsbi_status . '，無獎金';
+            if ($is_bonus_waived) {
+                $it['review_hints'][] = '推薦人已放棄獎金';
+            } else {
+                $it['review_hints'][] = '學生狀態為' . $nsbi_status . '，無獎金';
+            }
         }
 
         // 2026-01 起：審核結果不再由系統自動判斷或寫回，
         // 僅由招生中心手動選擇（通過/不通過/需人工審查）。
     }
     unset($it);
+
+    // 審核結果為 APD（審核完成可發獎金）時，自動寄送 Gmail 通知推薦人
+    // 由 recommendation_review_email_logs 去重，避免重複寄送
+    foreach ($recommendations as $auto_mail_item) {
+        $rid = (int)($auto_mail_item['id'] ?? 0);
+        $status_code = trim((string)($auto_mail_item['status'] ?? ''));
+        $no_bonus_flag = (int)($auto_mail_item['no_bonus'] ?? 0);
+        if ($rid <= 0) continue;
+        if ($status_code !== 'APD' && mb_strpos($status_code, '審核完成') === false) continue;
+        if ($no_bonus_flag === 1) continue;
+        if (function_exists('send_director_approved_email_once')) {
+            $status_updated_at = (string)($auto_mail_item['updated_at'] ?? '');
+            @send_director_approved_email_once($conn, $rid, $username, $status_updated_at);
+        }
+    }
 
     if ($stmt_nsbi_by_name) $stmt_nsbi_by_name->close();
     if ($stmt_nsbi_by_phone) $stmt_nsbi_by_phone->close();
@@ -1161,6 +1198,45 @@ try {
     if (!empty($dup_recommenders)) {
         uasort($dup_recommenders, function($a, $b) {
             return strcmp((string)$a['name'], (string)$b['name']);
+        });
+    }
+
+    // --- 重複被推薦人清單（姓名 + 學校 + 連絡電話 都一致） ---
+    $dup_students = []; // key => ['name'=>..., 'school'=>..., 'phone'=>..., 'count'=>int]
+    foreach ($recommendations as $rec) {
+        $sname = trim((string)($rec['student_name'] ?? ''));
+        $sschool_code = trim((string)($rec['student_school_code'] ?? ''));
+        $sschool_name = trim((string)($rec['student_school'] ?? ''));
+        $sschool_display = ($sschool_name !== '') ? $sschool_name : $sschool_code;
+        $sphone_raw = trim((string)($rec['student_phone'] ?? ''));
+        $sphone = normalize_phone($sphone_raw);
+
+        // 三欄都要有值才納入重複判定
+        if ($sname === '' || $sphone === '' || ($sschool_code === '' && $sschool_name === '')) continue;
+
+        $school_key = ($sschool_code !== '') ? $sschool_code : normalize_text($sschool_name);
+        $key = normalize_text($sname) . '|' . $school_key . '|' . $sphone;
+        if (!isset($dup_students[$key])) {
+            $dup_students[$key] = [
+                'key' => $key,
+                'name' => $sname,
+                'school' => $sschool_display,
+                'phone' => $sphone_raw !== '' ? $sphone_raw : $sphone,
+                'count' => 0
+            ];
+        }
+        $dup_students[$key]['count'] += 1;
+    }
+    $dup_students = array_filter($dup_students, function($v) {
+        return isset($v['count']) && (int)$v['count'] >= 2;
+    });
+    if (!empty($dup_students)) {
+        uasort($dup_students, function($a, $b) {
+            $cmp_name = strcmp((string)$a['name'], (string)$b['name']);
+            if ($cmp_name !== 0) return $cmp_name;
+            $cmp_school = strcmp((string)$a['school'], (string)$b['school']);
+            if ($cmp_school !== 0) return $cmp_school;
+            return strcmp((string)$a['phone'], (string)$b['phone']);
         });
     }
 
@@ -2051,8 +2127,12 @@ try {
                                 寄送gmail
                                 <img class="gmail-icon" src="https://upload.wikimedia.org/wikipedia/commons/7/7e/Gmail_icon_%282020%29.svg" alt="Gmail">
                             </button>
+                            <button type="button" class="btn-view" id="dupStudentToggle">
+                                找尋重複被推薦人
+                            </button>
                             <button type="button" class="btn-view" id="gmailSendConfirm" style="display:none;">發送</button>
                             <button type="button" class="btn-view" id="gmailSendCancel" style="display:none;">取消</button>
+                            <div id="dupStudentSearchWrap" style="display:none;"></div>
                         </div>
                         <?php endif; ?>
                         <?php if (empty($recommendations)): ?>
@@ -2078,7 +2158,6 @@ try {
                                         <!-- <th>狀態</th> -->
                                         <!-- <th>入學狀態</th> -->
                                         <?php if ($is_admission_center && !$is_teacher_user): ?>
-                                        <th>分配部門</th>
                                         <th>操作</th>
                                         <?php elseif ($is_department_user): ?>
                                         <th>分配狀態</th>
@@ -2093,11 +2172,24 @@ try {
                                     <?php
                                         $current_status_code = isset($item['status']) ? trim((string)$item['status']) : '';
                                         $row_review = $get_review_label($current_status_code);
+                                        $row_student_name = trim((string)($item['student_name'] ?? ''));
+                                        $row_student_school_code = trim((string)($item['student_school_code'] ?? ''));
+                                        $row_student_school = trim((string)($item['student_school'] ?? ''));
+                                        $row_student_phone_raw = trim((string)($item['student_phone'] ?? ''));
+                                        $row_student_phone_norm = normalize_phone($row_student_phone_raw);
+                                        $row_school_key = ($row_student_school_code !== '') ? $row_student_school_code : normalize_text($row_student_school);
+                                        $row_dup_student_key = ($row_student_name !== '' && $row_school_key !== '' && $row_student_phone_norm !== '')
+                                            ? (normalize_text($row_student_name) . '|' . $row_school_key . '|' . $row_student_phone_norm)
+                                            : '';
                                     ?>
                                     <tr data-review-result="<?php echo htmlspecialchars($row_review); ?>"
                                         data-student-interest="<?php echo htmlspecialchars((string)($item['student_interest_code'] ?? '')); ?>"
                                         data-recommender-dept="<?php echo htmlspecialchars((string)($item['recommender_department_code'] ?? '')); ?>"
-                                        data-academic-year="<?php echo htmlspecialchars((string)($item['academic_year'] ?? '')); ?>">
+                                        data-academic-year="<?php echo htmlspecialchars((string)($item['academic_year'] ?? '')); ?>"
+                                        data-student-name="<?php echo htmlspecialchars($row_student_name); ?>"
+                                        data-student-school="<?php echo htmlspecialchars($row_student_school); ?>"
+                                        data-student-phone="<?php echo htmlspecialchars($row_student_phone_norm); ?>"
+                                        data-dup-student-key="<?php echo htmlspecialchars($row_dup_student_key); ?>">
                                         <td class="gmail-select-cell" style="display:none;">
                                             <input type="checkbox" class="gmail-select-row" value="<?php echo (int)$item['id']; ?>">
                                         </td>
@@ -2168,7 +2260,8 @@ try {
                                                                     <?php echo (int)($item['auto_review_match_name'] ?? 0); ?>,
                                                                     <?php echo (int)($item['auto_review_match_school'] ?? 0); ?>,
                                                                     <?php echo (int)($item['auto_review_match_phone'] ?? 0); ?>,
-                                                                    <?php echo htmlspecialchars(json_encode((string)($item['proof_evidence'] ?? '')), ENT_QUOTES, 'UTF-8'); ?>
+                                                                    <?php echo htmlspecialchars(json_encode((string)($item['proof_evidence'] ?? '')), ENT_QUOTES, 'UTF-8'); ?>,
+                                                                    <?php echo htmlspecialchars(json_encode((string)($item['director_reject_reason'] ?? '')), ENT_QUOTES, 'UTF-8'); ?>
                                                                 )"
                                                             >
                                                                 查看審核結果
@@ -2191,27 +2284,6 @@ try {
                                         </td> -->
                                         <?php if ($is_admission_center && !$is_teacher_user): ?>
                                         <td>
-                                            <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
-                                                <?php if (!empty($item['assigned_department'])): ?>
-                                                    <span style="color: #52c41a;">
-                                                        <i class="fas fa-check-circle"></i> 已分配 - 
-                                                        <?php echo htmlspecialchars($item['assigned_department']); ?>
-                                                    </span>
-                                                <?php else: ?>
-                                                    <span style="color: #8c8c8c;">
-                                                        <i class="fas fa-clock"></i> 未分配
-                                                    </span>
-                                                <?php endif; ?>
-                                                <button
-                                                    class="btn-view"
-                                                    style="background: #1890ff; color: white; border-color: #1890ff;"
-                                                    onclick="openAssignRecommendationDepartmentModal(<?php echo $item['id']; ?>, '<?php echo htmlspecialchars($item['student_name']); ?>', '<?php echo htmlspecialchars($item['assigned_department'] ?? ''); ?>')"
-                                                >
-                                                    <i class="fas fa-building"></i> <?php echo !empty($item['assigned_department']) ? '重新分配' : '分配'; ?>
-                                                </button>
-                                            </div>
-                                        </td>
-                                        <td>
                                             <div style="display: flex; gap: 8px; flex-wrap: wrap;">
                                                 <button type="button" 
                                                    class="btn-view" 
@@ -2224,6 +2296,8 @@ try {
                                                     $current_status = isset($item['status']) ? trim((string)$item['status']) : '';
                                                     $no_bonus = ((int)($item['no_bonus'] ?? 0) === 1);
                                                     $is_approved_for_bonus = in_array($current_status, ['APD'], true);
+                                                    $recommender_signed = (strtolower(trim((string)($item['director_review_status'] ?? ''))) === 'signed');
+                                                    $is_bonus_waived = (strtolower(trim((string)($item['director_review_status'] ?? ''))) === 'waived');
                                                     $bonus_sent = ($rid > 0 && isset($bonus_sent_map[$rid]));
                                                     $bonus_sent_amount = $bonus_sent ? (int)($bonus_sent_map[$rid]['amount'] ?? 1500) : 0;
                                                     $bonus_sent_at = $bonus_sent ? (string)($bonus_sent_map[$rid]['sent_at'] ?? '') : '';
@@ -2232,7 +2306,7 @@ try {
                                                 ?>
 
                                                 <?php if (!empty($can_send_bonus) && $is_approved_for_bonus && !$no_bonus): ?>
-                                                    <?php if ($bonus_sent): ?>
+                                                    <?php if ($bonus_sent && $recommender_signed): ?>
                                                         <span class="btn-view" style="background:#f6ffed; border-color:#b7eb8f; color:#389e0d; cursor: default;">
                                                             <i class="fas fa-check-circle"></i> 已發送 $<?php echo number_format((int)$bonus_sent_amount); ?>
                                                         </span>
@@ -2240,7 +2314,7 @@ try {
                                                         <button type="button"
                                                             class="btn-view"
                                                             style="background:#52c41a; color:white; border-color:#52c41a;"
-                                                            onclick="sendBonus(<?php echo (int)$rid; ?>, this)">
+                                                            onclick="sendBonus(<?php echo (int)$rid; ?>, this, <?php echo $recommender_signed ? 'true' : 'false'; ?>)">
                                                             <i class="fas fa-coins"></i> 發送獎金
                                                         </button>
                                                     <?php endif; ?>
@@ -2255,6 +2329,9 @@ try {
                                                 </button>
                                                 <?php endif; ?>
                                             </div>
+                                            <?php if ($is_bonus_waived): ?>
+                                                <div style="margin-top:6px; color:#cf1322; font-size:13px; font-weight:600;">推薦人放棄獎金</div>
+                                            <?php endif; ?>
                                         </td>
                                         <?php elseif ($is_department_user): ?>
                                         <td>
@@ -2284,6 +2361,8 @@ try {
                                                     $auto_review = isset($item['auto_review_result']) ? trim((string)$item['auto_review_result']) : '';
                                                     if ($auto_review === '人工確認') $auto_review = '需人工確認';
                                                     $is_approved_for_bonus = in_array($current_status, ['APD'], true);
+                                                    $recommender_signed = (strtolower(trim((string)($item['director_review_status'] ?? ''))) === 'signed');
+                                                    $is_bonus_waived = (strtolower(trim((string)($item['director_review_status'] ?? ''))) === 'waived');
                                                     $bonus_sent = ($rid > 0 && isset($bonus_sent_map[$rid]));
                                                     $bonus_sent_amount = $bonus_sent ? (int)($bonus_sent_map[$rid]['amount'] ?? 1500) : 0;
                                                     $no_bonus = ((int)($item['no_bonus'] ?? 0) === 1);
@@ -2292,7 +2371,7 @@ try {
                                                 ?>
 
                                                 <?php if (!empty($can_send_bonus) && $is_approved_for_bonus && !$no_bonus): ?>
-                                                    <?php if ($bonus_sent): ?>
+                                                    <?php if ($bonus_sent && $recommender_signed): ?>
                                                         <span class="btn-view" style="background:#f6ffed; border-color:#b7eb8f; color:#389e0d; cursor: default;">
                                                             <i class="fas fa-check-circle"></i> 已發送 $<?php echo number_format((int)$bonus_sent_amount); ?>
                                                         </span>
@@ -2300,7 +2379,7 @@ try {
                                                         <button type="button"
                                                             class="btn-view"
                                                             style="background:#52c41a; color:white; border-color:#52c41a;"
-                                                            onclick="sendBonus(<?php echo (int)$rid; ?>, this)">
+                                                            onclick="sendBonus(<?php echo (int)$rid; ?>, this, <?php echo $recommender_signed ? 'true' : 'false'; ?>)">
                                                             <i class="fas fa-coins"></i> 發送獎金
                                                         </button>
                                                     <?php endif; ?>
@@ -2318,6 +2397,9 @@ try {
                                                     <i class="fas fa-user-plus"></i> <?php echo !empty($item['assigned_teacher_id']) ? '重新分配' : '分配'; ?>
                                                 </button>
                                             </div>
+                                            <?php if ($is_bonus_waived): ?>
+                                                <div style="margin-top:6px; color:#cf1322; font-size:13px; font-weight:600;">推薦人放棄獎金</div>
+                                            <?php endif; ?>
                                         </td>
                                         <?php else: ?>
                                         <td>
@@ -2335,6 +2417,8 @@ try {
                                                     $auto_review = isset($item['auto_review_result']) ? trim((string)$item['auto_review_result']) : '';
                                                     if ($auto_review === '人工確認') $auto_review = '需人工確認';
                                                     $is_approved_for_bonus = in_array($current_status, ['APD'], true);
+                                                    $recommender_signed = (strtolower(trim((string)($item['director_review_status'] ?? ''))) === 'signed');
+                                                    $is_bonus_waived = (strtolower(trim((string)($item['director_review_status'] ?? ''))) === 'waived');
                                                     $bonus_sent = ($rid > 0 && isset($bonus_sent_map[$rid]));
                                                     $bonus_sent_amount = $bonus_sent ? (int)($bonus_sent_map[$rid]['amount'] ?? 1500) : 0;
                                                     $no_bonus = ((int)($item['no_bonus'] ?? 0) === 1);
@@ -2343,7 +2427,7 @@ try {
                                                 ?>
 
                                                 <?php if (!empty($can_send_bonus) && $is_approved_for_bonus && !$no_bonus): ?>
-                                                    <?php if ($bonus_sent): ?>
+                                                    <?php if ($bonus_sent && $recommender_signed): ?>
                                                         <span class="btn-view" style="background:#f6ffed; border-color:#b7eb8f; color:#389e0d; cursor: default;">
                                                             <i class="fas fa-check-circle"></i> 已發送 $<?php echo number_format((int)$bonus_sent_amount); ?>
                                                         </span>
@@ -2351,7 +2435,7 @@ try {
                                                         <button type="button"
                                                             class="btn-view"
                                                             style="background:#52c41a; color:white; border-color:#52c41a;"
-                                                            onclick="sendBonus(<?php echo (int)$rid; ?>, this)">
+                                                            onclick="sendBonus(<?php echo (int)$rid; ?>, this, <?php echo $recommender_signed ? 'true' : 'false'; ?>)">
                                                             <i class="fas fa-coins"></i> 發送獎金
                                                         </button>
                                                     <?php endif; ?>
@@ -2366,12 +2450,21 @@ try {
                                                 </button>
                                                 <?php endif; ?>
                                             </div>
+                                            <?php if ($is_bonus_waived): ?>
+                                                <div style="margin-top:6px; color:#cf1322; font-size:13px; font-weight:600;">推薦人放棄獎金</div>
+                                            <?php endif; ?>
                                         </td>
                                         <?php endif; ?>
                                     </tr>
                                     <tr id="detail-<?php echo $item['id']; ?>" class="detail-row" style="display: none;">
                                         <?php
-                                            $detail_colspan = (($is_admission_center && !$is_teacher_user) || $is_department_user) ? 9 : 8;
+                                            if ($is_admission_center && !$is_teacher_user) {
+                                                $detail_colspan = 8;
+                                            } elseif ($is_department_user) {
+                                                $detail_colspan = 9;
+                                            } else {
+                                                $detail_colspan = 8;
+                                            }
                                             if (!$can_show_review_result_column) $detail_colspan -= 1;
                                         ?>
                                         <td colspan="<?php echo (int)$detail_colspan; ?>" style="padding: 20px; background: #f9f9f9; border: 2px solid #b3d9ff; border-radius: 4px;">
@@ -2644,12 +2737,15 @@ try {
                         <option value="" selected>請選擇</option>
                         <option value="通過">通過</option>
                         <option value="不通過">不通過</option>
-                        <option value="需人工審查">需人工審查</option>
+                        <option value="需科主任審核">需科主任審核</option>
                     </select>
                 </div>
                 <div id="reviewCriteriaSelectedWrap" style="margin-top:16px; display:none;">
-                    <span>審核結果為：</span>
                     <span class="review-badge" id="reviewCriteriaSelectedBadge"></span>
+                </div>
+                <div id="reviewFailReasonWrap" style="margin-top:16px; display:none;">
+                    <div style="font-size:16px; color:#595959; margin-bottom:6px;">不通過原因</div>
+                    <div id="reviewFailReasonText" style="font-size:16px; color:#cf1322; white-space:pre-wrap; background:#fff1f0; border:1px solid #ffccc7; border-radius:8px; padding:10px 12px;"></div>
                 </div>
                 <div style="margin-top:16px; font-size:16px; color:#595959;">流程進度</div>
                 <div id="reviewProgressBar" class="review-progress" style="margin-top:8px;"></div>
@@ -2679,6 +2775,22 @@ try {
         </div>
     </div>
 
+    <!-- 發送獎金簽核提醒彈出視窗 -->
+    <div id="bonusGuardModal" class="modal" style="display: none;">
+        <div class="modal-content" style="max-width: 460px;">
+            <div class="modal-header">
+                <h3>提醒</h3>
+                <span class="close" onclick="closeBonusGuardModal()">&times;</span>
+            </div>
+            <div class="modal-body">
+                <p id="bonusGuardMessage" style="color:#cf1322; font-weight:600;">推薦人尚未線上簽核，待推薦人簽核後才可發送獎金</p>
+            </div>
+            <div class="modal-footer">
+                <button class="btn-confirm" onclick="closeBonusGuardModal()">確定</button>
+            </div>
+        </div>
+    </div>
+
     <script>
     // 分頁相關變數
     let currentPage = 1;
@@ -2697,9 +2809,14 @@ try {
         const gmailSendConfirm = document.getElementById('gmailSendConfirm');
         const gmailSendCancel = document.getElementById('gmailSendCancel');
         const gmailSelectAll = document.getElementById('gmailSelectAll');
+        const dupStudentToggle = document.getElementById('dupStudentToggle');
         const btnQuery = document.getElementById('btnQuery');
         const btnClear = document.getElementById('btnClear');
         const table = document.getElementById('recommendationTable');
+        const dupStudentList = <?php echo json_encode(array_values($dup_students), JSON_UNESCAPED_UNICODE); ?>;
+        const dupStudentKeySet = new Set((Array.isArray(dupStudentList) ? dupStudentList : []).map(v => String(v.key || '')));
+        let dupStudentFilterMode = ''; // '' | 'all' | 'single'
+        let dupStudentFilterKey = '';
 
         if (searchInput && table) {
             const tbody = table.getElementsByTagName('tbody')[0];
@@ -2777,17 +2894,46 @@ try {
                     }
 
                     // 4) 關鍵字搜尋（全欄位文字）
-                    if (!filterText) return true;
-
-                    const cells = row.getElementsByTagName('td');
-                    for (let j = 0; j < cells.length; j++) {
-                        const cellText = cells[j].textContent || cells[j].innerText || '';
-                        if (cellText.toLowerCase().indexOf(filterText) > -1) {
-                            return true;
+                    if (filterText) {
+                        let matched = false;
+                        const cells = row.getElementsByTagName('td');
+                        for (let j = 0; j < cells.length; j++) {
+                            const cellText = cells[j].textContent || cells[j].innerText || '';
+                            if (cellText.toLowerCase().indexOf(filterText) > -1) {
+                                matched = true;
+                                break;
+                            }
                         }
+                        if (!matched) return false;
                     }
-                    return false;
+
+                    // 5) 重複被推薦人篩選（姓名+學校+電話）
+                    const dupKey = String((row.dataset && row.dataset.dupStudentKey) ? row.dataset.dupStudentKey : '');
+                    if (dupStudentFilterMode === 'single') {
+                        if (!dupStudentFilterKey || dupKey !== dupStudentFilterKey) return false;
+                    } else if (dupStudentFilterMode === 'all') {
+                        if (!dupStudentKeySet.has(dupKey)) return false;
+                    }
+
+                    return true;
                 });
+
+                // 重複被推薦人模式下，將同名被推薦人排在一起
+                if (dupStudentFilterMode === 'single' || dupStudentFilterMode === 'all') {
+                    filteredRows.sort((a, b) => {
+                        const an = String((a.dataset && a.dataset.studentName) ? a.dataset.studentName : '');
+                        const bn = String((b.dataset && b.dataset.studentName) ? b.dataset.studentName : '');
+                        const as = String((a.dataset && a.dataset.studentSchool) ? a.dataset.studentSchool : '');
+                        const bs = String((b.dataset && b.dataset.studentSchool) ? b.dataset.studentSchool : '');
+                        const ap = String((a.dataset && a.dataset.studentPhone) ? a.dataset.studentPhone : '');
+                        const bp = String((b.dataset && b.dataset.studentPhone) ? b.dataset.studentPhone : '');
+                        const c1 = an.localeCompare(bn, 'zh-Hant');
+                        if (c1 !== 0) return c1;
+                        const c2 = as.localeCompare(bs, 'zh-Hant');
+                        if (c2 !== 0) return c2;
+                        return ap.localeCompare(bp, 'zh-Hant');
+                    });
+                }
 
                 currentPage = 1;
                 updatePagination();
@@ -2811,6 +2957,25 @@ try {
                     if (reviewFilter) reviewFilter.value = '';
                     if (interestFilter) interestFilter.value = '';
                     if (academicYearFilter) academicYearFilter.value = '';
+                    dupStudentFilterMode = '';
+                    dupStudentFilterKey = '';
+                    if (dupStudentToggle) dupStudentToggle.textContent = '找尋重複被推薦人';
+                    applyFilters();
+                });
+            }
+
+            if (dupStudentToggle) {
+                dupStudentToggle.addEventListener('click', function() {
+                    const isActive = dupStudentFilterMode === 'all';
+                    if (isActive) {
+                        dupStudentFilterMode = '';
+                        dupStudentFilterKey = '';
+                        dupStudentToggle.textContent = '找尋重複被推薦人';
+                    } else {
+                        dupStudentFilterMode = 'all';
+                        dupStudentFilterKey = '';
+                        dupStudentToggle.textContent = '取消重複被推薦人';
+                    }
                     applyFilters();
                 });
             }
@@ -2939,6 +3104,44 @@ try {
         return (div.textContent || div.innerText || '').trim();
     }
 
+    function escapeHtml(text) {
+        return String(text || '')
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+    }
+
+    function getEditableTextNodes(root) {
+        const nodes = [];
+        const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, null);
+        let node = walker.nextNode();
+        while (node) {
+            if ((node.nodeValue || '').trim() !== '') nodes.push(node);
+            node = walker.nextNode();
+        }
+        return nodes;
+    }
+
+    function extractEditableTextFromHtml(html) {
+        const div = document.createElement('div');
+        div.innerHTML = html || '';
+        const lines = getEditableTextNodes(div).map(n => (n.nodeValue || '').trim());
+        return lines.join('\n');
+    }
+
+    function applyEditedTextToHtmlTemplate(templateHtml, editedText) {
+        const div = document.createElement('div');
+        div.innerHTML = templateHtml || '';
+        const nodes = getEditableTextNodes(div);
+        const lines = String(editedText || '').split(/\r?\n/);
+        for (let i = 0; i < nodes.length; i++) {
+            if (i < lines.length) nodes[i].nodeValue = lines[i];
+        }
+        return div.innerHTML;
+    }
+
     function renderGmailPreviewItem(container, email, index) {
         const item = document.createElement('div');
         item.className = 'gmail-preview-item';
@@ -2964,10 +3167,18 @@ try {
 
         const bodyWrap = document.createElement('div');
         bodyWrap.className = 'gmail-preview-field';
-        bodyWrap.innerHTML = '<label>信件內容（HTML）</label>';
+        bodyWrap.innerHTML = '<label>信件內容（純文字預覽）</label>';
         const bodyInput = document.createElement('textarea');
         bodyInput.className = 'gmail-body';
-        bodyInput.value = email.body || '';
+        const originalHtml = String(email.body || '');
+        const previewText = extractEditableTextFromHtml(originalHtml);
+        bodyInput.value = previewText;
+        bodyInput.dataset.originalHtml = originalHtml;
+        bodyInput.dataset.originalText = previewText;
+        bodyInput.dataset.isDirty = '0';
+        bodyInput.addEventListener('input', () => {
+            bodyInput.dataset.isDirty = '1';
+        });
         bodyWrap.appendChild(bodyInput);
         item.appendChild(bodyWrap);
 
@@ -2979,13 +3190,13 @@ try {
         includeCheckbox.className = 'gmail-include-generated';
         includeCheckbox.checked = !!email.include_generated;
         includeLabel.appendChild(includeCheckbox);
-        const attachmentExt = email.attachment_ext || (email.xlsx_supported === false ? 'csv' : 'xlsx');
+        const attachmentExt = email.attachment_ext || (email.xlsx_supported === false ? 'xls' : 'xlsx');
         includeLabel.appendChild(document.createTextNode(' 附加系統 ' + (attachmentExt.toUpperCase()) + '：' + (email.attachment_name || ('推薦內容.' + attachmentExt))));
         if (email.xlsx_supported === false) {
             const warn = document.createElement('span');
             warn.style.color = '#fa8c16';
             warn.style.marginLeft = '8px';
-            warn.textContent = '（伺服器未啟用 ZipArchive，改附 CSV）';
+            warn.textContent = '（伺服器未啟用 ZipArchive，改附 Excel .xls）';
             includeLabel.appendChild(warn);
         }
         attachWrap.appendChild(includeLabel);
@@ -3098,9 +3309,15 @@ try {
                 const idx = parseInt(item.dataset.index, 10);
                 const recKey = item.dataset.recKey || '';
                 const subject = (item.querySelector('.gmail-subject') || {}).value || '';
-                const body = (item.querySelector('.gmail-body') || {}).value || '';
+                const bodyEl = item.querySelector('.gmail-body');
+                const bodyText = (bodyEl || {}).value || '';
+                const originalHtml = (bodyEl && bodyEl.dataset && bodyEl.dataset.originalHtml) ? bodyEl.dataset.originalHtml : '';
+                const isDirty = (bodyEl && bodyEl.dataset && bodyEl.dataset.isDirty === '1');
+                const body = (!isDirty)
+                    ? originalHtml
+                    : applyEditedTextToHtmlTemplate(originalHtml, bodyText);
                 const includeGenerated = (item.querySelector('.gmail-include-generated') || {}).checked;
-                const altBody = body;
+                const altBody = bodyText;
                 return {
                     rec_key: recKey,
                     subject,
@@ -3537,7 +3754,7 @@ try {
     // 查看審核結果（彈出視窗顯示三項條件 + 審核結果下拉）
     let currentReviewCriteriaId = null;
     let currentReviewCriteriaValue = '';
-    function openReviewCriteriaModal(recommendationId, studentName, currentReview, hasDuplicate, hasEnrollment, studentStatus, noBonus, nsbiFound, matchName, matchSchool, matchPhone, proofEvidence) {
+    function openReviewCriteriaModal(recommendationId, studentName, currentReview, hasDuplicate, hasEnrollment, studentStatus, noBonus, nsbiFound, matchName, matchSchool, matchPhone, proofEvidence, rejectReason) {
         const modal = document.getElementById('reviewCriteriaModal');
         const nameEl = document.getElementById('reviewCriteriaStudentName');
         const listEl = document.getElementById('reviewCriteriaList');
@@ -3546,13 +3763,17 @@ try {
         const selectWrap = document.getElementById('reviewCriteriaSelectWrap');
         const selectedWrap = document.getElementById('reviewCriteriaSelectedWrap');
         const selectedBadge = document.getElementById('reviewCriteriaSelectedBadge');
-        if (!modal || !nameEl || !listEl || !selectEl || !selectWrap || !selectedWrap || !selectedBadge) return;
+        const failReasonWrap = document.getElementById('reviewFailReasonWrap');
+        const failReasonText = document.getElementById('reviewFailReasonText');
+        if (!modal || !nameEl || !listEl || !selectEl || !selectWrap || !selectedWrap || !selectedBadge || !failReasonWrap || !failReasonText) return;
 
         currentReviewCriteriaId = recommendationId;
         currentReviewCriteriaValue = '';
         nameEl.textContent = studentName || '';
         listEl.innerHTML = '';
         if (progressEl) progressEl.innerHTML = '';
+        failReasonWrap.style.display = 'none';
+        failReasonText.textContent = '';
 
         const addLine = (text, isFail, colorOverride) => {
             const div = document.createElement('div');
@@ -3678,11 +3899,26 @@ try {
             div.appendChild(a);
             listEl.appendChild(div);
         } else {
-            addLine('證明文件：無', false, '#8c8c8c');
+            const div = document.createElement('div');
+            div.style.display = 'inline-block';
+            div.style.width = 'fit-content';
+            div.style.fontWeight = '600';
+            div.style.fontSize = '16px';
+            div.style.color = '#ffffff';
+            div.style.background = '#cf1322';
+            div.style.padding = '4px 10px';
+            div.style.borderRadius = '6px';
+            div.textContent = '證明文件：無';
+            listEl.appendChild(div);
         }
 
         const normalized = (currentReview || '').trim();
+        const normalizedRejectReason = (rejectReason || '').trim();
         renderProgress(normalized);
+        if (normalized === '科主任審核未通過') {
+            failReasonText.textContent = normalizedRejectReason || '未填寫不通過原因';
+            failReasonWrap.style.display = 'block';
+        }
         if (normalized === '尚未審核') {
             // 僅尚未審核可調整
             currentReviewCriteriaValue = '';
@@ -3702,7 +3938,7 @@ try {
             currentReviewCriteriaValue = normalized;
             selectEl.value = '';
             selectWrap.style.display = 'none';
-            selectedWrap.style.display = 'block';
+            selectedWrap.style.display = 'none';
             let badgeClass = 'review-badge';
             if (normalized === '審核完成（可發獎金）' || normalized === '已通過初審（待科主任審核）') badgeClass += ' pass';
             else if (normalized === '初審未通過' || normalized === '科主任審核未通過') badgeClass += ' fail';
@@ -3777,10 +4013,27 @@ try {
                  '&review_result=' + encodeURIComponent(reviewResult));
     }
 
+    function openBonusGuardModal(message) {
+        const modal = document.getElementById('bonusGuardModal');
+        const msg = document.getElementById('bonusGuardMessage');
+        if (msg) msg.textContent = message || '推薦人尚未線上簽核，待推薦人簽核後才可發送獎金';
+        if (modal) modal.style.display = 'flex';
+    }
+
+    function closeBonusGuardModal() {
+        const modal = document.getElementById('bonusGuardModal');
+        if (modal) modal.style.display = 'none';
+    }
+
     // 發送獎金（同名且通過者由後端自動平分）
-    function sendBonus(recommendationId, btnEl) {
+    function sendBonus(recommendationId, btnEl, recommenderSigned) {
         const rid = parseInt(recommendationId || 0, 10) || 0;
         if (!rid) return;
+        const hasSigned = (recommenderSigned === true || recommenderSigned === 1 || recommenderSigned === '1' || recommenderSigned === 'true');
+        if (!hasSigned) {
+            openBonusGuardModal('推薦人尚未線上簽核，待推薦人簽核後才可發送獎金');
+            return;
+        }
         if (!confirm('確認要發送此筆獎金？（同名且通過者會自動平分）')) return;
 
         if (btnEl) {
@@ -3844,6 +4097,14 @@ try {
         reviewCriteriaModal.addEventListener('click', function(e) {
             if (e.target === this) {
                 closeReviewCriteriaModal();
+            }
+        });
+    }
+    const bonusGuardModal = document.getElementById('bonusGuardModal');
+    if (bonusGuardModal) {
+        bonusGuardModal.addEventListener('click', function(e) {
+            if (e.target === this) {
+                closeBonusGuardModal();
             }
         });
     }

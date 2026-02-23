@@ -444,9 +444,11 @@ function getRegistrationStageStatusHtml($item, $current_registration_stage, $sta
     $reminded_col = $current_registration_stage . '_reminded';
     $registered_col = $current_registration_stage . '_registered';
     $declined_col = $current_registration_stage . '_declined';
+    $reason_col = $current_registration_stage . '_decline_reason';
     $is_reminded = ((int)($item[$reminded_col] ?? 0) === 1);
     $is_registered = ((int)($item[$registered_col] ?? 0) === 1);
     $is_declined = ((int)($item[$declined_col] ?? 0) === 1);
+    $decline_reason = trim((string)($item[$reason_col] ?? ''));
     if ($is_registered) {
         $status_text = '已報名';
         $status_style = 'color:#52c41a;font-weight:500;';
@@ -460,7 +462,11 @@ function getRegistrationStageStatusHtml($item, $current_registration_stage, $sta
         $status_text = '未提醒';
         $status_style = 'color:#faad14;font-weight:500;';
     }
-    return '<div style="margin-top:6px;font-size:12px;color:#666;"><span style="color:#8c8c8c;">報名階段：</span>' . htmlspecialchars($stage_name) . '　<span style="color:#8c8c8c;">狀態：</span><span style="' . $status_style . '">' . htmlspecialchars($status_text) . '</span></div>';
+    $out = '<div style="margin-top:6px;font-size:12px;color:#666;"><span style="color:#8c8c8c;">報名階段：</span>' . htmlspecialchars($stage_name) . '　<span style="color:#8c8c8c;">狀態：</span><span style="' . $status_style . '">' . htmlspecialchars($status_text) . '</span></div>';
+    if ($is_declined && $decline_reason !== '') {
+        $out .= '<div style="margin-top:4px;font-size:11px;color:#8c8c8c;"><span style="color:#8c8c8c;">不報名原因：</span>' . nl2br(htmlspecialchars($decline_reason)) . '</div>';
+    }
+    return $out;
 }
 
 /**
@@ -517,8 +523,12 @@ try {
         'continued_recruitment_reminded' => "TINYINT(1) NOT NULL DEFAULT 0 COMMENT '續招是否已提醒'",
         'continued_recruitment_registered' => "TINYINT(1) NOT NULL DEFAULT 0 COMMENT '續招是否已報名'",
         'continued_recruitment_declined' => "TINYINT(1) NOT NULL DEFAULT 0 COMMENT '續招本階段不報'",
+        'priority_exam_decline_reason' => "TEXT DEFAULT NULL COMMENT '優先免試本階段不報原因'",
+        'joint_exam_decline_reason' => "TEXT DEFAULT NULL COMMENT '聯合免試本階段不報原因'",
+        'continued_recruitment_decline_reason' => "TEXT DEFAULT NULL COMMENT '續招本階段不報原因'",
         'is_registered' => "TINYINT(1) NOT NULL DEFAULT 0 COMMENT '是否已報名（任一階段）'",
-        'check_in_status' => "VARCHAR(20) NOT NULL DEFAULT 'pending' COMMENT '報到流程: pending=待報到, reminded=已提醒報到, completed=已完成報到, declined=放棄報到'"
+        'check_in_status' => "VARCHAR(20) NOT NULL DEFAULT 'pending' COMMENT '報到流程: pending=待報到, reminded=已提醒報到, completed=已完成報到, declined=放棄報到'",
+        'check_in_decline_reason' => "TEXT DEFAULT NULL COMMENT '放棄報到原因'"
     ];
     foreach ($registration_cols as $name => $def) {
         $r = @$conn->query("SHOW COLUMNS FROM enrollment_intention LIKE '$name'");
@@ -1231,11 +1241,11 @@ try {
                                                             <i class="fas fa-address-book"></i> 新增聯絡紀錄
                                                         </button>
                                                         <?php else: ?>
-                                                        <button type="button" class="btn-view btn-contact-view"
+                                                            <button type="button" class="btn-view btn-contact-view"
                                                             data-student-id="<?php echo (int)$item['id']; ?>"
                                                             data-student-name="<?php echo htmlspecialchars($item['name'] ?? '', ENT_QUOTES, 'UTF-8'); ?>"
                                                             data-assigned-teacher-id="<?php echo (int)($item['assigned_teacher_id'] ?? 0); ?>"
-                                                            onclick="event.stopPropagation(); openContactLogsModal(this.dataset.studentId, this.dataset.studentName, this.dataset.assignedTeacherId)">
+                                                            onclick="event.stopPropagation(); openContactLogsModal(this.dataset.studentId, this.dataset.studentName, this.dataset.assignedTeacherId, true)">
                                                             <i class="fas fa-address-book"></i> 查看聯絡紀錄
                                                         </button>
                                                         <?php endif; ?>
@@ -1254,6 +1264,7 @@ try {
                                             <?php
                                                 $check_in_status = $item['check_in_status'] ?? 'pending';
                                                 $can_check_in = !$is_admission_center ? ($is_assigned_to_me || !$is_director) : true;
+                                                $check_in_decline_reason = trim((string)($item['check_in_decline_reason'] ?? ''));
                                             ?>
                                             <td><?php echo htmlspecialchars($item['name']); ?></td>
                                             <td><?php echo getSchoolName($item['junior_high'] ?? '', $school_data); ?></td>
@@ -1261,7 +1272,19 @@ try {
                                                 <td><?php echo $assignment_html; ?></td>
                                             <?php endif; ?>
                                             <td><?php echo htmlspecialchars(getRegisteredStageDisplay($item)); ?></td>
-                                            <td><?php echo getCheckInStatusBadgeHtml($check_in_status); ?></td>
+                                            <td><?php
+                                                if ($check_in_status === 'declined') {
+                                                    $reason_attr = htmlspecialchars($check_in_decline_reason, ENT_QUOTES, 'UTF-8');
+                                                    echo '<div>';
+                                                    echo '<button type="button" class="btn-view" style="border-color:#8c8c8c;color:#8c8c8c;background:#f5f5f5;cursor:pointer;padding:2px 8px;font-size:12px;" title="按一下顯示放棄報到原因" data-decline-reason="' . $reason_attr . '" onclick="event.stopPropagation(); showCheckInDeclineReason(this.getAttribute(\'data-decline-reason\'))"><i class="fas fa-times-circle" style="font-size:10px;"></i> 放棄報到</button>';
+                                                    if ($check_in_decline_reason !== '') {
+                                                        echo '<div style="margin-top:4px;font-size:11px;color:#8c8c8c;"><span style="color:#8c8c8c;">放棄報到原因：</span>' . nl2br(htmlspecialchars($check_in_decline_reason)) . '</div>';
+                                                    }
+                                                    echo '</div>';
+                                                } else {
+                                                    echo getCheckInStatusBadgeHtml($check_in_status);
+                                                }
+                                            ?></td>
                                             <td onclick="event.stopPropagation();">
                                                 <div style="display: flex; gap: 8px; flex-wrap: wrap;">
                                                     <button type="button"
@@ -1270,12 +1293,15 @@ try {
                                                         onclick="event.stopPropagation(); toggleDetail(<?php echo $item['id']; ?>)">
                                                         <i class="fas fa-eye"></i> <span class="btn-text">查看詳情</span>
                                                     </button>
+                                                    <?php if ($check_in_status === 'declined'): ?>
+                                                        <button type="button" class="btn-view" style="border-color:#8c8c8c;color:#8c8c8c;" title="放棄報到原因" data-decline-reason="<?php echo htmlspecialchars($check_in_decline_reason, ENT_QUOTES, 'UTF-8'); ?>" onclick="event.stopPropagation(); showCheckInDeclineReason(this.getAttribute('data-decline-reason'))"><i class="fas fa-comment-alt"></i> 查看原因</button>
+                                                    <?php endif; ?>
                                                     <?php if ($can_check_in): ?>
                                                         <?php if ($check_in_status === 'pending'): ?>
                                                             <button type="button" class="btn-view" style="border-color:#1890ff;color:#1890ff;" onclick="event.stopPropagation(); handleCheckInAction(<?php echo (int)$item['id']; ?>, 'check_in_remind', '已提醒報到')"><i class="fas fa-bell"></i> 已提醒報到</button>
                                                         <?php elseif ($check_in_status === 'reminded'): ?>
                                                             <button type="button" class="btn-view" style="border-color:#52c41a;color:#52c41a;" onclick="event.stopPropagation(); handleCheckInAction(<?php echo (int)$item['id']; ?>, 'check_in_complete', '已完成報到')"><i class="fas fa-check-circle"></i> 已完成報到</button>
-                                                            <button type="button" class="btn-view" style="border-color:#8c8c8c;color:#8c8c8c;" onclick="event.stopPropagation(); handleCheckInAction(<?php echo (int)$item['id']; ?>, 'check_in_decline', '放棄報到')"><i class="fas fa-times-circle"></i> 放棄報到</button>
+                                                            <button type="button" class="btn-view" style="border-color:#8c8c8c;color:#8c8c8c;" onclick="event.stopPropagation(); openCheckInDeclineModal(<?php echo (int)$item['id']; ?>)"><i class="fas fa-times-circle"></i> 放棄報到</button>
                                                         <?php endif; ?>
                                                     <?php endif; ?>
                                                 </div>
@@ -1295,6 +1321,8 @@ try {
                                                     'continued_recruitment' => '續招'
                                                 ];
                                                 $stage_name = $current_registration_stage ? ($stage_names[$current_registration_stage] ?? '') : '';
+                                                $reason_col = $current_registration_stage ? $current_registration_stage . '_decline_reason' : '';
+                                                $decline_reason_for_btn = ($reason_col !== '') ? trim((string)($item[$reason_col] ?? '')) : '';
 
                                                 // 是否允許此使用者對該學生做報名提醒動作：
                                                 // - 招生中心：一律不能提醒
@@ -1346,7 +1374,7 @@ try {
                                                             data-student-id="<?php echo (int)$item['id']; ?>"
                                                             data-student-name="<?php echo htmlspecialchars($item['name'] ?? '', ENT_QUOTES, 'UTF-8'); ?>"
                                                             data-assigned-teacher-id="<?php echo (int)($item['assigned_teacher_id'] ?? 0); ?>"
-                                                            onclick="event.stopPropagation(); openContactLogsModal(this.dataset.studentId, this.dataset.studentName, this.dataset.assignedTeacherId)">
+                                                            onclick="event.stopPropagation(); openContactLogsModal(this.dataset.studentId, this.dataset.studentName, this.dataset.assignedTeacherId, true)">
                                                             <i class="fas fa-address-book"></i> 查看聯絡紀錄
                                                         </button>
                                                         <?php endif; ?>
@@ -1371,9 +1399,10 @@ try {
                                                             </button>
                                                         <?php else: ?>
                                                             <?php if ($is_declined): ?>
-                                                                <span class="btn-view" style="border-color: #d9d9d9; color: #8c8c8c; cursor: default; background: #f5f5f5;">
-                                                                    <i class="fas fa-minus-circle"></i> 本階段不報（已記錄）
-                                                                </span>
+                                                                <button type="button" class="btn-view" style="border-color: #d9d9d9; color: #8c8c8c; background: #f5f5f5; cursor: pointer;" title="按一下顯示不報名原因" data-decline-reason="<?php echo htmlspecialchars($decline_reason_for_btn, ENT_QUOTES, 'UTF-8'); ?>" onclick="event.stopPropagation(); showDeclineReason(this.getAttribute('data-decline-reason'))">
+                                                                    <i class="fas fa-minus-circle"></i> 本階段不報
+                                                                </button>
+                                                                <button type="button" class="btn-view" style="border-color: #8c8c8c; color: #8c8c8c;" title="不報名原因" data-decline-reason="<?php echo htmlspecialchars($decline_reason_for_btn, ENT_QUOTES, 'UTF-8'); ?>" onclick="event.stopPropagation(); showDeclineReason(this.getAttribute('data-decline-reason'))"><i class="fas fa-comment-alt"></i> 查看原因</button>
                                                             <?php else: ?>
                                                                 <button type="button"
                                                                     class="btn-view"
@@ -1388,7 +1417,7 @@ try {
                                                                     style="border-color: #faad14; color: #faad14; background: #fffbe6;"
                                                                     id="decline-btn-<?php echo $item['id']; ?>"
                                                                     data-enrollment-id="<?php echo (int)$item['id']; ?>"
-                                                                    onclick="event.stopPropagation(); handleRegistrationDeclineStage(<?php echo (int)$item['id']; ?>, '<?php echo htmlspecialchars($stage_name, ENT_QUOTES, 'UTF-8'); ?>')">
+                                                                    onclick="event.stopPropagation(); handleRegistrationDeclineStage(<?php echo (int)$item['id']; ?>, '<?php echo htmlspecialchars($current_registration_stage, ENT_QUOTES, 'UTF-8'); ?>')">
                                                                     <i class="fas fa-user-times"></i> 本階段不報
                                                                 </button>
                                                             <?php endif; ?>
@@ -1492,6 +1521,61 @@ try {
         </div>
     </div>
 
+    <!-- 本階段不報名：填寫原因 -->
+    <div id="declineStageModal" class="modal" style="display: none;">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>本階段不報名</h3>
+                <span class="close" onclick="closeDeclineStageModal()">&times;</span>
+            </div>
+            <div class="modal-body">
+                <p id="declineStageModalStageName" style="margin-bottom: 12px; color: #666; font-size: 14px;"></p>
+                <p style="margin-bottom: 8px; font-size: 13px;">學生將回復為「持續聯絡追蹤」，仍留在當年度招生名單中，下一招生階段可再次提醒報名。</p>
+                <label style="display: block; font-size: 13px; color: #333; margin-bottom: 6px; font-weight: 600;">不報名原因</label>
+                <textarea id="declineStageReason" rows="4" class="form-control" placeholder="請填寫不報名原因" style="width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 4px; resize: vertical;"></textarea>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn-cancel" onclick="closeDeclineStageModal()">取消</button>
+                <button type="button" class="btn-confirm" onclick="confirmDeclineStage()">確定本階段不報名</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 放棄報到：填寫原因 -->
+    <div id="checkInDeclineModal" class="modal" style="display: none;">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>放棄報到</h3>
+                <span class="close" onclick="closeCheckInDeclineModal()">&times;</span>
+            </div>
+            <div class="modal-body">
+                <p style="margin-bottom: 8px; font-size: 13px;">標記後僅影響報到流程，不回到招生追蹤。</p>
+                <label style="display: block; font-size: 13px; color: #333; margin-bottom: 6px; font-weight: 600;">放棄報到原因 <span style="color: #999; font-weight: normal;">(選填)</span></label>
+                <textarea id="checkInDeclineReason" rows="4" class="form-control" placeholder="請填寫放棄報到原因" style="width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 4px; resize: vertical;"></textarea>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn-cancel" onclick="closeCheckInDeclineModal()">取消</button>
+                <button type="button" class="btn-confirm" onclick="confirmCheckInDecline()">確定放棄報到</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 查看原因（不報名原因 / 放棄報到原因） -->
+    <div id="declineReasonModal" class="modal" style="display: none;">
+        <div class="modal-content" style="max-width: 420px;">
+            <div class="modal-header">
+                <h3 id="declineReasonModalTitle">不報名原因</h3>
+                <span class="close" onclick="closeDeclineReasonModal()">&times;</span>
+            </div>
+            <div class="modal-body">
+                <p id="declineReasonText" style="margin: 0; white-space: pre-wrap; word-break: break-word; color: #333;"></p>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn-confirm" onclick="closeDeclineReasonModal()">關閉</button>
+            </div>
+        </div>
+    </div>
+
     <div id="contactLogsModal" class="modal contact-log-modal" style="display: none;">
         <div class="modal-content">
             <div class="modal-header">
@@ -1502,32 +1586,89 @@ try {
                 <div id="addLogSection" style="margin-bottom: 20px; background: #f9f9f9; padding: 16px; border-radius: 8px; display: none;">
                     <h4 style="margin-bottom: 12px;">新增紀錄</h4>
                     <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; margin-bottom: 12px;">
-                        <div>
-                            <label style="display:block; font-size: 13px; color:#666; margin-bottom:6px; font-weight:600;">聯絡日期</label>
-                            <input type="date" id="newLogDate" class="form-control" style="width: 100%;">
-                        </div>
-                        <div>
-                            <label style="display:block; font-size: 13px; color:#666; margin-bottom:6px; font-weight:600;">聯絡方式</label>
-                            <select id="newLogMethod" class="form-control" style="width: 100%;">
-                                <option value="電話">電話</option>
-                                <option value="Line">Line</option>
-                                <option value="Email">Email</option>
-                                <option value="面談">面談</option>
-                                <option value="其他">其他</option>
-                            </select>
-                        </div>
-                        <div>
-                            <label style="display:block; font-size: 13px; color:#666; margin-bottom:6px; font-weight:600;">聯絡結果</label>
-                            <select id="newLogContactResult" class="form-control" style="width: 100%;">
-                                <option value="contacted">已聯絡</option>
-                                <option value="unreachable">聯絡不到</option>
-                            </select>
-                        </div>
-                    </div>
-                    <div>
-                        <label style="display:block; font-size: 13px; color:#666; margin-bottom:6px; font-weight:600;">聯絡紀錄</label>
-                        <textarea id="newLogContent" class="form-control" rows="4" placeholder="請輸入聯絡內容和結果..."></textarea>
-                    </div>
+    <div>
+        <label style="display:block; font-size: 13px; color:#666; margin-bottom:6px; font-weight:600;">聯絡日期</label>
+        <input type="date" id="newLogDate" class="form-control" style="width: 100%;">
+    </div>
+    <div>
+        <label style="display:block; font-size: 13px; color:#666; margin-bottom:6px; font-weight:600;">聯絡方式</label>
+        <select id="newLogMethod" class="form-control" style="width: 100%;">
+            <option value="電話">電話</option>
+            <option value="Line">Line</option>
+            <option value="Email">Email</option>
+            <option value="面談">面談</option>
+            <option value="其他">其他</option>
+        </select>
+    </div>
+    <div>
+        <label style="display:block; font-size: 13px; color:#666; margin-bottom:6px; font-weight:600;">聯絡結果</label>
+        <select id="newLogContactResult" class="form-control" style="width: 100%;">
+            <option value="contacted">已聯絡</option>
+            <option value="unreachable">聯絡不到</option>
+        </select>
+    </div>
+</div>
+
+<div>
+    <label style="display:block; font-size: 13px; color:#666; margin-bottom:6px; font-weight:600;">詳細紀錄 (可多選)</label>
+    <div style="background: #fff; border: 1px solid #d9d9d9; border-radius: 6px; padding: 12px; display: flex; flex-direction: column; gap: 10px;">
+        
+        <div>
+            <div style="font-size:12px; color:#1890ff; font-weight:bold; margin-bottom:4px;">【接聽與意願狀態】</div>
+            <div style="display: flex; flex-wrap: wrap; gap: 8px;">
+                <label style="cursor:pointer; font-size:13px; background:#e6f7ff; padding:2px 8px; border-radius:4px;"><input type="checkbox" name="logOptions" value="學生接聽"> 學生接聽</label>
+                <label style="cursor:pointer; font-size:13px; background:#e6f7ff; padding:2px 8px; border-radius:4px;"><input type="checkbox" name="logOptions" value="家長接聽"> 家長接聽</label>
+                <label style="cursor:pointer; font-size:13px; background:#f6ffed; padding:2px 8px; border-radius:4px;"><input type="checkbox" name="logOptions" value="學生有意願"> 學生有意願</label>
+                <label style="cursor:pointer; font-size:13px; background:#f6ffed; padding:2px 8px; border-radius:4px;"><input type="checkbox" name="logOptions" value="家長支持"> 家長支持</label>
+                <label style="cursor:pointer; font-size:13px; background:#fff2e8; padding:2px 8px; border-radius:4px;"><input type="checkbox" name="logOptions" value="學生無意願"> 學生無意願</label>
+                <label style="cursor:pointer; font-size:13px; background:#fff1f0; padding:2px 8px; border-radius:4px;"><input type="checkbox" name="logOptions" value="家長反對"> 家長反對</label>
+            </div>
+        </div>
+        
+        <div style="height:1px; background:#eee;"></div>
+
+        <div>
+            <div style="font-size:12px; color:#cf1322; font-weight:bold; margin-bottom:4px;">【主要抗性/困難】</div>
+            <div style="display: flex; flex-wrap: wrap; gap: 8px;">
+                <label style="cursor:pointer; font-size:13px;"><input type="checkbox" name="logOptions" value="距離太遠/交通不便"> 距離太遠/交通不便</label>
+                <label style="cursor:pointer; font-size:13px;"><input type="checkbox" name="logOptions" value="會考分數高/想讀高中"> 會考分數高/想讀高中</label>
+                <label style="cursor:pointer; font-size:13px;"><input type="checkbox" name="logOptions" value="學費/經濟考量"> 學費/經濟考量</label>
+                <label style="cursor:pointer; font-size:13px;"><input type="checkbox" name="logOptions" value="已決定他校"> 已決定他校</label>
+                <label style="cursor:pointer; font-size:13px;"><input type="checkbox" name="logOptions" value="志趣不合/沒興趣"> 志趣不合</label>
+            </div>
+        </div>
+
+        <div style="height:1px; background:#eee;"></div>
+
+        <div>
+            <div style="font-size:12px; color:#fa8c16; font-weight:bold; margin-bottom:4px;">【詢問重點/關心議題】</div>
+            <div style="display: flex; flex-wrap: wrap; gap: 8px;">
+                <label style="cursor:pointer; font-size:13px;"><input type="checkbox" name="logOptions" value="詢問獎學金/補助"> 詢問獎學金/補助</label>
+                <label style="cursor:pointer; font-size:13px;"><input type="checkbox" name="logOptions" value="詢問校車/住宿"> 詢問校車/住宿</label>
+                <label style="cursor:pointer; font-size:13px;"><input type="checkbox" name="logOptions" value="詢問升學/就業"> 詢問升學/就業</label>
+            </div>
+        </div>
+
+        <div style="height:1px; background:#eee;"></div>
+
+        <div>
+            <div style="font-size:12px; color:#52c41a; font-weight:bold; margin-bottom:4px;">【後續行動與狀態】</div>
+            <div style="display: flex; flex-wrap: wrap; gap: 8px;">
+                <label style="cursor:pointer; font-size:13px;"><input type="checkbox" name="logOptions" value="考慮中"> 考慮中</label>
+                <label style="cursor:pointer; font-size:13px;"><input type="checkbox" name="logOptions" value="已加LINE"> 已加LINE</label>
+                <label style="cursor:pointer; font-size:13px;"><input type="checkbox" name="logOptions" value="邀請參訪"> 邀請參訪</label>
+                <label style="cursor:pointer; font-size:13px;"><input type="checkbox" name="logOptions" value="寄送資料"> 寄送資料</label>
+                <label style="cursor:pointer; font-size:13px;"><input type="checkbox" name="logOptions" value="需再次聯絡"> 需再次聯絡</label>
+            </div>
+        </div>
+
+    </div>
+</div>
+
+<div style="margin-top: 12px;">
+    <label style="display:block; font-size: 13px; color:#666; margin-bottom:6px; font-weight:600;">詳細備註 (補充說明)</label>
+    <textarea id="newLogContent" class="form-control" rows="2" placeholder="詳細備註"></textarea>
+</div>
                     <div style="margin-top: 12px; text-align: right;">
                         <button class="assign-btn" onclick="submitContactLog()">
                             <i class="fas fa-paper-plane"></i> 新增
@@ -1983,83 +2124,111 @@ try {
         }
 
         // Contact Logs functions
-        function openContactLogsModal(studentId, studentName, assignedTeacherId, viewOnly) {
-            console.log('openContactLogsModal called:', studentId, studentName, assignedTeacherId, viewOnly);
-            // 確保 studentId 是數字
-            const id = parseInt(studentId) || 0;
-            if (!id) {
-                console.error('openContactLogsModal: studentId is missing or invalid:', studentId);
-                alert('錯誤：無法取得學生ID');
-                return;
-            }
-            currentStudentId = id;
-            const nameElement = document.getElementById('contactLogStudentName');
-            const modalElement = document.getElementById('contactLogsModal');
-            if (!nameElement || !modalElement) {
-                console.error('openContactLogsModal: Modal elements not found');
-                alert('錯誤：找不到聯絡紀錄視窗元素');
-                return;
-            }
-            nameElement.textContent = studentName || '未知';
-            modalElement.style.display = 'flex';
-            
-            // 如果是僅查看模式（從詳情頁面點擊），隱藏所有新增/修改相關區塊
-            const isViewOnly = viewOnly === true || viewOnly === 'true';
-            
-            const addLogSection = document.getElementById('addLogSection');
-            var closeSec = document.getElementById('closeCaseSection');
-            var changeIntentionSec = document.getElementById('changeIntentionSection');
-            var currentIntentionSec = document.getElementById('currentIntentionSection');
-            
-            if (isViewOnly) {
-                // 僅查看模式：隱藏所有新增/修改區塊
-                if (addLogSection) addLogSection.style.display = 'none';
-                if (closeSec) closeSec.style.display = 'none';
-                if (changeIntentionSec) changeIntentionSec.style.display = 'none';
-                if (currentIntentionSec) currentIntentionSec.style.display = 'none';
+function openContactLogsModal(studentId, studentName, assignedTeacherId, viewOnly) {
+    // 1. 基礎設定
+    const id = parseInt(studentId) || 0;
+    if (!id) {
+        alert('錯誤：無法取得學生ID');
+        return;
+    }
+    currentStudentId = id;
+    
+    // 設定標題
+    const nameElement = document.getElementById('contactLogStudentName');
+    const modalElement = document.getElementById('contactLogsModal');
+    if (nameElement) nameElement.textContent = studentName || '未知';
+    if (modalElement) modalElement.style.display = 'flex';
+    
+    // 2. 取得介面元素
+    const addLogSection = document.getElementById('addLogSection');
+    // 如果有其他區塊 (如結案/轉介)，也一併取得
+    var closeSec = document.getElementById('closeCaseSection'); 
+    var changeIntentionSec = document.getElementById('changeIntentionSection');
+    var currentIntentionSec = document.getElementById('currentIntentionSection');
+
+    // 3. 判斷是否為「僅查看」模式
+    const isViewOnly = viewOnly === true || viewOnly === 'true';
+
+    if (isViewOnly) {
+        // --- 僅查看模式：隱藏所有操作區塊 ---
+        if (addLogSection) addLogSection.style.display = 'none';
+        if (closeSec) closeSec.style.display = 'none';
+        if (changeIntentionSec) changeIntentionSec.style.display = 'none';
+        if (currentIntentionSec) currentIntentionSec.style.display = 'none';
+        
+    } else {
+        // --- 正常模式：進行權限驗證 ---
+        
+        // 取得 PHP 傳遞過來的角色與 ID 資訊
+        const isAdmissionCenter = <?php echo isset($is_admission_center) && $is_admission_center ? 'true' : 'false'; ?>;
+        const isDirector = <?php echo isset($is_director) && $is_director ? 'true' : 'false'; ?>;
+        const currentUserId = <?php echo isset($user_id) && is_numeric($user_id) ? (int)$user_id : 0; ?>;
+        const assignedTeacherIdInt = parseInt(assignedTeacherId) || 0;
+        
+        // 判斷是否允許新增紀錄
+        let canAddLog = false;
+
+        if (isAdmissionCenter) {
+            // 招生中心：一律不能寫紀錄
+            canAddLog = false;
+        } else if (isDirector) {
+            // 主任：
+            // 1. 如果學生已分配給其他老師 (ID > 0 且 != 主任ID)，主任只能看，不能寫
+            // 2. 如果學生未分配 (ID == 0) 或分配給主任自己 (ID == 主任ID)，主任可以寫
+            if (assignedTeacherIdInt > 0 && assignedTeacherIdInt !== currentUserId) {
+                canAddLog = false;
+                // console.log('主任權限限制：學生已分配給其他老師');
             } else {
-                // 正常模式：檢查是否顯示新增記錄區塊
-                const isAdmissionCenter = <?php echo isset($is_admission_center) && $is_admission_center ? 'true' : 'false'; ?>;
-                const isDirector = <?php echo isset($is_director) && $is_director ? 'true' : 'false'; ?>;
-                const currentUserId = <?php echo isset($user_id) && is_numeric($user_id) ? (int)$user_id : 0; ?>;
-                
-                // 招生中心不能寫記錄
-                if (isAdmissionCenter) {
-                    if (addLogSection) addLogSection.style.display = 'none';
-                } else if (isDirector) {
-                    // 主任：檢查學生是否已分配給其他老師
-                    const assignedTeacherIdInt = parseInt(assignedTeacherId) || 0;
-                    // 如果已分配給其他老師（assigned_teacher_id 不為空且不等於主任自己的ID），則不能寫記錄
-                    if (assignedTeacherIdInt > 0 && assignedTeacherIdInt !== currentUserId) {
-                        // 已分配給其他老師，主任只能查看
-                        if (addLogSection) addLogSection.style.display = 'none';
-                        console.log('Director cannot write log: student assigned to teacher', assignedTeacherIdInt);
-                    } else {
-                        // 未分配或分配給主任自己（自行聯絡），可以寫記錄
-                        if (addLogSection) addLogSection.style.display = 'block';
-                        const today = new Date().toISOString().split('T')[0];
-                        document.getElementById('newLogDate').value = today;
-                        document.getElementById('newLogMethod').value = '電話';
-                        var cr = document.getElementById('newLogContactResult');
-                        if (cr) cr.value = 'contacted';
-                        document.getElementById('newLogContent').value = '';
-                        if (typeof resetTrackingForm === 'function') resetTrackingForm();
-                        if (typeof toggleTrackingSection === 'function') toggleTrackingSection();
-                    }
-                } else {
-                    if (addLogSection) addLogSection.style.display = 'block';
-                    const today = new Date().toISOString().split('T')[0];
-                    document.getElementById('newLogDate').value = today;
-                    document.getElementById('newLogMethod').value = '電話';
-                    var cr = document.getElementById('newLogContactResult');
-                    if (cr) cr.value = 'contacted';
-                    document.getElementById('newLogContent').value = '';
-                }
-                if (closeSec) closeSec.style.display = 'none';
-                if (changeIntentionSec) changeIntentionSec.style.display = 'none';
+                canAddLog = true;
             }
-            loadContactLogs(studentId);
+        } else {
+            // 一般老師 (TEA)：
+            // 雖然列表已經過濾過，但這裡再做一次雙重驗證
+            // 只有當學生是分配給自己時，才能寫紀錄
+            if (assignedTeacherIdInt === currentUserId) {
+                canAddLog = true;
+            } else {
+                canAddLog = false;
+            }
         }
+
+        // 4. 根據權限顯示或隱藏「新增紀錄」區塊
+        if (addLogSection) {
+            if (canAddLog) {
+                addLogSection.style.display = 'block';
+                
+                // === [關鍵] 初始化表單與重置勾選框 ===
+                const today = new Date().toISOString().split('T')[0];
+                const dateInput = document.getElementById('newLogDate');
+                const methodInput = document.getElementById('newLogMethod');
+                const contentInput = document.getElementById('newLogContent');
+                const resultInput = document.getElementById('newLogContactResult');
+
+                if (dateInput) dateInput.value = today;
+                if (methodInput) methodInput.value = '電話';
+                if (resultInput) resultInput.value = 'contacted';
+                if (contentInput) contentInput.value = '';
+
+                // 重置所有勾選框 (這是新加的功能)
+                document.querySelectorAll('input[name="logOptions"]').forEach(cb => cb.checked = false);
+                
+                // 如果有其他追蹤表單重置函式
+                if (typeof resetTrackingForm === 'function') resetTrackingForm();
+                if (typeof toggleTrackingSection === 'function') toggleTrackingSection();
+
+            } else {
+                addLogSection.style.display = 'none';
+            }
+        }
+
+        // 隱藏其他不相關的區塊 (依需求調整)
+        if (closeSec) closeSec.style.display = 'none';
+        if (changeIntentionSec) changeIntentionSec.style.display = 'none';
+    }
+
+    // 5. 載入歷史紀錄
+    loadContactLogs(studentId);
+}
 
         function closeContactLogsModal() {
             document.getElementById('contactLogsModal').style.display = 'none';
@@ -2101,8 +2270,6 @@ try {
                 return res.json();
             })
             .then(data => {
-                var addSec = document.getElementById('addLogSection');
-                if (addSec) addSec.style.display = 'block';
                 if (data.success && data.logs && data.logs.length > 0) {
                     list.innerHTML = data.logs.map(log => {
                         const method = log.method || log.contact_method || '其他';
@@ -2160,75 +2327,74 @@ try {
             });
         }
 
-        function submitContactLog() {
-            const content = document.getElementById('newLogContent').value.trim();
-            const contactDate = document.getElementById('newLogDate').value;
-            const contactMethod = document.getElementById('newLogMethod').value;
-            
-            if (!content) {
-                alert('請輸入聯絡內容');
-                return;
-            }
-            
-            if (!contactDate) {
-                alert('請選擇聯絡日期');
-                return;
-            }
-            
-            if (!contactMethod) {
-                alert('請選擇聯絡方式');
-                return;
-            }
-            
-            const formData = new FormData();
-            formData.append('enrollment_id', currentStudentId);
-            formData.append('notes', content);
-            formData.append('method', contactMethod);
-            formData.append('contact_date', contactDate);
-            var crEl = document.getElementById('newLogContactResult');
-            formData.append('contact_result', (crEl && crEl.value) ? crEl.value : 'contacted');
+function submitContactLog() {
+    const content = document.getElementById('newLogContent').value.trim();
+    const contactDate = document.getElementById('newLogDate').value;
+    const contactMethod = document.getElementById('newLogMethod').value;
+    
+    // 取得所有勾選的項目
+    const checkboxes = document.querySelectorAll('input[name="logOptions"]:checked');
+    let selectedOpts = [];
+    checkboxes.forEach(cb => selectedOpts.push(cb.value));
+    
+    // 驗證
+    if (selectedOpts.length === 0 && !content) {
+        alert('請至少勾選一個狀況或輸入備註內容');
+        return;
+    }
+    
+    if (!contactDate) {
+        alert('請選擇聯絡日期');
+        return;
+    }
+    
+    // 組合文字
+    // 格式範例：【家長接聽、家長支持、學生無意願、學費/經濟考量】
+    //           備註：媽媽覺得學費太貴，但爸爸想讓孩子來...
+    let finalNotes = "";
+    if (selectedOpts.length > 0) {
+        finalNotes += "【" + selectedOpts.join('、') + "】";
+    }
+    
+    if (content) {
+        if (finalNotes) finalNotes += "\n";
+        finalNotes += content;
+    }
+    
+    const formData = new FormData();
+    formData.append('enrollment_id', currentStudentId);
+    formData.append('notes', finalNotes);
+    formData.append('method', contactMethod);
+    formData.append('contact_date', contactDate);
+    var crEl = document.getElementById('newLogContactResult');
+    formData.append('contact_result', (crEl && crEl.value) ? crEl.value : 'contacted');
 
-            fetch('../../Topics-frontend/frontend/api/contact_logs_api.php', {
-                method: 'POST',
-                body: formData
-            })
-            .then(res => {
-                if (!res.ok) {
-                    return res.text().then(text => {
-                        try {
-                            const data = JSON.parse(text);
-                            throw new Error(data.message || 'HTTP error! status: ' + res.status);
-                        } catch (e) {
-                            if (e instanceof Error && e.message) {
-                                throw e;
-                            }
-                            throw new Error('HTTP error! status: ' + res.status);
-                        }
-                    });
-                }
-                return res.json();
-            })
-            .then(data => {
-                if (data.success) {
-                    alert('聯絡紀錄已新增');
-                    var contentField = document.getElementById('newLogContent');
-                    var dateField = document.getElementById('newLogDate');
-                    var methodField = document.getElementById('newLogMethod');
-                    if (contentField) contentField.value = '';
-                    if (dateField) dateField.value = new Date().toISOString().split('T')[0];
-                    if (methodField) methodField.value = '電話';
-                    var crEl = document.getElementById('newLogContactResult');
-                    if (crEl) crEl.value = 'contacted';
-                    if (currentStudentId) loadContactLogs(currentStudentId);
-                } else {
-                    alert(data.message || '新增失敗');
-                }
-            })
-            .catch(err => {
-                console.error('Error submitting contact log:', err);
-                alert('提交失敗: ' + (err.message || '未知錯誤'));
-            });
+    // 發送請求
+    fetch('../../Topics-frontend/frontend/api/contact_logs_api.php', {
+        method: 'POST',
+        body: formData
+    })
+    .then(res => res.json())
+    .then(data => {
+        if (data.success) {
+            alert('聯絡紀錄已新增');
+            
+            // 重置表單
+            document.getElementById('newLogContent').value = '';
+            document.getElementById('newLogDate').value = new Date().toISOString().split('T')[0];
+            document.querySelectorAll('input[name="logOptions"]').forEach(cb => cb.checked = false);
+            
+            // 重新載入列表
+            if (currentStudentId) loadContactLogs(currentStudentId);
+        } else {
+            alert(data.message || '新增失敗');
         }
+    })
+    .catch(err => {
+        console.error('Error:', err);
+        alert('提交失敗');
+    });
+}
 
         // 報名提醒處理函數
         function handleRegistrationRemind(enrollmentId, stageName) {
@@ -2281,13 +2447,39 @@ try {
             });
         }
 
-        function handleRegistrationDeclineStage(enrollmentId, stageName) {
-            if (!confirm('確定學生本招生階段不報名嗎？\n\n學生將回復為「持續聯絡追蹤」，仍留在當年度招生名單中，下一招生階段可再次提醒報名。')) return;
-            
+        var _declineStageEnrollmentId = 0;
+        var _declineStageStageName = '';
+
+        function openDeclineStageModal(enrollmentId, stageName) {
+            _declineStageEnrollmentId = enrollmentId;
+            _declineStageStageName = stageName || '';
+            var stageLabel = stageName === 'priority_exam' ? '優先免試' : (stageName === 'joint_exam' ? '聯合免試' : (stageName === 'continued_recruitment' ? '續招' : (stageName || '—')));
+            var el = document.getElementById('declineStageModalStageName');
+            if (el) el.textContent = '目前階段：' + stageLabel;
+            var reasonEl = document.getElementById('declineStageReason');
+            if (reasonEl) reasonEl.value = '';
+            var modal = document.getElementById('declineStageModal');
+            if (modal) modal.style.display = 'flex';
+        }
+
+        function closeDeclineStageModal() {
+            var modal = document.getElementById('declineStageModal');
+            if (modal) modal.style.display = 'none';
+            _declineStageEnrollmentId = 0;
+            _declineStageStageName = '';
+        }
+
+        function confirmDeclineStage() {
+            if (_declineStageEnrollmentId <= 0) return;
+            var reasonEl = document.getElementById('declineStageReason');
+            var reason = reasonEl ? reasonEl.value.trim() : '';
+
             var formData = new FormData();
             formData.append('action', 'decline_stage');
-            formData.append('enrollment_id', enrollmentId);
-            
+            formData.append('enrollment_id', _declineStageEnrollmentId);
+            if (_declineStageStageName) formData.append('stage', _declineStageStageName);
+            if (reason) formData.append('decline_reason', reason);
+
             fetch('../../Topics-frontend/frontend/api/registration_reminder_api.php', {
                 method: 'POST',
                 body: formData
@@ -2295,6 +2487,72 @@ try {
             .then(function(response) { return response.json(); })
             .then(function(data) {
                 if (data.success) {
+                    closeDeclineStageModal();
+                    location.reload();
+                } else {
+                    alert(data.message || '操作失敗');
+                }
+            })
+            .catch(function(e) {
+                console.error(e);
+                alert('操作失敗，請稍後再試');
+            });
+        }
+
+        function handleRegistrationDeclineStage(enrollmentId, stageName) {
+            openDeclineStageModal(enrollmentId, stageName);
+        }
+
+        function showDeclineReason(reason) {
+            var titleEl = document.getElementById('declineReasonModalTitle');
+            if (titleEl) titleEl.textContent = '不報名原因';
+            var textEl = document.getElementById('declineReasonText');
+            var modal = document.getElementById('declineReasonModal');
+            if (textEl) textEl.textContent = (reason && reason.trim() !== '') ? reason.trim() : '未填寫原因';
+            if (modal) modal.style.display = 'flex';
+        }
+        function showCheckInDeclineReason(reason) {
+            var titleEl = document.getElementById('declineReasonModalTitle');
+            if (titleEl) titleEl.textContent = '放棄報到原因';
+            var textEl = document.getElementById('declineReasonText');
+            var modal = document.getElementById('declineReasonModal');
+            if (textEl) textEl.textContent = (reason && reason.trim() !== '') ? reason.trim() : '未填寫原因';
+            if (modal) modal.style.display = 'flex';
+        }
+        function closeDeclineReasonModal() {
+            var modal = document.getElementById('declineReasonModal');
+            if (modal) modal.style.display = 'none';
+        }
+
+        var _checkInDeclineEnrollmentId = 0;
+        function openCheckInDeclineModal(enrollmentId) {
+            _checkInDeclineEnrollmentId = enrollmentId;
+            var reasonEl = document.getElementById('checkInDeclineReason');
+            if (reasonEl) reasonEl.value = '';
+            var modal = document.getElementById('checkInDeclineModal');
+            if (modal) modal.style.display = 'flex';
+        }
+        function closeCheckInDeclineModal() {
+            var modal = document.getElementById('checkInDeclineModal');
+            if (modal) modal.style.display = 'none';
+            _checkInDeclineEnrollmentId = 0;
+        }
+        function confirmCheckInDecline() {
+            if (_checkInDeclineEnrollmentId <= 0) return;
+            var reasonEl = document.getElementById('checkInDeclineReason');
+            var reason = reasonEl ? reasonEl.value.trim() : '';
+            var formData = new FormData();
+            formData.append('action', 'check_in_decline');
+            formData.append('enrollment_id', _checkInDeclineEnrollmentId);
+            if (reason) formData.append('check_in_decline_reason', reason);
+            fetch('../../Topics-frontend/frontend/api/registration_reminder_api.php', {
+                method: 'POST',
+                body: formData
+            })
+            .then(function(response) { return response.json(); })
+            .then(function(data) {
+                if (data.success) {
+                    closeCheckInDeclineModal();
                     location.reload();
                 } else {
                     alert(data.message || '操作失敗');
