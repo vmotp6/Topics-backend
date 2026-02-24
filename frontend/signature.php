@@ -356,6 +356,11 @@ $current_page = 'signature';
                                 
                                 <!-- 步驟 2: WebAuthn 註冊 -->
                                 <div id="step2WebAuthnRegister" style="display: none;">
+                                    <div id="webauthnLocalhostWarning" style="display: none; background: #fffbe6; border: 1px solid #ffe58f; padding: 12px 16px; border-radius: 6px; margin-bottom: 16px;">
+                                        <p style="margin: 0; color: #ad6800; font-size: 13px;">
+                                            <i class="fas fa-exclamation-triangle"></i> 目前使用 IP 位址（127.0.0.1）存取，生物驗證無法使用。請改用 <strong>http://localhost</strong> 開啟本頁後再試。
+                                        </p>
+                                    </div>
                                     <div style="background: #f6ffed; border: 1px solid #b7eb8f; padding: 16px; border-radius: 6px; margin-bottom: 20px;">
                                         <p style="margin: 0; color: #389e0d; font-size: 14px;">
                                             <i class="fas fa-check-circle"></i> 郵件驗證成功！現在可以開始註冊設備。
@@ -1022,6 +1027,10 @@ $current_page = 'signature';
                     document.getElementById('step1EmailVerification').style.display = 'none';
                     document.getElementById('step2WebAuthnRegister').style.display = 'block';
                     statusDiv.innerHTML = '';
+                    // 若使用 IP 存取，顯示改用 localhost 的提示（WebAuthn 不支援 IP 作為 rpId）
+                    const host = (typeof location !== 'undefined' && location.hostname) ? location.hostname : '';
+                    const warnEl = document.getElementById('webauthnLocalhostWarning');
+                    if (warnEl && (host === '127.0.0.1' || host === '::1')) warnEl.style.display = 'block';
                 }, 1000);
                 
             } catch (error) {
@@ -1137,7 +1146,11 @@ $current_page = 'signature';
                         platform: navigator.platform,
                         userAgent: navigator.userAgent
                     });
-                    throw new Error('生物驗證失敗: ' + webauthError.message + '\n\n建議：\n1. 確保已設定指紋或臉部辨識\n2. 更新瀏覽器到最新版本\n3. 如為 Android，請使用 Chrome 並更新到最新版本');
+                    let suggestion = '建議：\n1. 確保已設定指紋或臉部辨識\n2. 更新瀏覽器到最新版本\n3. 如為 Android，請使用 Chrome 並更新到最新版本';
+                    if (webauthError.message && (webauthError.message.indexOf('invalid domain') > -1 || webauthError.message.indexOf('無效的網域') > -1)) {
+                        suggestion = '目前網址為 IP（127.0.0.1）時，瀏覽器不支援生物驗證。請改用 http://localhost 開啟本頁後再試。';
+                    }
+                    throw new Error('生物驗證失敗: ' + webauthError.message + '\n\n' + suggestion);
                 }
                 
                 // 3. 發送註冊結果到後端
