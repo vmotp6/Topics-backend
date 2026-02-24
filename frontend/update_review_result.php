@@ -24,8 +24,8 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
 $recommendation_id = isset($_POST['recommendation_id']) ? intval($_POST['recommendation_id']) : 0;
 $review_result = isset($_POST['review_result']) ? trim($_POST['review_result']) : '';
 
-// 驗證參數
-$allowed_results = ['通過', '不通過', '需人工審查'];
+// 驗證參數（前端下拉為：通過、不通過、需科主任審核；後端保留「需人工審查」以相容舊請求）
+$allowed_results = ['通過', '不通過', '需人工審查', '需科主任審核'];
 if ($recommendation_id <= 0 || !in_array($review_result, $allowed_results, true)) {
     echo json_encode(['success' => false, 'message' => '無效的參數']);
     exit;
@@ -109,11 +109,12 @@ function ensure_application_status_codes($conn, $needed) {
     $stmt_ins->close();
 }
 
-// 審核結果對應的狀態代碼（與主文件一致）
+// 審核結果對應的狀態代碼（與主文件一致）；「需科主任審核」與「需人工審查」皆對應 MC
 $review_status_map = [
     '通過' => ['code' => 'AP', 'name' => '通過', 'order' => 90],
     '不通過' => ['code' => 'RE', 'name' => '不通過', 'order' => 91],
     '需人工審查' => ['code' => 'MC', 'name' => '需人工審查', 'order' => 92],
+    '需科主任審核' => ['code' => 'MC', 'name' => '需科主任審核', 'order' => 92],
 ];
 
 $status_code = $review_status_map[$review_result]['code'];

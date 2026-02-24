@@ -69,7 +69,9 @@ require_once $email_functions_path;
 if (!function_exists('getCurrentRegistrationStage')) {
     function getCurrentRegistrationStage() {
         $current_month = (int)date('m');
-        if ($current_month >= 5 && $current_month < 6) {
+        if ($current_month >= 4 && $current_month < 5) {
+            return 'full_exempt'; // 4月：完全免試
+        } elseif ($current_month >= 5 && $current_month < 6) {
             return 'priority_exam'; // 5月：優先免試
         } elseif ($current_month >= 6 && $current_month < 8) {
             return 'joint_exam'; // 6-7月：聯合免試
@@ -83,7 +85,9 @@ if (!function_exists('getCurrentRegistrationStage')) {
 if (!function_exists('ensureRegistrationColumns')) {
     function ensureRegistrationColumns($conn) {
         $cols = [
-            'registration_stage' => "VARCHAR(20) DEFAULT NULL COMMENT 'priority_exam/joint_exam/continued_recruitment 當前報名階段'",
+            'registration_stage' => "VARCHAR(20) DEFAULT NULL COMMENT 'full_exempt/priority_exam/joint_exam/continued_recruitment 當前報名階段'",
+            'full_exempt_reminded' => "TINYINT(1) NOT NULL DEFAULT 0 COMMENT '完全免試是否已提醒'",
+            'full_exempt_registered' => "TINYINT(1) NOT NULL DEFAULT 0 COMMENT '完全免試是否已報名'",
             'priority_exam_reminded' => "TINYINT(1) NOT NULL DEFAULT 0 COMMENT '優先免試是否已提醒'",
             'priority_exam_registered' => "TINYINT(1) NOT NULL DEFAULT 0 COMMENT '優先免試是否已報名'",
             'joint_exam_reminded' => "TINYINT(1) NOT NULL DEFAULT 0 COMMENT '聯合免試是否已提醒'",
@@ -104,6 +108,7 @@ if (!function_exists('ensureRegistrationColumns')) {
 if (!function_exists('sendRegistrationStageReminderEmail')) {
     function sendRegistrationStageReminderEmail($email, $studentName, $stage) {
         $stage_names = [
+            'full_exempt' => '完全免試',
             'priority_exam' => '優先免試',
             'joint_exam' => '聯合免試',
             'continued_recruitment' => '續招'
@@ -203,6 +208,8 @@ if (!function_exists('getStageTimeRange')) {
     function getStageTimeRange($stage) {
         $current_year = (int)date('Y');
         $ranges = [
+            'full_exempt' => "{$current_year}年4月",
+            'full_exempt' => "{$current_year}年4月",
             'priority_exam' => "{$current_year}年5月",
             'joint_exam' => "{$current_year}年6-7月",
             'continued_recruitment' => "{$current_year}年8月以後"
@@ -224,7 +231,7 @@ $success_message = '';
 if ($action === 'test' && !empty($test_stage)) {
     try {
         // 驗證階段
-        $valid_stages = ['priority_exam', 'joint_exam', 'continued_recruitment'];
+        $valid_stages = ['full_exempt', 'priority_exam', 'joint_exam', 'continued_recruitment'];
         if (!in_array($test_stage, $valid_stages)) {
             throw new Exception('無效的階段參數');
         }
@@ -354,6 +361,7 @@ if ($action === 'test' && !empty($test_stage)) {
 // 查詢當前階段
 $current_stage = getCurrentRegistrationStage();
 $stage_names = [
+    'full_exempt' => '完全免試',
     'priority_exam' => '優先免試',
     'joint_exam' => '聯合免試',
     'continued_recruitment' => '續招'
@@ -624,6 +632,7 @@ $smtp_configured = !empty(SMTP_USERNAME) && !empty(SMTP_PASSWORD) && !empty(SMTP
                     <label for="stage">選擇報名階段：</label>
                     <select id="stage" name="stage" required>
                         <option value="">請選擇階段</option>
+                        <option value="full_exempt" <?php echo $test_stage === 'full_exempt' ? 'selected' : ''; ?>>完全免試（4月）</option>
                         <option value="priority_exam" <?php echo $test_stage === 'priority_exam' ? 'selected' : ''; ?>>優先免試（5月）</option>
                         <option value="joint_exam" <?php echo $test_stage === 'joint_exam' ? 'selected' : ''; ?>>聯合免試（6-7月）</option>
                         <option value="continued_recruitment" <?php echo $test_stage === 'continued_recruitment' ? 'selected' : ''; ?>>續招（8月以後）</option>

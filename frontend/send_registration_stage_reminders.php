@@ -118,6 +118,9 @@ function getCurrentStagePeriodKey($conn) {
             // 解析失敗則不視為續招期間
         }
     }
+    if ($current_month >= 4 && $current_month < 5) {
+        return ['stage' => 'full_exempt', 'period_key' => $current_year . '-04']; // 4月：完全免試
+    }
     if ($current_month >= 5 && $current_month < 6) {
         return ['stage' => 'priority_exam', 'period_key' => $current_year . '-05'];
     }
@@ -144,7 +147,10 @@ function ensureStageReminderLogTable($conn) {
  */
 function ensureRegistrationColumns($conn) {
     $cols = [
-        'registration_stage' => "VARCHAR(20) DEFAULT NULL COMMENT 'priority_exam/joint_exam/continued_recruitment 當前報名階段'",
+        'registration_stage' => "VARCHAR(20) DEFAULT NULL COMMENT 'full_exempt/priority_exam/joint_exam/continued_recruitment 當前報名階段'",
+        'full_exempt_reminded' => "TINYINT(1) NOT NULL DEFAULT 0 COMMENT '完全免試是否已提醒'",
+        'full_exempt_registered' => "TINYINT(1) NOT NULL DEFAULT 0 COMMENT '完全免試是否已報名'",
+        'full_exempt_declined' => "TINYINT(1) NOT NULL DEFAULT 0 COMMENT '完全免試本階段不報'",
         'priority_exam_reminded' => "TINYINT(1) NOT NULL DEFAULT 0 COMMENT '優先免試是否已提醒'",
         'priority_exam_registered' => "TINYINT(1) NOT NULL DEFAULT 0 COMMENT '優先免試是否已報名'",
         'priority_exam_declined' => "TINYINT(1) NOT NULL DEFAULT 0 COMMENT '優先免試本階段不報'",
@@ -169,6 +175,7 @@ function ensureRegistrationColumns($conn) {
  */
 function sendRegistrationStageReminderEmail($email, $studentName, $stage) {
     $stage_names = [
+        'full_exempt' => '完全免試',
         'priority_exam' => '優先免試',
         'joint_exam' => '聯合免試',
         'continued_recruitment' => '續招'
@@ -268,6 +275,7 @@ function sendRegistrationStageReminderEmail($email, $studentName, $stage) {
  */
 function sendRegistrationStageReminderToTeacher($email, $teacherName, $stage, $studentCount, $studentNamesList) {
     $stage_names = [
+        'full_exempt' => '完全免試',
         'priority_exam' => '優先免試',
         'joint_exam' => '聯合免試',
         'continued_recruitment' => '續招'
@@ -316,6 +324,7 @@ function getStageTimeRange($stage) {
  */
 function runRegistrationStageReminders() {
     $stage_names = [
+        'full_exempt' => '完全免試',
         'priority_exam' => '優先免試',
         'joint_exam' => '聯合免試',
         'continued_recruitment' => '續招'

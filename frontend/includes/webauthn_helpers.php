@@ -30,11 +30,17 @@ function base64UrlDecode($data) {
 
 /**
  * 獲取 Relying Party ID（域名）
+ * WebAuthn 規範不允許 IP 作為 rpId，Chrome 會回傳 "This is an invalid domain"。
+ * 本機開發時若以 127.0.0.1 存取，改回傳 localhost（使用者需改用 http://localhost 存取才能通過驗證）。
  */
 function getRelyingPartyId() {
     $host = $_SERVER['HTTP_HOST'] ?? 'localhost';
     // 移除端口號
     $host = preg_replace('/:\d+$/', '', $host);
+    // 本機 IP 視為 localhost，避免瀏覽器報 "invalid domain"
+    if ($host === '127.0.0.1' || $host === '[::1]' || $host === '::1') {
+        return 'localhost';
+    }
     return $host;
 }
 

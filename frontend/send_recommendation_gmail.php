@@ -708,9 +708,8 @@ try {
                             @$ins->execute();
                             $ins->close();
                         }
-                        $protocol = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
-                        $host = $_SERVER['HTTP_HOST'] ?? 'localhost';
-                        $approval_link = $protocol . '://' . $host . '/Topics-frontend/frontend/recommendation_approval.php?token=' . urlencode($token);
+                        // 主任線上簽核連結固定使用 localhost（供本機/測試使用）
+                        $approval_link = 'http://localhost/Topics-frontend/frontend/recommendation_approval.php?token=' . urlencode($token);
                     }
                     if ($approval_link !== '') {
                         $link_html = '<a href="' . htmlspecialchars($approval_link, ENT_QUOTES, 'UTF-8') . '">' . htmlspecialchars($approval_link, ENT_QUOTES, 'UTF-8') . '</a>';

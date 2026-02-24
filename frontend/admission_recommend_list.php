@@ -271,6 +271,14 @@ if ($is_director && $user_id > 0) {
 $is_admission_center = $is_admin_or_staff && !$is_department_user;
 $can_show_review_result_column = ($can_view_review_result || $is_teacher_user);
 $can_use_bulk_gmail_send = !$is_teacher_user;
+// IM 科主任（role=DI）隱藏部分工具列操作
+$is_im_di = (
+    strtoupper(trim((string)$user_role)) === 'DI' &&
+    (
+        strtoupper(trim((string)$username)) === 'IM' ||
+        in_array(strtoupper(trim((string)$user_department_code)), ['IM', 'IMD'], true)
+    )
+);
 
 // 檢查是否有 recommender 和 recommended 表
 $has_recommender_table = false;
@@ -2112,7 +2120,7 @@ try {
                             // view_mode：下拉選單顯示用（空字串視同 all，向後相容）
                             $view_mode_ui = ($view_mode === '' || $view_mode === null) ? 'all' : (string)$view_mode;
                         ?>
-                        <?php if (!$is_teacher_user): ?>
+                        <?php if (!$is_teacher_user && !$is_im_di): ?>
                         <div style="display:flex; align-items:center; gap:12px; margin-bottom:12px; margin-left: 55px; margin-top: 15px; flex-wrap: wrap;">
                             <span class="search-label">審核狀態</span>
                             <select id="viewModeSelect" class="search-select" title="審核狀態篩選">

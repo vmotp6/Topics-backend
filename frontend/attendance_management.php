@@ -6,6 +6,7 @@ checkBackendLogin();
 
 // 引入資料庫設定
 require_once '../../Topics-frontend/frontend/config.php';
+require_once __DIR__ . '/includes/enrollment_assignment_log.php';
 
 // 獲取場次ID
 $session_id = isset($_GET['session_id']) ? intval($_GET['session_id']) : 0;
