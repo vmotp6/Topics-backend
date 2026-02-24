@@ -3,8 +3,9 @@
  * 檢查未聯絡學生並處理通知與自動分配
  * 
  * 功能：
- * 1. 檢查分配後2天沒有聯絡的學生，發送通知
- * 2. 檢查分配後3天沒有聯絡的學生，自動分配給下一個志願
+ * 1. 分配後 1 天沒有聯絡 → 發送通知
+ * 2. 分配後 2 天沒有聯絡 → 再發送通知
+ * 3. 分配後 3 天沒有聯絡 → 自動分配給下一個志願
  * 
  * 使用方式：
  * - 手動執行：http://127.0.0.1/Topics-backend/frontend/check_uncontacted_students.php
@@ -14,13 +15,15 @@
 require_once __DIR__ . '/session_config.php';
 require_once __DIR__ . '/../../Topics-frontend/frontend/config.php';
 require_once __DIR__ . '/../../Topics-frontend/frontend/includes/enrollment_notification_functions.php';
+require_once __DIR__ . '/includes/enrollment_assignment_log.php';
 
 header('Content-Type: text/html; charset=utf-8');
 
 // 允許通過 URL 參數設置測試模式（縮短時間間隔）
 $test_mode = isset($_GET['test']) && $_GET['test'] === '1';
-$days_2_notification = $test_mode ? 0.1 : 2; // 測試模式：0.1天（約2.4小時），正常模式：2天
-$days_3_reassign = $test_mode ? 0.15 : 3; // 測試模式：0.15天（約3.6小時），正常模式：3天
+$days_1_notification = $test_mode ? 0.05 : 1;  // 第1天通知
+$days_2_notification = $test_mode ? 0.1 : 2;   // 第2天通知
+$days_3_reassign = $test_mode ? 0.15 : 3;      // 第3天轉下一意願
 
 echo "<!DOCTYPE html>
 <html>
@@ -50,13 +53,14 @@ echo "<!DOCTYPE html>
 if ($test_mode) {
     echo "<div class='test-mode'>
         <strong>⚠️ 測試模式已啟用</strong><br>
-        通知間隔：{$days_2_notification} 天（約 " . round($days_2_notification * 24) . " 小時）<br>
-        重新分配間隔：{$days_3_reassign} 天（約 " . round($days_3_reassign * 24) . " 小時）<br>
+        第1天通知：{$days_1_notification} 天（約 " . round($days_1_notification * 24) . " 小時）<br>
+        第2天通知：{$days_2_notification} 天（約 " . round($days_2_notification * 24) . " 小時）<br>
+        第3天轉下一意願：{$days_3_reassign} 天（約 " . round($days_3_reassign * 24) . " 小時）<br>
         <a href='?test=0'>切換到正常模式</a>
     </div>";
 } else {
     echo "<div class='info'>
-        正常模式：通知間隔 {$days_2_notification} 天，重新分配間隔 {$days_3_reassign} 天<br>
+        正常模式：第1天通知、第2天通知、第3天轉下一意願<br>
         <a href='?test=1'>切換到測試模式（縮短時間間隔）</a>
     </div>";
 }
@@ -66,17 +70,17 @@ try {
     
     // 獲取當前時間
     $now = new DateTime();
-    
+
+    // 起算日：已分配老師 → created_at（主任收到表單）；未分配老師 → updated_at（含剛轉派）
+    $assignment_start_sql = "CASE WHEN ei.assigned_teacher_id IS NOT NULL THEN ei.created_at ELSE ei.updated_at END";
+
     // ==========================================
-    // 1. 檢查分配後2天沒有聯絡的學生（發送通知）
+    // 1. 檢查分配後 1 天沒有聯絡的學生（發送通知）
     // ==========================================
     echo "<div class='section'>";
-    echo "<h2>📧 檢查2天未聯絡的學生（發送通知）</h2>";
-    
-    // 查詢已分配但沒有聯絡記錄的學生
-    // 使用 assigned_department 和 created_at 來判斷分配時間
-    // 如果 assigned_teacher_id 不為空，使用最近一次分配時間
-    $sql_2days = "
+    echo "<h2>📧 檢查1天未聯絡的學生（發送通知）</h2>";
+
+    $sql_1day = "
         SELECT 
             ei.id,
             ei.name,
@@ -84,14 +88,13 @@ try {
             ei.email,
             ei.assigned_department,
             ei.assigned_teacher_id,
-            ei.created_at,
             d.name AS department_name,
             u.name AS assigned_teacher_name,
             u.email AS assigned_teacher_email,
             dir.user_id AS director_id,
             dir_user.name AS director_name,
             dir_user.email AS director_email,
-            TIMESTAMPDIFF(HOUR, ei.created_at, NOW()) AS hours_since_assigned
+            TIMESTAMPDIFF(HOUR, $assignment_start_sql, NOW()) AS hours_since_assigned
         FROM enrollment_intention ei
         LEFT JOIN departments d ON ei.assigned_department = d.code
         LEFT JOIN user u ON ei.assigned_teacher_id = u.id
@@ -104,21 +107,108 @@ try {
             FROM enrollment_contact_logs ecl 
             WHERE ecl.enrollment_id = ei.id
         )
-        AND TIMESTAMPDIFF(DAY, ei.created_at, NOW()) >= ?
-        AND TIMESTAMPDIFF(DAY, ei.created_at, NOW()) < ?
-        ORDER BY ei.created_at ASC
+        AND TIMESTAMPDIFF(DAY, $assignment_start_sql, NOW()) >= ?
+        AND TIMESTAMPDIFF(DAY, $assignment_start_sql, NOW()) < ?
+        ORDER BY $assignment_start_sql ASC
     ";
-    
+
+    $stmt_1day = $conn->prepare($sql_1day);
+    $stmt_1day->bind_param("dd", $days_1_notification, $days_2_notification);
+    $stmt_1day->execute();
+    $result_1day = $stmt_1day->get_result();
+    $students_1day = $result_1day->fetch_all(MYSQLI_ASSOC);
+
+    if (empty($students_1day)) {
+        echo "<p class='info'>✓ 沒有找到需要發送通知的學生（1天未聯絡）</p>";
+    } else {
+        echo "<p class='warning'>找到 " . count($students_1day) . " 位需要發送通知的學生（第1天）</p>";
+        echo "<table>";
+        echo "<tr><th>學生ID</th><th>姓名</th><th>科系</th><th>分配給</th><th>已過時間</th><th>操作</th></tr>";
+        $notification_sent_1 = 0;
+        $notification_failed_1 = 0;
+        foreach ($students_1day as $student) {
+            $hours = $student['hours_since_assigned'];
+            $days = round($hours / 24, 1);
+            $recipient_name = $student['assigned_teacher_name'] ?? $student['director_name'] ?? '未知';
+            $recipient_email = $student['assigned_teacher_email'] ?? $student['director_email'] ?? null;
+            $is_teacher = !empty($student['assigned_teacher_id']);
+            echo "<tr>";
+            echo "<td>{$student['id']}</td>";
+            echo "<td>{$student['name']}</td>";
+            echo "<td>{$student['department_name']} ({$student['assigned_department']})</td>";
+            echo "<td>" . ($is_teacher ? "老師：{$recipient_name}" : "主任：{$recipient_name}") . "</td>";
+            echo "<td>{$days} 天（{$hours} 小時）</td>";
+            if (empty($recipient_email)) {
+                echo "<td class='error'>✗ 無法發送：收件人沒有郵箱</td>";
+                $notification_failed_1++;
+            } else {
+                $student_data = ['name' => $student['name'], 'phone1' => $student['phone1'] ?? '', 'email' => $student['email'] ?? ''];
+                $email_sent = $is_teacher
+                    ? sendTeacherReminderNotification($conn, $student['assigned_teacher_id'], $student_data, $days)
+                    : sendDirectorReminderNotification($conn, $student['assigned_department'], $student_data, $days);
+                if ($email_sent) {
+                    echo "<td class='success'>✓ 通知已發送</td>";
+                    $notification_sent_1++;
+                } else {
+                    echo "<td class='error'>✗ 通知發送失敗</td>";
+                    $notification_failed_1++;
+                }
+            }
+            echo "</tr>";
+        }
+        echo "</table>";
+        echo "<p><strong>統計：</strong>成功發送 {$notification_sent_1} 封，失敗 {$notification_failed_1} 封</p>";
+    }
+    echo "</div>";
+
+    // ==========================================
+    // 2. 檢查分配後 2 天沒有聯絡的學生（再發送通知）
+    // ==========================================
+    echo "<div class='section'>";
+    echo "<h2>📧 檢查2天未聯絡的學生（再發送通知）</h2>";
+
+    $sql_2days = "
+        SELECT 
+            ei.id,
+            ei.name,
+            ei.phone1,
+            ei.email,
+            ei.assigned_department,
+            ei.assigned_teacher_id,
+            d.name AS department_name,
+            u.name AS assigned_teacher_name,
+            u.email AS assigned_teacher_email,
+            dir.user_id AS director_id,
+            dir_user.name AS director_name,
+            dir_user.email AS director_email,
+            TIMESTAMPDIFF(HOUR, $assignment_start_sql, NOW()) AS hours_since_assigned
+        FROM enrollment_intention ei
+        LEFT JOIN departments d ON ei.assigned_department = d.code
+        LEFT JOIN user u ON ei.assigned_teacher_id = u.id
+        LEFT JOIN director dir ON ei.assigned_department = dir.department
+        LEFT JOIN user dir_user ON dir.user_id = dir_user.id
+        WHERE ei.assigned_department IS NOT NULL
+        AND ei.assigned_department != ''
+        AND NOT EXISTS (
+            SELECT 1 
+            FROM enrollment_contact_logs ecl 
+            WHERE ecl.enrollment_id = ei.id
+        )
+        AND TIMESTAMPDIFF(DAY, $assignment_start_sql, NOW()) >= ?
+        AND TIMESTAMPDIFF(DAY, $assignment_start_sql, NOW()) < ?
+        ORDER BY $assignment_start_sql ASC
+    ";
+
     $stmt_2days = $conn->prepare($sql_2days);
     $stmt_2days->bind_param("dd", $days_2_notification, $days_3_reassign);
     $stmt_2days->execute();
     $result_2days = $stmt_2days->get_result();
     $students_2days = $result_2days->fetch_all(MYSQLI_ASSOC);
-    
+
     if (empty($students_2days)) {
         echo "<p class='info'>✓ 沒有找到需要發送通知的學生（2天未聯絡）</p>";
     } else {
-        echo "<p class='warning'>找到 " . count($students_2days) . " 位需要發送通知的學生</p>";
+        echo "<p class='warning'>找到 " . count($students_2days) . " 位需要發送通知的學生（第2天）</p>";
         echo "<table>";
         echo "<tr><th>學生ID</th><th>姓名</th><th>科系</th><th>分配給</th><th>已過時間</th><th>操作</th></tr>";
         
@@ -178,19 +268,21 @@ try {
     echo "</div>";
     
     // ==========================================
-    // 2. 檢查分配後3天沒有聯絡的學生（自動分配給下一個志願）
+    // 3. 檢查分配後 3 天沒有聯絡的學生（自動分配給下一個志願）
     // ==========================================
     echo "<div class='section'>";
     echo "<h2>🔄 檢查3天未聯絡的學生（自動重新分配）</h2>";
     
+    // 三天起算：已分配老師 → 用 created_at（主任收到表單）；未分配老師（含剛轉派）→ 用 updated_at
     $sql_3days = "
         SELECT 
             ei.id,
             ei.name,
             ei.assigned_department,
-            ei.updated_at as assigned_at,
+            ei.assigned_teacher_id,
+            CASE WHEN ei.assigned_teacher_id IS NOT NULL THEN ei.created_at ELSE ei.updated_at END AS assignment_start,
             d.name AS department_name,
-            TIMESTAMPDIFF(HOUR, ei.updated_at, NOW()) AS hours_since_assigned
+            TIMESTAMPDIFF(HOUR, CASE WHEN ei.assigned_teacher_id IS NOT NULL THEN ei.created_at ELSE ei.updated_at END, NOW()) AS hours_since_assigned
         FROM enrollment_intention ei
         LEFT JOIN departments d ON ei.assigned_department = d.code
         WHERE ei.assigned_department IS NOT NULL
@@ -200,8 +292,8 @@ try {
             FROM enrollment_contact_logs ecl 
             WHERE ecl.enrollment_id = ei.id
         )
-        AND TIMESTAMPDIFF(DAY, ei.updated_at, NOW()) >= ?
-        ORDER BY ei.updated_at ASC
+        AND TIMESTAMPDIFF(DAY, CASE WHEN ei.assigned_teacher_id IS NOT NULL THEN ei.created_at ELSE ei.updated_at END, NOW()) >= ?
+        ORDER BY assignment_start ASC
     ";
     
     $stmt_3days = $conn->prepare($sql_3days);
@@ -236,8 +328,8 @@ try {
             if ($next_choice) {
                 echo "<td>{$next_choice['department_name']} ({$next_choice['department_code']})</td>";
                 
-                // 執行重新分配
-                $reassign_result = reassignToNextChoice($conn, $student['id'], $next_choice['department_code'], $student);
+                // 執行重新分配（傳入 next_choice 以寫入歷程的 choice_order）
+                $reassign_result = reassignToNextChoice($conn, $student['id'], $next_choice['department_code'], $student, $next_choice);
                 
                 if ($reassign_result['success']) {
                     echo "<td class='success'>✓ 已重新分配給 {$next_choice['department_name']}</td>";
@@ -262,7 +354,7 @@ try {
     echo "</div>";
     
     // ==========================================
-    // 3. 顯示所有已分配但未聯絡的學生（參考資訊）
+    // 4. 顯示所有已分配但未聯絡的學生（參考資訊）
     // ==========================================
     echo "<div class='section'>";
     echo "<h2>📊 所有已分配但未聯絡的學生（參考）</h2>";
@@ -272,9 +364,10 @@ try {
             ei.id,
             ei.name,
             ei.assigned_department,
-            ei.created_at,
+            ei.assigned_teacher_id,
+            CASE WHEN ei.assigned_teacher_id IS NOT NULL THEN ei.created_at ELSE ei.updated_at END AS assignment_start,
             d.name AS department_name,
-            TIMESTAMPDIFF(HOUR, ei.created_at, NOW()) AS hours_since_assigned
+            TIMESTAMPDIFF(HOUR, CASE WHEN ei.assigned_teacher_id IS NOT NULL THEN ei.created_at ELSE ei.updated_at END, NOW()) AS hours_since_assigned
         FROM enrollment_intention ei
         LEFT JOIN departments d ON ei.assigned_department = d.code
         WHERE ei.assigned_department IS NOT NULL
@@ -284,7 +377,7 @@ try {
             FROM enrollment_contact_logs ecl 
             WHERE ecl.enrollment_id = ei.id
         )
-        ORDER BY ei.created_at ASC
+        ORDER BY assignment_start ASC
     ";
     
     $result_all = $conn->query($sql_all);
@@ -307,7 +400,10 @@ try {
                 $status = '需要重新分配（≥3天）';
                 $status_class = 'error';
             } elseif ($days >= $days_2_notification) {
-                $status = '需要發送通知（≥2天）';
+                $status = '需要發送通知（第2天）';
+                $status_class = 'warning';
+            } elseif ($days >= $days_1_notification) {
+                $status = '需要發送通知（第1天）';
                 $status_class = 'warning';
             } else {
                 $status = '正常';
@@ -318,7 +414,7 @@ try {
             echo "<td>{$student['id']}</td>";
             echo "<td>{$student['name']}</td>";
             echo "<td>{$student['department_name']} ({$student['assigned_department']})</td>";
-            echo "<td>{$student['created_at']}</td>";
+            echo "<td>" . ($student['assignment_start'] ?? $student['created_at'] ?? '') . "</td>";
             echo "<td>{$days} 天（{$hours} 小時）</td>";
             echo "<td class='{$status_class}'>{$status}</td>";
             echo "</tr>";
@@ -396,8 +492,9 @@ function getNextEnrollmentChoice($conn, $enrollment_id, $current_department_code
 
 /**
  * 重新分配給下一個志願
+ * @param array|null $next_choice 下一個志願（含 choice_order, department_code），用於寫入分配歷程
  */
-function reassignToNextChoice($conn, $enrollment_id, $new_department_code, $student_data) {
+function reassignToNextChoice($conn, $enrollment_id, $new_department_code, $student_data, $next_choice = null) {
     try {
         // 開始事務
         $conn->begin_transaction();
@@ -406,6 +503,14 @@ function reassignToNextChoice($conn, $enrollment_id, $new_department_code, $stud
         $stmt = $conn->prepare("UPDATE enrollment_intention SET assigned_department = ?, assigned_teacher_id = NULL WHERE id = ?");
         $stmt->bind_param("si", $new_department_code, $enrollment_id);
         $stmt->execute();
+        
+        // 寫入分配歷程：第 N 意願、來源為自動轉派
+        $choice_order = isset($next_choice['choice_order']) ? (int)$next_choice['choice_order'] : 0;
+        if ($choice_order < 1) {
+            $cnt = count_enrollment_assignment_logs($conn, $enrollment_id);
+            $choice_order = $cnt + 1;
+        }
+        insert_enrollment_assignment_log($conn, $enrollment_id, $new_department_code, $choice_order, 'reassign');
         
         // 獲取新科系的主任資訊
         $director_stmt = $conn->prepare("

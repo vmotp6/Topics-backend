@@ -6,11 +6,12 @@
  * php test_registration_stage_reminders.php [stage] [test_email]
  * 
  * 參數說明：
- * - stage: 可選，指定測試的階段 (priority_exam/joint_exam/continued_recruitment)
+ * - stage: 可選，指定測試的階段 (full_exempt/priority_exam/joint_exam/continued_recruitment)
  *   如果不指定，會使用當前月份判斷
  * - test_email: 可選，指定測試郵箱，如果不指定，會查詢資料庫中的學生
  * 
  * 範例：
+ * php test_registration_stage_reminders.php full_exempt test@example.com
  * php test_registration_stage_reminders.php priority_exam test@example.com
  * php test_registration_stage_reminders.php joint_exam
  * php test_registration_stage_reminders.php
@@ -77,9 +78,9 @@ $test_stage = $argv[1] ?? null;
 $test_email = $argv[2] ?? null;
 
 // 驗證階段參數
-$valid_stages = ['priority_exam', 'joint_exam', 'continued_recruitment'];
+$valid_stages = ['full_exempt', 'priority_exam', 'joint_exam', 'continued_recruitment'];
 if ($test_stage && !in_array($test_stage, $valid_stages)) {
-    die("錯誤：無效的階段參數。請使用：priority_exam, joint_exam, 或 continued_recruitment\n");
+    die("錯誤：無效的階段參數。請使用：full_exempt, priority_exam, joint_exam, 或 continued_recruitment\n");
 }
 
 echo "========================================\n";
@@ -107,6 +108,7 @@ if (!$current_stage) {
     $conn_temp->close();
 }
 $stage_names = [
+    'full_exempt' => '完全免試',
     'priority_exam' => '優先免試',
     'joint_exam' => '聯合免試',
     'continued_recruitment' => '續招'
@@ -116,7 +118,7 @@ if (!$current_stage) {
     if (!$test_stage) {
         echo "⚠️  目前非報名期間，但可以強制指定階段進行測試\n";
         echo "   使用方式：php test_registration_stage_reminders.php [stage] [test_email]\n";
-        echo "   範例：php test_registration_stage_reminders.php priority_exam test@example.com\n";
+        echo "   範例：php test_registration_stage_reminders.php full_exempt test@example.com\n";
         exit(0);
     }
 }

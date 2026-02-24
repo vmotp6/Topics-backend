@@ -30,6 +30,7 @@ if ($student_id <= 0 || empty($department_code)) {
 }
 
 require_once '../../Topics-frontend/frontend/config.php';
+require_once __DIR__ . '/includes/enrollment_assignment_log.php';
 
 try {
     $conn = getDatabaseConnection();
@@ -109,6 +110,22 @@ try {
     $update->bind_param("si", $department_code, $student_id);
 
     if ($update->execute()) {
+        // 分配歷程：手動改派，志願序從 enrollment_choices 或歷程筆數+1
+        $choice_order = 1;
+        $ec = $conn->prepare("SELECT choice_order FROM enrollment_choices WHERE enrollment_id = ? AND department_code = ? LIMIT 1");
+        if ($ec) {
+            $ec->bind_param("is", $student_id, $department_code);
+            $ec->execute();
+            $er = $ec->get_result()->fetch_assoc();
+            $ec->close();
+            if ($er && isset($er['choice_order'])) {
+                $choice_order = (int)$er['choice_order'];
+            } else {
+                $cnt = count_enrollment_assignment_logs($conn, $student_id);
+                $choice_order = $cnt + 1;
+            }
+        }
+        insert_enrollment_assignment_log($conn, $student_id, $department_code, $choice_order, 'manual');
         echo json_encode([
             'success' => true,
             'message' => '已分配學生至科系',

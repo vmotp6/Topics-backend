@@ -2,7 +2,7 @@
 
 ## 一、每個階段的報名時間在哪裡設定
 
-報名時間是依「月份」判斷，**需在以下 3 個檔案保持一致**：
+報名時間是依「月份」判斷（完全免試 4 月、優先免試 5 月、聯合免試 6–7 月；續招依科系名額管理時間），**需在以下 3 個檔案保持一致**：
 
 ### 1. enrollment_list.php（名單頁面顯示的階段）
 
@@ -11,15 +11,13 @@
 
 ```php
 // 判斷當前報名階段（與 send_registration_stage_reminders.php、registration_reminder_api.php 需一致）
-function getCurrentRegistrationStage() {
+// 完全免試 4 月、優先免試 5 月、聯合免試 6–7 月；續招依科系名額管理設定的時間區間
+function getCurrentRegistrationStage($conn) {
     $current_month = (int)date('m');
-    if ($current_month >= 5 && $current_month < 6) {
-        return 'priority_exam'; // 5月：優先免試
-    } elseif ($current_month >= 6 && $current_month < 8) {
-        return 'joint_exam'; // 6-7月：聯合免試
-    } elseif ($current_month >= 8) {
-        return 'continued_recruitment'; // 8月以後：續招
-    }
+    // 續招：依 department_quotas 時間區間
+    if ($current_month >= 4 && $current_month < 5) return 'full_exempt';   // 4月：完全免試
+    if ($current_month >= 5 && $current_month < 6) return 'priority_exam';  // 5月：優先免試
+    if ($current_month >= 6 && $current_month < 8) return 'joint_exam';      // 6-7月：聯合免試
     return null; // 非報名期間
 }
 ```

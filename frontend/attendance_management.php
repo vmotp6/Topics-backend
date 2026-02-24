@@ -9,6 +9,7 @@ if (!isset($_SESSION['admin_logged_in']) || !$_SESSION['admin_logged_in']) {
 
 // 引入資料庫設定
 require_once '../../Topics-frontend/frontend/config.php';
+require_once __DIR__ . '/includes/enrollment_assignment_log.php';
 
 // 獲取場次ID
 $session_id = isset($_GET['session_id']) ? intval($_GET['session_id']) : 0;
@@ -481,6 +482,9 @@ if ($tbl_ei && $tbl_ei->num_rows > 0) {
                 }
                 if ($up->execute()) {
                     $enrollment_intention_updated++;
+                    if ($has_dept && $existing_id && count_enrollment_assignment_logs($conn, $existing_id) === 0) {
+                        insert_enrollment_assignment_log($conn, $existing_id, $assigned_dept, 1, 'initial');
+                    }
                     $up->close();
                 } else {
                     $err = $up->error; $erno = $up->errno; $up->close();
@@ -502,6 +506,7 @@ if ($tbl_ei && $tbl_ei->num_rows > 0) {
                     $ins->close();
                     $enrollment_intention_written++;
                     if ($has_dept && $eid > 0) {
+                        insert_enrollment_assignment_log($conn, $eid, $assigned_dept, 1, 'initial');
                         @$conn->query("ALTER TABLE enrollment_choices ADD UNIQUE KEY uniq_ec (enrollment_id, choice_order)");
                         $c1 = $conn->prepare("INSERT INTO enrollment_choices (enrollment_id, choice_order, department_code, system_code) VALUES (?,1,?,NULL) ON DUPLICATE KEY UPDATE department_code=VALUES(department_code)");
                         $c1->bind_param("is", $eid, $assigned_dept); $c1->execute(); $c1->close();
@@ -537,7 +542,12 @@ if ($tbl_ei && $tbl_ei->num_rows > 0) {
                                     } else {
                                         $up->bind_param("sssssii", $name, $email, $phone, $school_for_bind, $grade_for_bind, $graduation_year, $existing_id);
                                     }
-                                    if ($up->execute()) $enrollment_intention_updated++;
+                                    if ($up->execute()) {
+                                        $enrollment_intention_updated++;
+                                        if ($has_dept && $existing_id && count_enrollment_assignment_logs($conn, $existing_id) === 0) {
+                                            insert_enrollment_assignment_log($conn, $existing_id, $assigned_dept, 1, 'initial');
+                                        }
+                                    }
                                     $up->close();
                                 } else throw new Exception($conn->error . ' (errno ' . $conn->errno . ')');
                             } else throw new Exception(($errmsg ?: 'Unknown') . ' (errno ' . $errno . ')');

@@ -236,7 +236,7 @@ function getContinuedRecruitmentTimeRange($conn = null) {
 
 /**
  * 判斷當前報名階段
- * 優先免試/聯合免試依月份；續招依「科系名額管理」設定的報名時間區間，設定什麼時候就是什麼階段。
+ * 完全免試(4月)/優先免試(5月)/聯合免試(6-7月)依月份；續招依「科系名額管理」設定的報名時間區間，設定什麼時候就是什麼階段。
  * @param mysqli|null $conn 資料庫連線；就讀意願名單請傳入以與科系名額管理同步讀取 department_quotas
  */
 function getCurrentRegistrationStage($conn = null) {
@@ -256,6 +256,9 @@ function getCurrentRegistrationStage($conn = null) {
             // 解析失敗則不視為續招期間
         }
     }
+    if ($current_month >= 4 && $current_month < 5) {
+        return 'full_exempt'; // 4月：完全免試
+    }
     if ($current_month >= 5 && $current_month < 6) {
         return 'priority_exam'; // 5月：優先免試
     }
@@ -266,6 +269,7 @@ function getCurrentRegistrationStage($conn = null) {
 }
 
 $stage_display_names = [
+    'full_exempt' => '完全免試',
     'priority_exam' => '優先免試',
     'joint_exam' => '聯合免試',
     'continued_recruitment' => '續招'
@@ -283,7 +287,7 @@ if (!in_array($reminder_filter, ['', 'reminded', 'not_reminded'], true)) {
 
 // 已報名名單的「報名階段」篩選：預設只顯示目前階段，可選全部或其他階段
 $registered_stage_filter = isset($_GET['registered_stage']) ? trim((string)$_GET['registered_stage']) : '';
-$valid_registered_stages = ['', 'all', 'priority_exam', 'joint_exam', 'continued_recruitment'];
+$valid_registered_stages = ['', 'all', 'full_exempt', 'priority_exam', 'joint_exam', 'continued_recruitment'];
 if (!in_array($registered_stage_filter, $valid_registered_stages, true)) {
     $registered_stage_filter = '';
 }
@@ -475,6 +479,7 @@ function getRegistrationStageStatusHtml($item, $current_registration_stage, $sta
  * @return string 優先免試 / 聯合免試 / 續招
  */
 function getRegisteredStageDisplay($item) {
+    if ((int)($item['full_exempt_registered'] ?? 0) === 1) return '完全免試';
     if ((int)($item['priority_exam_registered'] ?? 0) === 1) return '優先免試';
     if ((int)($item['joint_exam_registered'] ?? 0) === 1) return '聯合免試';
     if ((int)($item['continued_recruitment_registered'] ?? 0) === 1) return '續招';
@@ -513,7 +518,11 @@ try {
 
     // 確保報名提醒相關欄位存在
     $registration_cols = [
-        'registration_stage' => "VARCHAR(20) DEFAULT NULL COMMENT 'priority_exam/joint_exam/continued_recruitment 當前報名階段'",
+        'registration_stage' => "VARCHAR(20) DEFAULT NULL COMMENT 'full_exempt/priority_exam/joint_exam/continued_recruitment 當前報名階段'",
+        'full_exempt_reminded' => "TINYINT(1) NOT NULL DEFAULT 0 COMMENT '完全免試是否已提醒'",
+        'full_exempt_registered' => "TINYINT(1) NOT NULL DEFAULT 0 COMMENT '完全免試是否已報名'",
+        'full_exempt_declined' => "TINYINT(1) NOT NULL DEFAULT 0 COMMENT '完全免試本階段不報'",
+        'full_exempt_decline_reason' => "TEXT DEFAULT NULL COMMENT '完全免試本階段不報原因'",
         'priority_exam_reminded' => "TINYINT(1) NOT NULL DEFAULT 0 COMMENT '優先免試是否已提醒'",
         'priority_exam_registered' => "TINYINT(1) NOT NULL DEFAULT 0 COMMENT '優先免試是否已報名'",
         'priority_exam_declined' => "TINYINT(1) NOT NULL DEFAULT 0 COMMENT '優先免試本階段不報'",
@@ -650,7 +659,7 @@ try {
         // 預設只顯示「目前報名階段」註冊的名單；篩選可選全部或其他階段
         if ($registered_stage_filter === 'all') {
             // 全部：不另加條件
-        } elseif ($registered_stage_filter !== '' && in_array($registered_stage_filter, ['priority_exam', 'joint_exam', 'continued_recruitment'], true)) {
+        } elseif ($registered_stage_filter !== '' && in_array($registered_stage_filter, ['full_exempt', 'priority_exam', 'joint_exam', 'continued_recruitment'], true)) {
             $reg_col = $registered_stage_filter . '_registered';
             $status_where .= " AND (IFNULL(ei.`$reg_col`,0) = 1)";
         } else {
@@ -1025,6 +1034,7 @@ try {
                                         <select name="registered_stage" class="history-select" onchange="this.form.submit()" style="padding: 6px 12px; border: 1px solid #d9d9d9; border-radius: 6px; font-size: 14px; background: #fff; cursor: pointer; min-width: 140px;">
                                             <option value="" <?php echo $registered_stage_filter === '' ? 'selected' : ''; ?>><?php echo $current_registration_stage ? '目前階段（' . htmlspecialchars($current_stage_display) . '）' : '目前階段'; ?></option>
                                             <option value="all" <?php echo $registered_stage_filter === 'all' ? 'selected' : ''; ?>>全部</option>
+                                            <option value="full_exempt" <?php echo $registered_stage_filter === 'full_exempt' ? 'selected' : ''; ?>>完全免試</option>
                                             <option value="priority_exam" <?php echo $registered_stage_filter === 'priority_exam' ? 'selected' : ''; ?>>優先免試</option>
                                             <option value="joint_exam" <?php echo $registered_stage_filter === 'joint_exam' ? 'selected' : ''; ?>>聯合免試</option>
                                             <option value="continued_recruitment" <?php echo $registered_stage_filter === 'continued_recruitment' ? 'selected' : ''; ?>>續招</option>
@@ -1316,6 +1326,7 @@ try {
                                                 $is_registered = $registered_col ? ((int)($item[$registered_col] ?? 0) === 1) : false;
                                                 $is_declined = $declined_col ? ((int)($item[$declined_col] ?? 0) === 1) : false;
                                                 $stage_names = [
+                                                    'full_exempt' => '完全免試',
                                                     'priority_exam' => '優先免試',
                                                     'joint_exam' => '聯合免試',
                                                     'continued_recruitment' => '續招'
@@ -2082,24 +2093,33 @@ try {
             
             // 檢查是否為學校行政（只有學校行政可以看到意願順序）
             const isAdminOrStaff = <?php echo isset($is_admin_or_staff) && $is_admin_or_staff ? 'true' : 'false'; ?>;
+            // 僅招生中心可看到「每科分配時間」欄
+            const isAdmissionCenter = <?php echo isset($is_admission_center) && $is_admission_center ? 'true' : 'false'; ?>;
             
             // 構建意願選項 HTML（只有學校行政可以看到）
             let choicesHtml = '';
             let intentionSectionHtml = '';
             
             if (isAdminOrStaff) {
-                // 學校行政：顯示完整的意願順序
+                // 學校行政：顯示完整的意願順序；招生中心多顯示「分配時間」欄（僅日期時間）
                 if (choices.length > 0) {
                     choices.forEach(choice => {
                         const deptName = escapeHtml(choice.department_name || choice.department_code || '未指定');
                         const systemName = escapeHtml(choice.system_name || choice.system_code || '');
                         const systemDisplay = systemName ? ' (' + systemName + ')' : '';
-                        choicesHtml += '<tr><td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5; width: 120px;">意願 ' + choice.choice_order + '</td><td style="padding: 5px; border: 1px solid #ddd;">' + deptName + systemDisplay + '</td></tr>';
+                        let timeCell = '';
+                        if (isAdmissionCenter) {
+                            const timeStr = choice.assigned_at ? formatDate(choice.assigned_at) : '—';
+                            timeCell = '<td style="padding: 5px; border: 1px solid #ddd;">' + timeStr + '</td>';
+                        }
+                        choicesHtml += '<tr><td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5; width: 120px;">意願 ' + choice.choice_order + '</td><td style="padding: 5px; border: 1px solid #ddd;">' + deptName + systemDisplay + '</td>' + timeCell + '</tr>';
                     });
                 } else {
-                    choicesHtml = '<tr><td colspan="2" style="padding: 5px; border: 1px solid #ddd; color: #999;">無意願資料</td></tr>';
+                    const colCount = isAdmissionCenter ? 3 : 2;
+                    choicesHtml = '<tr><td colspan="' + colCount + '" style="padding: 5px; border: 1px solid #ddd; color: #999;">無意願資料</td></tr>';
                 }
-                intentionSectionHtml = '<h4 style="margin: 0 0 10px 0; font-size: 16px;">就讀意願</h4><table style="width: 100%; border-collapse: collapse; font-size: 14px;">' + choicesHtml + '</table>';
+                const thTime = isAdmissionCenter ? '<th style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5; width: 140px;">分配時間</th>' : '';
+                intentionSectionHtml = '<h4 style="margin: 0 0 10px 0; font-size: 16px;">就讀意願</h4><table style="width: 100%; border-collapse: collapse; font-size: 14px;"><thead><tr><th style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5; width: 120px;">意願</th><th style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">科系</th>' + thTime + '</tr></thead><tbody>' + choicesHtml + '</tbody></table>';
             } else {
                 // 其他角色：不顯示意願順序
                 intentionSectionHtml = '';
@@ -2453,7 +2473,7 @@ function submitContactLog() {
         function openDeclineStageModal(enrollmentId, stageName) {
             _declineStageEnrollmentId = enrollmentId;
             _declineStageStageName = stageName || '';
-            var stageLabel = stageName === 'priority_exam' ? '優先免試' : (stageName === 'joint_exam' ? '聯合免試' : (stageName === 'continued_recruitment' ? '續招' : (stageName || '—')));
+            var stageLabel = stageName === 'full_exempt' ? '完全免試' : (stageName === 'priority_exam' ? '優先免試' : (stageName === 'joint_exam' ? '聯合免試' : (stageName === 'continued_recruitment' ? '續招' : (stageName || '—'))));
             var el = document.getElementById('declineStageModalStageName');
             if (el) el.textContent = '目前階段：' + stageLabel;
             var reasonEl = document.getElementById('declineStageReason');
