@@ -26,6 +26,7 @@ if (!file_exists($config_path)) {
 }
 
 require_once $config_path;
+require_once __DIR__ . '/includes/enrollment_assignment_log.php';
 
 if (!function_exists('getDatabaseConnection')) {
     die(json_encode(['success' => false, 'message' => '資料庫連接函數未定義']));
@@ -116,6 +117,80 @@ try {
         $choices[] = $row;
     }
     $choices_stmt->close();
+    
+    // 僅招生中心：取得每意願的分配時間（enrollment_department_assignment_log）
+    $is_admission_center = false;
+    if (!empty($_SESSION['role']) && in_array($_SESSION['role'], ['ADM', 'STA'])) {
+        $uid = (int)($_SESSION['user_id'] ?? 0);
+        $has_dept = false;
+        $t = @$conn->query("SHOW TABLES LIKE 'director'");
+        if ($t && $t->num_rows > 0) {
+            $st = $conn->prepare("SELECT 1 FROM director WHERE user_id = ? LIMIT 1");
+            if ($st) { $st->bind_param("i", $uid); $st->execute(); if ($st->get_result()->num_rows > 0) $has_dept = true; $st->close(); }
+        }
+        if (!$has_dept) {
+            $t2 = @$conn->query("SHOW TABLES LIKE 'teacher'");
+            if ($t2 && $t2->num_rows > 0) {
+                $st2 = $conn->prepare("SELECT 1 FROM teacher WHERE user_id = ? LIMIT 1");
+                if ($st2) { $st2->bind_param("i", $uid); $st2->execute(); if ($st2->get_result()->num_rows > 0) $has_dept = true; $st2->close(); }
+            }
+        }
+        $is_admission_center = !$has_dept;
+    }
+    if ($is_admission_center) {
+        ensure_enrollment_assignment_log_table($conn);
+        $log_sql = "SELECT choice_order, assigned_at, source FROM enrollment_department_assignment_log WHERE enrollment_id = ? ORDER BY choice_order ASC";
+        $log_stmt = $conn->prepare($log_sql);
+        if ($log_stmt) {
+            $log_stmt->bind_param("i", $enrollment_id);
+            $log_stmt->execute();
+            $log_res = $log_stmt->get_result();
+            $log_by_order = [];
+            while ($lr = $log_res->fetch_assoc()) {
+                $order = (int)$lr['choice_order'];
+                $src = $lr['source'] ?? 'initial';
+                $label = '';
+                if ($src === 'initial') {
+                    $label = ($order === 1) ? '系統自動分配給第一意願' : '系統分配';
+                } elseif ($src === 'reassign') {
+                    $label = '逾3日未聯絡自動轉入此意願';
+                } else {
+                    $label = '手動改派';
+                }
+                $log_by_order[$order] = [
+                    'assigned_at' => $lr['assigned_at'],
+                    'assignment_label' => $label
+                ];
+            }
+            $log_stmt->close();
+            foreach ($choices as &$c) {
+                $order = (int)($c['choice_order'] ?? 0);
+                $entry = $log_by_order[$order] ?? null;
+                $c['assigned_at'] = $entry['assigned_at'] ?? null;
+                $c['assignment_label'] = $entry['assignment_label'] ?? null;
+            }
+            unset($c);
+            // 舊資料補登：若第一意願沒有歷程但已有分配科系，用建立時間顯示
+            $assigned_dept = trim((string)($student['assigned_department'] ?? ''));
+            $created_at = $student['created_at'] ?? null;
+            if ($created_at && $assigned_dept !== '') {
+                $first = null;
+                foreach ($choices as $idx => $ch) {
+                    if ((int)($ch['choice_order'] ?? 0) === 1) {
+                        $first = $idx;
+                        break;
+                    }
+                }
+                if ($first !== null && (empty($choices[$first]['assigned_at']) || empty($choices[$first]['assignment_label']))) {
+                    $match = (strtoupper(trim((string)($choices[$first]['department_code'] ?? ''))) === strtoupper($assigned_dept));
+                    if ($match) {
+                        $choices[$first]['assigned_at'] = $created_at;
+                        $choices[$first]['assignment_label'] = '系統自動分配給第一意願（依建立時間）';
+                    }
+                }
+            }
+        }
+    }
     
     // 獲取聯絡記錄數量（不獲取詳細內容，因為可以通過 contact_logs_api.php 獲取）
     $logs_count_sql = "SELECT COUNT(*) as count FROM enrollment_contact_logs WHERE enrollment_id = ?";

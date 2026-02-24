@@ -3,6 +3,7 @@
  * 自動寫入就讀意願名單：與年級無關，只要是「高意願」就直接寫入 enrollment_intention，不發送 email。
  */
 require_once __DIR__ . '/session_config.php';
+require_once __DIR__ . '/includes/enrollment_assignment_log.php';
 
 header('Content-Type: application/json; charset=utf-8');
 @ini_set('display_errors', '0');
@@ -23,7 +24,6 @@ function ensure_enrollment_intention_columns(mysqli $conn): void {
         'assigned_department' => "VARCHAR(50) NULL",
         'assigned_teacher_id' => "INT NULL",
         'graduation_year' => "INT NULL",
-        'case_closed' => "TINYINT(1) NOT NULL DEFAULT 0 COMMENT '0=否,1=是(結案後顯示於歷史紀錄)'",
         'intention_level' => "VARCHAR(20) DEFAULT NULL",
         'follow_up_status' => "VARCHAR(30) DEFAULT 'tracking'",
     ];
@@ -247,6 +247,9 @@ try {
                 $upd->execute();
                 $upd->close();
                 $enrollment_id = $existing_id;
+                if (!empty($dept) && count_enrollment_assignment_logs($conn, $enrollment_id) === 0) {
+                    insert_enrollment_assignment_log($conn, $enrollment_id, $dept, 1, 'initial');
+                }
             } else {
                 $ins = $conn->prepare("
                     INSERT INTO enrollment_intention (
@@ -262,6 +265,9 @@ try {
                 $ins->execute();
                 $enrollment_id = (int)$conn->insert_id;
                 $ins->close();
+                if (!empty($dept) && $enrollment_id > 0) {
+                    insert_enrollment_assignment_log($conn, $enrollment_id, $dept, 1, 'initial');
+                }
             }
 
             if (!empty($priority1) && $enrollment_id > 0) {

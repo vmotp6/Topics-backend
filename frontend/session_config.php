@@ -1,4 +1,4 @@
-﻿<?php
+<?php
 // 後台 Session 設定 - 與前台保持一致以共享登入狀態
 if (session_status() === PHP_SESSION_NONE) {
     ini_set('session.cookie_lifetime', 86400);
@@ -77,7 +77,12 @@ function checkBackendLogin() {
 
     // 驗證角色
     $user_role = $_SESSION['role'] ?? '';
-    $allowed_backend_roles = ['ADM', 'STA', 'DI', 'TEA', 'IM', 'AS', '管理員', '行政人員', '主任', '老師', '資管科主任', '科助'];
+    // 向後相容：部分舊系統可能用 admin/staff/director/teacher 等字串作為 role
+    $allowed_backend_roles = [
+        'ADM', 'STA', 'DI', 'TEA', 'IM', 'AS', 'STAM',
+        '管理員', '行政人員', '學校行政人員', '主任', '老師', '招生中心組員', '資管科主任', '科助',
+        'admin', 'staff', 'director', 'teacher', 'assistant'
+    ];
     
     if (!in_array($user_role, $allowed_backend_roles)) {
         $_SESSION['admin_logged_in'] = false;
