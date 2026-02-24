@@ -626,68 +626,69 @@ try {
     $result = $stmt->get_result();
     $recommendations = $result->fetch_all(MYSQLI_ASSOC);
 
-    // 教師僅可查看「自己推薦」的資料
-    // 比對來源：session username/name + teacher 表常見識別欄位（若存在）
-    if ($is_teacher_user) {
-        $teacher_identity_candidates = [];
-        $teacher_identity_candidates[] = trim((string)$username);
-        $teacher_identity_candidates[] = trim((string)($_SESSION['name'] ?? ''));
+    // 教師 + IM(role=DI) 僅可查看「自己推薦」的資料
+    // 比對來源：session username/name + teacher/director 表常見識別欄位（若存在）
+    if ($is_teacher_user || $is_im_di) {
+        $identity_candidates = [];
+        $identity_candidates[] = trim((string)$username);
+        $identity_candidates[] = trim((string)($_SESSION['name'] ?? ''));
 
         try {
             if ($user_id > 0) {
-                $teacher_cols = [];
-                $tc = $conn->query("SHOW COLUMNS FROM teacher");
+                $source_table = ($is_director && !$is_teacher_user) ? 'director' : 'teacher';
+                $cols = [];
+                $tc = $conn->query("SHOW COLUMNS FROM {$source_table}");
                 if ($tc) {
                     while ($crow = $tc->fetch_assoc()) {
-                        $teacher_cols[] = (string)$crow['Field'];
+                        $cols[] = (string)$crow['Field'];
                     }
                 }
-                if (!empty($teacher_cols)) {
+                if (!empty($cols)) {
                     $pick = [];
                     $common = ['name', 'teacher_id', 'employee_no', 'teacher_no', 'number', 'username', 'id', 'user_id'];
                     foreach ($common as $c) {
-                        if (in_array($c, $teacher_cols, true)) $pick[] = $c;
+                        if (in_array($c, $cols, true)) $pick[] = $c;
                     }
                     if (!empty($pick)) {
-                        $sql_pick = "SELECT " . implode(', ', $pick) . " FROM teacher WHERE user_id = ? LIMIT 1";
-                        $stmt_teacher = $conn->prepare($sql_pick);
-                        if ($stmt_teacher) {
-                            $stmt_teacher->bind_param("i", $user_id);
-                            if ($stmt_teacher->execute()) {
-                                $res_teacher = $stmt_teacher->get_result();
-                                if ($res_teacher && ($teacher_row = $res_teacher->fetch_assoc())) {
+                        $sql_pick = "SELECT " . implode(', ', $pick) . " FROM {$source_table} WHERE user_id = ? LIMIT 1";
+                        $stmt_identity = $conn->prepare($sql_pick);
+                        if ($stmt_identity) {
+                            $stmt_identity->bind_param("i", $user_id);
+                            if ($stmt_identity->execute()) {
+                                $res_identity = $stmt_identity->get_result();
+                                if ($res_identity && ($identity_row = $res_identity->fetch_assoc())) {
                                     foreach ($pick as $k) {
-                                        $v = trim((string)($teacher_row[$k] ?? ''));
-                                        if ($v !== '') $teacher_identity_candidates[] = $v;
+                                        $v = trim((string)($identity_row[$k] ?? ''));
+                                        if ($v !== '') $identity_candidates[] = $v;
                                     }
                                 }
                             }
-                            $stmt_teacher->close();
+                            $stmt_identity->close();
                         }
                     }
                 }
             }
         } catch (Exception $e) {
-            error_log('讀取 teacher 身分資訊失敗: ' . $e->getMessage());
+            error_log('讀取使用者身分資訊失敗: ' . $e->getMessage());
         }
 
-        $teacher_identity_norm = [];
-        foreach ($teacher_identity_candidates as $v) {
+        $identity_norm = [];
+        foreach ($identity_candidates as $v) {
             $nv = normalize_text($v);
-            if ($nv !== '') $teacher_identity_norm[$nv] = true;
+            if ($nv !== '') $identity_norm[$nv] = true;
         }
 
-        $filtered_teacher = [];
+        $filtered_self = [];
         foreach ($recommendations as $rec_item) {
             $rec_sid_text = normalize_text((string)($rec_item['recommender_student_id'] ?? ''));
             $rec_name_text = normalize_text((string)($rec_item['recommender_name'] ?? ''));
-            $match_sid = ($rec_sid_text !== '' && isset($teacher_identity_norm[$rec_sid_text]));
-            $match_name = ($rec_name_text !== '' && isset($teacher_identity_norm[$rec_name_text]));
+            $match_sid = ($rec_sid_text !== '' && isset($identity_norm[$rec_sid_text]));
+            $match_name = ($rec_name_text !== '' && isset($identity_norm[$rec_name_text]));
             if ($match_sid || $match_name) {
-                $filtered_teacher[] = $rec_item;
+                $filtered_self[] = $rec_item;
             }
         }
-        $recommendations = $filtered_teacher;
+        $recommendations = $filtered_self;
     }
 
     // 取得 departments 對照（用於 student_interest CSV 顯示成名稱）
@@ -2401,9 +2402,11 @@ try {
                                                     <i class="fas fa-edit"></i> 修改結果
                                                 </button>
                                                 <?php endif; ?>
+                                                <?php if (!$is_im_di): ?>
                                                 <button class="btn-view" style="background: #1890ff; color: white; border-color: #1890ff;" onclick="openAssignRecommendationModal(<?php echo $item['id']; ?>, '<?php echo htmlspecialchars($item['student_name']); ?>', <?php echo !empty($item['assigned_teacher_id']) ? $item['assigned_teacher_id'] : 'null'; ?>)">
                                                     <i class="fas fa-user-plus"></i> <?php echo !empty($item['assigned_teacher_id']) ? '重新分配' : '分配'; ?>
                                                 </button>
+                                                <?php endif; ?>
                                             </div>
                                             <?php if ($is_bonus_waived): ?>
                                                 <div style="margin-top:6px; color:#cf1322; font-size:13px; font-weight:600;">推薦人放棄獎金</div>
@@ -2658,7 +2661,7 @@ try {
     <?php endif; ?>
 
     <!-- 分配學生彈出視窗（IMD） -->
-    <?php if ($is_department_user): ?>
+    <?php if ($is_department_user && !$is_im_di): ?>
     <div id="assignRecommendationModal" class="modal" style="display: none;">
         <div class="modal-content">
             <div class="modal-header">

@@ -57,6 +57,7 @@ $is_school_admin = ($user_role === '學校行政人員' || $user_role === '行�
 $is_director = ($user_role === 'DI');
 $is_stam = ($user_role === 'STAM');
 $is_staff = ($user_role === 'STA');
+$is_im_di = false;
 
 // 學年度定義：8/1 ~ 隔年 7/31
 function getAcademicYearRangeAug1(): array {
@@ -144,6 +145,11 @@ if ($is_director && $user_id) {
 // 額外的安全檢查：如果映射後的 user_role 是 IM，確保 is_im 一定為 true
 if ($user_role === 'IM') {
     $is_im = true;
+}
+
+// IM 科主任（role=DI）在「招生推薦統計分析」僅可查看資管科
+if ($is_director && $is_im) {
+    $is_im_di = true;
 }
 
 // 如果是 IMD 帳號或 IM 角色，只能查看資管科的資料
@@ -1412,6 +1418,15 @@ if ($teacher_id > 0) {
                         }
                         $school_ratio_stmt->close();
                     }
+                }
+
+                if ($is_im_di && !empty($recommend_ratio_by_department)) {
+                    $recommend_ratio_by_department = array_values(array_filter($recommend_ratio_by_department, function($row) {
+                        $dept_id = strtoupper(trim((string)($row['department_id'] ?? '')));
+                        $dept_name = trim((string)($row['department_name'] ?? ''));
+                        if ($dept_id === 'IM' || $dept_name === '資訊管理科' || $dept_name === '資管科') return true;
+                        return (mb_strpos($dept_name, '資管') !== false);
+                    }));
                 }
 
                 if (!empty($recommend_ratio_by_department)) {
