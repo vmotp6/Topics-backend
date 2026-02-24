@@ -1,11 +1,8 @@
 <?php
 require_once __DIR__ . '/session_config.php';
+require_once __DIR__ . '/includes/department_session_access.php';
 
-// 檢查是否已登入
-if (!isset($_SESSION['admin_logged_in']) || !$_SESSION['admin_logged_in']) {
-    header("Location: login.php");
-    exit;
-}
+checkBackendLogin();
 
 // 引入資料庫設定
 require_once '../../Topics-frontend/frontend/config.php';
@@ -19,6 +16,19 @@ if ($session_id === 0) {
 
 // 建立資料庫連接
 $conn = getDatabaseConnection();
+
+$normalized_role = normalizeBackendRole($_SESSION['role'] ?? '');
+$is_super_user = isSuperUserRole($normalized_role);
+$current_user_id = getOrFetchCurrentUserId($conn);
+$user_department_code = null;
+$is_department_director = false;
+
+if (!$is_super_user && isDepartmentDirectorRole($normalized_role) && $current_user_id) {
+    $user_department_code = getCurrentUserDepartmentCode($conn, $current_user_id);
+    if (!empty($user_department_code)) {
+        $is_department_director = true;
+    }
+}
 
 // 獲取場次資訊
 $stmt = $conn->prepare("SELECT * FROM admission_sessions WHERE id = ?");
@@ -37,21 +47,39 @@ if (!$session) {
     exit;
 }
 
+// 科主任權限：只能查看「自己建立的場次」或「該科系有體驗課程資料」的場次
+if ($is_department_director && $current_user_id && $user_department_code) {
+    if (!canDepartmentDirectorViewSession($conn, $session_id, (int)$current_user_id, (string)$user_department_code)) {
+        $conn->close();
+        header("Location: settings.php");
+        exit;
+    }
+}
+
 // 獲取該場次的報名者列表（包含學校名稱）
 // 注意：只顯示當前年份的報名記錄
 $current_year = date('Y');
-$stmt = $conn->prepare("
-    SELECT aa.*, sd.name as school_name_display
-    FROM admission_applications aa
-    LEFT JOIN school_data sd ON aa.school = sd.school_code
-    WHERE aa.session_id = ?
-    AND YEAR(aa.created_at) = ?
-    ORDER BY aa.id DESC
-");
+$sql = "
+        SELECT aa.*, sd.name as school_name_display
+        FROM admission_applications aa
+        LEFT JOIN school_data sd ON aa.school = sd.school_code
+        WHERE aa.session_id = ?
+        AND YEAR(aa.created_at) = ?
+";
+if ($is_department_director && $user_department_code) {
+    $sql .= " AND (aa.course_priority_1 = ? OR aa.course_priority_2 = ?) ";
+}
+$sql .= " ORDER BY aa.id DESC ";
+$stmt = $conn->prepare($sql);
 if (!$stmt) {
     die("準備語句失敗: " . $conn->error);
 }
-$stmt->bind_param("ii", $session_id, $current_year);
+if ($is_department_director && $user_department_code) {
+    $dept = (string)$user_department_code;
+    $stmt->bind_param("iiss", $session_id, $current_year, $dept, $dept);
+} else {
+    $stmt->bind_param("ii", $session_id, $current_year);
+}
 $stmt->execute();
 $registrations_result = $stmt->get_result();
 $registrations = $registrations_result->fetch_all(MYSQLI_ASSOC);
@@ -192,11 +220,3 @@ $page_title = '查看報名名單 - ' . htmlspecialchars($session['session_name'
     </div>
 </body>
 </html>
-
-```
-
-我已經完成了這些修改。現在，您在「場次設定」頁面應該能看到「查看名單」按鈕，點擊後即可瀏覽該場次的報名者列表。
-
-<!--
-[PROMPT_SUGGESTION]我希望在報名名單頁面增加一個「匯出成Excel」的功能。[/PROMPT_SUGGESTION]
-[PROMPT_SUGGESTION]可以讓我在後台直接編輯報名者的資料嗎？[/PROMPT_SUGGESTION]

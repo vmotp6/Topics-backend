@@ -1,11 +1,8 @@
 <?php
 require_once __DIR__ . '/session_config.php';
+require_once __DIR__ . '/includes/department_session_access.php';
 
-// 檢查是否已登入
-if (!isset($_SESSION['admin_logged_in']) || !$_SESSION['admin_logged_in']) {
-    header("Location: login.php");
-    exit;
-}
+checkBackendLogin();
 
 // 引入資料庫設定
 require_once '../../Topics-frontend/frontend/config.php';
@@ -16,6 +13,19 @@ $page_title = '場次設定';
 // 建立資料庫連接
 $conn = getDatabaseConnection();
 
+$normalized_role = normalizeBackendRole($_SESSION['role'] ?? '');
+$is_super_user = isSuperUserRole($normalized_role);
+$current_user_id = getOrFetchCurrentUserId($conn);
+$user_department_code = null;
+$is_department_director = false;
+
+if (!$is_super_user && isDepartmentDirectorRole($normalized_role) && $current_user_id) {
+    $user_department_code = getCurrentUserDepartmentCode($conn, $current_user_id);
+    if (!empty($user_department_code)) {
+        $is_department_director = true;
+    }
+}
+
 $message = "";
 $messageType = "";
 
@@ -25,6 +35,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
         switch ($_POST['action']) {
             // 場次管理
             case 'add_session':
+                if (!$current_user_id) {
+                    throw new Exception("無法取得使用者資訊，請重新登入後再試。");
+                }
                 $sql = "INSERT INTO admission_sessions(session_name, description, session_date, session_end_date,session_type, session_link, session_location,
                         max_participants, is_active, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
                 $stmt = $conn->prepare($sql);
@@ -42,7 +55,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                 // 處理說明
                 $description = !empty($_POST['description']) ? $_POST['description'] : null;
                 // 記錄創建者
-                $created_by = isset($_SESSION['user_id']) ? intval($_SESSION['user_id']) : null;
+                $created_by = $current_user_id;
                 // bind_param: session_name(s), session_date(s), session_end_date(s), session_type(i), session_link(s), session_location(s), max_participants(i), description(s), created_by(i)
                 $session_name = $_POST['session_name'];
                 $is_active = 1; // 新增時預設啟用
@@ -69,6 +82,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                 break;
 
             case 'update_session':
+                if ($is_department_director) {
+                    $session_id_check = intval($_POST['session_id'] ?? 0);
+                    $owner_stmt = $conn->prepare("SELECT created_by FROM admission_sessions WHERE id = ? LIMIT 1");
+                    if (!$owner_stmt) {
+                        throw new Exception("權限檢查失敗，請稍後再試。");
+                    }
+                    $owner_stmt->bind_param("i", $session_id_check);
+                    $owner_stmt->execute();
+                    $owner_row = $owner_stmt->get_result()->fetch_assoc();
+                    $owner_stmt->close();
+                    $created_by_owner = isset($owner_row['created_by']) ? intval($owner_row['created_by']) : 0;
+                    if ($created_by_owner !== intval($current_user_id)) {
+                        throw new Exception("權限不足：只有您自己新增的場次可以編輯。");
+                    }
+                }
                 $sql = "UPDATE admission_sessions SET session_name = ?, session_date = ?, session_end_date = ?, session_type = ?, session_link = ?, session_location = ?, max_participants = ?, description = ?, is_active = ? WHERE id = ?";
                 $stmt = $conn->prepare($sql);
                 // session_type: 1=線上, 2=實體
@@ -106,6 +134,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                 break;
 
             case 'delete_session':
+                if ($is_department_director) {
+                    $session_id_check = intval($_POST['session_id'] ?? 0);
+                    $owner_stmt = $conn->prepare("SELECT created_by FROM admission_sessions WHERE id = ? LIMIT 1");
+                    if (!$owner_stmt) {
+                        throw new Exception("權限檢查失敗，請稍後再試。");
+                    }
+                    $owner_stmt->bind_param("i", $session_id_check);
+                    $owner_stmt->execute();
+                    $owner_row = $owner_stmt->get_result()->fetch_assoc();
+                    $owner_stmt->close();
+                    $created_by_owner = isset($owner_row['created_by']) ? intval($owner_row['created_by']) : 0;
+                    if ($created_by_owner !== intval($current_user_id)) {
+                        throw new Exception("權限不足：只有您自己新增的場次可以刪除。");
+                    }
+                }
                 $sql = "DELETE FROM admission_sessions WHERE id = ?";
                 $stmt = $conn->prepare($sql);
                 $stmt->bind_param("i", $_POST['session_id']);
@@ -140,17 +183,59 @@ if (!in_array(strtolower($sortOrder), ['asc', 'desc'])) {
 // 獲取所有資料（包含出席統計）
 // 場次設定頁面顯示所有場次，不區分歷史紀錄
 // 注意：報名人數和出席人數只計算與場次年份相同的記錄
-$sessions_sql = "
-    SELECT s.*, 
-           COUNT(DISTINCT CASE WHEN YEAR(a.created_at) = YEAR(s.session_date) THEN a.id END) as registration_count,
-           (s.max_participants - COUNT(DISTINCT CASE WHEN YEAR(a.created_at) = YEAR(s.session_date) THEN a.id END)) as remaining_slots,
-           COUNT(DISTINCT CASE WHEN ar.attendance_status = 1 AND YEAR(ar.check_in_time) = YEAR(s.session_date) THEN ar.id END) as attendance_count
-    FROM admission_sessions s
-    LEFT JOIN admission_applications a ON s.id = a.session_id 
-    LEFT JOIN attendance_records ar ON s.id = ar.session_id AND a.id = ar.application_id
-    GROUP BY s.id 
-    ORDER BY s.$sortBy $sortOrder";
-$sessions = $conn->query($sessions_sql)->fetch_all(MYSQLI_ASSOC);
+if ($is_department_director && $current_user_id && $user_department_code) {
+    $sessions_sql = "
+        SELECT s.*, 
+               COUNT(DISTINCT CASE WHEN YEAR(a.created_at) = YEAR(s.session_date) AND (a.course_priority_1 = ? OR a.course_priority_2 = ?) THEN a.id END) as registration_count,
+               (s.max_participants - COUNT(DISTINCT CASE WHEN YEAR(a.created_at) = YEAR(s.session_date) AND (a.course_priority_1 = ? OR a.course_priority_2 = ?) THEN a.id END)) as remaining_slots,
+               COUNT(DISTINCT CASE WHEN ar.attendance_status = 1 AND YEAR(ar.check_in_time) = YEAR(s.session_date) AND (a.course_priority_1 = ? OR a.course_priority_2 = ?) THEN ar.id END) as attendance_count
+        FROM admission_sessions s
+        LEFT JOIN admission_applications a ON s.id = a.session_id 
+        LEFT JOIN attendance_records ar ON s.id = ar.session_id AND a.id = ar.application_id
+        WHERE (
+            s.created_by = ?
+            OR EXISTS (
+                SELECT 1
+                FROM admission_applications aa2
+                WHERE aa2.session_id = s.id
+                  AND YEAR(aa2.created_at) = YEAR(s.session_date)
+                  AND (aa2.course_priority_1 = ? OR aa2.course_priority_2 = ?)
+                LIMIT 1
+            )
+        )
+        GROUP BY s.id 
+        ORDER BY s.$sortBy $sortOrder";
+    $stmt_sessions = $conn->prepare($sessions_sql);
+    if (!$stmt_sessions) {
+        $sessions = [];
+    } else {
+        $dept = $user_department_code;
+        $uid = (int)$current_user_id;
+        $stmt_sessions->bind_param(
+            "ssssssiss",
+            $dept, $dept,
+            $dept, $dept,
+            $dept, $dept,
+            $uid,
+            $dept, $dept
+        );
+        $stmt_sessions->execute();
+        $sessions = $stmt_sessions->get_result()->fetch_all(MYSQLI_ASSOC);
+        $stmt_sessions->close();
+    }
+} else {
+    $sessions_sql = "
+        SELECT s.*, 
+               COUNT(DISTINCT CASE WHEN YEAR(a.created_at) = YEAR(s.session_date) THEN a.id END) as registration_count,
+               (s.max_participants - COUNT(DISTINCT CASE WHEN YEAR(a.created_at) = YEAR(s.session_date) THEN a.id END)) as remaining_slots,
+               COUNT(DISTINCT CASE WHEN ar.attendance_status = 1 AND YEAR(ar.check_in_time) = YEAR(s.session_date) THEN ar.id END) as attendance_count
+        FROM admission_sessions s
+        LEFT JOIN admission_applications a ON s.id = a.session_id 
+        LEFT JOIN attendance_records ar ON s.id = ar.session_id AND a.id = ar.application_id
+        GROUP BY s.id 
+        ORDER BY s.$sortBy $sortOrder";
+    $sessions = $conn->query($sessions_sql)->fetch_all(MYSQLI_ASSOC);
+}
 
 $conn->close();
 ?>
@@ -457,14 +542,25 @@ $conn->close();
                                     <td><span class="status-badge <?php echo $item['is_active'] ? 'status-active' : 'status-inactive'; ?>"><?php echo $item['is_active'] ? '啟用' : '停用'; ?></span></td>
                                     <td>
                                         <div class="action-buttons">
-                                        <button class="btn-action btn-edit" onclick='editSession(<?php echo json_encode($item); ?>)'>編輯</button>
+                                        <?php
+                                        $can_manage = true;
+                                        if ($is_department_director && $current_user_id) {
+                                            $created_by = isset($item['created_by']) ? intval($item['created_by']) : 0;
+                                            $can_manage = ($created_by === intval($current_user_id));
+                                        }
+                                        ?>
+                                        <?php if (!$is_department_director || $can_manage): ?>
+                                            <button class="btn-action btn-edit" onclick='editSession(<?php echo json_encode($item); ?>)'>編輯</button>
+                                        <?php endif; ?>
                                         <a href="view_registrations.php?session_id=<?php echo $item['id']; ?>" class="btn-action btn-view-list">查看名單</a>
                                         <a href="attendance_management.php?session_id=<?php echo $item['id']; ?>" class="btn-action btn-view-list" style="color: var(--warning-color); border-color: var(--warning-color);">出席紀錄</a>
-                                        <form method="POST" style="display:inline;" onsubmit="return confirm('確定要刪除此場次嗎？');">
-                                            <input type="hidden" name="action" value="delete_session">
-                                            <input type="hidden" name="session_id" value="<?php echo $item['id']; ?>">
-                                            <button type="submit" class="btn-action btn-delete">刪除</button>
-                                        </form>
+                                        <?php if (!$is_department_director || $can_manage): ?>
+                                            <form method="POST" style="display:inline;" onsubmit="return confirm('確定要刪除此場次嗎？');">
+                                                <input type="hidden" name="action" value="delete_session">
+                                                <input type="hidden" name="session_id" value="<?php echo $item['id']; ?>">
+                                                <button type="submit" class="btn-action btn-delete">刪除</button>
+                                            </form>
+                                        <?php endif; ?>
                                         </div>
                                     </td>
                                 </tr>

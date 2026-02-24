@@ -1,14 +1,12 @@
 <?php
 require_once __DIR__ . '/session_config.php';
+require_once __DIR__ . '/includes/department_session_access.php';
 
-// 檢查是否已登入
-if (!isset($_SESSION['admin_logged_in']) || !$_SESSION['admin_logged_in']) {
-    header("Location: login.php");
-    exit;
-}
+checkBackendLogin();
 
 // 引入資料庫設定
 require_once '../../Topics-frontend/frontend/config.php';
+require_once __DIR__ . '/includes/enrollment_assignment_log.php';
 
 // 獲取場次ID
 $session_id = isset($_GET['session_id']) ? intval($_GET['session_id']) : 0;
@@ -20,6 +18,19 @@ if ($session_id === 0) {
 // 建立資料庫連接
 $conn = getDatabaseConnection();
 
+$normalized_role = normalizeBackendRole($_SESSION['role'] ?? '');
+$is_super_user = isSuperUserRole($normalized_role);
+$current_user_id = getOrFetchCurrentUserId($conn);
+$user_department_code = null;
+$is_department_director = false;
+
+if (!$is_super_user && isDepartmentDirectorRole($normalized_role) && $current_user_id) {
+    $user_department_code = getCurrentUserDepartmentCode($conn, $current_user_id);
+    if (!empty($user_department_code)) {
+        $is_department_director = true;
+    }
+}
+
 $message = "";
 $messageType = "";
 
@@ -28,6 +39,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
     try {
         switch ($_POST['action']) {
             case 'update_attendance':
+                // 科主任唯讀模式：非自己建立的場次不可更新出席紀錄
+                if ($is_department_director && $current_user_id) {
+                    $owner_stmt = $conn->prepare("SELECT created_by FROM admission_sessions WHERE id = ? LIMIT 1");
+                    if ($owner_stmt) {
+                        $owner_stmt->bind_param("i", $session_id);
+                        $owner_stmt->execute();
+                        $owner_row = $owner_stmt->get_result()->fetch_assoc();
+                        $owner_stmt->close();
+                        $created_by_owner = isset($owner_row['created_by']) ? intval($owner_row['created_by']) : 0;
+                        if ($created_by_owner !== intval($current_user_id)) {
+                            throw new Exception("權限不足：此場次僅可查看，無法更新出席紀錄。");
+                        }
+                    }
+                }
                 // 批量更新出席紀錄（簽到和未到都要有時間記錄）
                 if (isset($_POST['attendance']) && is_array($_POST['attendance'])) {
                     $conn->begin_transaction();
@@ -76,6 +101,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                 break;
 
             case 'import_excel':
+                // 科主任唯讀模式：非自己建立的場次不可匯入
+                if ($is_department_director && $current_user_id) {
+                    $owner_stmt = $conn->prepare("SELECT created_by FROM admission_sessions WHERE id = ? LIMIT 1");
+                    if ($owner_stmt) {
+                        $owner_stmt->bind_param("i", $session_id);
+                        $owner_stmt->execute();
+                        $owner_row = $owner_stmt->get_result()->fetch_assoc();
+                        $owner_stmt->close();
+                        $created_by_owner = isset($owner_row['created_by']) ? intval($owner_row['created_by']) : 0;
+                        if ($created_by_owner !== intval($current_user_id)) {
+                            throw new Exception("權限不足：此場次僅可查看，無法匯入出席紀錄。");
+                        }
+                    }
+                }
                 // 處理 Excel/CSV 匯入
                 if (isset($_FILES['excel_file']) && $_FILES['excel_file']['error'] === UPLOAD_ERR_OK) {
                     $file = $_FILES['excel_file']['tmp_name'];
@@ -231,10 +270,42 @@ if (!$session) {
     exit;
 }
 
+// 科主任權限：只能查看「自己建立的場次」或「該科系有體驗課程資料」的場次
+if ($is_department_director && $current_user_id && $user_department_code) {
+    if (!canDepartmentDirectorViewSession($conn, $session_id, (int)$current_user_id, (string)$user_department_code)) {
+        $conn->close();
+        header("Location: settings.php");
+        exit;
+    }
+}
+
+$is_session_owner = ($current_user_id && isset($session['created_by'])) ? (intval($session['created_by']) === intval($current_user_id)) : false;
+$is_read_only = ($is_department_director && !$is_session_owner);
+
+// 科主任可選擇哪些意願度會自動寫入就讀意願名單
+$intention_mode = isset($_GET['intention_mode']) ? $_GET['intention_mode'] : 'high';
+$allowed_intention_modes = ['high', 'high_medium', 'all', 'none'];
+if (!in_array($intention_mode, $allowed_intention_modes, true)) {
+    $intention_mode = 'high';
+}
+$auto_intention_levels = ['高意願'];
+if ($intention_mode === 'high_medium') {
+    $auto_intention_levels = ['高意願', '中意願'];
+} elseif ($intention_mode === 'all') {
+    $auto_intention_levels = ['高意願', '中意願', '低意願'];
+} elseif ($intention_mode === 'none') {
+    $auto_intention_levels = [];
+}
+// 非科主任維持原本行為：僅寫入高意願
+if (!$is_department_director) {
+    $intention_mode = 'high';
+    $auto_intention_levels = ['高意願'];
+}
+
 // 獲取該場次的報名者列表及出席紀錄（包含未到時間）
 // 注意：只顯示與場次年份相同的報名記錄和簽到記錄
 $session_year = date('Y', strtotime($session['session_date']));
-$stmt = $conn->prepare("
+$registrations_sql = "
     SELECT 
         aa.*, 
         aa.grade as grade_code,
@@ -259,6 +330,11 @@ $stmt = $conn->prepare("
         )
     WHERE aa.session_id = ? 
     AND YEAR(aa.created_at) = ?
+";
+if ($is_department_director && $user_department_code) {
+    $registrations_sql .= " AND (aa.course_priority_1 = ? OR aa.course_priority_2 = ?) ";
+}
+$registrations_sql .= "
     ORDER BY 
         CASE 
             WHEN aa.grade IS NOT NULL AND (aa.grade LIKE '%國三%' OR aa.grade = '3' OR aa.grade LIKE 'G3%' OR aa.grade LIKE '%G3%' OR COALESCE(io.name, '') LIKE '%國三%') THEN 1
@@ -267,11 +343,17 @@ $stmt = $conn->prepare("
             ELSE 4
         END ASC,
         aa.student_name ASC
-");
+";
+$stmt = $conn->prepare($registrations_sql);
 if ($stmt === false) {
     die("準備 SQL 語句失敗：" . $conn->error);
 }
-$stmt->bind_param("iiiii", $session_id, $session_year, $session_year, $session_id, $session_year);
+if ($is_department_director && $user_department_code) {
+    $dept = (string)$user_department_code;
+    $stmt->bind_param("iiiiiss", $session_id, $session_year, $session_year, $session_id, $session_year, $dept, $dept);
+} else {
+    $stmt->bind_param("iiiii", $session_id, $session_year, $session_year, $session_id, $session_year);
+}
 $stmt->execute();
 $registrations_result = $stmt->get_result();
 $registrations = $registrations_result->fetch_all(MYSQLI_ASSOC);
@@ -385,7 +467,12 @@ usort($registrations, function($a, $b) {
     return strcmp($a['student_name'], $b['student_name']);
 });
 
-// 自動寫入就讀意願名單：只要是「高意願」就寫入 enrollment_intention（同一請求、同一 DB，與畫面上意願度一致）
+// 自動寫入就讀意願名單
+// - 一般角色：永遠只寫入「高意願」
+// - 科主任：可用 intention_mode 選擇要寫入哪些意願度（高 / 高+中 / 全部 / 不寫入）
+// - 即使科主任是「僅可查看」場次（非自己建立），仍允許寫入就讀意願名單
+if (!$is_read_only || $is_department_director) {
+// 自動寫入就讀意願名單：依據設定的意願度（高/中/低）寫入 enrollment_intention
 $enrollment_intention_written = 0;   // 新增筆數
 $enrollment_intention_updated = 0;   // 已存在而更新筆數（email/電話重複）
 $enrollment_intention_errors = [];   // 寫入失敗原因，供提示
@@ -400,25 +487,31 @@ if ($tbl_ei && $tbl_ei->num_rows > 0) {
     $dept_id = $session['department_id'] ?? '';
     $this_year_grad = (date('n') >= 8) ? (int)date('Y') + 1 : (int)date('Y'); // 當年度國三畢業年，與 enrollment_list 一致
     foreach ($registrations as $reg) {
-        if (($reg['willingness_level'] ?? '') !== '高意願') continue;
+        $level = $reg['willingness_level'] ?? null;
+        if (empty($auto_intention_levels) || !$level || !in_array($level, $auto_intention_levels, true)) continue;
         $name = trim((string)($reg['student_name'] ?? ''));
         $email = trim((string)($reg['email'] ?? ''));
         $phone = trim((string)($reg['contact_phone'] ?? ''));
         if ($name === '') continue;
         $existing_id = null;
+        $existing_remarks = null;
         if ($email !== '' || $phone !== '') {
-            $chk = $conn->prepare("SELECT id FROM enrollment_intention WHERE (email = ? OR phone1 = ? OR phone2 = ?) LIMIT 1");
+            $chk = $conn->prepare("SELECT id, remarks FROM enrollment_intention WHERE (email = ? OR phone1 = ? OR phone2 = ?) LIMIT 1");
             if ($chk) {
                 $chk->bind_param("sss", $email, $phone, $phone);
                 $chk->execute();
                 $row = $chk->get_result()->fetch_assoc();
                 $chk->close();
-                if ($row) $existing_id = (int)$row['id'];
+                if ($row) {
+                    $existing_id = (int)$row['id'];
+                    $existing_remarks = (string)($row['remarks'] ?? '');
+                }
             }
         }
         $school_code = trim((string)($reg['school'] ?? ''));
         $grade = trim((string)($reg['grade'] ?? ''));
-        $remarks = "來自場次：{$session_name} (報名時間：" . date('Y-m-d H:i', strtotime($reg['created_at'] ?? 'now')) . ")";
+        // 備註：標記由入學說明會自動建立 / 更新
+        $remarks = "由入學說明會建立：{$session_name} (報名時間：" . date('Y-m-d H:i', strtotime($reg['created_at'] ?? 'now')) . ")";
         $p1_raw = (string)($reg['course_priority_1'] ?? '');
         $p2_raw = (string)($reg['course_priority_2'] ?? '');
         $assigned_dept = '';
@@ -467,42 +560,102 @@ if ($tbl_ei && $tbl_ei->num_rows > 0) {
             }
         }
         $has_dept = ($assigned_dept !== '');
+        // 依意願度轉換成 intention_level 代碼（high/medium/low）
+        $intention_level_code = 'high';
+        if ($level === '中意願') {
+            $intention_level_code = 'medium';
+        } elseif ($level === '低意願') {
+            $intention_level_code = 'low';
+        }
         try {
             if ($existing_id) {
-                $up_sql = $has_dept
-                    ? "UPDATE enrollment_intention SET name=?, email=?, phone1=?, junior_high=?, current_grade=?, assigned_department=?, intention_level='high', follow_up_status='tracking', graduation_year=? WHERE id=?"
-                    : "UPDATE enrollment_intention SET name=?, email=?, phone1=?, junior_high=?, current_grade=?, assigned_department=NULL, intention_level='high', follow_up_status='tracking', graduation_year=? WHERE id=?";
-                $up = $conn->prepare($up_sql);
-                if (!$up) throw new Exception($conn->error . ' (errno ' . $conn->errno . ')');
-                if ($has_dept) {
-                    $up->bind_param("ssssssii", $name, $email, $phone, $school_for_bind, $grade_for_bind, $assigned_dept, $graduation_year, $existing_id);
+                // 檢查備註中是否已由入學說明會建立過，如果有則不更新
+                if (strpos($existing_remarks, '由入學說明會建立') !== false) {
+                    // 跳過更新，不計入更新計數
                 } else {
-                    $up->bind_param("sssssii", $name, $email, $phone, $school_for_bind, $grade_for_bind, $graduation_year, $existing_id);
-                }
-                if ($up->execute()) {
-                    $enrollment_intention_updated++;
-                    $up->close();
-                } else {
-                    $err = $up->error; $erno = $up->errno; $up->close();
-                    throw new Exception(($err ?: 'Unknown') . ' (errno ' . $erno . ')');
+                    $up_sql = $has_dept
+                        ? "UPDATE enrollment_intention SET name=?, email=?, phone1=?, junior_high=?, current_grade=?, assigned_department=?, intention_level=?, remarks=?, follow_up_status='tracking', graduation_year=? WHERE id=?"
+                        : "UPDATE enrollment_intention SET name=?, email=?, phone1=?, junior_high=?, current_grade=?, assigned_department=NULL, intention_level=?, remarks=?, follow_up_status='tracking', graduation_year=? WHERE id=?";
+                    $up = $conn->prepare($up_sql);
+                    if (!$up) throw new Exception($conn->error . ' (errno ' . $conn->errno . ')');
+                    if ($has_dept) {
+                        $up->bind_param(
+                            "ssssssssii",
+                            $name,
+                            $email,
+                            $phone,
+                            $school_for_bind,
+                            $grade_for_bind,
+                            $assigned_dept,
+                            $intention_level_code,
+                            $remarks,
+                            $graduation_year,
+                            $existing_id
+                        );
+                    } else {
+                        $up->bind_param(
+                            "sssssssii",
+                            $name,
+                            $email,
+                            $phone,
+                            $school_for_bind,
+                            $grade_for_bind,
+                            $intention_level_code,
+                            $remarks,
+                            $graduation_year,
+                            $existing_id
+                        );
+                    }
+                    if ($up->execute()) {
+                        $enrollment_intention_updated++;
+                        $up->close();
+                    } else {
+                        $err = $up->error; $erno = $up->errno; $up->close();
+                        throw new Exception(($err ?: 'Unknown') . ' (errno ' . $erno . ')');
+                    }
                 }
             } else {
                 $ins_sql = $has_dept
-                    ? "INSERT INTO enrollment_intention (name,email,phone1,phone2,junior_high,current_grade,identity,gender,line_id,facebook,remarks,assigned_department,intention_level,follow_up_status,graduation_year,created_at) VALUES (?,?,?,NULL,?,?,1,0,NULL,NULL,?,?,'high','tracking',?,NOW())"
-                    : "INSERT INTO enrollment_intention (name,email,phone1,phone2,junior_high,current_grade,identity,gender,line_id,facebook,remarks,assigned_department,intention_level,follow_up_status,graduation_year,created_at) VALUES (?,?,?,NULL,?,?,1,0,NULL,NULL,?,NULL,'high','tracking',?,NOW())";
+                    ? "INSERT INTO enrollment_intention (name,email,phone1,phone2,junior_high,current_grade,identity,gender,line_id,facebook,remarks,assigned_department,intention_level,follow_up_status,graduation_year,created_at) VALUES (?,?,?,NULL,?,?,1,0,NULL,NULL,?,?,?,'tracking',?,NOW())"
+                    : "INSERT INTO enrollment_intention (name,email,phone1,phone2,junior_high,current_grade,identity,gender,line_id,facebook,remarks,assigned_department,intention_level,follow_up_status,graduation_year,created_at) VALUES (?,?,?,NULL,?,?,1,0,NULL,NULL,?,NULL,?,'tracking',?,NOW())";
                 $ins = $conn->prepare($ins_sql);
                 if (!$ins) throw new Exception($conn->error . ' (errno ' . $conn->errno . ')');
                 if ($has_dept) {
-                    $ins->bind_param("sssssssi", $name, $email, $phone, $school_for_bind, $grade_for_bind, $remarks, $assigned_dept, $graduation_year);
+                    $ins->bind_param(
+                        "ssssssssi",
+                        $name,
+                        $email,
+                        $phone,
+                        $school_for_bind,
+                        $grade_for_bind,
+                        $remarks,
+                        $assigned_dept,
+                        $intention_level_code,
+                        $graduation_year
+                    );
                 } else {
-                    $ins->bind_param("ssssssi", $name, $email, $phone, $school_for_bind, $grade_for_bind, $remarks, $graduation_year);
+                    $ins->bind_param(
+                        "sssssssi",
+                        $name,
+                        $email,
+                        $phone,
+                        $school_for_bind,
+                        $grade_for_bind,
+                        $remarks,
+                        $intention_level_code,
+                        $graduation_year
+                    );
                 }
                 if ($ins->execute()) {
                     $eid = (int)$conn->insert_id;
                     $ins->close();
                     $enrollment_intention_written++;
                     if ($has_dept && $eid > 0) {
-                        @$conn->query("ALTER TABLE enrollment_choices ADD UNIQUE KEY uniq_ec (enrollment_id, choice_order)");
+                        // 檢查 UNIQUE KEY 是否已存在，避免重複添加約束
+                        $keyExists = $conn->query("SELECT 1 FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_NAME='enrollment_choices' AND INDEX_NAME='uniq_ec'");
+                        if (!$keyExists || $keyExists->num_rows === 0) {
+                            @$conn->query("ALTER TABLE enrollment_choices ADD UNIQUE KEY uniq_ec (enrollment_id, choice_order)");
+                        }
                         $c1 = $conn->prepare("INSERT INTO enrollment_choices (enrollment_id, choice_order, department_code, system_code) VALUES (?,1,?,NULL) ON DUPLICATE KEY UPDATE department_code=VALUES(department_code)");
                         $c1->bind_param("is", $eid, $assigned_dept); $c1->execute(); $c1->close();
                     }
@@ -519,7 +672,7 @@ if ($tbl_ei && $tbl_ei->num_rows > 0) {
                     $errmsg = $ins->error;
                     $ins->close();
                     if ($errno === 1062 && ($email !== '' || $phone !== '')) {
-                        $chk2 = $conn->prepare("SELECT id FROM enrollment_intention WHERE email = ? OR phone1 = ? OR phone2 = ? LIMIT 1");
+                        $chk2 = $conn->prepare("SELECT id, remarks FROM enrollment_intention WHERE email = ? OR phone1 = ? OR phone2 = ? LIMIT 1");
                         if ($chk2) {
                             $chk2->bind_param("sss", $email, $phone, $phone);
                             $chk2->execute();
@@ -527,19 +680,48 @@ if ($tbl_ei && $tbl_ei->num_rows > 0) {
                             $chk2->close();
                             if ($row2) {
                                 $existing_id = (int)$row2['id'];
-                                $up_sql2 = $has_dept
-                                    ? "UPDATE enrollment_intention SET name=?, email=?, phone1=?, junior_high=?, current_grade=?, assigned_department=?, intention_level='high', follow_up_status='tracking', graduation_year=? WHERE id=?"
-                                    : "UPDATE enrollment_intention SET name=?, email=?, phone1=?, junior_high=?, current_grade=?, assigned_department=NULL, intention_level='high', follow_up_status='tracking', graduation_year=? WHERE id=?";
-                                $up = $conn->prepare($up_sql2);
-                                if ($up) {
-                                    if ($has_dept) {
-                                        $up->bind_param("ssssssii", $name, $email, $phone, $school_for_bind, $grade_for_bind, $assigned_dept, $graduation_year, $existing_id);
-                                    } else {
-                                        $up->bind_param("sssssii", $name, $email, $phone, $school_for_bind, $grade_for_bind, $graduation_year, $existing_id);
-                                    }
-                                    if ($up->execute()) $enrollment_intention_updated++;
-                                    $up->close();
-                                } else throw new Exception($conn->error . ' (errno ' . $conn->errno . ')');
+                                $existing_remarks2 = (string)($row2['remarks'] ?? '');
+                                // 檢查備註中是否已由入學說明會建立過，如果有則不更新
+                                if (strpos($existing_remarks2, '由入學說明會建立') !== false) {
+                                    // 跳過更新，不計入更新計數
+                                } else {
+                                    $up_sql2 = $has_dept
+                                        ? "UPDATE enrollment_intention SET name=?, email=?, phone1=?, junior_high=?, current_grade=?, assigned_department=?, intention_level=?, remarks=?, follow_up_status='tracking', graduation_year=? WHERE id=?"
+                                        : "UPDATE enrollment_intention SET name=?, email=?, phone1=?, junior_high=?, current_grade=?, assigned_department=NULL, intention_level=?, remarks=?, follow_up_status='tracking', graduation_year=? WHERE id=?";
+                                    $up = $conn->prepare($up_sql2);
+                                    if ($up) {
+                                        if ($has_dept) {
+                                            $up->bind_param(
+                                                "ssssssssii",
+                                                $name,
+                                                $email,
+                                                $phone,
+                                                $school_for_bind,
+                                                $grade_for_bind,
+                                                $assigned_dept,
+                                                $intention_level_code,
+                                                $remarks,
+                                                $graduation_year,
+                                                $existing_id
+                                            );
+                                        } else {
+                                            $up->bind_param(
+                                                "sssssssii",
+                                                $name,
+                                                $email,
+                                                $phone,
+                                                $school_for_bind,
+                                                $grade_for_bind,
+                                                $intention_level_code,
+                                                $remarks,
+                                                $graduation_year,
+                                                $existing_id
+                                            );
+                                        }
+                                        if ($up->execute()) $enrollment_intention_updated++;
+                                        $up->close();
+                                    } else throw new Exception($conn->error . ' (errno ' . $conn->errno . ')');
+                                }
                             } else throw new Exception(($errmsg ?: 'Unknown') . ' (errno ' . $errno . ')');
                         } else throw new Exception(($errmsg ?: 'Unknown') . ' (errno ' . $errno . ')');
                     } else throw new Exception(($errmsg ?: 'Unknown') . ' (errno ' . $errno . ')');
@@ -551,19 +733,26 @@ if ($tbl_ei && $tbl_ei->num_rows > 0) {
             $enrollment_intention_errors[] = $name . ($email !== '' ? " ({$email})" : '') . '：' . $msg;
         }
     }
-    // 僅在「有新增」或「有寫入失敗」時提示；僅更新已存在名單時不提示，避免每次進入頁面都顯示
-    if ($enrollment_intention_written > 0 || !empty($enrollment_intention_errors)) {
+    // 有新增 / 更新 / 失敗都提示一次，讓主任清楚知道本次自動寫入結果
+    if ($enrollment_intention_written > 0 || $enrollment_intention_updated > 0 || !empty($enrollment_intention_errors)) {
         if ($message !== '') $message .= ' ';
+        $message .= "就讀意願名單：";
         if ($enrollment_intention_written > 0) {
-            $message .= "就讀意願名單：新增 " . $enrollment_intention_written . " 筆。";
+            $message .= "新增 " . $enrollment_intention_written . " 筆";
+        }
+        if ($enrollment_intention_updated > 0) {
+            if ($enrollment_intention_written > 0) $message .= "，";
+            $message .= "更新 " . $enrollment_intention_updated . " 筆";
         }
         if (!empty($enrollment_intention_errors)) {
-            $message .= " 寫入失敗 " . count($enrollment_intention_errors) . " 筆：";
+            if ($enrollment_intention_written > 0 || $enrollment_intention_updated > 0) $message .= "，";
+            $message .= "寫入失敗 " . count($enrollment_intention_errors) . " 筆：";
             $message .= implode('；', array_slice($enrollment_intention_errors, 0, 5));
             if (count($enrollment_intention_errors) > 5) $message .= "…（共 " . count($enrollment_intention_errors) . " 筆失敗）";
         }
         $messageType = !empty($enrollment_intention_errors) ? "warning" : "success";
     }
+}
 }
 
 // 判斷是否為歷史紀錄：以簽到時間作為基準，非今年份的區分到歷史資料
@@ -667,6 +856,27 @@ if ($check_table_exists && $check_table_exists->num_rows > 0) {
         $online_check_ins = $check_in_result->fetch_all(MYSQLI_ASSOC);
         $check_in_stmt->close();
     }
+}
+
+// 科主任時，「查看簽到表記錄」僅顯示與上方同一意願度設定的學生
+if (!empty($online_check_ins) && !empty($auto_intention_levels) && $is_department_director && $intention_mode !== 'none') {
+    $willingness_map = [];
+    foreach ($registrations as $reg) {
+        if (!empty($reg['id']) && !empty($reg['willingness_level'])) {
+            $willingness_map[(int)$reg['id']] = $reg['willingness_level'];
+        }
+    }
+    foreach ($online_check_ins as &$ci) {
+        $appId = isset($ci['application_id']) ? (int)$ci['application_id'] : 0;
+        $ci['willingness_level'] = $willingness_map[$appId] ?? null;
+    }
+    unset($ci);
+    $online_check_ins = array_values(array_filter($online_check_ins, function($ci) use ($auto_intention_levels) {
+        if (empty($ci['application_id']) || empty($ci['willingness_level'])) {
+            return false;
+        }
+        return in_array($ci['willingness_level'], $auto_intention_levels, true);
+    }));
 }
 
 $conn->close();
@@ -844,6 +1054,21 @@ $page_title = '出席紀錄管理 - ' . htmlspecialchars($session['session_name'
             cursor: pointer;
         }
 
+        .filter-group {
+            display: flex;
+            flex-wrap: nowrap;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .intention-mode-select {
+            min-width: 230px;
+            font-weight: 600;
+            color: var(--primary-color);
+            border-color: var(--primary-color);
+            background: #e6f7ff;
+        }
+
         .modal { display: none; position: fixed; z-index: 2000; left: 0; top: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.45); overflow-y: auto; }
         .modal-content { background-color: #fff; margin: 2% auto; padding: 0; border-radius: 8px; width: 90%; max-width: 700px; max-height: 95vh; box-shadow: 0 4px 12px rgba(0,0,0,0.15); display: flex; flex-direction: column; }
         .modal-header { padding: 16px 24px; border-bottom: 1px solid var(--border-color); display: flex; justify-content: space-between; align-items: center; flex-shrink: 0; }
@@ -870,6 +1095,9 @@ $page_title = '出席紀錄管理 - ' . htmlspecialchars($session['session_name'
                         <?php if ($is_history): ?>
                             <span style="color: var(--warning-color); margin-left: 8px;">(歷史紀錄)</span>
                         <?php endif; ?>
+                        <?php if ($is_read_only): ?>
+                            <span style="color: var(--warning-color); margin-left: 8px;">(僅可查看)</span>
+                        <?php endif; ?>
                     </div>
                     <div class="table-search">
                         <input type="text" id="tableSearchInput" placeholder="搜尋姓名、Email..." onkeyup="filterTable()">
@@ -881,12 +1109,18 @@ $page_title = '出席紀錄管理 - ' . htmlspecialchars($session['session_name'
                             <button class="btn btn-secondary" onclick="toggleCheckInRecords()"><i class="fas fa-list"></i> 查看簽到表記錄</button>
                             <?php if (!empty($online_check_ins)): ?>
                                 <a href="export_online_check_in.php?session_id=<?php echo $session_id; ?>" class="btn btn-excel"><i class="fas fa-file-excel"></i> 下載簽到表 Excel</a>
-                                <button class="btn btn-primary" onclick="syncCheckInRecords()"><i class="fas fa-sync-alt"></i> 比對並同步簽到記錄</button>
+                                <?php if (!$is_read_only): ?>
+                                    <button class="btn btn-primary" onclick="syncCheckInRecords()"><i class="fas fa-sync-alt"></i> 比對並同步簽到記錄</button>
+                                <?php endif; ?>
                             <?php endif; ?>
-                            <button class="btn btn-primary" onclick="saveAttendance()"><i class="fas fa-save"></i> 儲存變更</button>
-                            <a href="absent_reminder.php?session_id=<?php echo $session_id; ?>" class="btn" style="background: var(--danger-color); color: white; border-color: var(--danger-color);">
-                                <i class="fas fa-exclamation-triangle"></i> 未到警示
-                            </a>
+                            <?php if (!$is_read_only): ?>
+                                <button class="btn btn-primary" onclick="saveAttendance()"><i class="fas fa-save"></i> 儲存變更</button>
+                            <?php endif; ?>
+                            <?php if (!$is_read_only): ?>
+                                <a href="absent_reminder.php?session_id=<?php echo $session_id; ?>" class="btn" style="background: var(--danger-color); color: white; border-color: var(--danger-color);">
+                                    <i class="fas fa-exclamation-triangle"></i> 未到警示
+                                </a>
+                            <?php endif; ?>
                         <?php endif; ?>
                         <a href="settings.php" class="btn btn-secondary"><i class="fas fa-arrow-left"></i> 返回</a>
                     </div>
@@ -917,7 +1151,7 @@ $page_title = '出席紀錄管理 - ' . htmlspecialchars($session['session_name'
                         <div class="value"><?php echo $absent_count; ?></div>
                     </div>
                 </div>
-                <div class="filter-group" style="margin-bottom:15px; margin-left:1265px;">
+                <div class="filter-group" style="margin-bottom:15px;">
                         <select id="filterGrade" class="form-control" style="width: auto; padding: 8px 12px; margin: 0;" onchange="filterTable()">
                             <option value="">全部年級</option>
                             <option value="國三">國三</option>
@@ -937,6 +1171,14 @@ $page_title = '出席紀錄管理 - ' . htmlspecialchars($session['session_name'
                             <option value="未到">未到</option>
                             <option value="未報名但有來">未報名但有來</option>
                         </select>
+                        <?php if ($is_department_director): ?>
+                            <select id="intentionModeSelect" class="form-control intention-mode-select" style="width: auto; padding: 8px 12px; margin: 0;" onchange="onIntentionModeChange(this.value)">
+                                <option value="high" <?php echo $intention_mode === 'high' ? 'selected' : ''; ?>>自動寫入：僅高意願</option>
+                                <option value="high_medium" <?php echo $intention_mode === 'high_medium' ? 'selected' : ''; ?>>自動寫入：高 + 中意願</option>
+                                <option value="all" <?php echo $intention_mode === 'all' ? 'selected' : ''; ?>>自動寫入：全部意願度</option>
+                                <option value="none" <?php echo $intention_mode === 'none' ? 'selected' : ''; ?>>不自動寫入就讀意願名單</option>
+                            </select>
+                        <?php endif; ?>
                 </div>
 
                 <div class="table-wrapper">
@@ -1054,7 +1296,7 @@ $page_title = '出席紀錄管理 - ' . htmlspecialchars($session['session_name'
                                             </span>
                                         </td>
                                         <td>
-                                            <?php if ($is_history): ?>
+                                            <?php if ($is_history || $is_read_only): ?>
                                                 <span class="status-badge <?php echo (isset($reg['attendance_status']) && $reg['attendance_status'] == 1) ? 'status-attended' : 'status-absent'; ?>">
                                                     <?php echo (isset($reg['attendance_status']) && $reg['attendance_status'] == 1) ? '已到' : '未到'; ?>
                                                 </span>
@@ -1331,6 +1573,12 @@ $page_title = '出席紀錄管理 - ' . htmlspecialchars($session['session_name'
             if (confirm('確定要儲存所有出席紀錄變更嗎？')) {
                 document.getElementById('attendanceForm').submit();
             }
+        }
+
+        function onIntentionModeChange(mode) {
+            const url = new URL(window.location.href);
+            url.searchParams.set('intention_mode', mode);
+            window.location.href = url.toString();
         }
 
         function showModal(modalId) {
