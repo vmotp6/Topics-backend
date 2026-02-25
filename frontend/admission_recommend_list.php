@@ -291,8 +291,6 @@ $current_page = 'admission_recommend_list';
 // 建立資料庫連接
 try {
     $conn = getDatabaseConnection();
-    // 統一狀態名稱：MC => 待科主任審核
-    @$conn->query("UPDATE application_statuses SET name = '待科主任審核' WHERE code = 'MC'");
 } catch (Exception $e) {
     die("資料庫連接失敗: " . $e->getMessage());
 }
@@ -628,69 +626,68 @@ try {
     $result = $stmt->get_result();
     $recommendations = $result->fetch_all(MYSQLI_ASSOC);
 
-    // 教師 + IM(role=DI) 僅可查看「自己推薦」的資料
-    // 比對來源：session username/name + teacher/director 表常見識別欄位（若存在）
-    if ($is_teacher_user || $is_im_di) {
-        $identity_candidates = [];
-        $identity_candidates[] = trim((string)$username);
-        $identity_candidates[] = trim((string)($_SESSION['name'] ?? ''));
+    // 教師僅可查看「自己推薦」的資料
+    // 比對來源：session username/name + teacher 表常見識別欄位（若存在）
+    if ($is_teacher_user) {
+        $teacher_identity_candidates = [];
+        $teacher_identity_candidates[] = trim((string)$username);
+        $teacher_identity_candidates[] = trim((string)($_SESSION['name'] ?? ''));
 
         try {
             if ($user_id > 0) {
-                $source_table = ($is_director && !$is_teacher_user) ? 'director' : 'teacher';
-                $cols = [];
-                $tc = $conn->query("SHOW COLUMNS FROM {$source_table}");
+                $teacher_cols = [];
+                $tc = $conn->query("SHOW COLUMNS FROM teacher");
                 if ($tc) {
                     while ($crow = $tc->fetch_assoc()) {
-                        $cols[] = (string)$crow['Field'];
+                        $teacher_cols[] = (string)$crow['Field'];
                     }
                 }
-                if (!empty($cols)) {
+                if (!empty($teacher_cols)) {
                     $pick = [];
                     $common = ['name', 'teacher_id', 'employee_no', 'teacher_no', 'number', 'username', 'id', 'user_id'];
                     foreach ($common as $c) {
-                        if (in_array($c, $cols, true)) $pick[] = $c;
+                        if (in_array($c, $teacher_cols, true)) $pick[] = $c;
                     }
                     if (!empty($pick)) {
-                        $sql_pick = "SELECT " . implode(', ', $pick) . " FROM {$source_table} WHERE user_id = ? LIMIT 1";
-                        $stmt_identity = $conn->prepare($sql_pick);
-                        if ($stmt_identity) {
-                            $stmt_identity->bind_param("i", $user_id);
-                            if ($stmt_identity->execute()) {
-                                $res_identity = $stmt_identity->get_result();
-                                if ($res_identity && ($identity_row = $res_identity->fetch_assoc())) {
+                        $sql_pick = "SELECT " . implode(', ', $pick) . " FROM teacher WHERE user_id = ? LIMIT 1";
+                        $stmt_teacher = $conn->prepare($sql_pick);
+                        if ($stmt_teacher) {
+                            $stmt_teacher->bind_param("i", $user_id);
+                            if ($stmt_teacher->execute()) {
+                                $res_teacher = $stmt_teacher->get_result();
+                                if ($res_teacher && ($teacher_row = $res_teacher->fetch_assoc())) {
                                     foreach ($pick as $k) {
-                                        $v = trim((string)($identity_row[$k] ?? ''));
-                                        if ($v !== '') $identity_candidates[] = $v;
+                                        $v = trim((string)($teacher_row[$k] ?? ''));
+                                        if ($v !== '') $teacher_identity_candidates[] = $v;
                                     }
                                 }
                             }
-                            $stmt_identity->close();
+                            $stmt_teacher->close();
                         }
                     }
                 }
             }
         } catch (Exception $e) {
-            error_log('讀取使用者身分資訊失敗: ' . $e->getMessage());
+            error_log('讀取 teacher 身分資訊失敗: ' . $e->getMessage());
         }
 
-        $identity_norm = [];
-        foreach ($identity_candidates as $v) {
+        $teacher_identity_norm = [];
+        foreach ($teacher_identity_candidates as $v) {
             $nv = normalize_text($v);
-            if ($nv !== '') $identity_norm[$nv] = true;
+            if ($nv !== '') $teacher_identity_norm[$nv] = true;
         }
 
-        $filtered_self = [];
+        $filtered_teacher = [];
         foreach ($recommendations as $rec_item) {
             $rec_sid_text = normalize_text((string)($rec_item['recommender_student_id'] ?? ''));
             $rec_name_text = normalize_text((string)($rec_item['recommender_name'] ?? ''));
-            $match_sid = ($rec_sid_text !== '' && isset($identity_norm[$rec_sid_text]));
-            $match_name = ($rec_name_text !== '' && isset($identity_norm[$rec_name_text]));
+            $match_sid = ($rec_sid_text !== '' && isset($teacher_identity_norm[$rec_sid_text]));
+            $match_name = ($rec_name_text !== '' && isset($teacher_identity_norm[$rec_name_text]));
             if ($match_sid || $match_name) {
-                $filtered_self[] = $rec_item;
+                $filtered_teacher[] = $rec_item;
             }
         }
-        $recommendations = $filtered_self;
+        $recommendations = $filtered_teacher;
     }
 
     // 取得 departments 對照（用於 student_interest CSV 顯示成名稱）
@@ -1114,6 +1111,79 @@ try {
             if ($view_mode === 'approved_bonus' && $label === '審核完成（可發獎金）') $filtered[] = $rec;
         }
         $recommendations = $filtered;
+    }
+
+    if (isset($_GET['export_bonus']) && $view_mode === 'approved_bonus') {
+        $rows = [[
+            '推薦編號',
+            '審核結果',
+            '被推薦人姓名',
+            '就讀學校',
+            '年級',
+            '電子郵件',
+            '聯絡電話',
+            'LINE ID',
+            '學生興趣',
+            '推薦理由',
+            '其他補充資訊',
+            '證明文件',
+            '推薦時間',
+            '推薦人姓名',
+            '推薦人學號',
+            '推薦人年級',
+            '推薦人科系',
+            '推薦人聯絡電話',
+            '推薦人電子郵件',
+        ]];
+        foreach ($recommendations as $rec) {
+            $rows[] = [
+                (string)($rec['id'] ?? ''),
+                $get_review_label($rec['status'] ?? ''),
+                (string)($rec['student_name'] ?? ''),
+                (string)($rec['student_school'] ?? ''),
+                (string)($rec['student_grade'] ?? ''),
+                (string)($rec['student_email'] ?? ''),
+                (string)($rec['student_phone'] ?? ''),
+                (string)($rec['student_line_id'] ?? ''),
+                (string)($rec['student_interest'] ?? ''),
+                (string)($rec['recommendation_reason'] ?? ''),
+                (string)($rec['additional_info'] ?? ''),
+                (string)($rec['proof_evidence'] ?? ''),
+                (string)($rec['created_at'] ?? ''),
+                (string)($rec['recommender_name'] ?? ''),
+                (string)($rec['recommender_student_id'] ?? ''),
+                (string)($rec['recommender_grade'] ?? ''),
+                (string)($rec['recommender_department'] ?? ''),
+                (string)($rec['recommender_phone'] ?? ''),
+                (string)($rec['recommender_email'] ?? ''),
+            ];
+        }
+
+        $filename_base = '可發送獎金名單_' . date('Ymd_His');
+        if (class_exists('ZipArchive')) {
+            $tmp = tempnam(sys_get_temp_dir(), 'bonus_export_');
+            $xlsx_path = $tmp . '.xlsx';
+            @rename($tmp, $xlsx_path);
+            $built = build_simple_xlsx($rows, $xlsx_path);
+            if ($built && file_exists($xlsx_path)) {
+                header('Content-Type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+                header('Content-Disposition: attachment; filename="' . $filename_base . '.xlsx"');
+                header('Content-Length: ' . filesize($xlsx_path));
+                readfile($xlsx_path);
+                @unlink($xlsx_path);
+                exit;
+            }
+        }
+
+        header('Content-Type: text/csv; charset=UTF-8');
+        header('Content-Disposition: attachment; filename="' . $filename_base . '.csv"');
+        echo "\xEF\xBB\xBF";
+        $out = fopen('php://output', 'w');
+        foreach ($rows as $row) {
+            fputcsv($out, $row);
+        }
+        fclose($out);
+        exit;
     }
 
     // --- 相同推薦人清單（姓名 + 學號/教師編號 都一致才算） ---
@@ -2016,8 +2086,8 @@ try {
                             <a class="btn-view" href="bonus_send_list.php" style="margin-left: 8px;">
                                 <i class="fas fa-receipt"></i> 已發送獎金名單
                             </a>
-                            <a class="btn-view" href="bonus_eligible_list.php" style="margin-left: 8px;">
-                                <i class="fas fa-list"></i> 可發送獎金名單
+                            <a class="btn-view" href="admission_recommend_list.php?view=approved_bonus&export_bonus=1" style="margin-left: 8px;">
+                                <i class="fas fa-file-excel"></i> 匯出可發送獎金名單
                             </a>
                         <?php endif; ?>
                     </div>
