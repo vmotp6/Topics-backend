@@ -1109,82 +1109,14 @@ try {
             if ($view_mode === 'director_pending' && ($label === '已通過初審（待科主任審核）' || $label === '初審未通過（待科主任審核）')) $filtered[] = $rec;
             if ($view_mode === 'rejected' && ($label === '初審未通過' || $label === '科主任審核未通過')) $filtered[] = $rec;
             if ($view_mode === 'director_in_progress' && $label === '科主任審核中') $filtered[] = $rec;
-            if ($view_mode === 'approved_bonus' && $label === '審核完成（可發獎金）') $filtered[] = $rec;
-        }
-        $recommendations = $filtered;
-    }
-
-    if (isset($_GET['export_bonus']) && $view_mode === 'approved_bonus') {
-        $rows = [[
-            '推薦編號',
-            '審核結果',
-            '被推薦人姓名',
-            '就讀學校',
-            '年級',
-            '電子郵件',
-            '聯絡電話',
-            'LINE ID',
-            '學生興趣',
-            '推薦理由',
-            '其他補充資訊',
-            '證明文件',
-            '推薦時間',
-            '推薦人姓名',
-            '推薦人學號',
-            '推薦人年級',
-            '推薦人科系',
-            '推薦人聯絡電話',
-            '推薦人電子郵件',
-        ]];
-        foreach ($recommendations as $rec) {
-            $rows[] = [
-                (string)($rec['id'] ?? ''),
-                $get_review_label($rec['status'] ?? ''),
-                (string)($rec['student_name'] ?? ''),
-                (string)($rec['student_school'] ?? ''),
-                (string)($rec['student_grade'] ?? ''),
-                (string)($rec['student_email'] ?? ''),
-                (string)($rec['student_phone'] ?? ''),
-                (string)($rec['student_line_id'] ?? ''),
-                (string)($rec['student_interest'] ?? ''),
-                (string)($rec['recommendation_reason'] ?? ''),
-                (string)($rec['additional_info'] ?? ''),
-                (string)($rec['proof_evidence'] ?? ''),
-                (string)($rec['created_at'] ?? ''),
-                (string)($rec['recommender_name'] ?? ''),
-                (string)($rec['recommender_student_id'] ?? ''),
-                (string)($rec['recommender_grade'] ?? ''),
-                (string)($rec['recommender_department'] ?? ''),
-                (string)($rec['recommender_phone'] ?? ''),
-                (string)($rec['recommender_email'] ?? ''),
-            ];
-        }
-
-        $filename_base = '可發送獎金名單_' . date('Ymd_His');
-        if (class_exists('ZipArchive')) {
-            $tmp = tempnam(sys_get_temp_dir(), 'bonus_export_');
-            $xlsx_path = $tmp . '.xlsx';
-            @rename($tmp, $xlsx_path);
-            $built = build_simple_xlsx($rows, $xlsx_path);
-            if ($built && file_exists($xlsx_path)) {
-                header('Content-Type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-                header('Content-Disposition: attachment; filename="' . $filename_base . '.xlsx"');
-                header('Content-Length: ' . filesize($xlsx_path));
-                readfile($xlsx_path);
-                @unlink($xlsx_path);
-                exit;
+            if ($view_mode === 'approved_bonus') {
+                $director_status = strtolower(trim((string)($rec['director_review_status'] ?? '')));
+                if ($label === '審核完成（可發獎金）' && $director_status === 'signed') {
+                    $filtered[] = $rec;
+                }
             }
         }
-
-        header('Content-Type: text/csv; charset=UTF-8');
-        header('Content-Disposition: attachment; filename="' . $filename_base . '.csv"');
-        echo "\xEF\xBB\xBF";
-        $out = fopen('php://output', 'w');
-        foreach ($rows as $row) {
-            fputcsv($out, $row);
-        }
-        fclose($out);
-        exit;
+        $recommendations = $filtered;
     }
 
     // --- 相同推薦人清單（姓名 + 學號/教師編號 都一致才算） ---
@@ -2087,8 +2019,8 @@ try {
                             <a class="btn-view" href="bonus_send_list.php" style="margin-left: 8px;">
                                 <i class="fas fa-receipt"></i> 已發送獎金名單
                             </a>
-                            <a class="btn-view" href="admission_recommend_list.php?view=approved_bonus&export_bonus=1" style="margin-left: 8px;">
-                                <i class="fas fa-file-excel"></i> 匯出可發送獎金名單
+                            <a class="btn-view" href="bonus_eligible_list.php" style="margin-left: 8px;">
+                                <i class="fas fa-list"></i> 可發送獎金名單
                             </a>
                         <?php endif; ?>
                     </div>
