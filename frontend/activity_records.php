@@ -1505,6 +1505,38 @@ if ($teacher_id > 0) {
 
 // 續招錄取統計已移除，後續將重做
 
+// 畢業生大學類型統計（本屆孝班、忠班，與 teacher_student_university_info 同口徑）
+$graduate_university_stats = [];
+try {
+    $table_ns = $conn->query("SHOW TABLES LIKE 'new_student_basic_info'");
+    $table_ut = $conn->query("SHOW TABLES LIKE 'university_types'");
+    if ($table_ns && $table_ns->num_rows > 0 && $table_ut && $table_ut->num_rows > 0) {
+        $grad_year_west = (int)date('Y');
+        $roc_enroll_year = $grad_year_west - 1916;
+        $year_start = ($roc_enroll_year + 1911) . '-07-01 00:00:00';
+        $year_end = ($roc_enroll_year + 1912) . '-08-01 23:59:59';
+        $sql = "SELECT COALESCE(u.type_name, '未填寫') AS type_name, COUNT(*) AS cnt
+                FROM new_student_basic_info s
+                LEFT JOIN university_types u ON TRIM(UPPER(TRIM(COALESCE(s.university,'')))) = TRIM(UPPER(u.type_code))
+                WHERE s.created_at >= ? AND s.created_at <= ?
+                  AND (s.class_name LIKE '%孝%' OR s.class_name LIKE '%忠%')
+                GROUP BY u.type_code, u.type_name
+                ORDER BY (CASE WHEN u.id IS NULL THEN 999 ELSE u.id END), cnt DESC";
+        $stmt = $conn->prepare($sql);
+        if ($stmt) {
+            $stmt->bind_param('ss', $year_start, $year_end);
+            $stmt->execute();
+            $res = $stmt->get_result();
+            while ($row = $res->fetch_assoc()) {
+                $graduate_university_stats[] = ['type_name' => $row['type_name'], 'cnt' => (int)$row['cnt']];
+            }
+            $stmt->close();
+        }
+    }
+} catch (Exception $e) {
+    error_log('畢業生大學類型統計查詢失敗: ' . $e->getMessage());
+}
+
 $conn->close();
 ?>
 <!DOCTYPE html>
@@ -2761,6 +2793,28 @@ $conn->close();
                                 </div>
 </div>
                         
+                        <!-- 畢業生大學類型統計按鈕組 -->
+                        <div style="border-top: 1px solid #f0f0f0; padding-top: 20px; margin-top: 20px;">
+                            <h4 style="color: #667eea; margin-bottom: 15px; display: flex; align-items: center; gap: 10px;">
+                                <i class="fas fa-university"></i> 畢業生大學類型統計
+                            </h4>
+                            <div style="display: flex; gap: 12px; margin-bottom: 24px; flex-wrap: wrap;">
+                                <button class="btn-view" onclick="showGraduateUniversityStats()">
+                                    <i class="fas fa-chart-bar"></i> 各類型人數長條圖
+                                </button>
+                                <button class="btn-view" onclick="clearGraduateUniversityChart()" style="background: #dc3545; color: white; border-color: #dc3545;">
+                                    <i class="fas fa-arrow-up"></i> 收回圖表
+                                </button>
+                            </div>
+                            <div id="graduateUniversityAnalyticsContent" style="min-height: 200px;">
+                                <div class="empty-state">
+                                    <i class="fas fa-university fa-3x" style="margin-bottom: 16px;"></i>
+                                    <h4>點擊「各類型人數長條圖」查看畢業生就讀大學類型統計</h4>
+                                    <p>統計本屆孝班、忠班畢業生就讀國立大學、私立大學、直接就業、軍警學校、國外升學、其他等類型人數</p>
+                                </div>
+                            </div>
+                        </div>
+
                         <!-- 續招報名統計按鈕組 -->
                         <div style="border-top: 1px solid #f0f0f0; padding-top: 20px; margin-top: 20px;">
                             <h4 style="color: #667eea; margin-bottom: 15px; display: flex; align-items: center; gap: 10px;">
@@ -2909,6 +2963,7 @@ function resetEnrollmentTabs() {
     const activityRecords = <?php echo json_encode($all_activity_records ?? []); ?>;
     const attendanceStatsData = <?php echo json_encode(isset($attendance_stats_data) ? $attendance_stats_data : []); ?>;
     const allSessionsList = <?php echo json_encode(isset($all_sessions_list) ? $all_sessions_list : []); ?>;
+    const graduateUniversityStats = <?php echo json_encode(isset($graduate_university_stats) ? $graduate_university_stats : []); ?>;
     
     // 調試：輸出資料到控制台
     console.log('=== 出席統計資料調試 ===');
@@ -8153,6 +8208,88 @@ function showContinuedAdmissionChoicesStats() {
         
         // 重新顯示志願選擇分析，確保它始終顯示
         showContinuedAdmissionChoicesStats();
+    }
+
+    // 畢業生大學類型統計 - 長條圖
+    let graduateUniversityChartInstance = null;
+    function showGraduateUniversityStats() {
+        const data = graduateUniversityStats || [];
+        const content = document.getElementById('graduateUniversityAnalyticsContent');
+        if (!content) return;
+        if (data.length === 0) {
+            content.innerHTML = '<div class="empty-state"><i class="fas fa-university fa-3x" style="margin-bottom: 16px;"></i><h4>尚無畢業生大學類型資料</h4><p>請先在「畢業生資訊填寫」由教師填寫學生就讀的大學類型後，此處會顯示統計長條圖。</p></div>';
+            return;
+        }
+        const labels = data.map(d => d.type_name);
+        const counts = data.map(d => d.cnt);
+        const total = counts.reduce((a, b) => a + b, 0);
+        content.innerHTML = `
+            <div style="margin-bottom: 20px;">
+                <h4 style="color: #667eea; margin-bottom: 15px;"><i class="fas fa-chart-bar"></i> 畢業生就讀大學類型統計（本屆孝班、忠班）</h4>
+                <div class="chart-card">
+                    <div class="chart-title">各類型畢業生人數</div>
+                    <div class="chart-container" style="height: 320px;">
+                        <canvas id="graduateUniversityChart"></canvas>
+                    </div>
+                </div>
+                <div style="background: #f8f9fa; padding: 20px; border-radius: 10px; margin-top: 20px;">
+                    <h5 style="color: #333; margin-bottom: 15px;">統計摘要</h5>
+                    <p style="margin-bottom: 12px;">總計 <strong>${total}</strong> 人（孝班＋忠班）</p>
+                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px;">
+                        ${data.map(d => '<div style="background: white; padding: 12px; border-radius: 8px; border-left: 4px solid #667eea;"><span style="color: #666;">' + d.type_name + '</span><br><strong style="font-size: 1.2em; color: #333;">' + d.cnt + '</strong> 人</div>').join('')}
+                    </div>
+                </div>
+            </div>
+        `;
+        setTimeout(() => {
+            const canvas = document.getElementById('graduateUniversityChart');
+            if (!canvas) return;
+            if (graduateUniversityChartInstance) {
+                graduateUniversityChartInstance.destroy();
+                graduateUniversityChartInstance = null;
+            }
+            const ctx = canvas.getContext('2d');
+            graduateUniversityChartInstance = new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: labels,
+                    datasets: [{
+                        label: '人數',
+                        data: counts,
+                        backgroundColor: ['#667eea', '#764ba2', '#f093fb', '#4facfe', '#43e97b', '#fa709a', '#a8edea'],
+                        borderColor: ['#5a6fd8', '#6a3f8f', '#d97ae8', '#3d9ae8', '#3ad366', '#e85a82', '#96ddd8'],
+                        borderWidth: 1
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: { display: false },
+                        tooltip: { callbacks: { label: function(ctx) { return ctx.parsed.y + ' 人'; } } }
+                    },
+                    scales: {
+                        y: {
+                            beginAtZero: true,
+                            ticks: { stepSize: 1 }
+                        },
+                        x: {
+                            ticks: { maxRotation: 45, minRotation: 0 }
+                        }
+                    }
+                }
+            });
+        }, 100);
+    }
+    function clearGraduateUniversityChart() {
+        if (graduateUniversityChartInstance) {
+            graduateUniversityChartInstance.destroy();
+            graduateUniversityChartInstance = null;
+        }
+        const content = document.getElementById('graduateUniversityAnalyticsContent');
+        if (content) {
+            content.innerHTML = '<div class="empty-state"><i class="fas fa-university fa-3x" style="margin-bottom: 16px;"></i><h4>點擊「各類型人數長條圖」查看畢業生就讀大學類型統計</h4><p>統計本屆孝班、忠班畢業生就讀國立大學、私立大學、直接就業、軍警學校、國外升學、其他等類型人數</p></div>';
+        }
     }
     
     // 五專入學說明會統計 - 年級分布分析
