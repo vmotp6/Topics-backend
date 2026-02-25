@@ -612,7 +612,6 @@ if ($view === 'legacy') {
             <?php endif; ?>
             <input name="q" value="<?php echo htmlspecialchars($q); ?>" placeholder="搜尋：學號/姓名/班級/身分證號/手機">
             <button type="submit"><i class="fas fa-search"></i> 查詢</button>
-            <a class="reset" href="new_student_basic_info_management.php"><i class="fas fa-eraser"></i> 清除</a>
             <a class="reset" href="new_student_basic_info_management.php?view=<?php echo htmlspecialchars($view); ?><?php echo ($view === 'legacy' && $selected_roc_year > 0) ? '&roc_year=' . (int)$selected_roc_year : ''; ?>"><i class="fas fa-eraser"></i> 清除</a>
           </form>
         </div>
