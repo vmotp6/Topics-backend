@@ -291,6 +291,8 @@ $current_page = 'admission_recommend_list';
 // 建立資料庫連接
 try {
     $conn = getDatabaseConnection();
+    // 統一狀態名稱：MC => 待科主任審核
+    @$conn->query("UPDATE application_statuses SET name = '待科主任審核' WHERE code = 'MC'");
 } catch (Exception $e) {
     die("資料庫連接失敗: " . $e->getMessage());
 }
