@@ -1109,12 +1109,7 @@ try {
             if ($view_mode === 'director_pending' && ($label === '已通過初審（待科主任審核）' || $label === '初審未通過（待科主任審核）')) $filtered[] = $rec;
             if ($view_mode === 'rejected' && ($label === '初審未通過' || $label === '科主任審核未通過')) $filtered[] = $rec;
             if ($view_mode === 'director_in_progress' && $label === '科主任審核中') $filtered[] = $rec;
-            if ($view_mode === 'approved_bonus') {
-                $director_status = strtolower(trim((string)($rec['director_review_status'] ?? '')));
-                if ($label === '審核完成（可發獎金）' && $director_status === 'signed') {
-                    $filtered[] = $rec;
-                }
-            }
+            if ($view_mode === 'approved_bonus' && $label === '審核完成（可發獎金）') $filtered[] = $rec;
         }
         $recommendations = $filtered;
     }
