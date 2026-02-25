@@ -19,6 +19,77 @@ try {
     die('資料庫連接失敗: ' . $e->getMessage());
 }
 
+function excel_col_letter($index) {
+    $index = (int)$index + 1;
+    $letters = '';
+    while ($index > 0) {
+        $mod = ($index - 1) % 26;
+        $letters = chr(65 + $mod) . $letters;
+        $index = (int)(($index - 1) / 26);
+    }
+    return $letters;
+}
+
+function excel_xml_escape($value) {
+    $value = (string)$value;
+    return str_replace(['&', '<', '>', '"', "'"], ['&amp;', '&lt;', '&gt;', '&quot;', '&apos;'], $value);
+}
+
+function build_simple_xlsx($rows, $output_path) {
+    if (!class_exists('ZipArchive')) return false;
+    $zip = new ZipArchive();
+    if ($zip->open($output_path, ZipArchive::CREATE | ZipArchive::OVERWRITE) !== true) return false;
+
+    $sheet_rows = '';
+    $row_num = 1;
+    foreach ($rows as $row) {
+        $sheet_rows .= '<row r="' . $row_num . '">';
+        $col_num = 0;
+        foreach ($row as $cell) {
+            $col = excel_col_letter($col_num);
+            $cell_ref = $col . $row_num;
+            $text = excel_xml_escape($cell);
+            $sheet_rows .= '<c r="' . $cell_ref . '" t="inlineStr"><is><t xml:space="preserve">' . $text . '</t></is></c>';
+            $col_num++;
+        }
+        $sheet_rows .= '</row>';
+        $row_num++;
+    }
+
+    $sheet_xml = '<?xml version="1.0" encoding="UTF-8"?>'
+        . '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+        . '<sheetData>' . $sheet_rows . '</sheetData>'
+        . '</worksheet>';
+    $workbook_xml = '<?xml version="1.0" encoding="UTF-8"?>'
+        . '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+        . 'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+        . '<sheets><sheet name="Sheet1" sheetId="1" r:id="rId1"/></sheets>'
+        . '</workbook>';
+    $rels_xml = '<?xml version="1.0" encoding="UTF-8"?>'
+        . '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+        . '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>'
+        . '</Relationships>';
+    $workbook_rels_xml = '<?xml version="1.0" encoding="UTF-8"?>'
+        . '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+        . '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>'
+        . '</Relationships>';
+    $content_types_xml = '<?xml version="1.0" encoding="UTF-8"?>'
+        . '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+        . '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+        . '<Default Extension="xml" ContentType="application/xml"/>'
+        . '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>'
+        . '<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>'
+        . '</Types>';
+
+    $zip->addFromString('[Content_Types].xml', $content_types_xml);
+    $zip->addFromString('_rels/.rels', $rels_xml);
+    $zip->addFromString('xl/workbook.xml', $workbook_xml);
+    $zip->addFromString('xl/_rels/workbook.xml.rels', $workbook_rels_xml);
+    $zip->addFromString('xl/worksheets/sheet1.xml', $sheet_xml);
+    $zip->close();
+    return true;
+}
+
 $hasColumn = function($table, $column) use ($conn) {
     $stmt = $conn->prepare("SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ?");
     if (!$stmt) return false;
@@ -106,6 +177,57 @@ foreach ($rows as $r) {
 }
 $dept_options = array_keys($dept_options);
 sort($dept_options);
+
+if (isset($_GET['export']) && $_GET['export'] === '1') {
+    $export_rows = [[
+        '推薦ID',
+        '被推薦人',
+        '推薦人姓名',
+        '推薦人學號/編號',
+        '推薦人科系',
+        '審核結果',
+        '線上簽核',
+        '推薦時間'
+    ]];
+    foreach ($rows as $r) {
+        $export_rows[] = [
+            (string)($r['id'] ?? ''),
+            (string)($r['student_name'] ?? ''),
+            (string)($r['recommender_name'] ?? ''),
+            (string)($r['recommender_student_id'] ?? ''),
+            (string)($r['recommender_department'] ?? ''),
+            '審核完成（可發獎金）',
+            '已線上簽核',
+            (string)($r['created_at'] ?? ''),
+        ];
+    }
+
+    $filename_base = '可發送獎金名單_' . date('Ymd_His');
+    if (class_exists('ZipArchive')) {
+        $tmp = tempnam(sys_get_temp_dir(), 'eligible_export_');
+        $xlsx_path = $tmp . '.xlsx';
+        @rename($tmp, $xlsx_path);
+        $built = build_simple_xlsx($export_rows, $xlsx_path);
+        if ($built && file_exists($xlsx_path)) {
+            header('Content-Type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+            header('Content-Disposition: attachment; filename="' . $filename_base . '.xlsx"');
+            header('Content-Length: ' . filesize($xlsx_path));
+            readfile($xlsx_path);
+            @unlink($xlsx_path);
+            exit;
+        }
+    }
+
+    header('Content-Type: text/csv; charset=UTF-8');
+    header('Content-Disposition: attachment; filename="' . $filename_base . '.csv"');
+    echo "\xEF\xBB\xBF";
+    $out = fopen('php://output', 'w');
+    foreach ($export_rows as $row) {
+        fputcsv($out, $row);
+    }
+    fclose($out);
+    exit;
+}
 ?>
 <!DOCTYPE html>
 <html lang="zh-TW">
@@ -154,7 +276,10 @@ sort($dept_options);
             <a href="admission_recommend_list.php">被推薦人資訊</a> /
             <?php echo htmlspecialchars($page_title); ?>
           </div>
-          <a class="btn-view" href="admission_recommend_list.php?view=approved_bonus"><i class="fas fa-arrow-left"></i> 返回名單</a>
+          <div style="display:flex; gap:10px; align-items:center;">
+            <a class="btn-view" href="bonus_eligible_list.php?export=1"><i class="fas fa-file-excel"></i> 匯出Excel</a>
+            <a class="btn-view" href="admission_recommend_list.php?view=approved_bonus"><i class="fas fa-arrow-left"></i> 返回名單</a>
+          </div>
         </div>
 
         <div class="table-wrapper">
