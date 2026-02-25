@@ -1296,16 +1296,9 @@ $page_title = '出席紀錄管理 - ' . htmlspecialchars($session['session_name'
                                             </span>
                                         </td>
                                         <td>
-                                            <?php if ($is_history || $is_read_only): ?>
-                                                <span class="status-badge <?php echo (isset($reg['attendance_status']) && $reg['attendance_status'] == 1) ? 'status-attended' : 'status-absent'; ?>">
-                                                    <?php echo (isset($reg['attendance_status']) && $reg['attendance_status'] == 1) ? '已到' : '未到'; ?>
-                                                </span>
-                                            <?php else: ?>
-                                                <select name="attendance[<?php echo $reg['id']; ?>]" class="attendance-select">
-                                                    <option value="0" <?php echo (!isset($reg['attendance_status']) || $reg['attendance_status'] == 0) ? 'selected' : ''; ?>>未到</option>
-                                                    <option value="1" <?php echo (isset($reg['attendance_status']) && $reg['attendance_status'] == 1) ? 'selected' : ''; ?>>已到</option>
-                                                </select>
-                                            <?php endif; ?>
+                                            <span class="status-badge <?php echo (isset($reg['attendance_status']) && $reg['attendance_status'] == 1) ? 'status-attended' : 'status-absent'; ?>">
+                                                <?php echo (isset($reg['attendance_status']) && $reg['attendance_status'] == 1) ? '已到' : '未到'; ?>
+                                            </span>
                                         </td>
                                         <td>
                                             <?php 

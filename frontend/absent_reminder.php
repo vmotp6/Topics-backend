@@ -21,18 +21,23 @@ $current_year = (int)date('Y');
 $current_datetime = date('Y-m-d H:i:s');
 $hours_24_ago = date('Y-m-d H:i:s', strtotime('-24 hours'));
 
-// 查詢有報名但未出席的記錄
-// 條件：有報名記錄，但沒有出席記錄，且場次結束時間在 24 小時內
+// 查詢有報名但未簽到的記錄
+// 條件：有報名記錄，但在 online_check_in_records 中沒有簽到記錄
 $where_conditions = [];
 $where_params = [];
 $where_types = '';
 
+// 基本條件：場次已結束
+$where_conditions[] = "s.session_end_date IS NOT NULL";
+$where_conditions[] = "s.session_end_date <= ?";
+$where_params[] = $current_datetime;
+$where_types .= 's';
+
 if ($view_mode === 'urgent') {
     // 只顯示 24 小時內需要追蹤的記錄
-    $where_conditions[] = "s.session_end_date >= ? AND s.session_end_date <= ?";
+    $where_conditions[] = "s.session_end_date >= ?";
     $where_params[] = $hours_24_ago;
-    $where_params[] = $current_datetime;
-    $where_types .= 'ss';
+    $where_types .= 's';
 }
 
 if ($session_id > 0) {
@@ -41,7 +46,7 @@ if ($session_id > 0) {
     $where_types .= 'i';
 }
 
-$where_clause = !empty($where_conditions) ? 'AND ' . implode(' AND ', $where_conditions) : '';
+$where_clause = 'WHERE ' . implode(' AND ', $where_conditions) . ' AND oc.id IS NULL';
 
 $sql = "
     SELECT 
@@ -60,16 +65,10 @@ $sql = "
     FROM admission_sessions s
     INNER JOIN admission_applications aa ON s.id = aa.session_id
     LEFT JOIN school_data sd ON aa.school = sd.school_code
-    LEFT JOIN attendance_records ar ON aa.id = ar.application_id 
-        AND ar.session_id = s.id 
-        AND ar.attendance_status = 1
-    WHERE YEAR(aa.created_at) = ?
-    AND YEAR(s.session_date) = ?
-    AND s.session_end_date IS NOT NULL
-    AND s.session_end_date <= ?
-    AND ar.id IS NULL
-    AND (aa.notes IS NULL OR aa.notes NOT LIKE '%未報名但有來%')
+    LEFT JOIN online_check_in_records oc ON aa.id = oc.application_id 
+        AND oc.session_id = s.id
     {$where_clause}
+    AND (aa.notes IS NULL OR aa.notes NOT LIKE '%未報名但有來%')
     ORDER BY s.session_end_date DESC, aa.student_name ASC
 ";
 
@@ -79,10 +78,12 @@ if (!$stmt) {
 }
 
 // 綁定參數
-$bind_params = array_merge([$current_year, $current_year, $current_datetime], $where_params);
-$bind_types = 'iis' . $where_types;
-$stmt->bind_param($bind_types, ...$bind_params);
-$stmt->execute();
+if (!empty($where_params)) {
+    $stmt->bind_param($where_types, ...$where_params);
+}
+if (!$stmt->execute()) {
+    die("執行 SQL 語句失敗：" . $stmt->error);
+}
 $result = $stmt->get_result();
 $absent_list = $result->fetch_all(MYSQLI_ASSOC);
 $stmt->close();
@@ -95,6 +96,27 @@ foreach ($absent_list as $item) {
     if ($hours_since >= 0 && $hours_since <= 24) {
         $urgent_count++;
     }
+}
+
+// 診斷：查詢所有已結束的場次和報名數量
+$debug_sql = "
+    SELECT 
+        COUNT(DISTINCT s.id) as total_sessions,
+        COUNT(DISTINCT aa.id) as total_applications,
+        COUNT(DISTINCT oc.id) as total_check_ins
+    FROM admission_sessions s
+    INNER JOIN admission_applications aa ON s.id = aa.session_id
+    LEFT JOIN online_check_in_records oc ON aa.id = oc.application_id AND oc.session_id = s.id
+    WHERE s.session_end_date IS NOT NULL
+    AND s.session_end_date <= ?
+";
+$debug_stmt = $conn->prepare($debug_sql);
+if ($debug_stmt) {
+    $debug_stmt->bind_param("s", $current_datetime);
+    $debug_stmt->execute();
+    $debug_result = $debug_stmt->get_result()->fetch_assoc();
+    $debug_stmt->close();
+    // 可用於調試：$debug_result 包含統計數據
 }
 
 $conn->close();
