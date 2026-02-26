@@ -626,69 +626,68 @@ try {
     $result = $stmt->get_result();
     $recommendations = $result->fetch_all(MYSQLI_ASSOC);
 
-    // 教師 + IM(role=DI) 僅可查看「自己推薦」的資料
-    // 比對來源：session username/name + teacher/director 表常見識別欄位（若存在）
-    if ($is_teacher_user || $is_im_di) {
-        $identity_candidates = [];
-        $identity_candidates[] = trim((string)$username);
-        $identity_candidates[] = trim((string)($_SESSION['name'] ?? ''));
+    // 教師僅可查看「自己推薦」的資料
+    // 比對來源：session username/name + teacher 表常見識別欄位（若存在）
+    if ($is_teacher_user) {
+        $teacher_identity_candidates = [];
+        $teacher_identity_candidates[] = trim((string)$username);
+        $teacher_identity_candidates[] = trim((string)($_SESSION['name'] ?? ''));
 
         try {
             if ($user_id > 0) {
-                $source_table = ($is_director && !$is_teacher_user) ? 'director' : 'teacher';
-                $cols = [];
-                $tc = $conn->query("SHOW COLUMNS FROM {$source_table}");
+                $teacher_cols = [];
+                $tc = $conn->query("SHOW COLUMNS FROM teacher");
                 if ($tc) {
                     while ($crow = $tc->fetch_assoc()) {
-                        $cols[] = (string)$crow['Field'];
+                        $teacher_cols[] = (string)$crow['Field'];
                     }
                 }
-                if (!empty($cols)) {
+                if (!empty($teacher_cols)) {
                     $pick = [];
                     $common = ['name', 'teacher_id', 'employee_no', 'teacher_no', 'number', 'username', 'id', 'user_id'];
                     foreach ($common as $c) {
-                        if (in_array($c, $cols, true)) $pick[] = $c;
+                        if (in_array($c, $teacher_cols, true)) $pick[] = $c;
                     }
                     if (!empty($pick)) {
-                        $sql_pick = "SELECT " . implode(', ', $pick) . " FROM {$source_table} WHERE user_id = ? LIMIT 1";
-                        $stmt_identity = $conn->prepare($sql_pick);
-                        if ($stmt_identity) {
-                            $stmt_identity->bind_param("i", $user_id);
-                            if ($stmt_identity->execute()) {
-                                $res_identity = $stmt_identity->get_result();
-                                if ($res_identity && ($identity_row = $res_identity->fetch_assoc())) {
+                        $sql_pick = "SELECT " . implode(', ', $pick) . " FROM teacher WHERE user_id = ? LIMIT 1";
+                        $stmt_teacher = $conn->prepare($sql_pick);
+                        if ($stmt_teacher) {
+                            $stmt_teacher->bind_param("i", $user_id);
+                            if ($stmt_teacher->execute()) {
+                                $res_teacher = $stmt_teacher->get_result();
+                                if ($res_teacher && ($teacher_row = $res_teacher->fetch_assoc())) {
                                     foreach ($pick as $k) {
-                                        $v = trim((string)($identity_row[$k] ?? ''));
-                                        if ($v !== '') $identity_candidates[] = $v;
+                                        $v = trim((string)($teacher_row[$k] ?? ''));
+                                        if ($v !== '') $teacher_identity_candidates[] = $v;
                                     }
                                 }
                             }
-                            $stmt_identity->close();
+                            $stmt_teacher->close();
                         }
                     }
                 }
             }
         } catch (Exception $e) {
-            error_log('讀取使用者身分資訊失敗: ' . $e->getMessage());
+            error_log('讀取 teacher 身分資訊失敗: ' . $e->getMessage());
         }
 
-        $identity_norm = [];
-        foreach ($identity_candidates as $v) {
+        $teacher_identity_norm = [];
+        foreach ($teacher_identity_candidates as $v) {
             $nv = normalize_text($v);
-            if ($nv !== '') $identity_norm[$nv] = true;
+            if ($nv !== '') $teacher_identity_norm[$nv] = true;
         }
 
-        $filtered_self = [];
+        $filtered_teacher = [];
         foreach ($recommendations as $rec_item) {
             $rec_sid_text = normalize_text((string)($rec_item['recommender_student_id'] ?? ''));
             $rec_name_text = normalize_text((string)($rec_item['recommender_name'] ?? ''));
-            $match_sid = ($rec_sid_text !== '' && isset($identity_norm[$rec_sid_text]));
-            $match_name = ($rec_name_text !== '' && isset($identity_norm[$rec_name_text]));
+            $match_sid = ($rec_sid_text !== '' && isset($teacher_identity_norm[$rec_sid_text]));
+            $match_name = ($rec_name_text !== '' && isset($teacher_identity_norm[$rec_name_text]));
             if ($match_sid || $match_name) {
-                $filtered_self[] = $rec_item;
+                $filtered_teacher[] = $rec_item;
             }
         }
-        $recommendations = $filtered_self;
+        $recommendations = $filtered_teacher;
     }
 
     // 取得 departments 對照（用於 student_interest CSV 顯示成名稱）
