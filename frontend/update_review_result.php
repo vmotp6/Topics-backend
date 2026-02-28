@@ -113,8 +113,8 @@ function ensure_application_status_codes($conn, $needed) {
 $review_status_map = [
     '通過' => ['code' => 'AP', 'name' => '通過', 'order' => 90],
     '不通過' => ['code' => 'RE', 'name' => '不通過', 'order' => 91],
-    '需人工審查' => ['code' => 'MC', 'name' => '需人工審查', 'order' => 92],
-    '需科主任審核' => ['code' => 'MC', 'name' => '需科主任審核', 'order' => 92],
+    '需人工審查' => ['code' => 'MC', 'name' => '待科主任審核', 'order' => 92],
+    '需科主任審核' => ['code' => 'MC', 'name' => '待科主任審核', 'order' => 92],
 ];
 
 $status_code = $review_status_map[$review_result]['code'];
@@ -124,6 +124,8 @@ try {
 
     // 確保 application_statuses 中存在指定的狀態 code（避免 status 外鍵寫入失敗）
     ensure_application_status_codes($conn, $review_status_map);
+    // 將既有 MC 狀態名稱統一為「待科主任審核」
+    @$conn->query("UPDATE application_statuses SET name = '待科主任審核' WHERE code = 'MC'");
 
     // 檢查推薦記錄是否存在
     $stmt = $conn->prepare("SELECT id FROM admission_recommendations WHERE id = ?");
