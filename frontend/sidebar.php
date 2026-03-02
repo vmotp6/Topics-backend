@@ -379,6 +379,22 @@ function hasPermission($permission_code, $user_role, $permissions_array) {
                     <span>招生問答管理</span>
                 </a>
             <?php endif; ?>
+
+            <!-- 官方招生知識庫 (KM) - 招生中心 / 科主任 / 管理員 -->
+            <?php if ($is_staff || $is_admin || $is_director): ?>
+                <a href="recruitment_knowledge.php" class="menu-item <?php echo $current_page === 'recruitment_knowledge' ? 'active' : ''; ?>">
+                    <i class="fas fa-database"></i>
+                    <span>官方招生知識庫 (KM)</span>
+                </a>
+            <?php endif; ?>
+
+            <!-- 知識問答 (AI Search for KM) - 老師 / 招生中心 / 科主任 / 管理員 -->
+            <?php if ($is_teacher || $is_staff || $is_admin || $is_director): ?>
+                <a href="recruitment_ask.php" class="menu-item <?php echo $current_page === 'recruitment_ask' ? 'active' : ''; ?>">
+                    <i class="fas fa-robot"></i>
+                    <span>知識問答 (AI Search for KM)</span>
+                </a>
+            <?php endif; ?>
             
             <!-- 學校聯絡人 - 僅學校行政和管理員 -->
             <?php if ($is_staff || $is_admin): ?>
