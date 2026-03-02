@@ -279,9 +279,12 @@ $current_registration_stage = null;
 $current_stage_display = null;
 $selected_academic_year = isset($_GET['year']) ? (int)$_GET['year'] : 0;
 
-// 國三分類下的「已提醒/未提醒」篩選（僅在有報名階段時有效）
+// 國三分類下的「已提醒/未提醒」篩選（僅在有報名階段時有效）；招生中心無此權限，一律視為全部
 $reminder_filter = isset($_GET['reminder']) ? trim((string)$_GET['reminder']) : '';
 if (!in_array($reminder_filter, ['', 'reminded', 'not_reminded'], true)) {
+    $reminder_filter = '';
+}
+if ($is_admission_center) {
     $reminder_filter = '';
 }
 
@@ -324,7 +327,7 @@ if (!in_array(strtolower($sortOrder), ['asc', 'desc'])) {
     $sortOrder = 'asc';
 }
 
-// 基礎 SELECT
+// 基礎 SELECT（是否已聯絡：供招生中心、主任在大欄位顯示）
 $base_select = "
     SELECT 
         ei.*, 
@@ -335,7 +338,8 @@ $base_select = "
         d2.name AS intention2_name, d2.code AS intention2_code,
         es2.name AS system2_name,
         d3.name AS intention3_name, d3.code AS intention3_code,
-        es3.name AS system3_name
+        es3.name AS system3_name,
+        (SELECT IF(COUNT(*) > 0, 1, 0) FROM enrollment_contact_logs c WHERE c.enrollment_id = ei.id) AS has_contact
 ";
 
 $base_from_join = "
@@ -992,8 +996,9 @@ try {
                                                 當前報名階段：<?php echo htmlspecialchars($current_stage_display); ?>
                                             </span>
                                         </div>
-                                        <?php if ($view_mode === 'recruit'): ?>
+                                        <?php if ($view_mode === 'recruit' && !$is_admission_center): ?>
                                             <?php
+                                            // 招生中心不可提醒任何學生報名，故不顯示「提醒狀態」篩選
                                             $recruit_base = array_merge($_GET, ['view' => 'recruit']);
                                             $params_all = $recruit_base;
                                             unset($params_all['reminder']);
@@ -1124,6 +1129,7 @@ try {
                                             <?php if ($user_role !== 'TEA'): ?>
                                                 <th><?php echo $is_admission_center ? '分配科系 / 負責老師' : '分配狀態'; ?></th>
                                             <?php endif; ?>
+                                            <?php if ($is_admission_center || $is_director): ?><th>是否已聯絡</th><?php endif; ?>
                                             <th>操作</th>
                                         <?php elseif ($view_mode === 'registered'): ?>
                                             <th onclick="sortTable('name')">姓名 <span class="sort-icon" id="sort-name"></span></th>
@@ -1133,6 +1139,7 @@ try {
                                             <?php endif; ?>
                                             <th>報名階段</th>
                                             <th>報到狀態</th>
+                                            <?php if ($is_admission_center || $is_director): ?><th>是否已聯絡</th><?php endif; ?>
                                             <th>操作</th>
                                         <?php else: /* recruit */ ?>
                                             <th onclick="sortTable('name')">姓名 <span class="sort-icon" id="sort-name"></span></th>
@@ -1141,6 +1148,7 @@ try {
                                                 <th><?php echo $is_admission_center ? '分配科系 / 負責老師' : '分配狀態'; ?></th>
                                             <?php endif; ?>
                                             <th>報名狀態</th>
+                                            <?php if ($is_admission_center || $is_director): ?><th>是否已聯絡</th><?php endif; ?>
                                             <th>操作</th>
                                         <?php endif; ?>
                                     </tr>
@@ -1223,7 +1231,12 @@ try {
                                             <td><?php echo htmlspecialchars($item['name']); ?></td>
                                             <td><?php echo getSchoolName($item['junior_high'] ?? '', $school_data); ?></td>
                                             <td><?php echo getDynamicGradeText($item['graduation_year'] ?? '', $item['current_grade'] ?? '', $identity_options); ?></td>
-                                            <td><?php echo $assignment_html; ?></td>
+                                            <?php if ($user_role !== 'TEA'): ?>
+                                                <td><?php echo $assignment_html; ?></td>
+                                            <?php endif; ?>
+                                            <?php if ($is_admission_center || $is_director): ?>
+                                                <td><?php echo ((int)($item['has_contact'] ?? 0) === 1) ? '<span style="color:#52c41a;">已聯絡</span>' : '<span style="color:#999;">未聯絡</span>'; ?></td>
+                                            <?php endif; ?>
                                             <td onclick="event.stopPropagation();">
                                                 <div style="display: flex; gap: 8px; flex-wrap: wrap;">
                                                     <button type="button"
@@ -1273,7 +1286,8 @@ try {
                                         <?php elseif ($view_mode === 'registered'): ?>
                                             <?php
                                                 $check_in_status = $item['check_in_status'] ?? 'pending';
-                                                $can_check_in = !$is_admission_center ? ($is_assigned_to_me || !$is_director) : true;
+                                                // 招生中心不可操作報到流程（已提醒報到 / 已完成報到 / 放棄報到），僅老師/主任可操作自己名單
+                                                $can_check_in = !$is_admission_center && ($is_assigned_to_me || !$is_director);
                                                 $check_in_decline_reason = trim((string)($item['check_in_decline_reason'] ?? ''));
                                             ?>
                                             <td><?php echo htmlspecialchars($item['name']); ?></td>
@@ -1295,6 +1309,9 @@ try {
                                                     echo getCheckInStatusBadgeHtml($check_in_status);
                                                 }
                                             ?></td>
+                                            <?php if ($is_admission_center || $is_director): ?>
+                                                <td><?php echo ((int)($item['has_contact'] ?? 0) === 1) ? '<span style="color:#52c41a;">已聯絡</span>' : '<span style="color:#999;">未聯絡</span>'; ?></td>
+                                            <?php endif; ?>
                                             <td onclick="event.stopPropagation();">
                                                 <div style="display: flex; gap: 8px; flex-wrap: wrap;">
                                                     <button type="button"
@@ -1354,6 +1371,9 @@ try {
                                                 <td><?php echo $assignment_html; ?></td>
                                             <?php endif; ?>
                                             <td><?php echo getRegistrationStageStatusHtml($item, $current_registration_stage, $stage_display_names, 'recruit') ?: '<span style="color:#999;">—</span>'; ?></td>
+                                            <?php if ($is_admission_center || $is_director): ?>
+                                                <td><?php echo ((int)($item['has_contact'] ?? 0) === 1) ? '<span style="color:#52c41a;">已聯絡</span>' : '<span style="color:#999;">未聯絡</span>'; ?></td>
+                                            <?php endif; ?>
                                             <td onclick="event.stopPropagation();">
                                                 <div style="display: flex; gap: 8px; flex-wrap: wrap;">
                                                     <button type="button"
@@ -1405,7 +1425,7 @@ try {
                                                                 style="border-color: #1890ff; color: #1890ff;"
                                                                 id="remind-btn-<?php echo $item['id']; ?>"
                                                                 data-enrollment-id="<?php echo (int)$item['id']; ?>"
-                                                                onclick="event.stopPropagation(); handleRegistrationRemind(<?php echo (int)$item['id']; ?>, '<?php echo htmlspecialchars($stage_name, ENT_QUOTES, 'UTF-8'); ?>')">
+                                                                onclick="event.stopPropagation(); handleRegistrationRemind(<?php echo (int)$item['id']; ?>, '<?php echo htmlspecialchars($stage_name, ENT_QUOTES, 'UTF-8'); ?>', '<?php echo htmlspecialchars($current_registration_stage ?? '', ENT_QUOTES, 'UTF-8'); ?>')">
                                                                 <i class="fas fa-bell"></i> 已提醒
                                                             </button>
                                                         <?php else: ?>
@@ -1420,7 +1440,7 @@ try {
                                                                     style="border-color: #52c41a; color: #52c41a; background: #f6ffed;"
                                                                     id="register-btn-<?php echo $item['id']; ?>"
                                                                     data-enrollment-id="<?php echo (int)$item['id']; ?>"
-                                                                    onclick="event.stopPropagation(); handleRegistrationRegister(<?php echo (int)$item['id']; ?>, '<?php echo htmlspecialchars($stage_name, ENT_QUOTES, 'UTF-8'); ?>')">
+                                                                    onclick="event.stopPropagation(); handleRegistrationRegister(<?php echo (int)$item['id']; ?>, '<?php echo htmlspecialchars($stage_name, ENT_QUOTES, 'UTF-8'); ?>', '<?php echo htmlspecialchars($current_registration_stage ?? '', ENT_QUOTES, 'UTF-8'); ?>')">
                                                                     <i class="fas fa-check-circle"></i> 是否已報名
                                                                 </button>
                                                                 <button type="button"
@@ -2065,7 +2085,9 @@ try {
         function displayDetailContent(id, data) {
             const student = data.student;
             const choices = data.choices || [];
-            const contactLogsCount = data.contact_logs_count || 0;
+            // 招生中心不可看任何老師的聯絡紀錄，一律顯示 0 筆且不顯示「查看聯絡紀錄」按鈕
+            const isAdmissionCenterDetail = <?php echo isset($is_admission_center) && $is_admission_center ? 'true' : 'false'; ?>;
+            const contactLogsCount = isAdmissionCenterDetail ? 0 : (data.contact_logs_count || 0);
             
             const detailContent = document.getElementById('detail-content-' + id);
             if (!detailContent) return;
@@ -2128,9 +2150,13 @@ try {
             const isDirector = <?php echo (isset($is_director) && $is_director && isset($is_admission_center) && !$is_admission_center) ? 'true' : 'false'; ?>;
             const teacherNameDisplay = escapeHtml(student.assigned_teacher_name || student.teacher_name || student.teacher_username || '尚未指派');
             const reassignBtnHtml = isDirector ? ' <button type="button" class="btn-view" style="margin-left:8px;padding:4px 10px;font-size:13px;" data-student-id="' + (parseInt(student.id)||0) + '" data-student-name="' + escapeHtml(String(student.name||'')) + '" data-current-teacher-id="' + (parseInt(student.assigned_teacher_id)||0) + '" onclick="event.stopPropagation(); openAssignModalFromButton(this)"><i class="fas fa-user-edit"></i> 改派</button>' : '';
-            
+            // 招生中心：詳情中完全不顯示「聯絡紀錄」區塊（無標題、無筆數、無按鈕）
+            let contactBlockHtml = '';
+            if (!isAdmissionCenterDetail) {
+                contactBlockHtml = '<h4 style="margin: 10px 0 10px 0; font-size: 16px;">聯絡紀錄</h4><p>共有 <strong>' + contactLogsCount + '</strong> 筆聯絡紀錄</p><button class="btn-view" style="margin-top: 8px; border-color: #17a2b8; color: #17a2b8;" data-student-id="' + (parseInt(student.id) || 0) + '" data-student-name="' + escapeHtml(String(student.name || '')) + '" data-assigned-teacher-id="' + (parseInt(student.assigned_teacher_id || 0) || 0) + '" data-view-only="true" onclick="const btn = this; openContactLogsModal(parseInt(btn.dataset.studentId) || 0, btn.dataset.studentName || \'\', btn.dataset.assignedTeacherId || \'0\', btn.dataset.viewOnly === \'true\')"><i class="fas fa-eye"></i> 查看聯絡紀錄</button>';
+            }
             // 構建完整 HTML（使用表格格式，類似 admission_recommend_list.php）
-            const html = '<table style="width: 100%; border-collapse: collapse;"><tr><td style="width: 50%; vertical-align: top; padding-right: 20px;"><h4 style="margin: 0 0 10px 0; font-size: 16px;">基本資料</h4><table style="width: 100%; border-collapse: collapse; font-size: 14px;"><tr><td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5; width: 120px;">姓名</td><td style="padding: 5px; border: 1px solid #ddd;">' + escapeHtml(student.name) + '</td></tr><tr><td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">身分別</td><td style="padding: 5px; border: 1px solid #ddd;">' + escapeHtml(student.identity_text) + '</td></tr><tr><td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">性別</td><td style="padding: 5px; border: 1px solid #ddd;">' + escapeHtml(student.gender_text) + '</td></tr><tr><td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">電話1</td><td style="padding: 5px; border: 1px solid #ddd;">' + escapeHtml(student.phone1) + '</td></tr><tr><td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">電話2</td><td style="padding: 5px; border: 1px solid #ddd;">' + escapeHtml(student.phone2) + '</td></tr><tr><td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">Email</td><td style="padding: 5px; border: 1px solid #ddd;">' + escapeHtml(student.email) + '</td></tr><tr><td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">Line ID</td><td style="padding: 5px; border: 1px solid #ddd;">' + escapeHtml(student.line_id) + '</td></tr><tr><td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">Facebook</td><td style="padding: 5px; border: 1px solid #ddd;">' + escapeHtml(student.facebook) + '</td></tr><tr><td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">就讀國中</td><td style="padding: 5px; border: 1px solid #ddd;">' + escapeHtml(student.junior_high_name || student.junior_high) + '</td></tr><tr><td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">目前年級</td><td style="padding: 5px; border: 1px solid #ddd;">' + escapeHtml(student.current_grade_name || student.current_grade)  + '</td></tr><tr><td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">從哪裡知道我們</td><td style="padding: 5px; border: 1px solid #ddd;">' + escapeHtml(student.how_hear || '') + '</td></tr><tr><td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">建立時間</td><td style="padding: 5px; border: 1px solid #ddd;">' + formatDate(student.created_at) + '</td></tr>' + (student.remarks ? '<tr><td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">備註</td><td style="padding: 5px; border: 1px solid #ddd; white-space: pre-wrap;">' + escapeHtml(student.remarks) + '</td></tr>' : '') + '</table></td><td style="width: 50%; vertical-align: top; padding-left: 20px;">' + intentionSectionHtml + '<h4 style="margin: 10px 0 10px 0; font-size: 16px;">分配資訊</h4><table style="width: 100%; border-collapse: collapse; font-size: 14px;"><tr><td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5; width: 120px;">分配科系</td><td style="padding: 5px; border: 1px solid #ddd;">' + escapeHtml(student.assigned_department_name || student.assigned_department || '尚未分配') + '</td></tr><tr><td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">負責老師</td><td style="padding: 5px; border: 1px solid #ddd;">' + teacherNameDisplay + reassignBtnHtml + '</td></tr>' + (student.recommended_teacher_name ? '<tr><td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">推薦老師</td><td style="padding: 5px; border: 1px solid #ddd;">' + escapeHtml(student.recommended_teacher_name) + '</td></tr>' : '') + '</table><h4 style="margin: 10px 0 10px 0; font-size: 16px;">聯絡紀錄</h4><p>共有 <strong>' + contactLogsCount + '</strong> 筆聯絡紀錄</p><button class="btn-view" style="margin-top: 8px; border-color: #17a2b8; color: #17a2b8;" data-student-id="' + (parseInt(student.id) || 0) + '" data-student-name="' + escapeHtml(String(student.name || '')) + '" data-assigned-teacher-id="' + (parseInt(student.assigned_teacher_id || 0) || 0) + '" data-view-only="true" onclick="const btn = this; openContactLogsModal(parseInt(btn.dataset.studentId) || 0, btn.dataset.studentName || \'\', btn.dataset.assignedTeacherId || \'0\', btn.dataset.viewOnly === \'true\')"><i class="fas fa-eye"></i> 查看聯絡紀錄</button></td></tr></table>';
+            const html = '<table style="width: 100%; border-collapse: collapse;"><tr><td style="width: 50%; vertical-align: top; padding-right: 20px;"><h4 style="margin: 0 0 10px 0; font-size: 16px;">基本資料</h4><table style="width: 100%; border-collapse: collapse; font-size: 14px;"><tr><td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5; width: 120px;">姓名</td><td style="padding: 5px; border: 1px solid #ddd;">' + escapeHtml(student.name) + '</td></tr><tr><td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">身分別</td><td style="padding: 5px; border: 1px solid #ddd;">' + escapeHtml(student.identity_text) + '</td></tr><tr><td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">性別</td><td style="padding: 5px; border: 1px solid #ddd;">' + escapeHtml(student.gender_text) + '</td></tr><tr><td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">電話1</td><td style="padding: 5px; border: 1px solid #ddd;">' + escapeHtml(student.phone1) + '</td></tr><tr><td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">電話2</td><td style="padding: 5px; border: 1px solid #ddd;">' + escapeHtml(student.phone2) + '</td></tr><tr><td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">Email</td><td style="padding: 5px; border: 1px solid #ddd;">' + escapeHtml(student.email) + '</td></tr><tr><td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">Line ID</td><td style="padding: 5px; border: 1px solid #ddd;">' + escapeHtml(student.line_id) + '</td></tr><tr><td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">Facebook</td><td style="padding: 5px; border: 1px solid #ddd;">' + escapeHtml(student.facebook) + '</td></tr><tr><td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">就讀國中</td><td style="padding: 5px; border: 1px solid #ddd;">' + escapeHtml(student.junior_high_name || student.junior_high) + '</td></tr><tr><td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">目前年級</td><td style="padding: 5px; border: 1px solid #ddd;">' + escapeHtml(student.current_grade_name || student.current_grade)  + '</td></tr><tr><td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">從哪裡知道我們</td><td style="padding: 5px; border: 1px solid #ddd;">' + escapeHtml(student.how_hear || '') + '</td></tr><tr><td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">建立時間</td><td style="padding: 5px; border: 1px solid #ddd;">' + formatDate(student.created_at) + '</td></tr>' + (student.remarks ? '<tr><td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">備註</td><td style="padding: 5px; border: 1px solid #ddd; white-space: pre-wrap;">' + escapeHtml(student.remarks) + '</td></tr>' : '') + '</table></td><td style="width: 50%; vertical-align: top; padding-left: 20px;">' + intentionSectionHtml + '<h4 style="margin: 10px 0 10px 0; font-size: 16px;">分配資訊</h4><table style="width: 100%; border-collapse: collapse; font-size: 14px;"><tr><td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5; width: 120px;">分配科系</td><td style="padding: 5px; border: 1px solid #ddd;">' + escapeHtml(student.assigned_department_name || student.assigned_department || '尚未分配') + '</td></tr><tr><td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">負責老師</td><td style="padding: 5px; border: 1px solid #ddd;">' + teacherNameDisplay + reassignBtnHtml + '</td></tr>' + (student.recommended_teacher_name ? '<tr><td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">推薦老師</td><td style="padding: 5px; border: 1px solid #ddd;">' + escapeHtml(student.recommended_teacher_name) + '</td></tr>' : '') + '</table>' + contactBlockHtml + '</td></tr></table>';
             
             detailContent.innerHTML = html;
         }
@@ -2416,13 +2442,14 @@ function submitContactLog() {
     });
 }
 
-        // 報名提醒處理函數
-        function handleRegistrationRemind(enrollmentId, stageName) {
+        // 報名提醒處理函數（stage 為階段代碼，與名單頁一致，供 API 判定避免「目前非報名期間」）
+        function handleRegistrationRemind(enrollmentId, stageName, stage) {
             if (!confirm('確定已提醒學生報名' + stageName + '嗎？')) return;
             
             var formData = new FormData();
             formData.append('action', 'remind');
             formData.append('enrollment_id', enrollmentId);
+            if (stage) formData.append('stage', stage);
             
             fetch('../../Topics-frontend/frontend/api/registration_reminder_api.php', {
                 method: 'POST',
@@ -2442,12 +2469,13 @@ function submitContactLog() {
             });
         }
         
-        function handleRegistrationRegister(enrollmentId, stageName) {
+        function handleRegistrationRegister(enrollmentId, stageName, stage) {
             if (!confirm('確定學生已完成' + stageName + '報名嗎？標記後將移入「已報名」分類。')) return;
             
             var formData = new FormData();
             formData.append('action', 'register');
             formData.append('enrollment_id', enrollmentId);
+            if (stage) formData.append('stage', stage);
             
             fetch('../../Topics-frontend/frontend/api/registration_reminder_api.php', {
                 method: 'POST',
