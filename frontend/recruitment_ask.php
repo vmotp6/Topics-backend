@@ -315,23 +315,25 @@ if (!$can_ask) {
             btnSend.disabled = false;
             btnSend.innerHTML = '<i class="fas fa-paper-plane"></i>';
 
-            if (data.success) {
-                if (data.files && data.files.length > 0) {
-                    addSystemFileMessage(q, data.files);
-                }
-                var answerText = data.answer || '（無回覆內容）';
-                if (data.sources && data.sources.length > 0) {
-                    var s   = data.sources[0];
-                    var who = s.created_by_name || '未知建立者';
-                    var when = s.created_at || '時間未紀錄';
-                    answerText += '\n\n— 資料由『' + who + '』於 ' + when + ' 建立';
-                }
-                addMessage('system', answerText);
-            } else {
-                addMessage('system', '錯誤：' + (data.error || '查詢失敗'));
-                errorEl.textContent = data.error || '查詢失敗';
-                errorEl.style.display = 'block';
-            }
+           // 先顯示檔案（獨立處理）
+if (data.files && data.files.length > 0) {
+    addSystemFileMessage(q, data.files);
+}
+
+// 只有在「真的有文字回答」時，才顯示 AI 回覆
+if (data.answer && data.answer.trim() !== '') {
+    var answerText = data.answer;
+
+    if (data.sources && data.sources.length > 0) {
+        var s    = data.sources[0];
+        var who  = s.created_by_name || '未知建立者';
+        var when = s.created_at || '時間未紀錄';
+        answerText += '\n\n— 資料由『' + who + '』於 ' + when + ' 建立';
+    }
+
+    addMessage('system', answerText);
+}
+
         })
         .catch(function () {
             btnSend.disabled = false;

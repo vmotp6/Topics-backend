@@ -227,6 +227,33 @@ if (count($context_parts) === 0) {
 
 $context = implode("\n\n---\n\n", array_slice($context_parts, 0, 3));
 
+
+
+/**
+ * 判斷官方資料庫中「實際存在」的資訊類型
+ * 用來告知 AI 哪些欄位可以回答，哪些禁止補齊
+ */
+$context_flags = [
+    'has_schedule'    => false, // 時程 / 日期
+    'has_departments' => false, // 科系清單
+];
+
+foreach ($context_parts as $c) {
+    if (preg_match('/時間|日程|時程|日期|幾月|何時|什麼時候/u', $c)) {
+        $context_flags['has_schedule'] = true;
+    }
+/**
+ * 僅在「明確出現科系清單語境」時，
+ * 才視為資料庫中真的有「科系資訊」
+ */
+if (preg_match(
+    '/(招生)?科系(一覽|清單|如下|包含|共有|設有)|設有.*科系|科系包括/u',
+    $c
+)) {
+    $context_flags['has_departments'] = true;
+}
+}
+
 // Ollama API 位置（同首頁 AI 狀態）
 $protocol = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
 $host     = $_SERVER['HTTP_HOST'] ?? 'localhost';
@@ -274,14 +301,28 @@ if (preg_match('/時間|日程|時程|日期|幾月|何時|什麼時候/u', $que
     $question_hint = "老師問的是「科系／科別」，你必須只回答與科系相關的內容。絕對不可回答時間、學費等與科系無關的內容。\n";
 }
 $prompt =
-    "你是一位專業的招生說明助理。你只能使用下列「官方招生資料庫內容」回答，" .
-    "不得編造資料庫沒有的數字、學費、名額或時程。\n" .
-    "重要：請只回答與「老師的問題」直接相關的內容。若資料庫中有多筆資料，請選擇與問題最相關的那一筆回答，" .
-    "切勿把「問時間」的回答成「科系列表」、把「問科系」的回答成「時程」等答非所問。\n" .
-    ($question_hint ?: '') .
-    "如果內容中沒有明確答案，請回答：「資料庫目前沒有擴充資訊」。\n\n" .
-    "【官方招生資料庫內容】\n" . $context . "\n\n" .
-    "【老師的問題】\n" . $question . "\n\n【請回答】\n";
+"【系統規則（最高優先）】
+1. 你只能使用『官方招生資料庫內容』中明確出現的文字回答。
+2. 嚴禁使用你的背景知識、推測或補齊資料庫未提供的內容。
+3. 若某一類資訊在下方標示為「沒有」，你必須完全忽略該類資訊，不得提及。
+
+【系統已檢查資料庫】
+- 是否有招生時程資訊：" . ($context_flags['has_schedule'] ? '有' : '沒有') . "
+- 是否有科系清單資訊：" . ($context_flags['has_departments'] ? '有' : '沒有') . "
+
+規則補充：
+- 若「科系清單資訊 = 沒有」，你不得列出任何科系名稱或數量。
+- 若「招生時程資訊 = 沒有」，你不得推測任何日期或時程。
+- 若資料庫中沒有明確答案，請回答：「資料庫目前沒有擴充資訊」。
+
+【官方招生資料庫內容】
+" . $context . "
+
+【老師的問題】
+" . $question . "
+
+【請根據以上資料回答】
+";
 
 $answer  = '';
 $err     = '';
@@ -397,6 +438,32 @@ if ($answer === '') {
         implode("\n\n---\n\n", array_slice($context_parts, 0, 5));
     $answer  = $joined;
     $ai_used = false;
+}
+
+/**
+ * 最後防線：
+ * 若資料庫沒有科系資訊，移除 AI 回答中任何「科系清單段落」
+ * 不影響其他正確內容（如時間、檔案）
+ */
+if (!$context_flags['has_departments']) {
+    $answer = preg_replace(
+        '/(總共有|共有|包含).*(科系|科)[\s\S]*$/u',
+        '',
+        $answer
+    );
+    $answer = trim($answer);
+}
+
+/**
+ * 若答案在清理後為空：
+ * - 不顯示文字回答
+ * - 不顯示來源說明
+ * - 但「保留檔案清單」
+ */
+if ($answer === '') {
+    $ai_used = false;
+    $sources = [];   // 關鍵：只清來源
+    // files 保留
 }
 
 echo json_encode([
