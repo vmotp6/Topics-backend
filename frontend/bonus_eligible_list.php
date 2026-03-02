@@ -105,6 +105,9 @@ $hasColumn = function($table, $column) use ($conn) {
 $has_recommender_table = false;
 $t1 = $conn->query("SHOW TABLES LIKE 'recommender'");
 if ($t1 && $t1->num_rows > 0) $has_recommender_table = true;
+$has_recommended_table = false;
+$t2 = $conn->query("SHOW TABLES LIKE 'recommended'");
+if ($t2 && $t2->num_rows > 0) $has_recommended_table = true;
 
 $ar_has_recommender_name = $hasColumn('admission_recommendations', 'recommender_name');
 $ar_has_recommender_student_id = $hasColumn('admission_recommendations', 'recommender_student_id');
@@ -125,7 +128,9 @@ $rec_dept_code_expr = $has_recommender_table
 $rec_dept_name_expr = $has_recommender_table
     ? "COALESCE(rec_dept.name, " . ($ar_has_recommender_department ? "ar.recommender_department" : "''") . ", " . ($ar_has_recommender_department_code ? "ar.recommender_department_code" : "''") . ", '')"
     : "COALESCE(rec_dept2.name, " . ($ar_has_recommender_department ? "ar.recommender_department" : "''") . ", " . ($ar_has_recommender_department_code ? "ar.recommender_department_code" : "''") . ", '')";
-$student_name_expr = $ar_has_student_name ? "COALESCE(ar.student_name,'')" : "''";
+$student_name_expr = $has_recommended_table
+    ? "COALESCE(red.name, " . ($ar_has_student_name ? "ar.student_name" : "''") . ", '')"
+    : ($ar_has_student_name ? "COALESCE(ar.student_name,'')" : "''");
 $status_expr = $ar_has_status ? "COALESCE(ar.status,'')" : "''";
 
 $rows = [];
@@ -153,6 +158,7 @@ try {
         ar.created_at
     FROM admission_recommendations ar
     " . ($has_recommender_table ? "LEFT JOIN recommender rec ON ar.id = rec.recommendations_id" : "") . "
+    " . ($has_recommended_table ? "LEFT JOIN recommended red ON ar.id = red.recommendations_id" : "") . "
     " . ($has_recommender_table ? "LEFT JOIN departments rec_dept ON {$rec_dept_code_expr} = rec_dept.code" : "") . "
     " . (!$has_recommender_table ? "LEFT JOIN departments rec_dept2 ON " . ($ar_has_recommender_department_code ? "ar.recommender_department_code" : "''") . " = rec_dept2.code" : "") . "
     {$approval_join}
