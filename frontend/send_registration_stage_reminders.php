@@ -131,6 +131,50 @@ function getCurrentStagePeriodKey($conn) {
 }
 
 /**
+ * 取得「階段即將開始」（開始日前一週）的階段與期別鍵，僅用於發送「即將開始」提醒（只發老師）
+ * 條件：今天在「階段開始日 - 7 天」～「階段開始日 - 1 天」之間，且尚未進入該階段
+ * @return array|null ['stage'=>'...', 'period_key'=>'...'] 或 null
+ */
+function getUpcomingStagePeriodKey($conn) {
+    $tz = new DateTimeZone('Asia/Taipei');
+    $now = new DateTime('now', $tz);
+    $current_year = (int)$now->format('Y');
+    $current_month = (int)$now->format('m');
+    $current_day = (int)$now->format('d');
+
+    // 續招：依科系名額管理 register_start，前一週內且尚未進入續招
+    $continued_range = getContinuedRecruitmentTimeRange($conn);
+    if ($continued_range) {
+        try {
+            $start = new DateTime($continued_range['start'], $tz);
+            $start->setTime(0, 0, 0);
+            $now->setTime(0, 0, 0);
+            $days_until = (int)(($start->getTimestamp() - $now->getTimestamp()) / 86400);
+            if ($days_until >= 1 && $days_until <= 7) {
+                $pk = $continued_range['start'] . '_' . $continued_range['end'] . '_upcoming';
+                return ['stage' => 'continued_recruitment', 'period_key' => $pk];
+            }
+        } catch (Exception $e) {
+            // 解析失敗則跳過
+        }
+    }
+
+    // 完全免試 4/1 開始 → 3/25～3/31 為「即將開始」
+    if ($current_month === 3 && $current_day >= 25) {
+        return ['stage' => 'full_exempt', 'period_key' => $current_year . '-04_upcoming'];
+    }
+    // 優先免試 5/1 開始 → 4/24～4/30
+    if ($current_month === 4 && $current_day >= 24) {
+        return ['stage' => 'priority_exam', 'period_key' => $current_year . '-05_upcoming'];
+    }
+    // 聯合免試 6/1 開始 → 5/25～5/31
+    if ($current_month === 5 && $current_day >= 25) {
+        return ['stage' => 'joint_exam', 'period_key' => $current_year . '-06_upcoming'];
+    }
+    return null;
+}
+
+/**
  * 確保「階段提醒已發送記錄」資料表存在
  */
 function ensureStageReminderLogTable($conn) {
@@ -271,6 +315,42 @@ function sendRegistrationStageReminderEmail($email, $studentName, $stage) {
 }
 
 /**
+ * 發送「階段即將開始」（前一週）提醒給老師（只提醒老師，不發學生）
+ * @param string $stageStartLabel 例：「4 月 1 日」、「5 月 1 日」、「6 月 1 日」或續招開始日
+ */
+function sendUpcomingStageReminderToTeacher($email, $teacherName, $stage, $stageStartLabel, $studentCount, $studentNamesList) {
+    $stage_names = [
+        'full_exempt' => '完全免試',
+        'priority_exam' => '優先免試',
+        'joint_exam' => '聯合免試',
+        'continued_recruitment' => '續招'
+    ];
+    $stage_name = $stage_names[$stage] ?? '報名';
+    $subject = "康寧大學 - {$stage_name}即將開始，請預先提醒學生（一週前通知）";
+    $list_html = $studentNamesList ? '<ul style="margin:8px 0;">' . implode('', array_map(function ($n) {
+        return '<li>' . htmlspecialchars($n) . '</li>';
+    }, $studentNamesList)) . '</ul>' : '';
+    $list_text = $studentNamesList ? "\n- " . implode("\n- ", $studentNamesList) : '';
+    $body = "
+    <!DOCTYPE html>
+    <html>
+    <head><meta charset='UTF-8'></head>
+    <body style='font-family: Arial, Microsoft JhengHei, sans-serif;'>
+    <div style='max-width:600px; margin:0 auto; padding:20px;'>
+        <h2>老師您好，</h2>
+        <p><strong>{$stage_name}</strong> 報名階段將於 <strong>{$stageStartLabel}</strong> 開始。</p>
+        <p>您負責的學生中有 <strong>{$studentCount}</strong> 位尚未報名，請預先提醒學生留意報名時間：</p>
+        {$list_html}
+        <p>請於階段開始後協助學生完成報名手續。</p>
+        <p style='color:#666; font-size:14px;'>此郵件由系統自動發送（階段開始前一週通知）。</p>
+    </div>
+    </body>
+    </html>";
+    $altBody = "康寧大學 - {$stage_name}即將開始（一週前通知）\n\n{$stage_name}將於 {$stageStartLabel} 開始。您負責的學生中有 {$studentCount} 位尚未報名：{$list_text}\n\n請預先提醒學生，並於階段開始後協助完成報名。";
+    return sendEmail($email, $subject, $body, $altBody);
+}
+
+/**
  * 發送報名階段提醒郵件給老師（階段開始時提醒其負責的學生尚未報名）
  */
 function sendRegistrationStageReminderToTeacher($email, $teacherName, $stage, $studentCount, $studentNamesList) {
@@ -305,6 +385,30 @@ function sendRegistrationStageReminderToTeacher($email, $teacherName, $stage, $s
 }
 
 /**
+ * 取得「即將開始」提醒用的階段開始日顯示（例：4 月 1 日、續招為 register_start 日）
+ */
+function getUpcomingStageStartLabel($stage, $conn = null) {
+    $current_year = (int)date('Y');
+    if ($stage === 'full_exempt') {
+        return $current_year . ' 年 4 月 1 日';
+    }
+    if ($stage === 'priority_exam') {
+        return $current_year . ' 年 5 月 1 日';
+    }
+    if ($stage === 'joint_exam') {
+        return $current_year . ' 年 6 月 1 日';
+    }
+    if ($stage === 'continued_recruitment' && $conn) {
+        $r = getContinuedRecruitmentTimeRange($conn);
+        if ($r && !empty($r['start'])) {
+            $d = date_create($r['start']);
+            return $d ? $d->format('Y 年 n 月 j 日') : ($current_year . ' 年 8 月');
+        }
+    }
+    return $current_year . ' 年';
+}
+
+/**
  * 取得階段時間範圍
  */
 function getStageTimeRange($stage) {
@@ -315,6 +419,104 @@ function getStageTimeRange($stage) {
         'continued_recruitment' => "{$current_year}年8月以後"
     ];
     return $ranges[$stage] ?? '';
+}
+
+/**
+ * 執行「階段即將開始」（前一週）提醒：只發給老師，不發學生
+ * 名單：當年度國三、尚未報名、未結案，依負責老師分組寄送
+ * @return array ['success'=>bool, 'message'=>'', 'stage'=>'', 'stage_name'=>'', 'teachers_sent'=>n, 'teachers_fail'=>n, 'error'=>'']
+ */
+function runUpcomingStageReminders() {
+    $stage_names = [
+        'full_exempt' => '完全免試',
+        'priority_exam' => '優先免試',
+        'joint_exam' => '聯合免試',
+        'continued_recruitment' => '續招'
+    ];
+    try {
+        $conn = getDatabaseConnection();
+        ensureRegistrationColumns($conn);
+        $info = getUpcomingStagePeriodKey($conn);
+        if (!$info) {
+            $conn->close();
+            return ['success' => true, 'message' => '目前不在「階段開始前一週」窗口，無需發送即將開始提醒。', 'stage' => null, 'stage_name' => null, 'teachers_sent' => 0, 'teachers_fail' => 0, 'error' => ''];
+        }
+        $stage = $info['stage'];
+        $stage_name = $stage_names[$stage] ?? $stage;
+        $current_month = (int)date('m');
+        $current_year = (int)date('Y');
+        $this_year_grad = ($current_month >= 8) ? $current_year + 1 : $current_year;
+        $sql = "SELECT id, name, assigned_teacher_id 
+                FROM enrollment_intention 
+                WHERE (IFNULL(is_registered, 0) = 0)
+                AND graduation_year = ?
+                AND (IFNULL(check_in_status, 'pending') NOT IN ('completed', 'declined'))
+                AND assigned_teacher_id IS NOT NULL AND assigned_teacher_id > 0";
+        $stmt = $conn->prepare($sql);
+        if (!$stmt) {
+            $conn->close();
+            return ['success' => false, 'message' => '', 'stage' => $stage, 'stage_name' => $stage_name, 'teachers_sent' => 0, 'teachers_fail' => 0, 'error' => '準備 SQL 失敗：' . $conn->error];
+        }
+        $stmt->bind_param("i", $this_year_grad);
+        $stmt->execute();
+        $result = $stmt->get_result();
+        $students = [];
+        while ($row = $result->fetch_assoc()) {
+            $students[] = $row;
+        }
+        $stmt->close();
+        if (empty($students)) {
+            $conn->close();
+            return ['success' => true, 'message' => '沒有需要發送即將開始提醒的學生名單。', 'stage' => $stage, 'stage_name' => $stage_name, 'teachers_sent' => 0, 'teachers_fail' => 0, 'error' => ''];
+        }
+        $by_teacher = [];
+        foreach ($students as $s) {
+            $tid = (int)($s['assigned_teacher_id'] ?? 0);
+            if ($tid > 0) {
+                if (!isset($by_teacher[$tid])) {
+                    $by_teacher[$tid] = [];
+                }
+                $by_teacher[$tid][] = $s['name'];
+            }
+        }
+        $stage_start_label = getUpcomingStageStartLabel($stage, $conn);
+        $teachers_sent = 0;
+        $teachers_failed = 0;
+        foreach ($by_teacher as $teacher_id => $names) {
+            $user_stmt = $conn->prepare("SELECT id, name, email FROM user WHERE id = ? AND email IS NOT NULL AND email != '' LIMIT 1");
+            if (!$user_stmt) {
+                $teachers_failed++;
+                continue;
+            }
+            $user_stmt->bind_param("i", $teacher_id);
+            $user_stmt->execute();
+            $user_res = $user_stmt->get_result();
+            $teacher = $user_res ? $user_res->fetch_assoc() : null;
+            $user_stmt->close();
+            if (!$teacher) {
+                $teachers_failed++;
+                continue;
+            }
+            $sent = sendUpcomingStageReminderToTeacher($teacher['email'], $teacher['name'], $stage, $stage_start_label, count($names), array_slice($names, 0, 50));
+            if ($sent) {
+                $teachers_sent++;
+            } else {
+                $teachers_failed++;
+            }
+        }
+        $conn->close();
+        return [
+            'success' => true,
+            'message' => "已發送「{$stage_name}即將開始」提醒給 {$teachers_sent} 位老師。",
+            'stage' => $stage,
+            'stage_name' => $stage_name,
+            'teachers_sent' => $teachers_sent,
+            'teachers_fail' => $teachers_failed,
+            'error' => ''
+        ];
+    } catch (Exception $e) {
+        return ['success' => false, 'message' => '', 'stage' => null, 'stage_name' => null, 'teachers_sent' => 0, 'teachers_fail' => 0, 'error' => $e->getMessage()];
+    }
 }
 
 /**
@@ -422,18 +624,67 @@ function runRegistrationStageReminders() {
     }
 }
 
-// 僅在命令列執行時輸出文字並結束
+// 僅在命令列執行時輸出文字並結束（先嘗試「即將開始」提醒，再嘗試「階段已開始」提醒）
 if (php_sapi_name() === 'cli') {
     echo "========================================\n";
     echo "報名階段提醒郵件發送系統\n";
     echo "執行時間：" . date('Y-m-d H:i:s') . "\n";
     echo "========================================\n\n";
+    $conn = getDatabaseConnection();
+    ensureStageReminderLogTable($conn);
+    $upcoming = getUpcomingStagePeriodKey($conn);
+    if ($upcoming) {
+        $stmt = $conn->prepare("INSERT IGNORE INTO registration_stage_reminder_log (stage, period_key, sent_at) VALUES (?, ?, NOW())");
+        if ($stmt) {
+            $stmt->bind_param("ss", $upcoming['stage'], $upcoming['period_key']);
+            $stmt->execute();
+            $inserted = ($conn->affected_rows > 0);
+            $stmt->close();
+        } else {
+            $inserted = true;
+        }
+        $conn->close();
+        if ($inserted) {
+            $r = runUpcomingStageReminders();
+            echo "【階段即將開始】一週前提醒（只發老師）\n";
+            if ($r['stage']) {
+                echo "即將開始階段：{$r['stage_name']}\n\n";
+            }
+            echo $r['message'] . "\n";
+            echo "老師提醒 - 成功：{$r['teachers_sent']} 位，失敗：{$r['teachers_fail']} 位\n";
+            if (!empty($r['error'])) {
+                echo "錯誤：" . $r['error'] . "\n";
+            }
+            echo "\n程式執行完成。\n";
+            exit($r['success'] ? 0 : 1);
+        }
+    }
+    $info = getCurrentStagePeriodKey($conn);
+    if (!$info) {
+        $conn->close();
+        echo "目前非報名期間，無需發送。\n\n程式執行完成。\n";
+        exit(0);
+    }
+    $stmt = $conn->prepare("INSERT IGNORE INTO registration_stage_reminder_log (stage, period_key, sent_at) VALUES (?, ?, NOW())");
+    if ($stmt) {
+        $stmt->bind_param("ss", $info['stage'], $info['period_key']);
+        $stmt->execute();
+        $inserted = ($conn->affected_rows > 0);
+        $stmt->close();
+    } else {
+        $inserted = true;
+    }
+    $conn->close();
+    if (!$inserted) {
+        echo "本階段已發送過，不再重複發送。\n\n程式執行完成。\n";
+        exit(0);
+    }
     $r = runRegistrationStageReminders();
     if ($r['stage']) {
         echo "當前報名階段：{$r['stage_name']}\n\n";
     }
     echo $r['message'] . "\n";
-    if ($r['success'] && $r['students_total'] > 0) {
+    if ($r['success'] && isset($r['students_total']) && $r['students_total'] > 0) {
         echo "學生郵件 - 成功：{$r['students_sent']} 封，失敗：{$r['students_fail']} 封\n";
         echo "老師提醒 - 成功：{$r['teachers_sent']} 位，失敗：{$r['teachers_fail']} 位\n";
         echo "資料庫更新：{$r['updated']} 筆\n";

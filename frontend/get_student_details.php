@@ -201,6 +201,37 @@ try {
     $logs_count_row = $logs_count_result->fetch_assoc();
     $contact_logs_count = $logs_count_row['count'] ?? 0;
     $logs_count_stmt->close();
+
+    // 招生中心不可看任何老師的聯絡紀錄，詳情頁一律回傳 0 筆（與 enrollment_list 的 $is_admission_center 邏輯一致）
+    $detail_user_role = isset($_SESSION['role']) ? trim((string)$_SESSION['role']) : '';
+    $detail_user_id = isset($_SESSION['user_id']) ? (int)$_SESSION['user_id'] : 0;
+    $detail_is_admin_or_staff = in_array($detail_user_role, ['ADM', 'STA'], true);
+    $detail_has_department = false;
+    if ($detail_is_admin_or_staff && $detail_user_id > 0) {
+        $table_check = $conn->query("SHOW TABLES LIKE 'director'");
+        $has_director = $table_check && $table_check->num_rows > 0;
+        if ($has_director) {
+            $dstmt = $conn->prepare("SELECT 1 FROM director WHERE user_id = ? AND department IS NOT NULL AND department != ''");
+            if ($dstmt) {
+                $dstmt->bind_param("i", $detail_user_id);
+                $dstmt->execute();
+                if ($dstmt->get_result()->num_rows > 0) $detail_has_department = true;
+                $dstmt->close();
+            }
+        }
+        if (!$detail_has_department) {
+            $tstmt = $conn->prepare("SELECT 1 FROM teacher WHERE user_id = ? AND department IS NOT NULL AND department != ''");
+            if ($tstmt) {
+                $tstmt->bind_param("i", $detail_user_id);
+                $tstmt->execute();
+                if ($tstmt->get_result()->num_rows > 0) $detail_has_department = true;
+                $tstmt->close();
+            }
+        }
+    }
+    if ($detail_is_admin_or_staff && !$detail_has_department) {
+        $contact_logs_count = 0;
+    }
     
     $conn->close();
     
