@@ -5,6 +5,7 @@ checkBackendLogin();
 require_once '../../Topics-frontend/frontend/config.php';
 require_once __DIR__ . '/includes/continued_admission_auto_assign.php';
 require_once __DIR__ . '/includes/continued_admission_ranking.php';
+require_once __DIR__ . '/includes/continued_admission_auto_assign_director.php';
 
 header('Content-Type: application/json; charset=utf-8');
 
@@ -604,11 +605,18 @@ try {
                         } else {
                             $status_message = "，排名處理完成";
                         }
+
+                        // 嘗試自動分配給正取科系的主任
+                        $auto_assign_result = autoAssignToAdmittedDepartmentDirector($conn, $application_id);
+                        $assign_message = '';
+                        if ($auto_assign_result['success']) {
+                            $assign_message = '，' . $auto_assign_result['message'];
+                        }
                         
                         $conn->close();
                         echo json_encode([
                             'success' => true,
-                            'message' => '評分成功。所有評審已完成評分' . $status_message,
+                            'message' => '評分成功。所有評審已完成評分' . $status_message . $assign_message,
                             'ranking_processed' => true,
                             'status' => $final_status,
                             'rank' => $final_rank

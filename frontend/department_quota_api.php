@@ -32,6 +32,9 @@ switch ($action) {
     case 'update_global_register_time':
         updateGlobalRegisterTime($conn);
         break;
+    case 'update_global_cutoff_score':
+        updateGlobalCutoffScore($conn);
+        break;
     default:
         http_response_code(400);
         echo json_encode(['success' => false, 'message' => '無效的操作']);
@@ -304,6 +307,44 @@ function updateGlobalRegisterTime($conn) {
     } catch (Exception $e) {
         http_response_code(500);
         echo json_encode(['success' => false, 'message' => '更新統一報名時間失敗: ' . $e->getMessage()]);
+    }
+}
+
+/**
+ * 將統一錄取分數套用到所有啟用科系
+ */
+function updateGlobalCutoffScore($conn) {
+    if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+        http_response_code(405);
+        echo json_encode(['success' => false, 'message' => '方法不允許']);
+        return;
+    }
+
+    $input = json_decode(file_get_contents('php://input'), true);
+    $cutoff_score = $input['cutoff_score'] ?? null;
+
+    if ($cutoff_score === null || $cutoff_score === '') {
+        http_response_code(400);
+        echo json_encode(['success' => false, 'message' => '請先輸入統一錄取分數']);
+        return;
+    }
+
+    $cutoff_score = (int)$cutoff_score;
+    if ($cutoff_score < 0) {
+        http_response_code(400);
+        echo json_encode(['success' => false, 'message' => '錄取分數必須為 0 以上的整數']);
+        return;
+    }
+
+    try {
+        $stmt = $conn->prepare("UPDATE department_quotas SET cutoff_score = ? WHERE is_active = 1");
+        $stmt->bind_param("i", $cutoff_score);
+        $stmt->execute();
+
+        echo json_encode(['success' => true, 'message' => '已套用統一錄取分數到所有科系']);
+    } catch (Exception $e) {
+        http_response_code(500);
+        echo json_encode(['success' => false, 'message' => '更新統一錄取分數失敗: ' . $e->getMessage()]);
     }
 }
 ?>

@@ -137,10 +137,10 @@ $current_page = 'department_quota_management';
                     <a href="index.php">首頁</a> / <a href="continued_admission_list.php">續招報名管理</a> / <?php echo $page_title; ?>
                 </div>
 
-                <!-- 統一時間設定卡片 -->
+                <!-- 統一時間 / 錄取分數設定卡片 -->
                 <div class="card" style="margin-bottom: 16px;">
                     <div class="card-header">
-                        <h3><i class="fas fa-clock"></i> 統一續招時間設定（全部科系）</h3>
+                        <h3><i class="fas fa-clock"></i> 統一續招時間與錄取分數設定（全部科系）</h3>
                     </div>
                     <div class="card-body">
                         <div class="form-group" style="max-width: 540px;">
@@ -163,12 +163,19 @@ $current_page = 'department_quota_management';
                             <label>統一錄取公告時間</label>
                             <input type="datetime-local" id="globalAnnounceTime" min="">
                         </div>
+                        <div class="form-group" style="max-width: 260px;">
+                            <label>統一錄取分數（全部科系）</label>
+                            <input type="number" id="globalCutoffScore" min="0" step="1" placeholder="例如：60">
+                        </div>
                         <div style="display: flex; gap: 12px; align-items: center; flex-wrap: wrap;">
                             <button id="applyGlobalRegisterTimeBtn" class="btn-primary">
-                                <i class="fas fa-check"></i> 套用到全部科系
+                                <i class="fas fa-check"></i> 套用報名 / 審查 / 公告時間
+                            </button>
+                            <button id="applyGlobalCutoffBtn" class="btn-secondary">
+                                <i class="fas fa-signal"></i> 套用錄取分數到全部科系
                             </button>
                             <span style="font-size: 13px; color: #8c8c8c;">
-                                說明：此處設定後，會將報名時間、審查書面資料時間與錄取公告時間套用到所有已啟用的科系；前台續招報名表的開放時間也會依報名時間區間判斷。
+                                說明：此處設定後，會將報名時間、審查書面資料時間、錄取公告時間與錄取分數套用到所有已啟用的科系；前台續招報名表的開放時間依報名時間區間判斷。
                             </span>
                         </div>
                     </div>
@@ -681,6 +688,45 @@ $current_page = 'department_quota_management';
             .then(data => {
                 if (data.success) {
                     showToast('已套用統一報名時間到所有科系');
+                    loadQuotas();
+                } else {
+                    showToast('更新失敗: ' + data.message, false);
+                }
+            })
+            .catch(error => {
+                showToast('更新失敗: ' + error.message, false);
+            });
+        });
+    }
+
+    // 套用統一錄取分數按鈕
+    const applyGlobalCutoffBtn = document.getElementById('applyGlobalCutoffBtn');
+    if (applyGlobalCutoffBtn) {
+        applyGlobalCutoffBtn.addEventListener('click', function () {
+            const input = document.getElementById('globalCutoffScore');
+            if (!input) return;
+
+            const rawValue = input.value;
+            if (rawValue === '') {
+                showToast('請先輸入統一錄取分數', false);
+                return;
+            }
+
+            const score = parseInt(rawValue, 10);
+            if (isNaN(score) || score < 0) {
+                showToast('錄取分數必須是 0 以上的整數', false);
+                return;
+            }
+
+            fetch('department_quota_api.php?action=update_global_cutoff_score', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ cutoff_score: score })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    showToast('已套用統一錄取分數到所有科系');
                     loadQuotas();
                 } else {
                     showToast('更新失敗: ' + data.message, false);
