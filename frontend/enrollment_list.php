@@ -1460,24 +1460,19 @@ try {
                                     </tr>
                                     <tr id="detail-<?php echo $item['id']; ?>" class="detail-row" style="display: none;">
                                         <?php 
-                                        // 四大分類欄位數（依角色不同）：
-                                        // 老師：不顯示分配狀態欄
-                                        //   1) recruit：姓名、國中、意願狀態、操作 = 4
-                                        //   2) potential：姓名、國中、年級、意願狀態、操作 = 5
-                                        //   3) registered：姓名、國中、意願狀態、操作 = 4
-                                        // 主任/行政：顯示分配狀態欄
-                                        //   1) recruit：姓名、國中、分配狀態、意願狀態、操作 = 5
-                                        //   2) potential：姓名、國中、年級、分配狀態、意願狀態、操作 = 6
-                                        //   3) registered：姓名、國中、分配狀態、意願狀態、操作 = 5
-                                        // 4) history：學年、姓名、國中、狀態、操作 = 5（所有角色相同）
+                                        // 詳情列需橫跨與表頭相同的欄位數，才能與列表同寬
+                                        // history：學年、姓名、國中、狀態、操作 = 5
+                                        // potential：老師 5 欄；主任/行政 6 欄（含分配狀態、是否已聯絡）
+                                        // registered：老師 5 欄；主任/行政 7 欄（含分配狀態、報名階段、報到狀態、是否已聯絡）
+                                        // recruit：老師 4 欄；主任/行政 6 欄（含分配狀態、報名狀態、是否已聯絡）
                                         if ($view_mode === 'history') {
-                                            $colspan = 4;
+                                            $colspan = 5;
                                         } elseif ($view_mode === 'potential') {
                                             $colspan = ($user_role === 'TEA') ? 5 : 6;
                                         } elseif ($view_mode === 'registered') {
-                                            $colspan = ($user_role === 'TEA') ? 5 : 6;
+                                            $colspan = ($user_role === 'TEA') ? 5 : 7;
                                         } else { // recruit
-                                            $colspan = ($user_role === 'TEA') ? 4 : 5;
+                                            $colspan = ($user_role === 'TEA') ? 4 : 6;
                                         }
                                         ?>
                                         <td colspan="<?php echo $colspan; ?>" style="padding: 20px; background: #f9f9f9; border: 2px solid #b3d9ff; border-radius: 4px;">
