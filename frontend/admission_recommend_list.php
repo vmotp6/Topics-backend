@@ -743,6 +743,7 @@ try {
     // -------------------------------------------------------------
     $earliest_by_key = []; // key => ['ts' => int, 'id' => int]
     $dup_count_by_key = []; // key => int
+    $dup_dept_by_key = []; // key => [deptKey => true]
     foreach ($recommendations as $tmp) {
         $nm = trim((string)($tmp['student_name'] ?? ''));
         $phone = normalize_phone($tmp['student_phone'] ?? '');
@@ -755,6 +756,12 @@ try {
 
         if (!isset($dup_count_by_key[$key])) $dup_count_by_key[$key] = 0;
         $dup_count_by_key[$key] += 1;
+        $dept_code = trim((string)($tmp['recommender_department_code'] ?? ''));
+        $dept_name = trim((string)($tmp['recommender_department'] ?? ''));
+        $dept_key = ($dept_code !== '') ? strtoupper($dept_code) : normalize_text($dept_name);
+        if ($dept_key === '') $dept_key = '__EMPTY__';
+        if (!isset($dup_dept_by_key[$key])) $dup_dept_by_key[$key] = [];
+        $dup_dept_by_key[$key][$dept_key] = true;
 
         $ts = strtotime((string)($tmp['created_at'] ?? ''));
         if ($ts === false) $ts = PHP_INT_MAX;
@@ -931,6 +938,11 @@ try {
         }
         if ($key2 !== '' && isset($dup_count_by_key[$key2])) {
             $it['duplicate_count'] = (int)$dup_count_by_key[$key2];
+        }
+        $it['duplicate_same_dept'] = 0;
+        if ($key2 !== '' && isset($dup_count_by_key[$key2]) && (int)$dup_count_by_key[$key2] > 1) {
+            $dept_set = isset($dup_dept_by_key[$key2]) ? (array)$dup_dept_by_key[$key2] : [];
+            $it['duplicate_same_dept'] = (count($dept_set) <= 1) ? 1 : 0;
         }
 
         // --- 三項提示 ---
@@ -2203,6 +2215,7 @@ try {
                                                                     <?php echo (int)($item['auto_review_match_name'] ?? 0); ?>,
                                                                     <?php echo (int)($item['auto_review_match_school'] ?? 0); ?>,
                                                                     <?php echo (int)($item['auto_review_match_phone'] ?? 0); ?>,
+                                                                <?php echo (int)($item['duplicate_same_dept'] ?? 0); ?>,
                                                                     <?php echo htmlspecialchars(json_encode((string)($item['proof_evidence'] ?? '')), ENT_QUOTES, 'UTF-8'); ?>,
                                                                     <?php echo htmlspecialchars(json_encode((string)($item['director_reject_reason'] ?? '')), ENT_QUOTES, 'UTF-8'); ?>
                                                                 )"
@@ -2720,6 +2733,23 @@ try {
         </div>
     </div>
 
+    <!-- 重複推薦確認信 Gmail 預覽 -->
+    <div id="duplicateMailPreviewModal" class="modal" style="display: none;">
+        <div class="modal-content" style="max-width: 860px;">
+            <div class="modal-header">
+                <h3>寄送 Gmail 預覽</h3>
+                <span class="close" onclick="closeDuplicateMailPreviewModal()">&times;</span>
+            </div>
+            <div class="modal-body">
+                <div id="duplicateMailPreviewList"></div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn-cancel" onclick="closeDuplicateMailPreviewModal()">取消</button>
+                <button class="btn-confirm" id="duplicateMailSendBtn">確認發送</button>
+            </div>
+        </div>
+    </div>
+
     <!-- 發送獎金簽核提醒彈出視窗 -->
     <div id="bonusGuardModal" class="modal" style="display: none;">
         <div class="modal-content" style="max-width: 460px;">
@@ -3042,6 +3072,49 @@ try {
     let gmailPreviewIds = [];
     let gmailPreviewFiles = {};
     let gmailPreviewSingle = false;
+    let duplicateMailPreviewRecommendationId = 0;
+
+    function renderDuplicateMailPreview(container, payload) {
+        container.innerHTML = '';
+        const item = document.createElement('div');
+        item.className = 'gmail-preview-item';
+
+        const title = document.createElement('div');
+        title.className = 'gmail-preview-title';
+        title.textContent = '收件者：' + String(payload.to_email || '');
+        item.appendChild(title);
+
+        const subjectWrap = document.createElement('div');
+        subjectWrap.className = 'gmail-preview-field';
+        subjectWrap.innerHTML = '<label>主旨</label>';
+        const subjectInput = document.createElement('input');
+        subjectInput.type = 'text';
+        subjectInput.className = 'gmail-subject';
+        subjectInput.id = 'duplicateMailSubject';
+        subjectInput.value = String(payload.subject || '');
+        subjectWrap.appendChild(subjectInput);
+        item.appendChild(subjectWrap);
+
+        const bodyWrap = document.createElement('div');
+        bodyWrap.className = 'gmail-preview-field';
+        bodyWrap.innerHTML = '<label>信件內容（純文字預覽）</label>';
+        const bodyInput = document.createElement('textarea');
+        bodyInput.className = 'gmail-body';
+        bodyInput.id = 'duplicateMailBody';
+        const originalHtml = String(payload.body_html || '');
+        const previewText = extractEditableTextFromHtml(originalHtml);
+        bodyInput.value = previewText;
+        bodyInput.dataset.originalHtml = originalHtml;
+        bodyInput.dataset.originalText = previewText;
+        bodyInput.dataset.isDirty = '0';
+        bodyInput.addEventListener('input', () => {
+            bodyInput.dataset.isDirty = '1';
+        });
+        bodyWrap.appendChild(bodyInput);
+        item.appendChild(bodyWrap);
+
+        container.appendChild(item);
+    }
 
     function htmlToText(html) {
         const div = document.createElement('div');
@@ -3239,6 +3312,56 @@ try {
         gmailPreviewSingle = false;
     }
 
+    function openDuplicateMailPreviewModal(recommendationId, triggerBtn) {
+        const rid = parseInt(String(recommendationId || '0'), 10);
+        if (!rid) {
+            alert('缺少推薦編號，無法開啟預覽。');
+            return;
+        }
+        const modal = document.getElementById('duplicateMailPreviewModal');
+        const listEl = document.getElementById('duplicateMailPreviewList');
+        if (!modal || !listEl) return;
+
+        const oldText = triggerBtn ? triggerBtn.textContent : '';
+        if (triggerBtn) {
+            triggerBtn.disabled = true;
+            triggerBtn.textContent = '載入中...';
+        }
+
+        fetch('send_duplicate_recommendation_confirmation.php', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: 'action=preview&recommendation_id=' + encodeURIComponent(String(rid)),
+            credentials: 'same-origin'
+        })
+        .then(r => r.json())
+        .then(data => {
+            if (!data || !data.success) {
+                throw new Error((data && data.message) ? data.message : '載入預覽失敗');
+            }
+            duplicateMailPreviewRecommendationId = rid;
+            renderDuplicateMailPreview(listEl, data);
+            modal.style.display = 'flex';
+        })
+        .catch(err => {
+            alert('載入失敗：' + (err && err.message ? err.message : '未知錯誤'));
+        })
+        .finally(() => {
+            if (triggerBtn) {
+                triggerBtn.disabled = false;
+                triggerBtn.textContent = oldText || '寄信給被推薦人確認';
+            }
+        });
+    }
+
+    function closeDuplicateMailPreviewModal() {
+        const modal = document.getElementById('duplicateMailPreviewModal');
+        if (modal) modal.style.display = 'none';
+        const listEl = document.getElementById('duplicateMailPreviewList');
+        if (listEl) listEl.innerHTML = '';
+        duplicateMailPreviewRecommendationId = 0;
+    }
+
     const gmailPreviewSend = document.getElementById('gmailPreviewSend');
     if (gmailPreviewSend) {
         gmailPreviewSend.addEventListener('click', function() {
@@ -3309,6 +3432,59 @@ try {
             if (e.target === this) {
                 closeGmailPreviewModal();
             }
+        });
+    }
+
+    const duplicateMailSendBtn = document.getElementById('duplicateMailSendBtn');
+    if (duplicateMailSendBtn) {
+        duplicateMailSendBtn.addEventListener('click', function() {
+            const rid = parseInt(String(duplicateMailPreviewRecommendationId || '0'), 10);
+            if (!rid) {
+                alert('缺少推薦編號，無法寄送。');
+                return;
+            }
+            const subjectEl = document.getElementById('duplicateMailSubject');
+            const subject = subjectEl ? String(subjectEl.value || '').trim() : '';
+            if (!subject) {
+                alert('請輸入信件主旨。');
+                return;
+            }
+            const bodyEl = document.getElementById('duplicateMailBody');
+            const bodyText = bodyEl ? String(bodyEl.value || '') : '';
+            const originalHtml = (bodyEl && bodyEl.dataset && bodyEl.dataset.originalHtml) ? String(bodyEl.dataset.originalHtml) : '';
+            const isDirty = !!(bodyEl && bodyEl.dataset && bodyEl.dataset.isDirty === '1');
+            const bodyHtml = (!isDirty) ? originalHtml : applyEditedTextToHtmlTemplate(originalHtml, bodyText);
+            const altBody = bodyText;
+
+            duplicateMailSendBtn.disabled = true;
+            const oldText = duplicateMailSendBtn.textContent;
+            duplicateMailSendBtn.textContent = '寄送中...';
+            fetch('send_duplicate_recommendation_confirmation.php', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body:
+                    'action=send'
+                    + '&recommendation_id=' + encodeURIComponent(String(rid))
+                    + '&subject=' + encodeURIComponent(subject)
+                    + '&body_html=' + encodeURIComponent(bodyHtml)
+                    + '&alt_body=' + encodeURIComponent(altBody),
+                credentials: 'same-origin'
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (!data || !data.success) {
+                    throw new Error((data && data.message) ? data.message : '寄送失敗');
+                }
+                alert('已寄送確認信給被推薦人。');
+                closeDuplicateMailPreviewModal();
+            })
+            .catch(err => {
+                alert('寄送失敗：' + (err && err.message ? err.message : '未知錯誤'));
+            })
+            .finally(() => {
+                duplicateMailSendBtn.disabled = false;
+                duplicateMailSendBtn.textContent = oldText || '確認發送';
+            });
         });
     }
     
@@ -3699,7 +3875,7 @@ try {
     // 查看審核結果（彈出視窗顯示三項條件 + 審核結果下拉）
     let currentReviewCriteriaId = null;
     let currentReviewCriteriaValue = '';
-    function openReviewCriteriaModal(recommendationId, studentName, currentReview, hasDuplicate, hasEnrollment, studentStatus, noBonus, nsbiFound, matchName, matchSchool, matchPhone, proofEvidence, rejectReason) {
+    function openReviewCriteriaModal(recommendationId, studentName, currentReview, hasDuplicate, hasEnrollment, studentStatus, noBonus, nsbiFound, matchName, matchSchool, matchPhone, duplicateSameDept, proofEvidence, rejectReason) {
         const modal = document.getElementById('reviewCriteriaModal');
         const nameEl = document.getElementById('reviewCriteriaStudentName');
         const listEl = document.getElementById('reviewCriteriaList');
@@ -3795,7 +3971,27 @@ try {
 
         // 1) 重複推薦
         if (hasDuplicate) {
-            addLine('此被推薦人已被人推薦', true);
+            const dupLine = document.createElement('div');
+            dupLine.style.fontWeight = '400';
+            dupLine.style.fontSize = '16px';
+            dupLine.style.color = '#cf1322';
+            dupLine.appendChild(document.createTextNode('此被推薦人已被人推薦'));
+            const tag = document.createElement('span');
+            tag.style.color = '#262626';
+            tag.textContent = duplicateSameDept ? '(推薦人同科系)' : '(推薦人不同科系)';
+            dupLine.appendChild(tag);
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'btn-view';
+            btn.style.marginLeft = '10px';
+            btn.style.padding = '4px 10px';
+            btn.style.fontSize = '13px';
+            btn.textContent = '寄信給被推薦人確認';
+            btn.addEventListener('click', function() {
+                openDuplicateMailPreviewModal(recommendationId, btn);
+            });
+            dupLine.appendChild(btn);
+            listEl.appendChild(dupLine);
         } else {
             addLine('未發現重複推薦', false);
         }
@@ -4050,6 +4246,14 @@ try {
         bonusGuardModal.addEventListener('click', function(e) {
             if (e.target === this) {
                 closeBonusGuardModal();
+            }
+        });
+    }
+    const duplicateMailPreviewModal = document.getElementById('duplicateMailPreviewModal');
+    if (duplicateMailPreviewModal) {
+        duplicateMailPreviewModal.addEventListener('click', function(e) {
+            if (e.target === this) {
+                closeDuplicateMailPreviewModal();
             }
         });
     }

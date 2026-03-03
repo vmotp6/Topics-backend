@@ -30,6 +30,8 @@ if (!file_exists($config_path)) {
 }
 
 require_once $config_path;
+require_once __DIR__ . '/enrollment_intention_eval.php';
+require_once __DIR__ . '/includes/intention_change_log.php';
 
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     http_response_code(405);
@@ -56,24 +58,50 @@ try {
     }
 
     $conn = getDatabaseConnection();
-    
-    // 寫入資料庫
-    // 使用 enrollment_contact_logs 表 (欄位：enrollment_id, teacher_id, contact_date, method, notes)
+
+    // 依聯絡紀錄自動評估意願度，並在 notes 中註明計算結果（列表意願欄與聯絡紀錄都會顯示）
+    $intention_level = evaluateIntentionLevelFromNotes($notes);
+    if ($intention_level !== null) {
+        $level_label = ($intention_level === 'high') ? '高意願' : (($intention_level === 'low') ? '低意願' : '中意願');
+        $notes .= "\n系統自動評估意願度：" . $level_label;
+    }
+
+    // 寫入聯絡紀錄（notes 已含「系統自動評估意願度」說明）
     $stmt = $conn->prepare("INSERT INTO enrollment_contact_logs (enrollment_id, teacher_id, contact_date, method, notes, created_at) VALUES (?, ?, ?, ?, ?, NOW())");
-    
     if (!$stmt) {
         throw new Exception("Database prepare failed: " . $conn->error);
     }
-
     $stmt->bind_param("iisss", $enrollment_id, $teacher_id, $contact_date, $method, $notes);
-    
-    if ($stmt->execute()) {
-        echo json_encode(['success' => true, 'message' => '紀錄新增成功']);
-    } else {
+    if (!$stmt->execute()) {
         throw new Exception("Execute failed: " . $stmt->error);
     }
-
+    $contact_log_id = (int)$conn->insert_id;
     $stmt->close();
+
+    // 更新 enrollment_intention.intention_level（新資料蓋過舊，列表意願欄會顯示）
+    $old_level = null;
+    if ($intention_level !== null) {
+        $get = $conn->prepare("SELECT intention_level FROM enrollment_intention WHERE id = ? LIMIT 1");
+        if ($get) {
+            $get->bind_param("i", $enrollment_id);
+            $get->execute();
+            $res = $get->get_result();
+            $row = $res->fetch_assoc();
+            if ($row && isset($row['intention_level']) && (string)$row['intention_level'] !== '') {
+                $old_level = trim((string)$row['intention_level']);
+            }
+            $get->close();
+        }
+        $upd = $conn->prepare("UPDATE enrollment_intention SET intention_level = ? WHERE id = ?");
+        if ($upd) {
+            $upd->bind_param("si", $intention_level, $enrollment_id);
+            $upd->execute();
+            $upd->close();
+        }
+        logIntentionChange($conn, $enrollment_id, $old_level, $intention_level, $contact_log_id, $teacher_id);
+    }
+
+    echo json_encode(['success' => true, 'message' => '紀錄新增成功']);
     $conn->close();
 
 } catch (Exception $e) {
