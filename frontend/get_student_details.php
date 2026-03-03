@@ -27,6 +27,7 @@ if (!file_exists($config_path)) {
 
 require_once $config_path;
 require_once __DIR__ . '/includes/enrollment_assignment_log.php';
+require_once __DIR__ . '/includes/intention_change_log.php';
 
 if (!function_exists('getDatabaseConnection')) {
     die(json_encode(['success' => false, 'message' => '資料庫連接函數未定義']));
@@ -232,6 +233,25 @@ try {
     if ($detail_is_admin_or_staff && !$detail_has_department) {
         $contact_logs_count = 0;
     }
+
+    // 意願變動紀錄（enrollment_intention_change_log），依變動時間新到舊（若表不存在則先建立）
+    ensureIntentionChangeLogTable($conn);
+    $change_sql = "SELECT l.id, l.enrollment_id, l.old_level, l.new_level, l.contact_log_id, l.teacher_id, l.changed_at, u.name AS teacher_name, u.username AS teacher_username
+        FROM " . INTENTION_CHANGE_LOG_TABLE . " l
+        LEFT JOIN user u ON l.teacher_id = u.id
+        WHERE l.enrollment_id = ?
+        ORDER BY l.changed_at DESC";
+    $change_stmt = $conn->prepare($change_sql);
+    $intention_change_logs = [];
+    if ($change_stmt) {
+        $change_stmt->bind_param("i", $enrollment_id);
+        $change_stmt->execute();
+        $change_res = $change_stmt->get_result();
+        while ($cr = $change_res->fetch_assoc()) {
+            $intention_change_logs[] = $cr;
+        }
+        $change_stmt->close();
+    }
     
     $conn->close();
     
@@ -240,7 +260,8 @@ try {
         'success' => true,
         'student' => $student,
         'choices' => $choices,
-        'contact_logs_count' => $contact_logs_count
+        'contact_logs_count' => $contact_logs_count,
+        'intention_change_logs' => $intention_change_logs
     ];
     
     echo json_encode($response, JSON_UNESCAPED_UNICODE);

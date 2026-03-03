@@ -464,6 +464,24 @@ function getContactIntentionDisplay($notes) {
 }
 
 /**
+ * 列表「意願」欄顯示：優先顯示自動評估的意願度（高/中/低），若無則顯示聯絡紀錄意願標籤
+ * @param array $item 學生一筆資料（含 latest_contact_notes, intention_level）
+ * @return string 顯示用字串，無則空字串
+ */
+function getIntentionColumnDisplay($item) {
+    // 1. 先看自動評估的意願度（來源：intention_level，含說明會與聯絡紀錄自動計算）
+    $il = isset($item['intention_level']) ? trim((string)$item['intention_level']) : '';
+    if ($il === 'high') return '高意願';
+    if ($il === 'medium') return '中意願';
+    if ($il === 'low') return '低意願';
+
+    // 2. 沒有自動評估結果時，才回退顯示聯絡紀錄內的意願標籤
+    $ci = getContactIntentionDisplay($item['latest_contact_notes'] ?? null);
+    if ($ci !== '') return $ci;
+    return '';
+}
+
+/**
  * 取得「報名階段｜狀態」顯示 HTML（用於意願狀態欄下方）
  * @param array $item 學生一筆資料
  * @param string|null $current_registration_stage 當前報名階段 key
@@ -1275,7 +1293,7 @@ try {
                                             <?php if ($is_admission_center || $is_director): ?>
                                                 <td><?php echo ((int)($item['has_contact'] ?? 0) === 1) ? '<span style="color:#52c41a;">已聯絡</span>' : '<span style="color:#999;">未聯絡</span>'; ?></td>
                                             <?php endif; ?>
-                                            <td><?php $ci = getContactIntentionDisplay($item['latest_contact_notes'] ?? null); echo $ci !== '' ? htmlspecialchars($ci) : '<span style="color:#999;">—</span>'; ?></td>
+                                            <td><?php $disp = getIntentionColumnDisplay($item); echo $disp !== '' ? htmlspecialchars($disp) : '<span style="color:#999;">—</span>'; ?></td>
                                             <td onclick="event.stopPropagation();">
                                                 <div style="display: flex; gap: 8px; flex-wrap: wrap;">
                                                     <button type="button"
@@ -1351,7 +1369,7 @@ try {
                                             <?php if ($is_admission_center || $is_director): ?>
                                                 <td><?php echo ((int)($item['has_contact'] ?? 0) === 1) ? '<span style="color:#52c41a;">已聯絡</span>' : '<span style="color:#999;">未聯絡</span>'; ?></td>
                                             <?php endif; ?>
-                                            <td><?php $ci = getContactIntentionDisplay($item['latest_contact_notes'] ?? null); echo $ci !== '' ? htmlspecialchars($ci) : '<span style="color:#999;">—</span>'; ?></td>
+                                            <td><?php $disp = getIntentionColumnDisplay($item); echo $disp !== '' ? htmlspecialchars($disp) : '<span style="color:#999;">—</span>'; ?></td>
                                             <td onclick="event.stopPropagation();">
                                                 <div style="display: flex; gap: 8px; flex-wrap: wrap;">
                                                     <button type="button"
@@ -1414,7 +1432,7 @@ try {
                                             <?php if ($is_admission_center || $is_director): ?>
                                                 <td><?php echo ((int)($item['has_contact'] ?? 0) === 1) ? '<span style="color:#52c41a;">已聯絡</span>' : '<span style="color:#999;">未聯絡</span>'; ?></td>
                                             <?php endif; ?>
-                                            <td><?php $ci = getContactIntentionDisplay($item['latest_contact_notes'] ?? null); echo $ci !== '' ? htmlspecialchars($ci) : '<span style="color:#999;">—</span>'; ?></td>
+                                            <td><?php $disp = getIntentionColumnDisplay($item); echo $disp !== '' ? htmlspecialchars($disp) : '<span style="color:#999;">—</span>'; ?></td>
                                             <td onclick="event.stopPropagation();">
                                                 <div style="display: flex; gap: 8px; flex-wrap: wrap;">
                                                     <button type="button"
@@ -2194,6 +2212,29 @@ try {
                 // 其他角色：不顯示意願順序
                 intentionSectionHtml = '';
             }
+
+            // 意願變動紀錄區塊：只顯示「什麼時間是什麼意願」+ 觸發者（含說明會進來的意願）
+            const levelLabel = (code) => {
+                if (!code) return '—';
+                if (code === 'high') return '高意願';
+                if (code === 'medium') return '中意願';
+                if (code === 'low') return '低意願';
+                return escapeHtml(code);
+            };
+            const changeLogs = data.intention_change_logs || [];
+            let intentionChangeBlockHtml = '';
+            if (changeLogs.length > 0) {
+                let rows = '';
+                changeLogs.forEach(entry => {
+                    const timeStr = entry.changed_at ? formatDate(entry.changed_at) : '—';
+                    const intentionStr = levelLabel(entry.new_level);
+                    const who = entry.teacher_name || entry.teacher_username || (entry.teacher_id ? '老師#' + entry.teacher_id : '—');
+                    rows += '<tr><td style="padding: 5px; border: 1px solid #ddd;">' + timeStr + '</td><td style="padding: 5px; border: 1px solid #ddd;">' + intentionStr + '</td><td style="padding: 5px; border: 1px solid #ddd;">' + escapeHtml(who) + '</td></tr>';
+                });
+                intentionChangeBlockHtml = '<h4 style="margin: 10px 0 10px 0; font-size: 16px;">意願變動紀錄</h4><table style="width: 100%; border-collapse: collapse; font-size: 14px;"><thead><tr><th style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5; width: 140px;">時間</th><th style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5; width: 90px;">意願</th><th style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">觸發者</th></tr></thead><tbody>' + rows + '</tbody></table>';
+            } else {
+                intentionChangeBlockHtml = '<h4 style="margin: 10px 0 10px 0; font-size: 16px;">意願變動紀錄</h4><p style="color: #999; font-size: 14px;">尚無意願變動紀錄</p>';
+            }
             
             const isDirector = <?php echo (isset($is_director) && $is_director && isset($is_admission_center) && !$is_admission_center) ? 'true' : 'false'; ?>;
             const teacherNameDisplay = escapeHtml(student.assigned_teacher_name || student.teacher_name || student.teacher_username || '尚未指派');
@@ -2203,8 +2244,8 @@ try {
             if (!isAdmissionCenterDetail) {
                 contactBlockHtml = '<h4 style="margin: 10px 0 10px 0; font-size: 16px;">聯絡紀錄</h4><p>共有 <strong>' + contactLogsCount + '</strong> 筆聯絡紀錄</p><button class="btn-view" style="margin-top: 8px; border-color: #17a2b8; color: #17a2b8;" data-student-id="' + (parseInt(student.id) || 0) + '" data-student-name="' + escapeHtml(String(student.name || '')) + '" data-assigned-teacher-id="' + (parseInt(student.assigned_teacher_id || 0) || 0) + '" data-view-only="true" onclick="const btn = this; openContactLogsModal(parseInt(btn.dataset.studentId) || 0, btn.dataset.studentName || \'\', btn.dataset.assignedTeacherId || \'0\', btn.dataset.viewOnly === \'true\')"><i class="fas fa-eye"></i> 查看聯絡紀錄</button>';
             }
-            // 詳情表格：寬度 100%、左右雙欄各 50%（與列表同寬）
-            const html = '<table style="width: 100%; border-collapse: collapse;"><tr><td style="width: 50%; vertical-align: top; padding-right: 20px;"><h4 style="margin: 0 0 10px 0; font-size: 16px;">基本資料</h4><table style="width: 100%; border-collapse: collapse; font-size: 14px;"><tr><td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5; width: 120px;">姓名</td><td style="padding: 5px; border: 1px solid #ddd;">' + escapeHtml(student.name) + '</td></tr><tr><td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">身分別</td><td style="padding: 5px; border: 1px solid #ddd;">' + escapeHtml(student.identity_text) + '</td></tr><tr><td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">性別</td><td style="padding: 5px; border: 1px solid #ddd;">' + escapeHtml(student.gender_text) + '</td></tr><tr><td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">電話1</td><td style="padding: 5px; border: 1px solid #ddd;">' + escapeHtml(student.phone1) + '</td></tr><tr><td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">電話2</td><td style="padding: 5px; border: 1px solid #ddd;">' + escapeHtml(student.phone2) + '</td></tr><tr><td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">Email</td><td style="padding: 5px; border: 1px solid #ddd;">' + escapeHtml(student.email) + '</td></tr><tr><td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">Line ID</td><td style="padding: 5px; border: 1px solid #ddd;">' + escapeHtml(student.line_id) + '</td></tr><tr><td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">Facebook</td><td style="padding: 5px; border: 1px solid #ddd;">' + escapeHtml(student.facebook) + '</td></tr><tr><td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">就讀國中</td><td style="padding: 5px; border: 1px solid #ddd;">' + escapeHtml(student.junior_high_name || student.junior_high) + '</td></tr><tr><td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">目前年級</td><td style="padding: 5px; border: 1px solid #ddd;">' + escapeHtml(student.current_grade_name || student.current_grade)  + '</td></tr><tr><td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">從哪裡知道我們</td><td style="padding: 5px; border: 1px solid #ddd;">' + escapeHtml(student.how_hear || '') + '</td></tr><tr><td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">建立時間</td><td style="padding: 5px; border: 1px solid #ddd;">' + formatDate(student.created_at) + '</td></tr>' + (student.remarks ? '<tr><td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">備註</td><td style="padding: 5px; border: 1px solid #ddd; white-space: pre-wrap;">' + escapeHtml(student.remarks) + '</td></tr>' : '') + '</table></td><td style="width: 50%; vertical-align: top; padding-left: 20px;">' + intentionSectionHtml + '<h4 style="margin: 10px 0 10px 0; font-size: 16px;">分配資訊</h4><table style="width: 100%; border-collapse: collapse; font-size: 14px;"><tr><td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5; width: 120px;">分配科系</td><td style="padding: 5px; border: 1px solid #ddd;">' + escapeHtml(student.assigned_department_name || student.assigned_department || '尚未分配') + '</td></tr><tr><td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">負責老師</td><td style="padding: 5px; border: 1px solid #ddd;">' + teacherNameDisplay + reassignBtnHtml + '</td></tr>' + (student.recommended_teacher_name ? '<tr><td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">推薦老師</td><td style="padding: 5px; border: 1px solid #ddd;">' + escapeHtml(student.recommended_teacher_name) + '</td></tr>' : '') + '</table>' + contactBlockHtml + '</td></tr></table>';
+            // 詳情表格：寬度 100%、左右雙欄各 50%（與列表同寬）；右欄：就讀意願、意願變動紀錄、分配資訊、聯絡紀錄
+            const html = '<table style="width: 100%; border-collapse: collapse;"><tr><td style="width: 50%; vertical-align: top; padding-right: 20px;"><h4 style="margin: 0 0 10px 0; font-size: 16px;">基本資料</h4><table style="width: 100%; border-collapse: collapse; font-size: 14px;"><tr><td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5; width: 120px;">姓名</td><td style="padding: 5px; border: 1px solid #ddd;">' + escapeHtml(student.name) + '</td></tr><tr><td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">身分別</td><td style="padding: 5px; border: 1px solid #ddd;">' + escapeHtml(student.identity_text) + '</td></tr><tr><td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">性別</td><td style="padding: 5px; border: 1px solid #ddd;">' + escapeHtml(student.gender_text) + '</td></tr><tr><td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">電話1</td><td style="padding: 5px; border: 1px solid #ddd;">' + escapeHtml(student.phone1) + '</td></tr><tr><td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">電話2</td><td style="padding: 5px; border: 1px solid #ddd;">' + escapeHtml(student.phone2) + '</td></tr><tr><td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">Email</td><td style="padding: 5px; border: 1px solid #ddd;">' + escapeHtml(student.email) + '</td></tr><tr><td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">Line ID</td><td style="padding: 5px; border: 1px solid #ddd;">' + escapeHtml(student.line_id) + '</td></tr><tr><td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">Facebook</td><td style="padding: 5px; border: 1px solid #ddd;">' + escapeHtml(student.facebook) + '</td></tr><tr><td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">就讀國中</td><td style="padding: 5px; border: 1px solid #ddd;">' + escapeHtml(student.junior_high_name || student.junior_high) + '</td></tr><tr><td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">目前年級</td><td style="padding: 5px; border: 1px solid #ddd;">' + escapeHtml(student.current_grade_name || student.current_grade)  + '</td></tr><tr><td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">從哪裡知道我們</td><td style="padding: 5px; border: 1px solid #ddd;">' + escapeHtml(student.how_hear || '') + '</td></tr><tr><td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">建立時間</td><td style="padding: 5px; border: 1px solid #ddd;">' + formatDate(student.created_at) + '</td></tr>' + (student.remarks ? '<tr><td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">備註</td><td style="padding: 5px; border: 1px solid #ddd; white-space: pre-wrap;">' + escapeHtml(student.remarks) + '</td></tr>' : '') + '</table></td><td style="width: 50%; vertical-align: top; padding-left: 20px;">' + intentionSectionHtml + intentionChangeBlockHtml + '<h4 style="margin: 10px 0 10px 0; font-size: 16px;">分配資訊</h4><table style="width: 100%; border-collapse: collapse; font-size: 14px;"><tr><td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5; width: 120px;">分配科系</td><td style="padding: 5px; border: 1px solid #ddd;">' + escapeHtml(student.assigned_department_name || student.assigned_department || '尚未分配') + '</td></tr><tr><td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">負責老師</td><td style="padding: 5px; border: 1px solid #ddd;">' + teacherNameDisplay + reassignBtnHtml + '</td></tr>' + (student.recommended_teacher_name ? '<tr><td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">推薦老師</td><td style="padding: 5px; border: 1px solid #ddd;">' + escapeHtml(student.recommended_teacher_name) + '</td></tr>' : '') + '</table>' + contactBlockHtml + '</td></tr></table>';
             
             detailContent.innerHTML = html;
             detailContent.style.textAlign = 'left';
