@@ -2228,7 +2228,19 @@ try {
                 changeLogs.forEach(entry => {
                     const timeStr = entry.changed_at ? formatDate(entry.changed_at) : '—';
                     const intentionStr = levelLabel(entry.new_level);
-                    const who = entry.teacher_name || entry.teacher_username || (entry.teacher_id ? '老師#' + entry.teacher_id : '—');
+                    let who = entry.teacher_name || entry.teacher_username || '';
+                    if (!who) {
+                        // 說明會建立的初始意願（old_level 為 null 且沒有 teacher_id）顯示為「說明會」
+                        const hasTeacherId = !!entry.teacher_id && parseInt(entry.teacher_id, 10) !== 0;
+                        const isInitialFromSession = !hasTeacherId && (entry.old_level === null || entry.old_level === '' || typeof entry.old_level === 'undefined');
+                        if (isInitialFromSession) {
+                            who = '說明會';
+                        } else if (hasTeacherId) {
+                            who = '老師#' + entry.teacher_id;
+                        } else {
+                            who = '—';
+                        }
+                    }
                     rows += '<tr><td style="padding: 5px; border: 1px solid #ddd;">' + timeStr + '</td><td style="padding: 5px; border: 1px solid #ddd;">' + intentionStr + '</td><td style="padding: 5px; border: 1px solid #ddd;">' + escapeHtml(who) + '</td></tr>';
                 });
                 intentionChangeBlockHtml = '<h4 style="margin: 10px 0 10px 0; font-size: 16px;">意願變動紀錄</h4><table style="width: 100%; border-collapse: collapse; font-size: 14px;"><thead><tr><th style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5; width: 140px;">時間</th><th style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5; width: 90px;">意願</th><th style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">觸發者</th></tr></thead><tbody>' + rows + '</tbody></table>';
