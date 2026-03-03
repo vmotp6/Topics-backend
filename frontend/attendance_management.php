@@ -7,6 +7,7 @@ checkBackendLogin();
 // 引入資料庫設定
 require_once '../../Topics-frontend/frontend/config.php';
 require_once __DIR__ . '/includes/enrollment_assignment_log.php';
+require_once __DIR__ . '/includes/intention_change_log.php';
 
 // 獲取場次ID
 $session_id = isset($_GET['session_id']) ? intval($_GET['session_id']) : 0;
@@ -573,6 +574,17 @@ if ($tbl_ei && $tbl_ei->num_rows > 0) {
                 if (strpos($existing_remarks, '由入學說明會建立') !== false) {
                     // 跳過更新，不計入更新計數
                 } else {
+                    $old_level = null;
+                    $g = $conn->prepare("SELECT intention_level FROM enrollment_intention WHERE id = ? LIMIT 1");
+                    if ($g) {
+                        $g->bind_param("i", $existing_id);
+                        $g->execute();
+                        $gr = $g->get_result()->fetch_assoc();
+                        if ($gr && isset($gr['intention_level']) && (string)$gr['intention_level'] !== '') {
+                            $old_level = trim((string)$gr['intention_level']);
+                        }
+                        $g->close();
+                    }
                     $up_sql = $has_dept
                         ? "UPDATE enrollment_intention SET name=?, email=?, phone1=?, junior_high=?, current_grade=?, assigned_department=?, intention_level=?, remarks=?, follow_up_status='tracking', graduation_year=? WHERE id=?"
                         : "UPDATE enrollment_intention SET name=?, email=?, phone1=?, junior_high=?, current_grade=?, assigned_department=NULL, intention_level=?, remarks=?, follow_up_status='tracking', graduation_year=? WHERE id=?";
@@ -608,6 +620,7 @@ if ($tbl_ei && $tbl_ei->num_rows > 0) {
                     }
                     if ($up->execute()) {
                         $enrollment_intention_updated++;
+                        logIntentionChange($conn, $existing_id, $old_level, $intention_level_code, null, $current_user_id);
                         $up->close();
                     } else {
                         $err = $up->error; $erno = $up->errno; $up->close();
@@ -667,6 +680,22 @@ if ($tbl_ei && $tbl_ei->num_rows > 0) {
                             $c2->bind_param("is", $eid, $p2_code); $c2->execute(); $c2->close();
                         }
                     }
+                    // 說明會建立時：寫入一筆聯絡紀錄，並一定寫入意願變動紀錄（說明會原本意願度）
+                    if ($eid > 0) {
+                        $session_log_notes = "【由入學說明會建立】\n意願度：{$level}";
+                        $log_teacher_id = (int)($current_user_id ?? 0);
+                        $log_date = date('Y-m-d');
+                        $contact_log_id = null;
+                        $log_stmt = $conn->prepare("INSERT INTO enrollment_contact_logs (enrollment_id, teacher_id, contact_date, method, notes, created_at) VALUES (?, ?, ?, '入學說明會', ?, NOW())");
+                        if ($log_stmt) {
+                            $log_stmt->bind_param("iiss", $eid, $log_teacher_id, $log_date, $session_log_notes);
+                            $log_stmt->execute();
+                            $contact_log_id = (int)$conn->insert_id;
+                            $log_stmt->close();
+                        }
+                        // 說明會進來的名單原本就有意願度，一律寫進意願變動紀錄（初次設定）
+                        logIntentionChange($conn, $eid, null, $intention_level_code, $contact_log_id ?: null, $log_teacher_id);
+                    }
                 } else {
                     $errno = $ins->errno;
                     $errmsg = $ins->error;
@@ -685,6 +714,17 @@ if ($tbl_ei && $tbl_ei->num_rows > 0) {
                                 if (strpos($existing_remarks2, '由入學說明會建立') !== false) {
                                     // 跳過更新，不計入更新計數
                                 } else {
+                                    $old_level2 = null;
+                                    $g2 = $conn->prepare("SELECT intention_level FROM enrollment_intention WHERE id = ? LIMIT 1");
+                                    if ($g2) {
+                                        $g2->bind_param("i", $existing_id);
+                                        $g2->execute();
+                                        $gr2 = $g2->get_result()->fetch_assoc();
+                                        if ($gr2 && isset($gr2['intention_level']) && (string)$gr2['intention_level'] !== '') {
+                                            $old_level2 = trim((string)$gr2['intention_level']);
+                                        }
+                                        $g2->close();
+                                    }
                                     $up_sql2 = $has_dept
                                         ? "UPDATE enrollment_intention SET name=?, email=?, phone1=?, junior_high=?, current_grade=?, assigned_department=?, intention_level=?, remarks=?, follow_up_status='tracking', graduation_year=? WHERE id=?"
                                         : "UPDATE enrollment_intention SET name=?, email=?, phone1=?, junior_high=?, current_grade=?, assigned_department=NULL, intention_level=?, remarks=?, follow_up_status='tracking', graduation_year=? WHERE id=?";
@@ -718,7 +758,10 @@ if ($tbl_ei && $tbl_ei->num_rows > 0) {
                                                 $existing_id
                                             );
                                         }
-                                        if ($up->execute()) $enrollment_intention_updated++;
+                                        if ($up->execute()) {
+                                            $enrollment_intention_updated++;
+                                            logIntentionChange($conn, $existing_id, $old_level2, $intention_level_code, null, $current_user_id);
+                                        }
                                         $up->close();
                                     } else throw new Exception($conn->error . ' (errno ' . $conn->errno . ')');
                                 }
