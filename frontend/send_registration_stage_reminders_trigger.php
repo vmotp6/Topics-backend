@@ -37,6 +37,32 @@ require_once __DIR__ . '/send_registration_stage_reminders.php';
 
 $conn = getDatabaseConnection();
 ensureStageReminderLogTable($conn);
+
+// 1. 優先檢查「階段即將開始」（開始日前一週）：只提醒老師，每階段只發一次
+$upcoming = getUpcomingStagePeriodKey($conn);
+if ($upcoming) {
+    $stage = $upcoming['stage'];
+    $period_key = $upcoming['period_key'];
+    $stmt = $conn->prepare("INSERT IGNORE INTO registration_stage_reminder_log (stage, period_key, sent_at) VALUES (?, ?, NOW())");
+    if ($stmt) {
+        $stmt->bind_param("ss", $stage, $period_key);
+        $stmt->execute();
+        $inserted = ($conn->affected_rows > 0);
+        $stmt->close();
+    } else {
+        $inserted = true;
+    }
+    $conn->close();
+    if ($inserted) {
+        $result = runUpcomingStageReminders();
+        $result['already_sent'] = false;
+        $result['type'] = 'upcoming';
+        echo json_encode($result);
+        exit;
+    }
+}
+
+// 2. 再檢查「階段已開始」：老師＋學生提醒（原有邏輯）
 $info = getCurrentStagePeriodKey($conn);
 if (!$info) {
     $conn->close();
@@ -45,7 +71,6 @@ if (!$info) {
 }
 $stage = $info['stage'];
 $period_key = $info['period_key'];
-// 同一階段期別只發送一次：先嘗試寫入記錄，若已存在則不發送
 $stmt = $conn->prepare("INSERT IGNORE INTO registration_stage_reminder_log (stage, period_key, sent_at) VALUES (?, ?, NOW())");
 if ($stmt) {
     $stmt->bind_param("ss", $stage, $period_key);
@@ -53,7 +78,7 @@ if ($stmt) {
     $inserted = ($conn->affected_rows > 0);
     $stmt->close();
 } else {
-    $inserted = true; // 若表有問題仍嘗試發送
+    $inserted = true;
 }
 $conn->close();
 
@@ -64,4 +89,5 @@ if (!$inserted) {
 
 $result = runRegistrationStageReminders();
 $result['already_sent'] = false;
+$result['type'] = 'current';
 echo json_encode($result);
