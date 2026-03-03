@@ -3980,19 +3980,17 @@ try {
             tag.style.color = '#262626';
             tag.textContent = duplicateSameDept ? '(推薦人同科系)' : '(推薦人不同科系)';
             dupLine.appendChild(tag);
-            if (!duplicateSameDept) {
-                const btn = document.createElement('button');
-                btn.type = 'button';
-                btn.className = 'btn-view';
-                btn.style.marginLeft = '10px';
-                btn.style.padding = '4px 10px';
-                btn.style.fontSize = '13px';
-                btn.textContent = '寄信給被推薦人確認';
-                btn.addEventListener('click', function() {
-                    openDuplicateMailPreviewModal(recommendationId, btn);
-                });
-                dupLine.appendChild(btn);
-            }
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'btn-view';
+            btn.style.marginLeft = '10px';
+            btn.style.padding = '4px 10px';
+            btn.style.fontSize = '13px';
+            btn.textContent = '寄信給被推薦人確認';
+            btn.addEventListener('click', function() {
+                openDuplicateMailPreviewModal(recommendationId, btn);
+            });
+            dupLine.appendChild(btn);
             listEl.appendChild(dupLine);
         } else {
             addLine('未發現重複推薦', false);
