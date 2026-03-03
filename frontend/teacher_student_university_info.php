@@ -6,6 +6,163 @@ checkBackendLogin();
 // 引入資料庫設定（相對或多路徑可在 config.php 內處理）
 require_once '../../Topics-frontend/frontend/config.php';
 
+// ----- AJAX: 搜尋學校與取得科系（使用 sdata2 資料表） -----
+if (isset($_GET['ajax'])) {
+    $action = $_GET['ajax'];
+    try {
+        $q = trim((string)($_GET['q'] ?? ''));
+        $conn_ajax = getDatabaseConnection();
+        if (!$conn_ajax) throw new Exception('無法連線資料庫');
+
+        // 找出學校欄位與科系欄位的候選名稱
+        // sdata2 的 CSV 可能帶有不同命名，例如學校為 name/school/school_code 等，
+        // 科系部分在各版本中見過 department、department_code，另外也可能是 dept_code 或 dept_name。
+        // Candidates for school/department column names in the sdata2 CSV
+        $schoolCols = ['name','school','school_name','school_code','schnm','sname','sch_name','schnm1'];
+        $deptCols = ['department','dept','department_name','department_code','dept_code','dept_name','dname','科系','deptname'];
+
+        // helper to find first existing column in the table
+        $findCol = function($candidates) use ($conn_ajax) {
+            foreach ($candidates as $c) {
+                if (hasColumn($conn_ajax, 'sdata2', $c)) return $c;
+            }
+            return null;
+        };
+
+        // detect both code/name columns if available to improve search
+        $schoolCodeCol = null;
+        $schoolNameCol = null;
+        if (hasColumn($conn_ajax, 'sdata2', 'school_code')) $schoolCodeCol = 'school_code';
+        if (hasColumn($conn_ajax, 'sdata2', 'school_name')) $schoolNameCol = 'school_name';
+
+        // fallback to earlier detection if neither explicit column exists
+        if (!$schoolCodeCol && !$schoolNameCol) {
+            $schoolCol = $findCol($schoolCols);
+            $schoolCodeCol = $schoolCol;
+            $schoolNameCol = $schoolCol;
+        }
+
+        // 科系欄位檢測（名稱與代碼分開）
+        $deptNameCol = null;
+        $deptCodeCol = null;
+        if (hasColumn($conn_ajax, 'sdata2', 'dept_name')) {
+            $deptNameCol = 'dept_name';
+        } elseif (hasColumn($conn_ajax, 'sdata2', 'department_name')) {
+            $deptNameCol = 'department_name';
+        }
+        if (hasColumn($conn_ajax, 'sdata2', 'dept_code')) {
+            $deptCodeCol = 'dept_code';
+        } elseif (hasColumn($conn_ajax, 'sdata2', 'department_code')) {
+            $deptCodeCol = 'department_code';
+        }
+        // 如果都沒偵測到，退回先前的單一欄位方法
+        if (!$deptNameCol && !$deptCodeCol) {
+            $deptCol = $findCol($deptCols);
+            $deptNameCol = $deptCol;
+            $deptCodeCol = $deptCol;
+        } else {
+            // 供後面查詢使用的預設欄位
+            $deptCol = $deptCodeCol ?: $deptNameCol;
+        }
+
+        // debug warning if detection failed
+        if (!$schoolCodeCol) error_log('DEBUG: 無法在 sdata2 找到學校欄位候選 ' . json_encode($schoolCols));
+        if (!$deptCol) error_log('DEBUG: 無法在 sdata2 找到科系欄位候選 ' . json_encode($deptCols));
+
+        header('Content-Type: application/json; charset=utf-8');
+
+        if ($action === 'search_school') {
+            $out = [];
+            if (($schoolNameCol || $schoolCodeCol) && $q !== '') {
+                // 助搜尋時同時考慮「台」/「臺」變體
+                $alt = str_replace(['台','臺'], ['臺','台'], $q);
+
+                // decide which column to search by name
+                $nameCol = $schoolNameCol ?: $schoolCodeCol;
+                $codeCol = $schoolCodeCol ?: $schoolNameCol;
+
+                // if we have both name and code columns, search both and return name/code pair
+                if ($schoolNameCol && $schoolCodeCol && $schoolNameCol !== $schoolCodeCol) {
+                    // Normalize 台/臺 by replacing 台 -> 臺 in both column and parameter before LIKE
+                    $sql = "SELECT DISTINCT `$schoolNameCol` AS name, `$schoolCodeCol` AS code
+                            FROM sdata2
+                            WHERE (REPLACE(`$schoolNameCol`, '台', '臺') LIKE REPLACE(?, '台', '臺') OR REPLACE(`$schoolNameCol`, '台', '臺') LIKE REPLACE(?, '台', '臺'))
+                               OR (REPLACE(`$schoolCodeCol`, '台', '臺') LIKE REPLACE(?, '台', '臺') OR REPLACE(`$schoolCodeCol`, '台', '臺') LIKE REPLACE(?, '台', '臺'))
+                            LIMIT 30";
+                    $stmt = $conn_ajax->prepare($sql);
+                    if ($stmt) {
+                        $like1 = '%' . $q . '%';
+                        $like2 = '%' . $alt . '%';
+                        $like3 = '%' . $q . '%';
+                        $like4 = '%' . $alt . '%';
+                        $stmt->bind_param('ssss', $like1, $like2, $like3, $like4);
+                    }
+                } else {
+                    // single column case - normalize 台/臺 as well
+                    $sql = "SELECT DISTINCT `$nameCol` AS name, `$codeCol` AS code FROM sdata2 WHERE REPLACE(`$nameCol`, '台', '臺') LIKE REPLACE(?, '台', '臺') OR REPLACE(`$nameCol`, '台', '臺') LIKE REPLACE(?, '台', '臺') LIMIT 30";
+                    $stmt = $conn_ajax->prepare($sql);
+                    if ($stmt) {
+                        $like1 = '%' . $q . '%';
+                        $like2 = '%' . $alt . '%';
+                        $stmt->bind_param('ss', $like1, $like2);
+                    }
+                }
+
+                if (isset($stmt) && $stmt) {
+                    $stmt->execute();
+                    $res = $stmt->get_result();
+                    while ($r = $res->fetch_assoc()) {
+                        $name = trim($r['name'] ?? '');
+                        $code = trim($r['code'] ?? '');
+                        if ($name !== '') $out[] = ['name'=>$name,'code'=>$code ?: $name];
+                    }
+                    $stmt->close();
+                }
+            }
+            echo json_encode($out, JSON_UNESCAPED_UNICODE);
+            exit;
+        }
+
+        if ($action === 'get_depts') {
+            $school = trim((string)($_GET['school'] ?? ''));
+            $out = [];
+            if (($schoolNameCol || $schoolCodeCol) && ($deptNameCol || $deptCodeCol) && $school !== '') {
+                // choose comparison column based on what the user enters
+                $cmpCol = $schoolNameCol ?: $schoolCodeCol;
+                // also compute alternate variant for 台/臺
+                $altSchool = str_replace(['台','臺'], ['臺','台'], $school);
+
+                // prefer department name for display if available
+                $displayCol = $deptNameCol ?: $deptCodeCol;
+                                // Normalize 台/臺 in equality comparison to tolerate 台/臺 variants
+                                $sql = "SELECT DISTINCT `$displayCol` AS name
+                                                FROM sdata2
+                                                WHERE (REPLACE(`$cmpCol`, '台', '臺') = REPLACE(?, '台', '臺') OR REPLACE(`$cmpCol`, '台', '臺') = REPLACE(?, '台', '臺'))
+                                                    AND `$displayCol` IS NOT NULL AND `$displayCol` <> ''
+                                                LIMIT 200";
+                                $stmt = $conn_ajax->prepare($sql);
+                                if ($stmt) {
+                                        $stmt->bind_param('ss', $school, $altSchool);
+                                        $stmt->execute();
+                                        $res = $stmt->get_result();
+                                        while ($r = $res->fetch_assoc()) {
+                                                $name = trim($r['name'] ?? '');
+                                                if ($name !== '') $out[] = $name;
+                                        }
+                                        $stmt->close();
+                                }
+            }
+            echo json_encode($out, JSON_UNESCAPED_UNICODE);
+            exit;
+        }
+
+    } catch (Exception $e) {
+        header('Content-Type: application/json; charset=utf-8');
+        echo json_encode([]);
+        exit;
+    }
+}
+
 // 檢查用戶角色 - 僅允許教師(TEA)進入
 $session_role = $_SESSION['role'] ?? '';
 $session_username = $_SESSION['username'] ?? '';
@@ -61,6 +218,9 @@ try {
 
     // 撈大學類型
     $university_list = [];
+    // 檢查是否有學校/科系欄位
+    $has_school_col = hasColumn($conn, 'new_student_basic_info', 'university_school');
+    $has_dept_col = hasColumn($conn, 'new_student_basic_info', 'university_dept');
     $res = $conn->query("SELECT type_code as code, type_name as name FROM university_types ORDER BY id ASC");
     if ($res) {
         while ($row = $res->fetch_assoc()) {
@@ -164,8 +324,10 @@ try {
                     $achievements2 = $achievements_array[2] ?? null;     // 第三個成就
                     $achievement_note = trim($_POST['achievement_note'] ?? '');
 
-                    // 調試：記錄接收到的數據（包含三個成就欄位）
-                    error_log("DEBUG: 接收到的數據 - student_id={$student_id}, university={$university}, achievements={$achievements}, achievements1={$achievements1}, achievements2={$achievements2}, achievement_note={$achievement_note}");
+                    // 調試：記錄接收到的數據（包含學校/科系與三個成就欄位）
+                    $school_post = trim($_POST['university_school'] ?? '');
+                    $dept_post   = trim($_POST['university_dept'] ?? '');
+                    error_log("DEBUG: 接收到的數據 - student_id={$student_id}, university={$university}, university_school={$school_post}, university_dept={$dept_post}, achievements={$achievements}, achievements1={$achievements1}, achievements2={$achievements2}, achievement_note={$achievement_note}");
 
                     if ($student_id <= 0) {
                         $error_message = '無效的學生 ID';
@@ -193,19 +355,53 @@ try {
                             $verify_stmt->close();
                         } else {
                             $verify_stmt->close();
-                            // 更新學生資料
+                            // 更新學生資料（若資料表含有 university_school / university_dept 會一併儲存）
+                            $has_school_col = hasColumn($conn, 'new_student_basic_info', 'university_school');
+                            $has_dept_col = hasColumn($conn, 'new_student_basic_info', 'university_dept');
+
                             $update_sql = "UPDATE new_student_basic_info 
-                                           SET university = ?, achievements = ?, achievements1 = ?, achievements2 = ?, achievement_note = ?
-                                           WHERE id = ?";
+                                           SET university = ?, achievements = ?, achievements1 = ?, achievements2 = ?, achievement_note = ?";
+                            if ($has_school_col) $update_sql .= ", university_school = ?";
+                            if ($has_dept_col) $update_sql .= ", university_dept = ?";
+                            $update_sql .= " WHERE id = ?";
+
                             $stmt = $conn->prepare($update_sql);
                             if (!$stmt) throw new Exception('SQL準備失敗: ' . $conn->error);
 
-                            error_log("DEBUG: 執行更新SQL - UPDATE new_student_basic_info SET university=?, achievements=?, achievements1=?, achievements2=?, achievement_note=? WHERE id=$student_id");
-                            
-                            $stmt->bind_param('sssssi', $university, $achievements, $achievements1, $achievements2, $achievement_note, $student_id);
+                            error_log("DEBUG: 執行更新SQL - " . $update_sql . " [id={$student_id}]");
+
+                            // 準備 bind 參數
+                            $types = 'sssss';
+                            $params = [$university, $achievements, $achievements1, $achievements2, $achievement_note];
+                            if ($has_school_col) { $types .= 's'; $params[] = trim($_POST['university_school'] ?? ''); }
+                            if ($has_dept_col)  { $types .= 's'; $params[] = trim($_POST['university_dept'] ?? ''); }
+                            $types .= 'i'; $params[] = $student_id;
+
+                            // bind_param 需要引用參數
+                            $bind_names = []; // initialize to avoid leftover values
+                            $bind_names[] = $types;
+                            for ($i = 0; $i < count($params); $i++) {
+                                $bind_name = 'bind' . $i;
+                                $$bind_name = $params[$i];
+                                $bind_names[] = &$$bind_name;
+                            }
+                            error_log("DEBUG: bind types={$types} params=" . json_encode($params));
+                            call_user_func_array([$stmt, 'bind_param'], $bind_names);
+
                             if ($stmt->execute()) {
                                 error_log("DEBUG: 更新成功，受影響行數=" . $stmt->affected_rows);
-                                $success_message = '已成功保存學生資料';
+                                // 顯示接收到的學校/科系與欄位存在狀態以便排查
+                                $msg = '已成功保存學生資料';
+                                if ($has_school_col || $has_dept_col) {
+                                    $msg .= ' (has_school_col=' . ($has_school_col ? '1' : '0') . ', has_dept_col=' . ($has_dept_col ? '1' : '0') . ')';
+                                }
+                                if ($has_school_col) {
+                                    $msg .= ' 學校="' . htmlspecialchars($school_post) . '"';
+                                }
+                                if ($has_dept_col) {
+                                    $msg .= ' 科系="' . htmlspecialchars($dept_post) . '"';
+                                }
+                                $success_message = $msg;
                             } else {
                                 error_log("DEBUG: 更新失敗，錯誤=" . $stmt->error);
                                 $error_message = '保存失敗: ' . $stmt->error;
@@ -292,12 +488,17 @@ try {
 
                 // 取得學生資料（孝班與忠班）
                 $kw1 = '%孝%'; $kw2 = '%忠%';
+                // export query also needs dynamic school/dept
+                $sel_school = $has_school_col ? 's.university_school,' : "'' AS university_school,";
+                $sel_dept   = $has_dept_col ? 's.university_dept,' : "'' AS university_dept,";
 $students_sql = "
 SELECT 
     s.id,
     s.student_no,
     s.student_name,
     s.class_name,
+    {$sel_school}
+    {$sel_dept}
     s.university,
     u.type_name AS university_name,
     s.achievements,
@@ -346,6 +547,8 @@ if ($stmt2) {
             $rr['student_no'] ?? '',
             $rr['student_name'] ?? '',
             $rr['class_name'] ?? '',
+            $rr['university_school'] ?? '',
+            $rr['university_dept'] ?? '',
             $rr['university_name'] ?? $rr['university'] ?? '—', // <- 正確顯示中文名稱
             $achievement_text
         ];
@@ -356,7 +559,7 @@ if ($stmt2) {
                 if (empty($rows)) throw new Exception('查無學生資料，無法產生 Excel');
 
                 // 產生 xlsx
-                $excel_rows = array_merge([['學號','姓名','班級','大學','成就']], $rows);
+                $excel_rows = array_merge([['學號','姓名','班級','學校','科系','大學','成就']], $rows);
                 $tmp = tempnam(sys_get_temp_dir(), 'grad_send_');
                 if ($tmp === false) throw new Exception('無法建立暫存檔');
                 $excel_path = $tmp . '.xlsx'; @rename($tmp, $excel_path);
@@ -596,7 +799,10 @@ if ($stmt2) {
                 // 依類別轉換為關鍵字 (孝 -> %孝% ; 忠 -> %忠%)
                 $kw = (mb_strpos($selected_class, '孝') !== false) ? '%孝%' : '%忠%';
 
-                $students_sql = "SELECT s.id, s.student_no, s.student_name, s.university, u.type_name AS university_name, s.achievements, s.achievement_note, s.created_at
+                // 根據欄位存在與否構造 SELECT 部分
+                $sel_school = $has_school_col ? 's.university_school,' : "'' AS university_school,";
+                $sel_dept = $has_dept_col ? 's.university_dept,' : "'' AS university_dept,";
+                $students_sql = "SELECT s.id, s.student_no, s.student_name, {$sel_school} {$sel_dept} s.university, u.type_name AS university_name, s.achievements, s.achievement_note, s.created_at
                                 FROM new_student_basic_info s
                                 LEFT JOIN university_types u
                                     ON TRIM(UPPER(s.university)) = TRIM(UPPER(u.type_code))
@@ -618,6 +824,38 @@ if ($stmt2) {
                 $result = $stmt->get_result();
                 $students = $result ? $result->fetch_all(MYSQLI_ASSOC) : [];
                 $total_students = count($students);
+
+                // 若 students 中包含科系代碼，嘗試用 sdata2 的 dept_name 轉換為人可讀名稱
+                if (!empty($students)) {
+                    $hasDeptName = hasColumn($conn, 'sdata2', 'dept_name') || hasColumn($conn, 'sdata2', 'department_name');
+                    $hasDeptCode = hasColumn($conn, 'sdata2', 'dept_code') || hasColumn($conn, 'sdata2', 'department_code');
+                    if ($hasDeptName) {
+                        $nameCol = hasColumn($conn, 'sdata2', 'dept_name') ? 'dept_name' : 'department_name';
+                        $codeCol = $hasDeptCode ? (hasColumn($conn, 'sdata2', 'dept_code') ? 'dept_code' : 'department_code') : $nameCol;
+                        // prepare lookup once
+                        $lookupSql = "SELECT `$nameCol` AS dname FROM sdata2 WHERE (`school_name` = ? OR `school_code` = ?) AND (`$codeCol` = ? OR `$nameCol` = ?) LIMIT 1";
+                        $lookupStmt = $conn->prepare($lookupSql);
+                        if ($lookupStmt) {
+                            foreach ($students as &$stu) {
+                                $orig = trim((string)($stu['university_dept'] ?? ''));
+                                $sch = trim((string)($stu['university_school'] ?? ''));
+                                if ($orig !== '' && $sch !== '') {
+                                    $lookupStmt->bind_param('ssss', $sch, $sch, $orig, $orig);
+                                    $lookupStmt->execute();
+                                    $lr = $lookupStmt->get_result();
+                                    if ($lr && ($rr = $lr->fetch_assoc())) {
+                                        if (!empty($rr['dname'])) {
+                                            $stu['university_dept'] = $rr['dname'];
+                                        }
+                                    }
+                                }
+                            }
+                            unset($stu); // break reference
+                            $lookupStmt->close();
+                        }
+                    }
+                }
+
                 $stmt->close();
             }
     }
@@ -678,7 +916,9 @@ function ensureTablesExist($conn) {
     $check_columns = [
         'university' => "ALTER TABLE new_student_basic_info ADD COLUMN university VARCHAR(100) DEFAULT NULL",
         'achievements' => "ALTER TABLE new_student_basic_info ADD COLUMN achievements LONGTEXT DEFAULT NULL",
-        'achievement_note' => "ALTER TABLE new_student_basic_info ADD COLUMN achievement_note LONGTEXT DEFAULT NULL"
+        'achievement_note' => "ALTER TABLE new_student_basic_info ADD COLUMN achievement_note LONGTEXT DEFAULT NULL",
+        'university_school' => "ALTER TABLE new_student_basic_info ADD COLUMN university_school VARCHAR(200) DEFAULT NULL",
+        'university_dept' => "ALTER TABLE new_student_basic_info ADD COLUMN university_dept VARCHAR(200) DEFAULT NULL"
     ];
 
     foreach ($check_columns as $col => $alter_sql) {
@@ -1115,6 +1355,48 @@ function getAcademicYearRangeByRoc($roc_year) {
             }
         }
     </style>
+    <script>
+        // class selector helper placed in head so it exists even if later scripts fail
+        function selectClass(className) {
+            const url = new URL(window.location.href);
+            url.searchParams.set('class', className);
+            window.location.href = url.toString();
+        }
+        // stub so clicks before initialization do not error
+        // also queue params so early clicks will still open once real function loads
+        function openEditModal() {
+            console.warn('openEditModal stub called');
+            window.__pendingEditParams = window.__pendingEditParams || [];
+            // store any arguments passed for later execution
+            if (arguments.length) {
+                window.__pendingEditParams.push(Array.prototype.slice.call(arguments));
+            }
+        }
+        // attach click handlers for view/edit buttons early
+        // encode params as URI component so that HTML tags (<,>) do not
+        // corrupt the attribute value.  decode before parsing.
+        document.addEventListener('DOMContentLoaded', function() {
+            var handle = function() {
+                var p = [];
+                try {
+                    var raw = this.getAttribute('data-params') || '';
+                    raw = decodeURIComponent(raw);
+                    p = JSON.parse(raw);
+                } catch(e) {
+                    console.error('parse params', e, this.getAttribute('data-params'));
+                }
+                if (typeof openEditModal === 'function') {
+                    openEditModal.apply(null, p);
+                } else {
+                    // if modal function not defined yet, store params and call later
+                    window.__pendingEditParams = p;
+                }
+            };
+            document.querySelectorAll('.view-btn, .edit-btn').forEach(function(btn) {
+                btn.addEventListener('click', handle);
+            });
+        });
+    </script>
 </head>
 <body>
     <div class="dashboard">
@@ -1296,6 +1578,8 @@ if ($is_teacher && $selected_class !== '') {
                                     <tr>
                                         <th>學號</th>
                                         <th>姓名</th>
+                                        <th>學校</th>
+                                        <th>科系</th>
                                         <th>大學</th>
                                         <th>成就榮譽</th>
                                         <th>操作</th>
@@ -1306,6 +1590,8 @@ if ($is_teacher && $selected_class !== '') {
                                         <tr class="student-row">
                                             <td><?php echo htmlspecialchars($student['student_no']); ?></td>
                                             <td><?php echo htmlspecialchars($student['student_name']); ?></td>
+                                            <td><?php echo htmlspecialchars($student['university_school'] ?? '—'); ?></td>
+                                            <td><?php echo htmlspecialchars($student['university_dept'] ?? '—'); ?></td>
                                             <td><?php echo htmlspecialchars($student['university_name'] ?? '—'); ?></td>
                                             <td>
                                                 <div style="max-width: 200px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
@@ -1324,9 +1610,39 @@ if ($is_teacher && $selected_class !== '') {
                                             </td>
                                             <td>
                                                 <?php if ($is_director): ?>
-                                                    <button class="btn btn-primary" onclick="openEditModal(<?php echo (int)$student['id']; ?>, '<?php echo htmlspecialchars(addslashes($student['student_no'])); ?>', '<?php echo htmlspecialchars(addslashes($student['student_name'])); ?>', '<?php echo htmlspecialchars(addslashes($student['university'] ?? '')); ?>', '<?php echo htmlspecialchars(addslashes($student['achievements'] ?? '')); ?>', true, '<?php echo htmlspecialchars(addslashes($student['achievement_note'] ?? '')); ?>')">查看</button>
+                                                    <?php
+                                                        // prepare parameters for view (readonly)
+                                                        // wrap json in rawurlencode so < and > can't
+                                                        // appear in the HTML attribute; also escape tags
+                                                        $viewParams = rawurlencode(json_encode([
+                                                            (int)$student['id'],
+                                                            $student['student_no'] ?? '',
+                                                            $student['student_name'] ?? '',
+                                                            $student['university'] ?? '',
+                                                            $student['achievements'] ?? '',
+                                                            true,
+                                                            $student['achievement_note'] ?? '',
+                                                            $student['university_school'] ?? '',
+                                                            $student['university_dept'] ?? ''
+                                                        ], JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_TAG));
+                                                    ?>
+                                                    <button type="button" class="btn btn-primary view-btn" data-params='<?php echo htmlspecialchars($viewParams, ENT_QUOTES); ?>'>查看</button>
                                                 <?php else: ?>
-                                                    <button class="btn btn-primary" onclick="openEditModal(<?php echo (int)$student['id']; ?>, '<?php echo htmlspecialchars(addslashes($student['student_no'])); ?>', '<?php echo htmlspecialchars(addslashes($student['student_name'])); ?>', '<?php echo htmlspecialchars(addslashes($student['university'] ?? '')); ?>', '<?php echo htmlspecialchars(addslashes($student['achievements'] ?? '')); ?>', false, '<?php echo htmlspecialchars(addslashes($student['achievement_note'] ?? '')); ?>')">編輯</button>
+                                                    <?php
+                                                        // params for editable record; same encoding
+                                                        $editParams = rawurlencode(json_encode([
+                                                            (int)$student['id'],
+                                                            $student['student_no'] ?? '',
+                                                            $student['student_name'] ?? '',
+                                                            $student['university'] ?? '',
+                                                            $student['achievements'] ?? '',
+                                                            false,
+                                                            $student['achievement_note'] ?? '',
+                                                            $student['university_school'] ?? '',
+                                                            $student['university_dept'] ?? ''
+                                                        ], JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_TAG));
+                                                    ?>
+                                                    <button type="button" class="btn btn-primary edit-btn" data-params='<?php echo htmlspecialchars($editParams, ENT_QUOTES); ?>'>編輯</button>
                                                 <?php endif; ?>
                                             </td>
                                         </tr>
@@ -1374,6 +1690,22 @@ if ($is_teacher && $selected_class !== '') {
                     </select>
                 </div>
 
+                <!-- 學校與科系欄位：僅於選擇國立/私立大學時顯示 -->
+                <div id="twoTechFields" style="margin-top:10px; display:none;">
+                    <div class="form-group">
+                        <label class="form-label">學校（搜尋）</label>
+                        <input type="text" id="schoolInput" class="form-input" placeholder="輸入學校名稱開始搜尋...">
+                        <ul id="schoolSuggestions" style="list-style:none;margin:6px 0;padding:0;max-height:200px;overflow:auto;border:1px solid #ddd;display:none;background:#fff;"></ul>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">科系</label>
+                        <select id="schoolDeptSelect" name="university_dept" class="form-input">
+                            <option value="">請先選擇學校</option>
+                        </select>
+                    </div>
+                    <input type="hidden" name="university_school" id="university_school_input">
+                </div>
+
                <div class="form-group">
                 <label class="form-label">成就與榮譽</label>
 
@@ -1412,13 +1744,40 @@ if ($is_teacher && $selected_class !== '') {
             window.location.href = url.toString();
         }
 
-        function openEditModal(studentId, studentNo, studentName, university, achievements, readOnly, achievementNote) {
-            const form = document.getElementById('editForm');
+        function openEditModal(studentId, studentNo, studentName, university, achievements, readOnly, achievementNote, university_school, university_dept) {
+            var form = document.getElementById('editForm');
             document.getElementById('studentId').value = studentId;
             document.getElementById('studentNoDisplay').textContent = studentNo;
             document.getElementById('studentNameDisplay').textContent = studentName;
             document.getElementById('universityInput').value = university;
+            // 觸發 change 事件以顯示/隱藏二技欄位
+            try { document.getElementById('universityInput').dispatchEvent(new Event('change')); } catch (e) {}
             
+            // 如果有傳入學校/科系預設值，先填入（若為國立/私立會顯示欄位）
+            var schoolInput = document.getElementById('schoolInput');
+            var schoolHidden = document.getElementById('university_school_input');
+            var deptSelect = document.getElementById('schoolDeptSelect');
+            if (university_school) {
+                schoolInput.value = university_school;
+                schoolHidden.value = university_school;
+                // 載入科系並選擇
+                fetch(window.location.pathname + '?ajax=get_depts&school=' + encodeURIComponent(university_school))
+                    .then(function(r) { return r.json(); })
+                    .then(function(list) {
+                        deptSelect.innerHTML = '<option value="">請選擇科系</option>';
+                        if (Array.isArray(list)) {
+                            list.forEach(function(d) {
+                                var o = document.createElement('option'); o.value = d; o.textContent = d; deptSelect.appendChild(o);
+                            });
+                            if (university_dept) deptSelect.value = university_dept;
+                        }
+                    }).catch(function(err) { console.error(err); });
+            } else {
+                schoolInput.value = '';
+                schoolHidden.value = '';
+                deptSelect.innerHTML = '<option value="">請先選擇學校</option>';
+            }
+
             // 設置成就備註
             const noteInput = document.getElementById('achievementNoteInput');
             noteInput.value = achievementNote || '';
@@ -1447,6 +1806,8 @@ if ($is_teacher && $selected_class !== '') {
             
             if (readOnly) {
                 uni.disabled = true;
+                schoolInput.disabled = true;
+                deptSelect.disabled = true;
                 checkboxes.forEach(cb => cb.disabled = true);
                 noteInput.disabled = true;
                 saveBtn.style.display = 'none';
@@ -1454,6 +1815,8 @@ if ($is_teacher && $selected_class !== '') {
                 form.dataset.readonly = '1';
             } else {
                 uni.disabled = false;
+                schoolInput.disabled = false;
+                deptSelect.disabled = false;
                 checkboxes.forEach(cb => cb.disabled = false);
                 noteInput.disabled = false;
                 saveBtn.style.display = '';
@@ -1462,6 +1825,80 @@ if ($is_teacher && $selected_class !== '') {
             }
             
             document.getElementById('editModal').classList.add('active');
+        }
+        // if a click occurred before openEditModal existed, handle it now
+        if (window.__pendingEditParams) {
+            try { openEditModal.apply(null, window.__pendingEditParams); } catch(e) {}
+            window.__pendingEditParams = null;
+        }
+
+        // 當大學類型改變時，只有國立/私立才顯示學校/科系欄位
+        document.getElementById('universityInput').addEventListener('change', function() {
+            var sel = this;
+            var txt = sel.options[sel.selectedIndex] ? sel.options[sel.selectedIndex].text : '';
+            var isUniv = /國立|私立/.test(txt);
+            var container = document.getElementById('twoTechFields');
+            container.style.display = isUniv ? '' : 'none';
+
+            if (!isUniv) {
+                // 清除內容並隱藏建議
+                document.getElementById('schoolInput').value = '';
+                document.getElementById('schoolSuggestions').style.display = 'none';
+                var dept = document.getElementById('schoolDeptSelect');
+                dept.innerHTML = '<option value="">請先選擇學校</option>';
+                document.getElementById('university_school_input').value = '';
+            }
+        });
+
+        // 學校搜尋 (debounce)
+        var schoolTimer = null;
+        document.getElementById('schoolInput').addEventListener('input', function() {
+            var q = this.value.trim();
+            clearTimeout(schoolTimer);
+            if (q.length < 2) {
+                document.getElementById('schoolSuggestions').style.display = 'none';
+                return;
+            }
+            schoolTimer = setTimeout(function() {
+                fetch(window.location.pathname + '?ajax=search_school&q=' + encodeURIComponent(q))
+                    .then(function(r) { return r.json(); })
+                    .then(function(list) {
+                        var ul = document.getElementById('schoolSuggestions');
+                        ul.innerHTML = '';
+                        if (!Array.isArray(list) || list.length === 0) { ul.style.display = 'none'; return; }
+                        list.forEach(function(item) {
+                            var li = document.createElement('li');
+                            li.style.padding = '8px';
+                            li.style.borderBottom = '1px solid #eee';
+                            li.style.cursor = 'pointer';
+                            li.textContent = item.name;
+                            li.dataset.name = item.name;
+                            li.addEventListener('click', function() {
+                                selectSchoolSuggestion(this.dataset.name);
+                            });
+                            ul.appendChild(li);
+                        });
+                        ul.style.display = '';
+                    }).catch(function(err) { console.error(err); });
+            }, 250);
+        });
+
+        function selectSchoolSuggestion(name) {
+            document.getElementById('schoolInput').value = name;
+            document.getElementById('university_school_input').value = name;
+            document.getElementById('schoolSuggestions').style.display = 'none';
+            // 載入該學校的科系
+            fetch(window.location.pathname + '?ajax=get_depts&school=' + encodeURIComponent(name))
+                .then(function(r) { return r.json(); })
+                .then(function(list) {
+                    var sel = document.getElementById('schoolDeptSelect');
+                    sel.innerHTML = '<option value="">請選擇科系</option>';
+                    if (Array.isArray(list)) {
+                        list.forEach(function(d) {
+                            var o = document.createElement('option'); o.value = d; o.textContent = d; sel.appendChild(o);
+                        });
+                    }
+                }).catch(function(err) { console.error(err); });
         }
 
         function closeEditModal() {
@@ -1479,24 +1916,90 @@ if ($is_teacher && $selected_class !== '') {
         document.getElementById('editForm').addEventListener('submit', function(e) {
             // prevent submitting in readonly mode
             if (this.dataset.readonly === '1') { e.preventDefault(); return false; }
+
+            // make sure hidden school field contains whatever user typed
+            const schoolInputEl = document.getElementById('schoolInput');
+            const hiddenSchool = document.getElementById('university_school_input');
+            if (schoolInputEl && hiddenSchool) {
+                const txt = schoolInputEl.value.trim();
+                if (txt !== '') hiddenSchool.value = txt;
+            }
+
+            // if not in debug mode, allow normal POST (page will reload and show messages)
+            const debugMode = window.location.search.includes('debug=1');
+            if (!debugMode) {
+                // useful debug logging even during normal submit
+                const formDataLog = new FormData(this);
+                console.log('提交的數據(正常提交模式):');
+                for (let [key, value] of formDataLog.entries()) {
+                    console.log(key + ':', value);
+                }
+                // let the browser submit the form normally
+                return;
+            }
+
+            // debug mode: intercept submission and fetch so we can display returned HTML
             e.preventDefault();
-            
             const formData = new FormData(this);
-            
+
             // 調試：輸出表單數據
-            console.log('提交的數據:');
+            console.log('提交的數據(除錯模式):');
             for (let [key, value] of formData.entries()) {
                 console.log(key + ':', value);
             }
-            
+
             fetch(window.location.href, {
                 method: 'POST',
                 body: formData
             })
             .then(response => response.text())
             .then(html => {
-                // 重新載入頁面以顯示更新後的資料
-                window.location.reload();
+                // debug: log returned HTML so we can inspect success_message/SQL etc
+                console.log('server response HTML:', html);
+
+                // 嘗試解析出訊息區塊，並把它們顯示在目前頁面上
+                try {
+                    var parser = new DOMParser();
+                    var doc = parser.parseFromString(html, 'text/html');
+                    var successDiv = doc.querySelector('.message.success');
+                    var errorDiv = doc.querySelector('.message.error');
+                    if (successDiv) {
+                        var clone = successDiv.cloneNode(true);
+                        clone.style.position = 'fixed';
+                        clone.style.top = '0';
+                        clone.style.left = '0';
+                        clone.style.right = '0';
+                        clone.style.zIndex = '9999';
+                        document.body.appendChild(clone);
+                    }
+                    if (errorDiv) {
+                        var clone2 = errorDiv.cloneNode(true);
+                        clone2.style.position = 'fixed';
+                        clone2.style.top = successDiv ? '40px' : '0';
+                        clone2.style.left = '0';
+                        clone2.style.right = '0';
+                        clone2.style.zIndex = '9999';
+                        document.body.appendChild(clone2);
+                    }
+                } catch (e) {
+                    // fallback: show plain text snippet
+                    try {
+                        var div = document.createElement('div');
+                        div.style.position = 'fixed';
+                        div.style.top = '0';
+                        div.style.left = '0';
+                        div.style.right = '0';
+                        div.style.background = '#ffc';
+                        div.style.padding = '10px';
+                        div.style.zIndex = '9999';
+                        div.style.maxHeight = '200px';
+                        div.style.overflow = 'auto';
+                        div.innerText = html.replace(/<[^>]+>/g, '').substring(0,1000);
+                        document.body.appendChild(div);
+                    } catch (e2) {}
+                }
+
+                // debug mode should not reload automatically so messages stay visible
             })
             .catch(error => {
                 console.error('Error:', error);
@@ -1515,8 +2018,8 @@ if ($is_teacher && $selected_class !== '') {
             form.append('action', 'submit_class');
             form.append('class_name', className);
             fetch(window.location.href, { method: 'POST', body: form })
-            .then(r => r.text())
-            .then(() => { window.location.reload(); })
+            .then(function(r) { return r.text(); })
+            .then(function() { window.location.reload(); })
             .catch(err => { console.error(err); alert('提交失敗'); btn.disabled = false; btn.innerHTML = orig; });
         }
     </script>
