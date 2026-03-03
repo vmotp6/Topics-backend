@@ -1508,6 +1508,7 @@ try {
                                         // recruit：老師 5 欄；主任/行政 7 欄
                                         if ($view_mode === 'history') {
                                             $colspan = 5;
+                                            $colspan = 5;
                                         } elseif ($view_mode === 'potential') {
                                             $colspan = ($user_role === 'TEA') ? 6 : 7;
                                         } elseif ($view_mode === 'registered') {
