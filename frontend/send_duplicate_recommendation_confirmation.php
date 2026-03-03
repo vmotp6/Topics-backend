@@ -181,20 +181,10 @@ function build_mail_payload($targetRow, $allRows, $approval_link = '') {
         }
     }
     $rows = array_values($uniq);
-    $is_status_approvable = function($statusRaw) {
-        $st = strtolower(trim((string)$statusRaw));
-        if (in_array($st, ['ap', 'approved', 'mc', 'apd', 'apdr'], true)) return true;
-        $raw = trim((string)$statusRaw);
-        if ($raw !== '' && (mb_strpos($raw, '審核完成') !== false || mb_strpos($raw, '可發獎金') !== false || mb_strpos($raw, '待科主任審核') !== false)) {
-            return true;
-        }
-        return false;
-    };
     $matchedIds = [];
     foreach ($matched as $row) {
         $rid = (int)($row['id'] ?? 0);
         if ($rid <= 0) continue;
-        if (!$is_status_approvable($row['recommendation_status'] ?? '')) continue;
         $matchedIds[$rid] = true;
     }
     $groupIdsCsv = implode(',', array_keys($matchedIds));
