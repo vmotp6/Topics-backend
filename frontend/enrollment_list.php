@@ -327,7 +327,7 @@ if (!in_array(strtolower($sortOrder), ['asc', 'desc'])) {
     $sortOrder = 'asc';
 }
 
-// 基礎 SELECT（是否已聯絡、最新聯絡紀錄的 notes 供列表「意願」欄顯示）
+// 基礎 SELECT（是否已聯絡；意願只讀 ei.intention_level，不再子查詢聯絡紀錄以避開 N+1）
 $base_select = "
     SELECT 
         ei.*, 
@@ -339,8 +339,7 @@ $base_select = "
         es2.name AS system2_name,
         d3.name AS intention3_name, d3.code AS intention3_code,
         es3.name AS system3_name,
-        (SELECT IF(COUNT(*) > 0, 1, 0) FROM enrollment_contact_logs c WHERE c.enrollment_id = ei.id) AS has_contact,
-        (SELECT c.notes FROM enrollment_contact_logs c WHERE c.enrollment_id = ei.id ORDER BY c.contact_date DESC, c.id DESC LIMIT 1) AS latest_contact_notes
+        (SELECT IF(COUNT(*) > 0, 1, 0) FROM enrollment_contact_logs c WHERE c.enrollment_id = ei.id) AS has_contact
 ";
 
 $base_from_join = "
@@ -436,48 +435,22 @@ function getDepartmentName($code, $departments) {
     return $code;
 }
 
-/** 列表「意願」欄僅顯示這四項意願標籤 */
-$contact_intention_labels = ['學生有意願', '家長支持', '學生無意願', '家長反對'];
-
 /**
- * 從聯絡紀錄 notes 中抽出意願顯示用字串（僅含：學生有意願、家長支持、學生無意願、家長反對）
- * @param string|null $notes 最新一筆聯絡紀錄的 notes（格式：【A、B、C】\n備註）
- * @return string 頓號分隔的標籤，無則空字串
- */
-function getContactIntentionDisplay($notes) {
-    global $contact_intention_labels;
-    $notes = $notes === null ? '' : trim((string)$notes);
-    if ($notes === '') return '';
-    if (preg_match('/[【\[]([^】\]]*)[】\]]/u', $notes, $m)) {
-        $block = $m[1];
-        $parts = array_map('trim', preg_split('/[、,，\s]+/u', $block, -1, PREG_SPLIT_NO_EMPTY));
-        $out = array_filter($parts, function($p) use ($contact_intention_labels) {
-            return in_array($p, $contact_intention_labels, true);
-        });
-        if (!empty($out)) return implode('、', $out);
-    }
-    $found = [];
-    foreach ($contact_intention_labels as $label) {
-        if (strpos($notes, $label) !== false) $found[] = $label;
-    }
-    return implode('、', $found);
-}
-
-/**
- * 列表「意願」欄顯示：優先顯示自動評估的意願度（高/中/低），若無則顯示聯絡紀錄意願標籤
- * @param array $item 學生一筆資料（含 latest_contact_notes, intention_level）
- * @return string 顯示用字串，無則空字串
+ * 列表「意願」欄：單一事實來源為 intention_level，以徽章顯示，便於主任排序與辨識
+ * @param array $item 學生一筆資料（含 intention_level：high|medium|low|null）
+ * @return string HTML 徽章或空字串（空時呼叫端顯示 —）
  */
 function getIntentionColumnDisplay($item) {
-    // 1. 先看自動評估的意願度（來源：intention_level，含說明會與聯絡紀錄自動計算）
     $il = isset($item['intention_level']) ? trim((string)$item['intention_level']) : '';
-    if ($il === 'high') return '高意願';
-    if ($il === 'medium') return '中意願';
-    if ($il === 'low') return '低意願';
-
-    // 2. 沒有自動評估結果時，才回退顯示聯絡紀錄內的意願標籤
-    $ci = getContactIntentionDisplay($item['latest_contact_notes'] ?? null);
-    if ($ci !== '') return $ci;
+    if ($il === 'high') {
+        return '<span class="intention-badge intention-high" title="家長支持、學生有意願">高意願</span>';
+    }
+    if ($il === 'medium') {
+        return '<span class="intention-badge intention-medium" title="考慮中">中意願</span>';
+    }
+    if ($il === 'low') {
+        return '<span class="intention-badge intention-low" title="已決定他校、學生無意願、家長反對等">低意願</span>';
+    }
     return '';
 }
 
@@ -1293,7 +1266,7 @@ try {
                                             <?php if ($is_admission_center || $is_director): ?>
                                                 <td><?php echo ((int)($item['has_contact'] ?? 0) === 1) ? '<span style="color:#52c41a;">已聯絡</span>' : '<span style="color:#999;">未聯絡</span>'; ?></td>
                                             <?php endif; ?>
-                                            <td><?php $disp = getIntentionColumnDisplay($item); echo $disp !== '' ? htmlspecialchars($disp) : '<span style="color:#999;">—</span>'; ?></td>
+                                            <td><?php $disp = getIntentionColumnDisplay($item); echo $disp !== '' ? $disp : '<span style="color:#999;">—</span>'; ?></td>
                                             <td onclick="event.stopPropagation();">
                                                 <div style="display: flex; gap: 8px; flex-wrap: wrap;">
                                                     <button type="button"
@@ -1369,7 +1342,7 @@ try {
                                             <?php if ($is_admission_center || $is_director): ?>
                                                 <td><?php echo ((int)($item['has_contact'] ?? 0) === 1) ? '<span style="color:#52c41a;">已聯絡</span>' : '<span style="color:#999;">未聯絡</span>'; ?></td>
                                             <?php endif; ?>
-                                            <td><?php $disp = getIntentionColumnDisplay($item); echo $disp !== '' ? htmlspecialchars($disp) : '<span style="color:#999;">—</span>'; ?></td>
+                                            <td><?php $disp = getIntentionColumnDisplay($item); echo $disp !== '' ? $disp : '<span style="color:#999;">—</span>'; ?></td>
                                             <td onclick="event.stopPropagation();">
                                                 <div style="display: flex; gap: 8px; flex-wrap: wrap;">
                                                     <button type="button"
@@ -1428,11 +1401,27 @@ try {
                                             <?php if ($user_role !== 'TEA'): ?>
                                                 <td><?php echo $assignment_html; ?></td>
                                             <?php endif; ?>
-                                            <td><?php echo getRegistrationStageStatusHtml($item, $current_registration_stage, $stage_display_names, 'recruit') ?: '<span style="color:#999;">—</span>'; ?></td>
+                                            <td>
+                                                <?php
+                                                    $status_text = '—';
+                                                    if ($current_registration_stage) {
+                                                        if ($is_registered) {
+                                                            $status_text = '已報名';
+                                                        } elseif ($is_declined) {
+                                                            $status_text = '本階段不報';
+                                                        } elseif ($is_reminded) {
+                                                            $status_text = '已提醒';
+                                                        } else {
+                                                            $status_text = '未提醒';
+                                                        }
+                                                    }
+                                                    echo htmlspecialchars($status_text);
+                                                ?>
+                                            </td>
                                             <?php if ($is_admission_center || $is_director): ?>
                                                 <td><?php echo ((int)($item['has_contact'] ?? 0) === 1) ? '<span style="color:#52c41a;">已聯絡</span>' : '<span style="color:#999;">未聯絡</span>'; ?></td>
                                             <?php endif; ?>
-                                            <td><?php $disp = getIntentionColumnDisplay($item); echo $disp !== '' ? htmlspecialchars($disp) : '<span style="color:#999;">—</span>'; ?></td>
+                                            <td><?php $disp = getIntentionColumnDisplay($item); echo $disp !== '' ? $disp : '<span style="color:#999;">—</span>'; ?></td>
                                             <td onclick="event.stopPropagation();">
                                                 <div style="display: flex; gap: 8px; flex-wrap: wrap;">
                                                     <button type="button"
@@ -1715,12 +1704,14 @@ try {
 
         <div>
             <div style="font-size:12px; color:#cf1322; font-weight:bold; margin-bottom:4px;">【主要抗性/困難】</div>
-            <div style="display: flex; flex-wrap: wrap; gap: 8px;">
+            <div style="display: flex; flex-wrap: wrap; gap: 8px; align-items: center;">
                 <label style="cursor:pointer; font-size:13px;"><input type="checkbox" name="logOptions" value="距離太遠/交通不便"> 距離太遠/交通不便</label>
                 <label style="cursor:pointer; font-size:13px;"><input type="checkbox" name="logOptions" value="會考分數高/想讀高中"> 會考分數高/想讀高中</label>
                 <label style="cursor:pointer; font-size:13px;"><input type="checkbox" name="logOptions" value="學費/經濟考量"> 學費/經濟考量</label>
                 <label style="cursor:pointer; font-size:13px;"><input type="checkbox" name="logOptions" value="已決定他校"> 已決定他校</label>
                 <label style="cursor:pointer; font-size:13px;"><input type="checkbox" name="logOptions" value="志趣不合/沒興趣"> 志趣不合</label>
+                <label style="cursor:pointer; font-size:13px;"><input type="checkbox" name="logOptions" value="其他" data-other-input="logOtherResistance"> 其他</label>
+                <input type="text" id="logOtherResistance" placeholder="請輸入" maxlength="100" style="display:none; width: 180px; padding: 4px 8px; font-size: 13px; border: 1px solid #d9d9d9; border-radius: 4px;" />
             </div>
         </div>
 
@@ -1728,10 +1719,12 @@ try {
 
         <div>
             <div style="font-size:12px; color:#fa8c16; font-weight:bold; margin-bottom:4px;">【詢問重點/關心議題】</div>
-            <div style="display: flex; flex-wrap: wrap; gap: 8px;">
+            <div style="display: flex; flex-wrap: wrap; gap: 8px; align-items: center;">
                 <label style="cursor:pointer; font-size:13px;"><input type="checkbox" name="logOptions" value="詢問獎學金/補助"> 詢問獎學金/補助</label>
-                <label style="cursor:pointer; font-size:13px;"><input type="checkbox" name="logOptions" value="詢問校車/住宿"> 詢問校車/住宿</label>
+                <label style="cursor:pointer; font-size:13px;"><input type="checkbox" name="logOptions" value="詢問校車/住宿"> 詢問住宿</label>
                 <label style="cursor:pointer; font-size:13px;"><input type="checkbox" name="logOptions" value="詢問升學/就業"> 詢問升學/就業</label>
+                <label style="cursor:pointer; font-size:13px;"><input type="checkbox" name="logOptions" value="其他" data-other-input="logOtherInquiry"> 其他</label>
+                <input type="text" id="logOtherInquiry" placeholder="請輸入" maxlength="100" style="display:none; width: 180px; padding: 4px 8px; font-size: 13px; border: 1px solid #d9d9d9; border-radius: 4px;" />
             </div>
         </div>
 
@@ -1739,12 +1732,14 @@ try {
 
         <div>
             <div style="font-size:12px; color:#52c41a; font-weight:bold; margin-bottom:4px;">【後續行動與狀態】</div>
-            <div style="display: flex; flex-wrap: wrap; gap: 8px;">
+            <div style="display: flex; flex-wrap: wrap; gap: 8px; align-items: center;">
                 <label style="cursor:pointer; font-size:13px;"><input type="checkbox" name="logOptions" value="考慮中"> 考慮中</label>
                 <label style="cursor:pointer; font-size:13px;"><input type="checkbox" name="logOptions" value="已加LINE"> 已加LINE</label>
                 <label style="cursor:pointer; font-size:13px;"><input type="checkbox" name="logOptions" value="邀請參訪"> 邀請參訪</label>
                 <label style="cursor:pointer; font-size:13px;"><input type="checkbox" name="logOptions" value="寄送資料"> 寄送資料</label>
                 <label style="cursor:pointer; font-size:13px;"><input type="checkbox" name="logOptions" value="需再次聯絡"> 需再次聯絡</label>
+                <label style="cursor:pointer; font-size:13px;"><input type="checkbox" name="logOptions" value="其他" data-other-input="logOtherAction"> 其他</label>
+                <input type="text" id="logOtherAction" placeholder="請輸入" maxlength="100" style="display:none; width: 180px; padding: 4px 8px; font-size: 13px; border: 1px solid #d9d9d9; border-radius: 4px;" />
             </div>
         </div>
 
@@ -1761,6 +1756,7 @@ try {
                         </button>
                     </div>
                 </div>
+                <div id="contactLogsFilterHint" style="display:none; margin-bottom: 12px; padding: 8px 12px; background: #e6f7ff; border: 1px solid #91d5ff; border-radius: 6px; font-size: 13px; color: #0050b3;"></div>
                 <div id="contactLogsList">
                     </div>
             </div>
@@ -1813,6 +1809,17 @@ try {
                     document.querySelectorAll('input[name="logOptions"][value="' + mutexValue.replace(/"/g, '\\"') + '"]').forEach(function(other) {
                         if (other !== cb) other.checked = false;
                     });
+                });
+            });
+            // 「其他」勾選時顯示輸入框，取消勾選時隱藏並清空
+            document.querySelectorAll('input[name="logOptions"][data-other-input]').forEach(function(cb) {
+                cb.addEventListener('change', function() {
+                    var id = this.getAttribute('data-other-input');
+                    var input = document.getElementById(id);
+                    if (input) {
+                        input.style.display = this.checked ? 'inline-block' : 'none';
+                        if (!this.checked) input.value = '';
+                    }
                 });
             });
         });
@@ -2158,7 +2165,7 @@ try {
             const detailContent = document.getElementById('detail-content-' + id);
             if (!detailContent) return;
             
-            // 格式化日期
+            // 格式化日期（含時間）
             const formatDate = (dateStr) => {
                 if (!dateStr) return '未提供';
                 const date = new Date(dateStr);
@@ -2169,6 +2176,12 @@ try {
                     hour: '2-digit',
                     minute: '2-digit'
                 });
+            };
+            // 短日期 M/D（時間軸區間用）
+            const formatDateShort = (dateStr) => {
+                if (!dateStr) return '';
+                const d = new Date(dateStr);
+                return (d.getMonth() + 1) + '/' + d.getDate();
             };
             
             // 轉義 HTML 函數
@@ -2213,7 +2226,7 @@ try {
                 intentionSectionHtml = '';
             }
 
-            // 意願變動紀錄區塊：只顯示「什麼時間是什麼意願」+ 觸發者（含說明會進來的意願）
+            // 意願變動紀錄：合併連續相同意願為時間段，以垂直時間軸顯示
             const levelLabel = (code) => {
                 if (!code) return '—';
                 if (code === 'high') return '高意願';
@@ -2224,14 +2237,54 @@ try {
             const changeLogs = data.intention_change_logs || [];
             let intentionChangeBlockHtml = '';
             if (changeLogs.length > 0) {
-                let rows = '';
-                changeLogs.forEach(entry => {
-                    const timeStr = entry.changed_at ? formatDate(entry.changed_at) : '—';
-                    const intentionStr = levelLabel(entry.new_level);
-                    const who = entry.teacher_name || entry.teacher_username || (entry.teacher_id ? '老師#' + entry.teacher_id : '—');
-                    rows += '<tr><td style="padding: 5px; border: 1px solid #ddd;">' + timeStr + '</td><td style="padding: 5px; border: 1px solid #ddd;">' + intentionStr + '</td><td style="padding: 5px; border: 1px solid #ddd;">' + escapeHtml(who) + '</td></tr>';
+                // 依時間正序排列，合併為「區間」：每筆變動代表從 changed_at 開始進入 new_level，直到「下一筆變動的前一天」為止（新輸入當天歸新區間）
+                const sorted = changeLogs.slice().sort((a, b) => new Date(a.changed_at) - new Date(b.changed_at));
+                const periods = [];
+                for (let i = 0; i < sorted.length; i++) {
+                    const entry = sorted[i];
+                    const startDate = entry.changed_at ? entry.changed_at.slice(0, 10) : '';
+                    let endDate = null; // null = 至今
+                    if (i < sorted.length - 1) {
+                        const nextD = new Date(sorted[i + 1].changed_at);
+                        nextD.setDate(nextD.getDate() - 1);
+                        endDate = nextD.getFullYear() + '-' + String(nextD.getMonth() + 1).padStart(2, '0') + '-' + String(nextD.getDate()).padStart(2, '0');
+                    }
+                    let who = entry.teacher_name || entry.teacher_username || '';
+                    if (!who) {
+                        const hasTeacherId = !!entry.teacher_id && parseInt(entry.teacher_id, 10) !== 0;
+                        const isInitialFromSession = !hasTeacherId && (entry.old_level === null || entry.old_level === '' || typeof entry.old_level === 'undefined');
+                        who = isInitialFromSession ? '說明會' : (hasTeacherId ? '老師#' + entry.teacher_id : '—');
+                    }
+                    periods.push({ level: entry.new_level, startDate: startDate, endDate: endDate, who: who, entry: entry });
+                }
+                // 顯示順序：最新（至今）在上
+                periods.reverse();
+                const levelColor = (code) => { if (code === 'high') return '#52c41a'; if (code === 'low') return '#ff4d4f'; return '#faad14'; };
+                let timelineItems = '';
+                periods.forEach(p => {
+                    const dateRangeStr = p.endDate ? (formatDateShort(p.startDate) + ' ~ ' + formatDateShort(p.endDate)) : (formatDateShort(p.startDate) + ' ~ 至今');
+                    let subText = '觸發者：' + escapeHtml(p.who);
+                    if (p.endDate) {
+                        const startD = new Date(p.startDate);
+                        const endD = new Date(p.endDate);
+                        const days = Math.max(0, Math.round((endD - startD) / (24 * 60 * 60 * 1000)) + 1);
+                        subText += ' · 維持了 ' + days + ' 天';
+                    } else {
+                        subText += ' · 持續中';
+                    }
+                    const dateFrom = p.startDate || '';
+                    const dateTo = p.endDate || new Date().toISOString().slice(0, 10);
+                    const sid = parseInt(student.id) || 0;
+                    const sname = String(student.name || '');
+                    const atid = parseInt(student.assigned_teacher_id || 0) || 0;
+                    timelineItems += '<div class="intention-timeline-item" style="position:relative; padding-left: 24px; margin-bottom: 16px;">' +
+                        '<span style="position:absolute; left:0; top:4px; width:10px; height:10px; border-radius:50%; background:' + levelColor(p.level) + ';"></span>' +
+                        '<div style="font-size: 14px; font-weight: 600; color:#333;">' + levelLabel(p.level) + ' <span style="color:#666; font-weight:400;">(' + dateRangeStr + ')</span></div>' +
+                        '<div style="font-size: 12px; color: #8c8c8c; margin-top: 4px;">' + subText + '</div>' +
+                        '<button type="button" class="btn-view btn-timeline-view-log" style="margin-top: 6px; padding: 4px 10px; font-size: 12px;" data-date-from="' + escapeHtml(dateFrom) + '" data-date-to="' + escapeHtml(dateTo) + '" data-student-id="' + sid + '" data-student-name="' + escapeHtml(sname) + '" data-assigned-teacher-id="' + atid + '" onclick="event.stopPropagation(); scrollToContactBlockAndOpenFiltered(this)"><i class="fas fa-list"></i> 查看這段紀錄</button>' +
+                        '</div>';
                 });
-                intentionChangeBlockHtml = '<h4 style="margin: 10px 0 10px 0; font-size: 16px;">意願變動紀錄</h4><table style="width: 100%; border-collapse: collapse; font-size: 14px;"><thead><tr><th style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5; width: 140px;">時間</th><th style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5; width: 90px;">意願</th><th style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">觸發者</th></tr></thead><tbody>' + rows + '</tbody></table>';
+                intentionChangeBlockHtml = '<h4 style="margin: 10px 0 10px 0; font-size: 16px;">意願變動紀錄</h4><div class="intention-timeline" style="margin-top: 8px;">' + timelineItems + '</div>';
             } else {
                 intentionChangeBlockHtml = '<h4 style="margin: 10px 0 10px 0; font-size: 16px;">意願變動紀錄</h4><p style="color: #999; font-size: 14px;">尚無意願變動紀錄</p>';
             }
@@ -2242,7 +2295,7 @@ try {
             // 招生中心：詳情中完全不顯示「聯絡紀錄」區塊（無標題、無筆數、無按鈕）
             let contactBlockHtml = '';
             if (!isAdmissionCenterDetail) {
-                contactBlockHtml = '<h4 style="margin: 10px 0 10px 0; font-size: 16px;">聯絡紀錄</h4><p>共有 <strong>' + contactLogsCount + '</strong> 筆聯絡紀錄</p><button class="btn-view" style="margin-top: 8px; border-color: #17a2b8; color: #17a2b8;" data-student-id="' + (parseInt(student.id) || 0) + '" data-student-name="' + escapeHtml(String(student.name || '')) + '" data-assigned-teacher-id="' + (parseInt(student.assigned_teacher_id || 0) || 0) + '" data-view-only="true" onclick="const btn = this; openContactLogsModal(parseInt(btn.dataset.studentId) || 0, btn.dataset.studentName || \'\', btn.dataset.assignedTeacherId || \'0\', btn.dataset.viewOnly === \'true\')"><i class="fas fa-eye"></i> 查看聯絡紀錄</button>';
+                contactBlockHtml = '<div id="detail-contact-logs-block"><h4 style="margin: 10px 0 10px 0; font-size: 16px;">聯絡紀錄</h4><p>共有 <strong>' + contactLogsCount + '</strong> 筆聯絡紀錄</p><button class="btn-view" style="margin-top: 8px; border-color: #17a2b8; color: #17a2b8;" data-student-id="' + (parseInt(student.id) || 0) + '" data-student-name="' + escapeHtml(String(student.name || '')) + '" data-assigned-teacher-id="' + (parseInt(student.assigned_teacher_id || 0) || 0) + '" data-view-only="true" onclick="const btn = this; openContactLogsModal(parseInt(btn.dataset.studentId) || 0, btn.dataset.studentName || \'\', btn.dataset.assignedTeacherId || \'0\', btn.dataset.viewOnly === \'true\')"><i class="fas fa-eye"></i> 查看聯絡紀錄</button></div>';
             }
             // 詳情表格：寬度 100%、左右雙欄各 50%（與列表同寬）；右欄：就讀意願、意願變動紀錄、分配資訊、聯絡紀錄
             const html = '<table style="width: 100%; border-collapse: collapse;"><tr><td style="width: 50%; vertical-align: top; padding-right: 20px;"><h4 style="margin: 0 0 10px 0; font-size: 16px;">基本資料</h4><table style="width: 100%; border-collapse: collapse; font-size: 14px;"><tr><td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5; width: 120px;">姓名</td><td style="padding: 5px; border: 1px solid #ddd;">' + escapeHtml(student.name) + '</td></tr><tr><td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">身分別</td><td style="padding: 5px; border: 1px solid #ddd;">' + escapeHtml(student.identity_text) + '</td></tr><tr><td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">性別</td><td style="padding: 5px; border: 1px solid #ddd;">' + escapeHtml(student.gender_text) + '</td></tr><tr><td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">電話1</td><td style="padding: 5px; border: 1px solid #ddd;">' + escapeHtml(student.phone1) + '</td></tr><tr><td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">電話2</td><td style="padding: 5px; border: 1px solid #ddd;">' + escapeHtml(student.phone2) + '</td></tr><tr><td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">Email</td><td style="padding: 5px; border: 1px solid #ddd;">' + escapeHtml(student.email) + '</td></tr><tr><td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">Line ID</td><td style="padding: 5px; border: 1px solid #ddd;">' + escapeHtml(student.line_id) + '</td></tr><tr><td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">Facebook</td><td style="padding: 5px; border: 1px solid #ddd;">' + escapeHtml(student.facebook) + '</td></tr><tr><td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">就讀國中</td><td style="padding: 5px; border: 1px solid #ddd;">' + escapeHtml(student.junior_high_name || student.junior_high) + '</td></tr><tr><td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">目前年級</td><td style="padding: 5px; border: 1px solid #ddd;">' + escapeHtml(student.current_grade_name || student.current_grade)  + '</td></tr><tr><td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">從哪裡知道我們</td><td style="padding: 5px; border: 1px solid #ddd;">' + escapeHtml(student.how_hear || '') + '</td></tr><tr><td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">建立時間</td><td style="padding: 5px; border: 1px solid #ddd;">' + formatDate(student.created_at) + '</td></tr>' + (student.remarks ? '<tr><td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">備註</td><td style="padding: 5px; border: 1px solid #ddd; white-space: pre-wrap;">' + escapeHtml(student.remarks) + '</td></tr>' : '') + '</table></td><td style="width: 50%; vertical-align: top; padding-left: 20px;">' + intentionSectionHtml + intentionChangeBlockHtml + '<h4 style="margin: 10px 0 10px 0; font-size: 16px;">分配資訊</h4><table style="width: 100%; border-collapse: collapse; font-size: 14px;"><tr><td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5; width: 120px;">分配科系</td><td style="padding: 5px; border: 1px solid #ddd;">' + escapeHtml(student.assigned_department_name || student.assigned_department || '尚未分配') + '</td></tr><tr><td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">負責老師</td><td style="padding: 5px; border: 1px solid #ddd;">' + teacherNameDisplay + reassignBtnHtml + '</td></tr>' + (student.recommended_teacher_name ? '<tr><td style="padding: 5px; border: 1px solid #ddd; background: #f5f5f5;">推薦老師</td><td style="padding: 5px; border: 1px solid #ddd;">' + escapeHtml(student.recommended_teacher_name) + '</td></tr>' : '') + '</table>' + contactBlockHtml + '</td></tr></table>';
@@ -2259,8 +2312,25 @@ try {
             return div.innerHTML;
         }
 
+        // 從意願時間軸「查看這段紀錄」：先平滑滾動到聯絡紀錄區塊，再開啟 modal 並依日期篩選
+        function scrollToContactBlockAndOpenFiltered(btn) {
+            if (!btn || !btn.dataset) return;
+            const el = document.getElementById('detail-contact-logs-block');
+            if (el) {
+                el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+            }
+            const sid = parseInt(btn.dataset.studentId, 10) || 0;
+            const sname = (btn.dataset.studentName || '').replace(/&quot;/g, '"');
+            const atid = parseInt(btn.dataset.assignedTeacherId, 10) || 0;
+            const dateFrom = (btn.dataset.dateFrom || '').trim();
+            const dateTo = (btn.dataset.dateTo || '').trim();
+            setTimeout(function() {
+                openContactLogsModal(sid, sname, atid, 'true', dateFrom, dateTo);
+            }, 300);
+        }
+
         // Contact Logs functions
-function openContactLogsModal(studentId, studentName, assignedTeacherId, viewOnly) {
+function openContactLogsModal(studentId, studentName, assignedTeacherId, viewOnly, dateFrom, dateTo) {
     // 1. 基礎設定
     const id = parseInt(studentId) || 0;
     if (!id) {
@@ -2347,6 +2417,9 @@ function openContactLogsModal(studentId, studentName, assignedTeacherId, viewOnl
 
                 // 重置所有勾選框 (這是新加的功能)
                 document.querySelectorAll('input[name="logOptions"]').forEach(cb => cb.checked = false);
+                var o1 = document.getElementById('logOtherResistance'); if (o1) { o1.value = ''; o1.style.display = 'none'; }
+                var o2 = document.getElementById('logOtherInquiry'); if (o2) { o2.value = ''; o2.style.display = 'none'; }
+                var o3 = document.getElementById('logOtherAction'); if (o3) { o3.value = ''; o3.style.display = 'none'; }
                 
                 // 如果有其他追蹤表單重置函式
                 if (typeof resetTrackingForm === 'function') resetTrackingForm();
@@ -2362,8 +2435,8 @@ function openContactLogsModal(studentId, studentName, assignedTeacherId, viewOnl
         if (changeIntentionSec) changeIntentionSec.style.display = 'none';
     }
 
-    // 5. 載入歷史紀錄
-    loadContactLogs(studentId);
+    // 5. 載入歷史紀錄（可選日期篩選：從意願時間軸「查看這段紀錄」傳入）
+    loadContactLogs(id, dateFrom || undefined, dateTo || undefined);
 }
 
         function closeContactLogsModal() {
@@ -2378,13 +2451,15 @@ function openContactLogsModal(studentId, studentName, assignedTeacherId, viewOnl
             return div.innerHTML;
         }
 
-        function loadContactLogs(studentId) {
+        function loadContactLogs(studentId, dateFrom, dateTo) {
             const list = document.getElementById('contactLogsList');
+            const hintEl = document.getElementById('contactLogsFilterHint');
             if (!list) {
                 console.error('contactLogsList element not found');
                 return;
             }
             list.innerHTML = '<p style="text-align:center;">載入中...</p>';
+            if (hintEl) { hintEl.style.display = 'none'; hintEl.textContent = ''; }
             
             // 使用新的 API 端點，支援顯示分配資訊
             const apiUrl = '../../Topics-frontend/frontend/api/contact_logs_api.php?enrollment_id=' + encodeURIComponent(studentId);
@@ -2406,8 +2481,19 @@ function openContactLogsModal(studentId, studentName, assignedTeacherId, viewOnl
                 return res.json();
             })
             .then(data => {
-                if (data.success && data.logs && data.logs.length > 0) {
-                    list.innerHTML = data.logs.map(log => {
+                let logs = (data.success && data.logs) ? data.logs : [];
+                if (logs.length > 0 && dateFrom && dateTo) {
+                    logs = logs.filter(log => {
+                        const d = (log.contact_date || log.created_at || '').toString().slice(0, 10);
+                        return d >= dateFrom && d <= dateTo;
+                    });
+                    if (hintEl) {
+                        hintEl.textContent = '僅顯示 ' + dateFrom + ' ~ ' + dateTo + ' 的紀錄（共 ' + logs.length + ' 筆）';
+                        hintEl.style.display = 'block';
+                    }
+                }
+                if (logs.length > 0) {
+                    list.innerHTML = logs.map(log => {
                         const method = log.method || log.contact_method || '其他';
                         const notes = log.notes || log.result || '';
                         const contactDate = log.contact_date || '';
@@ -2454,7 +2540,11 @@ function openContactLogsModal(studentId, studentName, assignedTeacherId, viewOnl
                         '</div>';
                     }).join('');
                 } else {
-                    list.innerHTML = '<p style="text-align:center; color:#999;">尚無聯絡紀錄</p>';
+                    if (dateFrom && dateTo) {
+                        list.innerHTML = '<p style="text-align:center; color:#999;">此日期區間尚無聯絡紀錄</p>';
+                    } else {
+                        list.innerHTML = '<p style="text-align:center; color:#999;">尚無聯絡紀錄</p>';
+                    }
                 }
             })
             .catch(err => {
@@ -2473,6 +2563,15 @@ function submitContactLog() {
     let selectedOpts = [];
     checkboxes.forEach(cb => selectedOpts.push(cb.value));
     
+    // 三個「其他」輸入框：有內容時加入對應標籤（取代單純的「其他」）
+    const otherResistance = (document.getElementById('logOtherResistance') || {}).value.trim();
+    const otherInquiry = (document.getElementById('logOtherInquiry') || {}).value.trim();
+    const otherAction = (document.getElementById('logOtherAction') || {}).value.trim();
+    selectedOpts = selectedOpts.filter(function(v) { return v !== '其他'; });
+    if (otherResistance) selectedOpts.push('抗性-其他：' + otherResistance);
+    if (otherInquiry) selectedOpts.push('詢問-其他：' + otherInquiry);
+    if (otherAction) selectedOpts.push('行動-其他：' + otherAction);
+    
     // 驗證
     if (selectedOpts.length === 0 && !content) {
         alert('請至少勾選一個狀況或輸入備註內容');
@@ -2485,8 +2584,7 @@ function submitContactLog() {
     }
     
     // 組合文字
-    // 格式範例：【家長接聽、家長支持、學生無意願、學費/經濟考量】
-    //           備註：媽媽覺得學費太貴，但爸爸想讓孩子來...
+    // 格式範例：【家長接聽、家長支持、學生無意願、學費/經濟考量、抗性-其他：xxx】
     let finalNotes = "";
     if (selectedOpts.length > 0) {
         finalNotes += "【" + selectedOpts.join('、') + "】";
@@ -2502,6 +2600,7 @@ function submitContactLog() {
     formData.append('notes', finalNotes);
     formData.append('method', contactMethod);
     formData.append('contact_date', contactDate);
+    selectedOpts.forEach(function(opt) { formData.append('logOptions[]', opt); });
     var crEl = document.getElementById('newLogContactResult');
     formData.append('contact_result', (crEl && crEl.value) ? crEl.value : 'contacted');
 
@@ -2517,6 +2616,9 @@ function submitContactLog() {
             document.getElementById('newLogContent').value = '';
             document.getElementById('newLogDate').value = new Date().toISOString().split('T')[0];
             document.querySelectorAll('input[name="logOptions"]').forEach(cb => cb.checked = false);
+            var o1 = document.getElementById('logOtherResistance'); if (o1) { o1.value = ''; o1.style.display = 'none'; }
+            var o2 = document.getElementById('logOtherInquiry'); if (o2) { o2.value = ''; o2.style.display = 'none'; }
+            var o3 = document.getElementById('logOtherAction'); if (o3) { o3.value = ''; o3.style.display = 'none'; }
             window.location.reload();
         } else {
             alert(data.message || '新增失敗');

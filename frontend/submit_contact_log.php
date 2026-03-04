@@ -47,23 +47,47 @@ try {
     $notes = trim($_POST['notes'] ?? '');
     $teacher_id = $_SESSION['user_id']; // 紀錄是誰寫的
 
+    // 打勾的選項陣列（單一事實來源：依此更新意願，不依賴 notes 字串解析）
+    $log_options = [];
+    if (isset($_POST['logOptions']) && is_array($_POST['logOptions'])) {
+        $log_options = array_map('trim', $_POST['logOptions']);
+    } elseif (isset($_POST['logOptions']) && is_string($_POST['logOptions']) && $_POST['logOptions'] !== '') {
+        $log_options = [trim($_POST['logOptions'])];
+    }
+
     if ($enrollment_id <= 0) {
         echo json_encode(['success' => false, 'message' => '無效的學生 ID']);
         exit;
     }
 
-    if (empty($notes)) {
-        echo json_encode(['success' => false, 'message' => '請輸入聯絡內容']);
+    if (empty($notes) && empty($log_options)) {
+        echo json_encode(['success' => false, 'message' => '請至少勾選一個狀況或輸入聯絡內容']);
         exit;
     }
 
     $conn = getDatabaseConnection();
 
-    // 依聯絡紀錄自動評估意願度，並在 notes 中註明計算結果（列表意願欄與聯絡紀錄都會顯示）
-    $intention_level = evaluateIntentionLevelFromNotes($notes);
+    // 依 logOptions 陣列計算意願度（不依賴 notes 正則，避免漏抓）；無 logOptions 時才回退用 notes 解析
+    $intention_level = null;
+    if (!empty($log_options)) {
+        $strong_refusal = ['已決定他校', '志趣不合/沒興趣', '學生無意願', '家長反對'];
+        $positive = ['學生有意願', '家長支持'];
+        $has_refusal = count(array_intersect($log_options, $strong_refusal)) > 0;
+        $has_positive = count(array_intersect($log_options, $positive)) > 0;
+        if ($has_refusal) {
+            $intention_level = 'low';
+        } elseif ($has_positive) {
+            $intention_level = 'high';
+        } else {
+            $intention_level = 'medium';
+        }
+    }
+    if ($intention_level === null) {
+        $intention_level = evaluateIntentionLevelFromNotes($notes);
+    }
     if ($intention_level !== null) {
         $level_label = ($intention_level === 'high') ? '高意願' : (($intention_level === 'low') ? '低意願' : '中意願');
-        $notes .= "\n系統自動評估意願度：" . $level_label;
+        $notes .= (strlen($notes) > 0 ? "\n" : '') . "系統自動評估意願度：" . $level_label;
     }
 
     // 寫入聯絡紀錄（notes 已含「系統自動評估意願度」說明）
@@ -98,7 +122,10 @@ try {
             $upd->execute();
             $upd->close();
         }
-        logIntentionChange($conn, $enrollment_id, $old_level, $intention_level, $contact_log_id, $teacher_id);
+        // 僅在意願「真的改變」時寫入變動紀錄（相同意願不重複寫，時間軸會顯示為 2/28~至今，聯絡紀錄仍含今天那筆）
+        if ($old_level !== $intention_level) {
+            logIntentionChange($conn, $enrollment_id, $old_level, $intention_level, $contact_log_id, $teacher_id);
+        }
     }
 
     echo json_encode(['success' => true, 'message' => '紀錄新增成功']);

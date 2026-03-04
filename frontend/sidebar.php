@@ -272,6 +272,14 @@ function hasPermission($permission_code, $user_role, $permissions_array) {
                 </a>
             <?php endif; ?>
 
+            <!-- 教師經營成效分析 - 僅主任可見 -->
+            <?php if ($is_director): ?>
+                <a href="teacher_intention_performance.php" class="menu-item <?php echo $current_page === 'teacher_intention_performance' ? 'active' : ''; ?>">
+                    <i class="fas fa-chart-line"></i>
+                    <span>教師經營成效分析</span>
+                </a>
+            <?php endif; ?>
+
             <!-- 續招 - 所有角色都可以看到（但權限不同），STAM和AS需要權限 -->
             <?php if ((!$is_stam && !$is_as) || ($is_stam && hasPermission('continued_admission_list', $user_role, $stam_permissions)) || ($is_as && hasPermission('continued_admission_list', $user_role, $as_permissions))): ?>
                 <a href="continued_admission_list.php" class="menu-item <?php echo in_array($current_page, ['continued_admission_list', 'continued_admission_detail']) ? 'active' : ''; ?>">
