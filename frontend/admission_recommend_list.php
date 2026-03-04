@@ -1121,10 +1121,8 @@ try {
             if ($view_mode === 'rejected' && ($label === '初審未通過' || $label === '科主任審核未通過')) $filtered[] = $rec;
             if ($view_mode === 'director_in_progress' && $label === '科主任審核中') $filtered[] = $rec;
             if ($view_mode === 'approved_bonus') {
-                $director_status = strtolower(trim((string)($rec['director_review_status'] ?? '')));
-                if ($label === '審核完成（可發獎金）' && $director_status === 'signed') {
-                    $filtered[] = $rec;
-                }
+                // 通過(可發獎金) 篩選只看審核結果，不要求推薦人已線上簽核
+                if ($label === '審核完成（可發獎金）') $filtered[] = $rec;
             }
         }
         $recommendations = $filtered;
@@ -2750,6 +2748,22 @@ try {
         </div>
     </div>
 
+    <!-- 查看被推薦人選擇結果 -->
+    <div id="duplicateChoiceResultModal" class="modal" style="display: none;">
+        <div class="modal-content" style="max-width: 900px;">
+            <div class="modal-header">
+                <h3>被推薦人選擇結果</h3>
+                <span class="close" onclick="closeDuplicateChoiceResultModal()">&times;</span>
+            </div>
+            <div class="modal-body">
+                <div id="duplicateChoiceResultContent"></div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn-confirm" onclick="closeDuplicateChoiceResultModal()">確定</button>
+            </div>
+        </div>
+    </div>
+
     <!-- 發送獎金簽核提醒彈出視窗 -->
     <div id="bonusGuardModal" class="modal" style="display: none;">
         <div class="modal-content" style="max-width: 460px;">
@@ -3360,6 +3374,87 @@ try {
         const listEl = document.getElementById('duplicateMailPreviewList');
         if (listEl) listEl.innerHTML = '';
         duplicateMailPreviewRecommendationId = 0;
+    }
+
+    function openDuplicateChoiceResultModal(recommendationId, triggerBtn) {
+        const rid = parseInt(String(recommendationId || '0'), 10);
+        if (!rid) {
+            alert('缺少推薦編號，無法查看結果。');
+            return;
+        }
+        const modal = document.getElementById('duplicateChoiceResultModal');
+        const contentEl = document.getElementById('duplicateChoiceResultContent');
+        if (!modal || !contentEl) return;
+
+        const oldText = triggerBtn ? triggerBtn.textContent : '';
+        if (triggerBtn) {
+            triggerBtn.disabled = true;
+            triggerBtn.textContent = '載入中...';
+        }
+
+        contentEl.innerHTML = '<div style="color:#666;">載入中...</div>';
+        modal.style.display = 'flex';
+
+        fetch('get_recommended_choice_result.php', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: 'recommendation_id=' + encodeURIComponent(String(rid)),
+            credentials: 'same-origin'
+        })
+        .then(r => r.json())
+        .then(data => {
+            if (!data || !data.success) {
+                throw new Error((data && data.message) ? data.message : '載入失敗');
+            }
+            if (!data.has_result) {
+                contentEl.innerHTML = '<div style="color:#595959; font-size:16px;">尚未收到被推薦人的選擇結果。</div>';
+                return;
+            }
+            const rows = Array.isArray(data.rows) ? data.rows : [];
+            let html = '';
+            if (data.signed_at) {
+                html += '<div style="margin-bottom:10px; color:#595959;">簽核時間：' + escapeHtml(String(data.signed_at || '')) + '</div>';
+            }
+            html += '<table style="width:100%; border-collapse:collapse; background:#fff;">';
+            html += '<thead><tr>';
+            html += '<th style="border:1px solid #d9d9d9; background:#f5f5f5; padding:8px; text-align:left;">推薦人姓名</th>';
+            html += '<th style="border:1px solid #d9d9d9; background:#f5f5f5; padding:8px; text-align:left;">推薦人學號/編號</th>';
+            html += '<th style="border:1px solid #d9d9d9; background:#f5f5f5; padding:8px; text-align:left;">選擇結果</th>';
+            html += '<th style="border:1px solid #d9d9d9; background:#f5f5f5; padding:8px; text-align:left;">理由</th>';
+            html += '</tr></thead><tbody>';
+            if (!rows.length) {
+                html += '<tr><td colspan="4" style="border:1px solid #d9d9d9; padding:10px; color:#595959;">尚無可顯示資料</td></tr>';
+            } else {
+                rows.forEach(row => {
+                    const resultText = String(row.result_text || '');
+                    const resultColor = resultText === '不通過' ? '#cf1322' : (resultText === '通過' ? '#389e0d' : '#595959');
+                    html += '<tr>';
+                    html += '<td style="border:1px solid #d9d9d9; padding:8px;">' + escapeHtml(String(row.recommender_name || '')) + '</td>';
+                    html += '<td style="border:1px solid #d9d9d9; padding:8px;">' + escapeHtml(String(row.recommender_student_id || '')) + '</td>';
+                    html += '<td style="border:1px solid #d9d9d9; padding:8px; color:' + resultColor + '; font-weight:700;">' + escapeHtml(resultText || '未填寫') + '</td>';
+                    html += '<td style="border:1px solid #d9d9d9; padding:8px; white-space:pre-wrap;">' + escapeHtml(String(row.reason || '')) + '</td>';
+                    html += '</tr>';
+                });
+            }
+            html += '</tbody></table>';
+            contentEl.innerHTML = html;
+        })
+        .catch(err => {
+            contentEl.innerHTML = '<div style="color:#cf1322;">載入失敗：' + escapeHtml(err && err.message ? err.message : '未知錯誤') + '</div>';
+        })
+        .finally(() => {
+            if (triggerBtn) {
+                triggerBtn.disabled = false;
+                triggerBtn.textContent = oldText || '查看被推薦人選擇結果';
+            }
+        });
+    }
+
+    function closeDuplicateChoiceResultModal() {
+        const modal = document.getElementById('duplicateChoiceResultModal');
+        const contentEl = document.getElementById('duplicateChoiceResultContent');
+        if (contentEl) contentEl.innerHTML = '';
+        if (modal) modal.style.display = 'none';
     }
 
     const gmailPreviewSend = document.getElementById('gmailPreviewSend');
@@ -3980,17 +4075,33 @@ try {
             tag.style.color = '#262626';
             tag.textContent = duplicateSameDept ? '(推薦人同科系)' : '(推薦人不同科系)';
             dupLine.appendChild(tag);
+            const actionWrap = document.createElement('span');
+            actionWrap.style.display = 'inline-flex';
+            actionWrap.style.alignItems = 'center';
+            actionWrap.style.gap = '8px';
+            actionWrap.style.marginLeft = '10px';
+            actionWrap.style.whiteSpace = 'nowrap';
             const btn = document.createElement('button');
             btn.type = 'button';
             btn.className = 'btn-view';
-            btn.style.marginLeft = '10px';
             btn.style.padding = '4px 10px';
             btn.style.fontSize = '13px';
             btn.textContent = '寄信給被推薦人確認';
             btn.addEventListener('click', function() {
                 openDuplicateMailPreviewModal(recommendationId, btn);
             });
-            dupLine.appendChild(btn);
+            actionWrap.appendChild(btn);
+            const resultBtn = document.createElement('button');
+            resultBtn.type = 'button';
+            resultBtn.className = 'btn-view';
+            resultBtn.style.padding = '4px 10px';
+            resultBtn.style.fontSize = '13px';
+            resultBtn.textContent = '查看被推薦人選擇結果';
+            resultBtn.addEventListener('click', function() {
+                openDuplicateChoiceResultModal(recommendationId, resultBtn);
+            });
+            actionWrap.appendChild(resultBtn);
+            dupLine.appendChild(actionWrap);
             listEl.appendChild(dupLine);
         } else {
             addLine('未發現重複推薦', false);
@@ -4254,6 +4365,14 @@ try {
         duplicateMailPreviewModal.addEventListener('click', function(e) {
             if (e.target === this) {
                 closeDuplicateMailPreviewModal();
+            }
+        });
+    }
+    const duplicateChoiceResultModal = document.getElementById('duplicateChoiceResultModal');
+    if (duplicateChoiceResultModal) {
+        duplicateChoiceResultModal.addEventListener('click', function(e) {
+            if (e.target === this) {
+                closeDuplicateChoiceResultModal();
             }
         });
     }
