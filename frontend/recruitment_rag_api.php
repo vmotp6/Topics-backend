@@ -1,4 +1,5 @@
 <?php
+
 /**
  * 招生知識庫 RAG API
  * - 依關鍵字搜尋 recruitment_knowledge（問題＋回答）
@@ -23,10 +24,10 @@ if (
 
 $role = trim($_SESSION['role'] ?? '');
 $role_map = [
-    '管理員' => 'ADM', 'ADM' => 'ADM',
-    '行政人員' => 'STA', '學校行政人員' => 'STA', 'staff' => 'STA', 'STA' => 'STA', '招生中心' => 'STA',
-    '主任' => 'DI', 'director' => 'DI', 'DI' => 'DI', 'IM' => 'DI',
-    '老師' => 'TEA', 'teacher' => 'TEA', 'TEA' => 'TEA',
+    '管理員' => 'ADM',
+    '行政人員' => 'STA', '招生中心' => 'STA',
+    '主任' => 'DI', 
+    '老師' => 'TEA',
 ];
 $norm = $role_map[$role] ?? $role;
 if (!in_array($norm, ['ADM', 'STA', 'TEA', 'DI'], true)) {
@@ -43,19 +44,54 @@ if ($question === '') {
     exit;
 }
 
+// 先偵測是否有明確學校名稱
+$school_pattern = '/康寧大學|國立臺灣大學|台灣科技大學|其他學校名稱|海洋科技大學/u'; // 可自行擴充
+$mentioned_school = [];
+if (preg_match_all($school_pattern, $question, $matches)) {
+    $mentioned_school = $matches[0];
+}
+
+// 判斷回覆的學校
+$target_school = '康寧大學'; // 默認
+$school_warning = '';
+// 若問題中提到非康寧大學，加入警告
+if (!empty($mentioned_school) && !in_array('康寧大學', $mentioned_school)) {
+    echo json_encode([
+        'success' => true,
+        'ai_used' => false,
+        'answer'  => "⚠️ 注意：本系統專屬於康寧大學招生知識庫，僅提供康寧大學的官方資訊。\n您查詢的其他學校資料請自行查詢教育部或該校官方網站。\n\n",
+        'sources' => [],
+        'files'   => []
+    ]);
+    exit;
+}
+
+
+// 常見寒暄過濾
+if (preg_match('/你好|嗨|哈囉|在嗎/u', $question)) {
+    echo json_encode([
+        'success' => true,
+        'ai_used' => false,
+        'answer'  => "您好 😊 這裡是招生知識庫系統，請直接輸入招生相關問題，例如學費、時間、科系等。",
+        'sources' => [],
+        'files'   => []
+    ]);
+    exit;
+}
+
 $conn = getDatabaseConnection();
 
 // 確認資料表與欄位存在
 $t1 = $conn->query("SHOW TABLES LIKE 'recruitment_knowledge'");
 $t2 = $conn->query("SHOW TABLES LIKE 'recruitment_knowledge_files'");
 if (!$t1 || !$t2 || $t1->num_rows === 0 || $t2->num_rows === 0) {
-    $conn->close();
+    
     echo json_encode(['success' => false, 'error' => '招生知識庫資料表尚未建立']);
     exit;
 }
 $cols = $conn->query("SHOW COLUMNS FROM recruitment_knowledge LIKE 'question'");
 if (!$cols || $cols->num_rows === 0) {
-    $conn->close();
+    
     echo json_encode(['success' => false, 'error' => 'recruitment_knowledge 結構不是「問題→回答」，請先更新資料表結構']);
     exit;
 }
@@ -161,9 +197,7 @@ if ($res) {
         ];
 
         $context_parts[] =
-            "【來源：" . $label . "】" .
-            "Q: " . ($row['question'] ?? '') . "\n" .
-            "A: " . trim((string)($row['answer'] ?? ''));
+            trim((string)($row['answer'] ?? ''));
     }
 }
 
@@ -192,7 +226,21 @@ if (!empty($kid_list)) {
     }
 }
 
-$conn->close();
+if (!empty($sources) || !empty($files)) {
+    // 找到任何官方資料（文字或檔案）
+    $answer = implode("\n\n---\n\n", array_slice($context_parts, 0, 5));
+    $ai_used = false;
+
+    echo json_encode([
+        'success' => true,
+        'ai_used' => $ai_used,
+        'answer'  => $answer,
+        'sources' => $sources,
+        'files'   => $files
+    ]);
+    exit;
+}
+
 
 // 當問題問「時間／日程／時程」時，只傳含時間相關內容的資料給 AI，排除「科系列表」等答非所問
 if (count($context_parts) > 0 && preg_match('/時間|日程|時程|日期|幾月|何時|什麼時候/u', $question)) {
@@ -211,17 +259,38 @@ if (count($context_parts) > 0 && preg_match('/時間|日程|時程|日期|幾月
     }
 }
 
+
+
+
 // 沒有任何命中：不呼叫 AI，只如實說明
 if (count($context_parts) === 0) {
+
+    $chat_mode = true;   // 🔥 標記現在是對話模式
+
+    $prompt =
+    "你是康寧大學招生知識庫的 AI 助手。
+
+目前官方資料庫沒有相關資料。
+
+請自然回答使用者問題。
+如果不是招生問題，可以自由對話。
+
+使用者問題：
+{$question}
+";
+    $prompt .= "\n請用繁體中文回答。";
+    $answer = callOllama($prompt);
+
     echo json_encode([
         'success'  => true,
-        'ai_used'  => false,
-        'answer'   =>
-            "資料庫目前沒有「{$question}」相關的擴充資訊（尚未建立官方問答或附件）。\n\n" .
-            "若需要，請由招生中心／科主任在「官方招生知識庫 (KM)」新增對應的問題與回答。",
+        'ai_used'  => true,
+        'answer'   => $answer ?: "我在喔 😊 有什麼想聊的嗎？",
+        'ai_error' => '',
         'sources'  => [],
-        'files'    => [],
+        'files'    => []
     ]);
+
+    $conn->close();
     exit;
 }
 
@@ -259,7 +328,7 @@ $protocol = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https'
 $host     = $_SERVER['HTTP_HOST'] ?? 'localhost';
 $script   = $_SERVER['SCRIPT_NAME'] ?? '';
 $basePath = preg_replace('#/Topics-backend/frontend/.*$#', '', $script);
-$ollama_api_url          = $protocol . '://' . $host . $basePath . '/Topics-frontend/backend/api/ollama/ollama_api.php';
+$ollama_api_url          = $protocol . '://' . $host . $basePath . '/Topics-frontend/backend/api/ollama/backend_ollama_api.php';
 $ollama_api_url_fallback = getenv('OLLAMA_API_URL') ?: '';
 
 // 模型選擇：預設偏好 qwen2.5:3b
@@ -299,15 +368,17 @@ if (preg_match('/時間|日程|時程|日期|幾月|何時|什麼時候/u', $que
     $question_hint = "老師問的是「時間／日程／時程」，你必須只回答與時間、日期、時程相關的內容。絕對不可回答科系列表、學費、名額等與時間無關的內容。若資料中沒有時間資訊，請回答：「資料庫目前沒有擴充資訊」。\n";
 } elseif (preg_match('/科系|科別|有哪些科|幾個科/u', $question)) {
     $question_hint = "老師問的是「科系／科別」，你必須只回答與科系相關的內容。絕對不可回答時間、學費等與科系無關的內容。\n";
-}elseif (preg_match('/學費|費用|收費|多少錢/u', $question)) {
-    $question_hint = "
-        老師詢問的是學費相關問題。
-        你可以：
-        - 說明學費依教育部規定
-        - 建議查詢招生簡章
-        - 提醒實際金額以公告為準
-        但不得自行編造金額數字。
-    ";
+}elseif (preg_match('/學費|費用|收費|多少錢/u', $question) && count($context_parts) > 0) {
+    $answer = implode("\n\n---\n\n", $context_parts);
+    $ai_used = false;
+    echo json_encode([
+        'success' => true,
+        'ai_used' => $ai_used,
+        'answer'  => $answer,
+        'sources' => $sources,
+        'files'   => $files,
+    ]);
+    exit;
 }
 
 $official_site = "https://www.ukn.edu.tw/p/412-1000-381.php?Lang=zh-tw";
@@ -475,11 +546,11 @@ if (!$context_flags['has_departments']) {
  * - 不顯示來源說明
  * - 但「保留檔案清單」
  */
-if ($answer === '') {
+/*if ($answer === '') {
     $ai_used = false;
     $sources = [];   // 關鍵：只清來源
     // files 保留
-}
+}*/
 
 echo json_encode([
     'success'  => true,
@@ -489,5 +560,107 @@ echo json_encode([
     'sources'  => $sources,
     'files'    => $files,
 ]);
+
+
+function semanticSearchWithOllama($conn, $question)
+{
+    // 1️⃣ 取出問題列表
+    $sql = "
+        SELECT id, question, answer, source_label, created_at
+        FROM recruitment_knowledge
+        WHERE is_active = 1
+        ORDER BY updated_at DESC
+        LIMIT 30
+    ";
+
+    $res = $conn->query($sql);
+    if (!$res || $res->num_rows === 0) return [];
+
+    $rows = [];
+    while ($r = $res->fetch_assoc()) {
+        $rows[] = $r;
+    }
+
+    // 2️⃣ 組問題清單給 Ollama
+    $list_text = "";
+    foreach ($rows as $r) {
+        $list_text .= "ID:{$r['id']} 問題: {$r['question']}\n";
+    }
+
+    $prompt = "
+你是一個語意比對助手。
+請從下列問題列表中，選出與使用者問題最相似的 3 筆 ID。
+只回答 ID，用逗號分隔，不要解釋。
+
+使用者問題：
+{$question}
+
+問題列表：
+{$list_text}
+";
+
+    $response = callOllama($prompt);
+
+file_put_contents(
+    __DIR__ . '/debug_semantic.txt',
+    "使用者問題: {$question}\n模型回傳:\n{$response}\n\n",
+    FILE_APPEND
+);
+    if (!$response) return [];
+
+    // 3️⃣ 抓 ID
+    preg_match_all('/\d+/', $response, $matches);
+    $ids = $matches[0] ?? [];
+
+    if (empty($ids)) return [];
+
+    // 4️⃣ 再查完整資料
+    $id_list = implode(',', array_map('intval', $ids));
+    $sql2 = "
+        SELECT question, answer, source_label, created_at
+        FROM recruitment_knowledge
+        WHERE id IN ({$id_list})
+    ";
+
+    $res2 = $conn->query($sql2);
+    if (!$res2) return [];
+
+    $final = [];
+    while ($row = $res2->fetch_assoc()) {
+        $final[] =
+             $row['answer'];
+    }
+
+    return $final;
+}
+
+function callOllama($prompt)
+{
+    $url = 'http://127.0.0.1:11434/api/generate';
+
+    $data = json_encode([
+        'model'  => 'qwen2.5:3b',
+        'prompt' => $prompt,
+        'stream' => false
+    ]);
+
+    $opts = [
+        'http' => [
+            'method'  => 'POST',
+            'header'  => "Content-Type: application/json\r\n",
+            'content' => $data,
+            'timeout' => 60,
+        ],
+    ];
+
+    $context = stream_context_create($opts);
+    $result  = @file_get_contents($url, false, $context);
+
+    if (!$result) return null;
+
+    $json = json_decode($result, true);
+    return $json['response'] ?? null;
+}
+
 exit;
 
