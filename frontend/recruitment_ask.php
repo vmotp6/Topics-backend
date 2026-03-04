@@ -44,7 +44,7 @@ if (!$can_ask) {
             color: var(--text-color);
         }
         .dashboard { display: flex; min-height: 100vh; }
-        .content   { padding: 24px; flex: 1; display: flex; flex-direction: column; }
+        .content   { padding: 24px; flex: 1; display: flex; flex-direction: column;  margin-right:20px;}
 
         .breadcrumb {
             font-size: 14px;
@@ -54,7 +54,6 @@ if (!$can_ask) {
         .breadcrumb a { color: var(--primary-color); text-decoration: none; }
 
         .page-header {
-            display: flex;
             align-items: center;
             justify-content: space-between;
             margin-bottom: 16px;
@@ -89,12 +88,12 @@ if (!$can_ask) {
 
         .chat-area {
             flex: 1;
-            background: var(--card-bg);
+            background: linear-gradient(to bottom, #f8fbff, #ffffff);
             border: 1px solid var(--border-color);
-            border-radius: 8px;
-            padding: 20px;
-            margin-bottom: 16px;
-            min-height: 360px;
+            border-radius: 12px;
+            padding: 24px;
+            margin-bottom: 20px;
+            min-height: 420px;
             overflow-y: auto;
         }
         .msg {
@@ -119,16 +118,29 @@ if (!$can_ask) {
         .msg.user .msg-avatar       { background: var(--success-color); }
 
         .msg-bubble {
-            padding: 12px 16px;
-            border-radius: 8px;
-            line-height: 1.6;
-            white-space: pre-wrap;
-            word-break: break-word;
-            background: var(--bubble-system);
-            border: 1px solid #d6e4ff;
+            padding: 14px 18px;
+            border-radius: 16px;
+            line-height: 1.7;
+            background: #f4f9ff;
+            border: 1px solid #dceeff;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.04);
+            transition: all 0.2s ease;
         }
+
+        .msg-bubble {
+            transform: translateY(10px);
+            opacity: 0;
+            animation: fadeSlideIn 0.3s forwards;
+        }
+        @keyframes fadeSlideIn {
+            to {
+                transform: translateY(0);
+                opacity: 1;
+            }
+        }   
+        
         .msg.user .msg-bubble {
-            background: #f6ffed;
+            background: linear-gradient(135deg, #e6fffb, #f6ffed);
             border-color: #b7eb8f;
         }
 
@@ -148,22 +160,21 @@ if (!$can_ask) {
             display: flex;
             gap: 12px;
             align-items: center;
-            background: var(--card-bg);
-            border: 1px solid var(--border-color);
-            border-radius: 8px;
-            padding: 12px 16px;
+            background: #ffffff;
+            border: 1px solid #e6f4ff;
+            border-radius: 14px;
+            padding: 14px 18px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.05);
         }
         .input-area input {
             flex: 1;
-            padding: 12px 16px;
-            border-radius: 6px;
-            border: 1px solid var(--border-color);
+            border: none;
             font-size: 15px;
+            background: transparent;
         }
+
         .input-area input:focus {
             outline: none;
-            border-color: var(--primary-color);
-            box-shadow: 0 0 0 2px rgba(24,144,255,0.2);
         }
         .input-area input::placeholder { color: var(--text-secondary-color); }
 
@@ -192,6 +203,7 @@ if (!$can_ask) {
             border: 1px solid #ffccc7;
             color: var(--danger-color);
         }
+        
     </style>
 </head>
 <body>
@@ -205,7 +217,7 @@ if (!$can_ask) {
                 <a href="recruitment_knowledge.php">官方招生知識庫</a> /
                 知識問答
             </div>
-            <div class="page-header">
+            <div class="page-header" style="display:flex; background-color: #f0f2f5;">
                 <h1 class="page-title">
                     知識問答
                     <i class="fas fa-question-circle help-icon"
@@ -237,6 +249,28 @@ if (!$can_ask) {
     var btnClear      = document.getElementById('btnClear');
     var errorEl       = document.getElementById('errorMessage');
 
+    function addMessageTyping(role, content) {
+    var msg  = document.createElement('div');
+    msg.className = 'msg ' + (role === 'user' ? 'user' : 'msg-system');
+    var icon = role === 'user' ? 'fa-user' : 'fa-robot';
+    var html = '<div class="msg-avatar"><i class="fas ' + icon + '"></i></div>';
+    html += '<div><div class="msg-bubble"></div></div>';
+    msg.innerHTML = html;
+    chatArea.appendChild(msg);
+    chatArea.scrollTop = chatArea.scrollHeight;
+
+    var bubble = msg.querySelector('.msg-bubble');
+    var i = 0;
+    function typeChar() {
+        if (i < content.length) {
+            bubble.innerHTML += content[i++];
+            chatArea.scrollTop = chatArea.scrollHeight;
+            setTimeout(typeChar, 20); // 每個字母間隔時間
+        }
+    }
+    typeChar();
+}
+
     function escapeHtml(str) {
         if (!str) return '';
         var div = document.createElement('div');
@@ -247,7 +281,7 @@ if (!$can_ask) {
     function addMessage(role, content) {
         var msg  = document.createElement('div');
         msg.className = 'msg ' + (role === 'user' ? 'user' : 'msg-system');
-        var icon = role === 'user' ? 'fa-user' : 'fa-folder';
+        var icon = role === 'user' ? 'fa-user' : 'fa-robot';
         var html = '<div class="msg-avatar"><i class="fas ' + icon + '"></i></div>';
         html += '<div><div class="msg-bubble">' + escapeHtml(content) + '</div></div>';
         msg.innerHTML = html;
@@ -331,7 +365,7 @@ if (data.answer && data.answer.trim() !== '') {
         answerText += '\n\n— 資料由『' + who + '』於 ' + when + ' 建立';
     }
 
-    addMessage('system', answerText);
+    addMessageTyping('system', answerText);
 }
 
         })
@@ -349,7 +383,12 @@ if (data.answer && data.answer.trim() !== '') {
         if (e.key === 'Enter') ask();
     });
     btnClear.addEventListener('click', function () {
-        chatArea.innerHTML = '';
+        chatArea.innerHTML = `
+            <div style="text-align:center;margin-top:80px;color:#999">
+                <i class="fas fa-robot" style="font-size:40px;margin-bottom:12px;"></i>
+                <div style="font-size:16px;">請輸入招生相關問題</div>
+                <div style="font-size:13px;margin-top:6px;">例如：學費多少？招生時間是什麼時候？</div>
+            </div>`;
         errorEl.style.display = 'none';
     });
 })();</script>
