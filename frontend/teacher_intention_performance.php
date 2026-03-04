@@ -143,14 +143,12 @@ foreach ($teacher_rows as $tr) {
     $down_st = $conn->prepare($down_sql); $down_st->bind_param("i", $tid); $down_st->execute();
     $down_c = (int)($down_st->get_result()->fetch_assoc()['c'] ?? 0); $down_st->close();
     $assigned = (int)$tr['assigned_count'];
-    $rate = $assigned > 0 ? round((($up_c - $down_c) / $assigned) * 100, 1) : 0;
     $teacher_stats[] = [
         'teacher_id' => $tid,
         'teacher_name' => $tr['teacher_name'] ?: $tr['teacher_username'] ?: '未知',
         'assigned_count' => $assigned,
         'upgrade_count' => $up_c,
-        'downgrade_count' => $down_c,
-        'conversion_rate' => $rate
+        'downgrade_count' => $down_c
     ];
 }
 
@@ -268,7 +266,6 @@ $page_title = '教師經營成效分析';
                             <th>分配人數</th>
                             <th>成功提升數 (低/中➔高)</th>
                             <th>意願流失數 (高➔低)</th>
-                            <th>綜合轉換率</th>
                         </tr>
                     </thead>
                     <tbody>
@@ -278,11 +275,10 @@ $page_title = '教師經營成效分析';
                             <td><?php echo $ts['assigned_count']; ?></td>
                             <td><?php echo $ts['upgrade_count']; ?></td>
                             <td><?php echo $ts['downgrade_count']; ?></td>
-                            <td><?php echo $ts['conversion_rate']; ?>%</td>
                         </tr>
                         <?php endforeach; ?>
                         <?php if (empty($teacher_stats)): ?>
-                        <tr><td colspan="5" style="text-align:center; color:#999;">尚無分配資料</td></tr>
+                        <tr><td colspan="4" style="text-align:center; color:#999;">尚無分配資料</td></tr>
                         <?php endif; ?>
                     </tbody>
                 </table>
