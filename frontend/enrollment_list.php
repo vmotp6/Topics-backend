@@ -1401,7 +1401,23 @@ try {
                                             <?php if ($user_role !== 'TEA'): ?>
                                                 <td><?php echo $assignment_html; ?></td>
                                             <?php endif; ?>
-                                            <td><?php echo getRegistrationStageStatusHtml($item, $current_registration_stage, $stage_display_names, 'recruit') ?: '<span style="color:#999;">—</span>'; ?></td>
+                                            <td>
+                                                <?php
+                                                    $status_text = '—';
+                                                    if ($current_registration_stage) {
+                                                        if ($is_registered) {
+                                                            $status_text = '已報名';
+                                                        } elseif ($is_declined) {
+                                                            $status_text = '本階段不報';
+                                                        } elseif ($is_reminded) {
+                                                            $status_text = '已提醒';
+                                                        } else {
+                                                            $status_text = '未提醒';
+                                                        }
+                                                    }
+                                                    echo htmlspecialchars($status_text);
+                                                ?>
+                                            </td>
                                             <?php if ($is_admission_center || $is_director): ?>
                                                 <td><?php echo ((int)($item['has_contact'] ?? 0) === 1) ? '<span style="color:#52c41a;">已聯絡</span>' : '<span style="color:#999;">未聯絡</span>'; ?></td>
                                             <?php endif; ?>
