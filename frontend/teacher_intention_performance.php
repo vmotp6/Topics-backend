@@ -34,6 +34,8 @@ if (!$is_director || $user_id <= 0) {
 }
 
 $conn = getDatabaseConnection();
+// 統一連線 collation，避免 new_student_basic_info (general_ci) 與其他表 (unicode_ci) 比對時報錯
+$conn->query("SET NAMES utf8mb4 COLLATE utf8mb4_unicode_ci");
 ensureIntentionChangeLogTable($conn);
 
 // 主任科系（與 enrollment_list 一致）
@@ -180,6 +182,73 @@ $st->bind_param("ssssiii", ...array_merge($bind_dept, $bind_year));
 $st->execute();
 $detail_rows = $st->get_result()->fetch_all(MYSQLI_ASSOC);
 $st->close();
+
+// 區塊四：低意願卻入學的學生（比對 new_student_basic_info）
+$low_intent_enrolled_rows = [];
+try {
+    $t = $conn->query("SHOW TABLES LIKE 'new_student_basic_info'");
+    $has_nsbi_table = $t && $t->num_rows > 0;
+} catch (Exception $e) {
+    $has_nsbi_table = false;
+}
+
+if ($has_nsbi_table) {
+    // 就讀意願名單「目前意願為低」且出現在新生基本資料（姓名＋國中＋電話）
+    // new_student_basic_info 表為 utf8mb4_general_ci，其他表為 utf8mb4_unicode_ci → 用 CONVERT 統一再比對
+    $ns = function($col) { return "CONVERT(COALESCE(ns.{$col},'') USING utf8mb4) COLLATE utf8mb4_unicode_ci"; };
+    $t_sd = $conn->query("SHOW TABLES LIKE 'school_data'");
+    $table_school = ($t_sd && $t_sd->num_rows > 0) ? 'school_data' : null;
+    $school_join = '';
+    $school_cond = "(" . $ns('previous_school') . " = CONVERT(COALESCE(ei.junior_high,'') USING utf8mb4) COLLATE utf8mb4_unicode_ci OR ns.previous_school IS NULL OR TRIM(" . $ns('previous_school') . ") = '')";
+    if ($table_school) {
+        $school_join = " LEFT JOIN " . $table_school . " sd_low ON sd_low.school_code = ei.junior_high ";
+        $school_cond = "(" . $ns('previous_school') . " = CONVERT(COALESCE(ei.junior_high,'') USING utf8mb4) COLLATE utf8mb4_unicode_ci
+            OR (sd_low.school_code IS NOT NULL AND " . $ns('previous_school') . " = CONVERT(COALESCE(sd_low.name,'') USING utf8mb4) COLLATE utf8mb4_unicode_ci)
+            OR ns.previous_school IS NULL OR TRIM(" . $ns('previous_school') . ") = '')";
+    }
+    $sql_low_enrolled = "
+        SELECT 
+            ei.id AS enrollment_id,
+            ei.name AS student_name,
+            ei.junior_high,
+            ei.phone1,
+            ei.phone2,
+            COALESCE(ch.first_old, ei.intention_level) AS initial_level,
+            ei.intention_level AS current_level,
+            u.name AS teacher_name,
+            u.username AS teacher_username,
+            ns.student_no,
+            ns.class_name,
+            ns.created_at AS enrolled_at
+        " . $base_from . "
+        LEFT JOIN (
+            SELECT enrollment_id,
+                   SUBSTRING_INDEX(GROUP_CONCAT(IFNULL(old_level, new_level) ORDER BY changed_at ASC), ',', 1) AS first_old
+            FROM " . INTENTION_CHANGE_LOG_TABLE . "
+            GROUP BY enrollment_id
+        ) ch ON ch.enrollment_id = ei.id
+        LEFT JOIN user u ON ei.assigned_teacher_id = u.id
+        " . $school_join . "
+        INNER JOIN new_student_basic_info ns
+            ON TRIM(" . $ns('student_name') . ") = TRIM(CONVERT(COALESCE(ei.name,'') USING utf8mb4) COLLATE utf8mb4_unicode_ci)
+           AND (" . $school_cond . ")
+           AND (
+                (ei.phone1 IS NOT NULL AND ei.phone1 <> '' AND TRIM(REPLACE(REPLACE(REPLACE(REPLACE(" . $ns('mobile') . ", ' ', ''), '-', ''), '(', ''), ')', '')) = TRIM(REPLACE(REPLACE(REPLACE(REPLACE(CONVERT(COALESCE(ei.phone1,'') USING utf8mb4) COLLATE utf8mb4_unicode_ci, ' ', ''), '-', ''), '(', ''), ')', '')))
+             OR (ei.phone2 IS NOT NULL AND ei.phone2 <> '' AND TRIM(REPLACE(REPLACE(REPLACE(REPLACE(" . $ns('mobile') . ", ' ', ''), '-', ''), '(', ''), ')', '')) = TRIM(REPLACE(REPLACE(REPLACE(REPLACE(CONVERT(COALESCE(ei.phone2,'') USING utf8mb4) COLLATE utf8mb4_unicode_ci, ' ', ''), '-', ''), '(', ''), ')', '')))
+           )
+        " . $scope_where . "
+        AND ei.intention_level = 'low'
+        AND " . $ns('status') . " IN ('', '在學')
+        ORDER BY ns.created_at DESC
+    ";
+    $st_low = $conn->prepare($sql_low_enrolled);
+    if ($st_low) {
+        $st_low->bind_param("ssssiii", ...array_merge($bind_dept, $bind_year));
+        $st_low->execute();
+        $low_intent_enrolled_rows = $st_low->get_result()->fetch_all(MYSQLI_ASSOC);
+        $st_low->close();
+    }
+}
 
 function levelLabel($code) {
     if (!$code) return '—';
@@ -328,6 +397,64 @@ $page_title = '教師經營成效分析';
                         <?php endforeach; ?>
                         <?php if (empty($detail_rows)): ?>
                         <tr><td colspan="6" style="text-align:center; color:#999;">尚無意願異動明細</td></tr>
+                        <?php endif; ?>
+                    </tbody>
+                </table>
+            </div>
+
+            <!-- 區塊四：低意願卻入學的學生 -->
+            <div class="card" style="margin-top: 24px;">
+                <h3 style="margin: 0 0 16px 0; font-size: 18px;">低意願卻入學的學生（本系）</h3>
+                <p style="margin: 0 0 12px 0; font-size: 13px; color:#666;">
+                    條件：在就讀意願名單中「目前意願為低」，但在新生基本資料中出現為本系新生（姓名＋國中＋電話皆對得上）。
+                </p>
+                <table class="perf-table">
+                    <thead>
+                        <tr>
+                            <th>學生姓名</th>
+                            <th>原就讀國中</th>
+                            <th>聯絡電話</th>
+                            <th>初始意願</th>
+                            <th>目前意願</th>
+                            <th>新生班級／學號</th>
+                            <th>負責教師</th>
+                            <th>操作</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <?php foreach ($low_intent_enrolled_rows as $row): 
+                            $teacher_display = $row['teacher_name'] ?: $row['teacher_username'] ?: '—';
+                            $initial = levelLabel($row['initial_level']);
+                            $current = levelLabel($row['current_level']);
+                            $phones = [];
+                            if (!empty($row['phone1'])) $phones[] = $row['phone1'];
+                            if (!empty($row['phone2']) && $row['phone2'] !== $row['phone1']) $phones[] = $row['phone2'];
+                            $phone_display = $phones ? implode(' / ', $phones) : '—';
+                            $class_no = '';
+                            if (!empty($row['class_name'])) $class_no .= $row['class_name'];
+                            if (!empty($row['student_no'])) {
+                                if ($class_no !== '') $class_no .= '／';
+                                $class_no .= $row['student_no'];
+                            }
+                            if ($class_no === '') $class_no = '—';
+                        ?>
+                        <tr>
+                            <td><?php echo htmlspecialchars($row['student_name']); ?></td>
+                            <td><?php echo htmlspecialchars($row['junior_high'] ?: '—'); ?></td>
+                            <td><?php echo htmlspecialchars($phone_display); ?></td>
+                            <td><?php echo htmlspecialchars($initial); ?></td>
+                            <td><?php echo htmlspecialchars($current); ?></td>
+                            <td><?php echo htmlspecialchars($class_no); ?></td>
+                            <td><?php echo htmlspecialchars($teacher_display); ?></td>
+                            <td>
+                                <button type="button" class="btn-view" onclick="openContactLogModal(<?php echo (int)$row['enrollment_id']; ?>, '<?php echo htmlspecialchars(addslashes($row['student_name'])); ?>')">
+                                    <i class="fas fa-list"></i> 查看聯絡紀錄
+                                </button>
+                            </td>
+                        </tr>
+                        <?php endforeach; ?>
+                        <?php if (empty($low_intent_enrolled_rows)): ?>
+                        <tr><td colspan="8" style="text-align:center; color:#999;">目前尚未發現「低意願卻入學」的學生</td></tr>
                         <?php endif; ?>
                     </tbody>
                 </table>
