@@ -44,8 +44,20 @@ if ($question === '') {
     exit;
 }
 
+// 常見寒暄過濾
+if (preg_match('/你好|嗨|哈囉|在嗎|Hello|HELLO|HEllo/u', $question)) {
+    echo json_encode([
+        'success' => true,
+        'ai_used' => false,
+        'answer'  => "您好 😊 這裡是招生知識庫系統，請直接輸入招生相關問題，例如學費、時間、科系等。",
+        'sources' => [],
+        'files'   => []
+    ]);
+    exit;
+}
+
 // 先偵測是否有明確學校名稱
-$school_pattern = '/康寧大學|國立臺灣大學|台灣科技大學|其他學校名稱|海洋科技大學/u'; // 可自行擴充
+$school_pattern = '/康寧大學|國立臺灣大學|台灣科技大學|海洋科技大學|其他學校名稱/u'; // 可自行擴充
 $mentioned_school = [];
 if (preg_match_all($school_pattern, $question, $matches)) {
     $mentioned_school = $matches[0];
@@ -65,30 +77,17 @@ if (!empty($mentioned_school) && !in_array('康寧大學', $mentioned_school)) {
     ]);
     exit;
 }
-
-
-// 常見寒暄過濾
-if (preg_match('/你好|嗨|哈囉|在嗎/u', $question)) {
-    echo json_encode([
-        'success' => true,
-        'ai_used' => false,
-        'answer'  => "您好 😊 這裡是招生知識庫系統，請直接輸入招生相關問題，例如學費、時間、科系等。",
-        'sources' => [],
-        'files'   => []
-    ]);
-    exit;
-}
-
 $conn = getDatabaseConnection();
 
 // 確認資料表與欄位存在
 $t1 = $conn->query("SHOW TABLES LIKE 'recruitment_knowledge'");
 $t2 = $conn->query("SHOW TABLES LIKE 'recruitment_knowledge_files'");
+
 if (!$t1 || !$t2 || $t1->num_rows === 0 || $t2->num_rows === 0) {
-    
     echo json_encode(['success' => false, 'error' => '招生知識庫資料表尚未建立']);
     exit;
 }
+
 $cols = $conn->query("SHOW COLUMNS FROM recruitment_knowledge LIKE 'question'");
 if (!$cols || $cols->num_rows === 0) {
     
@@ -227,16 +226,59 @@ if (!empty($kid_list)) {
 }
 
 if (!empty($sources) || !empty($files)) {
-    // 找到任何官方資料（文字或檔案）
-    $answer = implode("\n\n---\n\n", array_slice($context_parts, 0, 5));
+
+    // ⭐ 第一筆當主回答
+    $main_answer = $context_parts[0] ?? '';
+
+    // ⭐ 其餘當補充
+    // ⭐ 其餘當補充，帶上建立者與建立時間
+    $extra_answers = [];
+    for ($i = 1; $i < count($context_parts); $i++) {
+        $extra_answers[] = [
+            'answer'          => $context_parts[$i],
+            'created_by_name' => $sources[$i]['created_by_name'] ?? '',
+            'created_at'      => $sources[$i]['created_at'] ?? '',
+            'source_label'    => $sources[$i]['source_label'] ?? '',
+        ];
+    }
+
+    // 回傳給前端
+    echo json_encode([
+        'success'       => true,
+        'ai_used'       => false,
+        'main_answer'   => $main_answer,
+        'extra_answers' => $extra_answers,
+        'sources'       => $sources,
+        'files'         => $files
+    ]);
+    exit;
+    $answer = "";
+
+    if ($main_answer !== '') {
+        $answer .= "【主要回答】\n";
+        $answer .= trim($main_answer);
+    }
+
+    if (!empty($extra_answers)) {
+        $answer .= "\n\n【補充資訊】\n";
+
+        foreach ($extra_answers as $extra) {
+            $extra = trim($extra);
+            if ($extra !== '') {
+                $answer .= "- " . $extra . "\n";
+            }
+        }
+    }
+
     $ai_used = false;
 
     echo json_encode([
         'success' => true,
         'ai_used' => $ai_used,
-        'answer'  => $answer,
-        'sources' => $sources,
-        'files'   => $files
+        'main_answer'   => $main_answer,
+        'extra_answers' => $extra_answers,
+        'sources'       => $sources,
+        'files'         => $files
     ]);
     exit;
 }
@@ -270,14 +312,11 @@ if (count($context_parts) === 0) {
     $prompt =
     "你是康寧大學招生知識庫的 AI 助手。
 
-目前官方資料庫沒有相關資料。
-
-請自然回答使用者問題。
-如果不是招生問題，可以自由對話。
-
-使用者問題：
-{$question}
-";
+    目前官方資料庫沒有相關資料。
+    請自然回答使用者問題。
+    如果不是招生問題，可以自由對話。
+    使用者問題：
+    {$question}";
     $prompt .= "\n請用繁體中文回答。";
     $answer = callOllama($prompt);
 
@@ -369,15 +408,14 @@ if (preg_match('/時間|日程|時程|日期|幾月|何時|什麼時候/u', $que
 } elseif (preg_match('/科系|科別|有哪些科|幾個科/u', $question)) {
     $question_hint = "老師問的是「科系／科別」，你必須只回答與科系相關的內容。絕對不可回答時間、學費等與科系無關的內容。\n";
 }elseif (preg_match('/學費|費用|收費|多少錢/u', $question) && count($context_parts) > 0) {
-    $answer = implode("\n\n---\n\n", $context_parts);
-    $ai_used = false;
-    echo json_encode([
-        'success' => true,
-        'ai_used' => $ai_used,
-        'answer'  => $answer,
-        'sources' => $sources,
-        'files'   => $files,
-    ]);
+    $main_answer = $context_parts[0] ?? '';
+    $extra_answers = [];
+    for ($i = 1; $i < count($context_parts); $i++) {
+        $extra_answers[] = [
+            'answer' => $context_parts[$i],
+            'source' => $sources[$i] ?? null
+        ];
+    }
     exit;
 }
 
