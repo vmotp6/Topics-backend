@@ -191,16 +191,13 @@ function getAcademicYearRangeByRocYear($roc_year) {
     ];
 }
 
-// 選擇要查詢的屆別（民國學年度）
-$selected_roc_year = isset($_GET['roc_year']) ? (int)$_GET['roc_year'] : 0;
-// 移除舊的 new_student_view 開關後，部分舊碼仍可能參考該變數，預設為空字串以避免未定義警告
-$new_student_view = isset($_GET['new_student_view']) ? (string)$_GET['new_student_view'] : '';
-// 計算目前學年度（以 8/1 為界）
-$aug_range = getAcademicYearRangeAug1();
-$current_roc_year = intval(date('Y', strtotime($aug_range['start']))) - 1911;
-if ($selected_roc_year <= 0) {
-    $selected_roc_year = $current_roc_year;
-} // 若未傳參數則預設為目前屆
+// 獲取新生統計的視圖類型（新生或歷屆學生）
+$new_student_view = isset($_GET['new_student_view']) ? $_GET['new_student_view'] : 'active'; // 'active' 為新生，'previous' 為歷屆學生
+$selected_roc_year = isset($_GET['roc_year']) ? (int)$_GET['roc_year'] : 0; // 選中的學年度（民國年）
+$fixed_previous_roc_year = 113; // 與招生推薦名單年度邏輯對齊：歷屆固定查看 113 屆
+if ($new_student_view === 'previous') {
+    $selected_roc_year = $fixed_previous_roc_year;
+}
 
 // 建立資料庫連接
 $conn = getDatabaseConnection();
@@ -901,37 +898,47 @@ if ($teacher_id > 0) {
                 $has_new_student_department_id = true;
             }
 
-            // 取得所選屆別的時間範圍（8/1～次年7/31）
-            $year_start = ($selected_roc_year + 1911) . '-08-01 00:00:00';
-            $year_end   = ($selected_roc_year + 1912) . '-07-31 23:59:59';
-            // 五專修業 5 年畢業日表達式
+            // 取得當前學年度範圍
+            $academic_year = getCurrentAcademicYearRange();
+            
+            // 根據視圖類型構建 WHERE 條件
+            // 五專修業 5 年，畢業日：入學第 5 年的 7/31
             $graduateExpr = "DATE(CONCAT(YEAR(created_at) + 5, '-07-31'))";
-
-            // 查詢所有可用屆別（學年度民國年），包含目前學年度
+            
+            // 查詢所有可用的學年度選項（用於歷屆學生選擇）
             $available_roc_years = [];
-            $yearSql = "SELECT DISTINCT 
-                        (CASE WHEN MONTH(created_at) < 8 THEN YEAR(created_at) - 1 ELSE YEAR(created_at) END) - 1911 AS roc_year
-                        FROM new_student_basic_info
-                        WHERE 1=1
-                        ORDER BY roc_year DESC";
-            $yearStmt = $conn->prepare($yearSql);
-            if ($yearStmt) {
-                $yearStmt->execute();
-                $yearResult = $yearStmt->get_result();
-                if ($yearResult) {
-                    while ($yearRow = $yearResult->fetch_assoc()) {
-                        $roc_year = (int)$yearRow['roc_year'];
-                        if ($roc_year > 0) $available_roc_years[] = $roc_year;
+            if ($new_student_view === 'previous') {
+                // 查詢所有歷屆學生的學年度（非新生但仍在學）
+                $yearSql = "SELECT DISTINCT 
+                    (CASE 
+                        WHEN MONTH(created_at) < 6 THEN YEAR(created_at) - 1
+                        ELSE YEAR(created_at)
+                    END) - 1911 AS roc_year
+                    FROM new_student_basic_info
+                    WHERE CURDATE() <= DATE(CONCAT(YEAR(created_at) + 5, '-07-31'))
+                    AND created_at NOT BETWEEN ? AND ?
+                    HAVING roc_year > 0
+                    ORDER BY roc_year DESC";
+                
+                $yearStmt = $conn->prepare($yearSql);
+                if ($yearStmt) {
+                    $yearStmt->bind_param('ss', $academic_year['start'], $academic_year['end']);
+                    $yearStmt->execute();
+                    $yearResult = $yearStmt->get_result();
+                    if ($yearResult) {
+                        while ($yearRow = $yearResult->fetch_assoc()) {
+                            $roc_year = (int)$yearRow['roc_year'];
+                            if ($roc_year > 0) {
+                                $available_roc_years[] = $roc_year;
+                            }
+                        }
                     }
+                    $yearStmt->close();
                 }
-                $yearStmt->close();
+                rsort($available_roc_years);
+                // 歷屆視圖固定看 113 屆
+                $available_roc_years = [$fixed_previous_roc_year];
             }
-            // 確保目前學年度也在列表中
-            if (!in_array($current_roc_year, $available_roc_years, true)) {
-                array_unshift($available_roc_years, $current_roc_year);
-            }
-            rsort($available_roc_years);
-
             
             // 構建 WHERE 條件和參數
             $where_params = [];
@@ -1000,68 +1007,7 @@ if ($teacher_id > 0) {
                 $new_student_total_stmt->close();
             }
 
-            // --- 每班國立錄取與前五大學統計（供前端圖表使用） ---
-            $per_class_stats = []; // 格式: class => ['total'=>int,'national'=>int]
-            $per_class_top_schools = []; // 格式: class => [school => count]
-            try {
-                // 構建查詢條件，優先使用有 department_id 的條件（若存在）
-                $student_where = ($where_condition_dept !== null) ? $where_condition_dept : $where_condition;
-                if (strpos($student_where, 'AND') === false) {
-                    $student_where .= " WHERE (ns.class_name LIKE '%孝%' OR ns.class_name LIKE '%忠%')";
-                } else {
-                    $student_where .= " AND (ns.class_name LIKE '%孝%' OR ns.class_name LIKE '%忠%')";
-                }
-
-                $per_sql = "SELECT ns.class_name, COALESCE(u.type_name,'') AS uni_type, COALESCE(ns.university_school, ns.university, '') AS school_name
-                            FROM new_student_basic_info ns
-                            LEFT JOIN university_types u ON TRIM(UPPER(COALESCE(ns.university,''))) = TRIM(UPPER(u.type_code)) " . $student_where;
-                $per_stmt = $conn->prepare($per_sql);
-                if ($per_stmt) {
-                    if (!empty($where_params)) {
-                        $per_stmt->bind_param($where_types, ...$where_params);
-                    }
-                    $per_stmt->execute();
-                    $per_res = $per_stmt->get_result();
-                    if ($per_res) {
-                        while ($prow = $per_res->fetch_assoc()) {
-                            $cls = trim($prow['class_name'] ?? '') ?: '未分類';
-                            $per_class_stats[$cls]['total'] = ($per_class_stats[$cls]['total'] ?? 0) + 1;
-                            $uni_type = trim($prow['uni_type'] ?? '');
-                            if ($uni_type !== '' && mb_strpos($uni_type, '國立') !== false) {
-                                $per_class_stats[$cls]['national'] = ($per_class_stats[$cls]['national'] ?? 0) + 1;
-                            }
-                            $school = trim($prow['school_name'] ?? '未填寫');
-                            if ($school !== '') {
-                                $per_class_top_schools[$cls][$school] = ($per_class_top_schools[$cls][$school] ?? 0) + 1;
-                            }
-                        }
-                    }
-                    $per_stmt->close();
-                }
-
-                // 計算百分比並取前五大學
-                $per_class_stats_list = [];
-                foreach ($per_class_stats as $cls => $info) {
-                    $total = $info['total'] ?? 0;
-                    $national = $info['national'] ?? 0;
-                    $percent = $total > 0 ? round(($national / $total) * 100, 1) : 0.0;
-                    // 排序 top schools
-                    $schools = $per_class_top_schools[$cls] ?? [];
-                    arsort($schools);
-                    $top5 = array_slice($schools, 0, 5, true);
-                    $per_class_stats_list[] = [
-                        'class_name' => $cls,
-                        'total' => $total,
-                        'national' => $national,
-                        'percent' => $percent,
-                        'top5' => $top5
-                    ];
-                }
-            } catch (Exception $e) {
-                error_log('每班國立錄取統計失敗: ' . $e->getMessage());
-            }
-
-            // --- 招生推薦審核完成（可發獎金）人數 ---
+            // 招生推薦審核完成（可發獎金）人數
             // 以 admission_recommendations.status = APD 或狀態文字包含「審核完成/可發獎金」計算
             $recommend_where = '';
             $recommend_params = [];
@@ -1565,13 +1511,10 @@ try {
     $table_ns = $conn->query("SHOW TABLES LIKE 'new_student_basic_info'");
     $table_ut = $conn->query("SHOW TABLES LIKE 'university_types'");
     if ($table_ns && $table_ns->num_rows > 0 && $table_ut && $table_ut->num_rows > 0) {
-        // 使用選取的屆別（$selected_roc_year）作為查詢依據；若未選則預設使用目前學年度
-        $query_roc = ($selected_roc_year > 0) ? $selected_roc_year : $current_roc_year;
-        // 取得該學年度範圍（使用既有函式）
-        $range = getAcademicYearRangeByRocYear($query_roc);
-        $year_start = $range['start'];
-        $year_end = $range['end'];
-
+        $grad_year_west = (int)date('Y');
+        $roc_enroll_year = $grad_year_west - 1916;
+        $year_start = ($roc_enroll_year + 1911) . '-07-01 00:00:00';
+        $year_end = ($roc_enroll_year + 1912) . '-08-01 23:59:59';
         $sql = "SELECT COALESCE(u.type_name, '未填寫') AS type_name, COUNT(*) AS cnt
                 FROM new_student_basic_info s
                 LEFT JOIN university_types u ON TRIM(UPPER(TRIM(COALESCE(s.university,'')))) = TRIM(UPPER(u.type_code))
@@ -1606,10 +1549,6 @@ $conn->close();
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2.0.0"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
-    <script>
-        // 後端產生的每班統計資料（供前端圖表使用）
-        window.perClassStats = <?php echo json_encode($per_class_stats_list ?? [], JSON_UNESCAPED_UNICODE); ?>;
-    </script>
     <style>
         :root {
             --primary-color: #1890ff;
@@ -2859,31 +2798,14 @@ $conn->close();
                             <h4 style="color: #667eea; margin-bottom: 15px; display: flex; align-items: center; gap: 10px;">
                                 <i class="fas fa-university"></i> 畢業生大學類型統計
                             </h4>
-                            <div style="display: flex; gap: 12px; margin-bottom: 24px; flex-wrap: wrap; align-items:center;">
+                            <div style="display: flex; gap: 12px; margin-bottom: 24px; flex-wrap: wrap;">
                                 <button class="btn-view" onclick="showGraduateUniversityStats()">
                                     <i class="fas fa-chart-bar"></i> 各類型人數長條圖
                                 </button>
                                 <button class="btn-view" onclick="clearGraduateUniversityChart()" style="background: #dc3545; color: white; border-color: #dc3545;">
                                     <i class="fas fa-arrow-up"></i> 收回圖表
                                 </button>
-
-                                <button class="btn-view" onclick="showPerClassNationalStats()">
-                                    <i class="fas fa-chart-bar"></i> 各班國立錄取人數／百分比
-                                </button>
-                                <button class="btn-view" onclick="showPerClassTopSchools()">
-                                    <i class="fas fa-graduation-cap"></i> 各班 Top5 錄取大學
-                                </button>
-
-                                <div style="margin-left: auto; display:flex; gap:8px; align-items:center;">
-                                    <label for="graduateRocYearSelect" style="margin-right:8px; color:#666;">屆別：</label>
-                                    <select id="graduateRocYearSelect" onchange="changeRocYear(this.value)" style="padding:6px 10px; border-radius:6px; border:1px solid #ddd; min-width:110px;">
-                                        <?php foreach ($available_roc_years as $roc_year): ?>
-                                            <option value="<?php echo $roc_year; ?>" <?php echo $selected_roc_year == $roc_year ? 'selected' : ''; ?>><?php echo $roc_year; ?>學年</option>
-                                        <?php endforeach; ?>
-                                    </select>
-                                </div>
                             </div>
-
                             <div id="graduateUniversityAnalyticsContent" style="min-height: 200px;">
                                 <div class="empty-state">
                                     <i class="fas fa-university fa-3x" style="margin-bottom: 16px;"></i>
@@ -2891,10 +2813,6 @@ $conn->close();
                                     <p>統計本屆孝班、忠班畢業生就讀國立大學、私立大學、直接就業、軍警學校、國外升學、其他等類型人數</p>
                                 </div>
                             </div>
-
-                            <!-- 每班統計容器 -->
-                            <div id="perClassNationalContent" style="min-height:200px; margin-top:20px;"></div>
-                            <div id="perClassTopSchoolsContent" style="min-height:200px; margin-top:20px;"></div>
                         </div>
 
                         <!-- 續招報名統計按鈕組 -->
@@ -4358,13 +4276,20 @@ function resetEnrollmentTabs() {
                         <i class="fas fa-school"></i> 國中學校來源統計
                     </h4>
                     <div style="display: flex; gap: 10px; align-items: center;">
-                        <select id="rocYearSelect" onchange="changeRocYear(this.value)" style="padding: 8px 12px; border: 1px solid #d9d9d9; border-radius: 6px; background: #fff; color: #333; font-size: 14px; cursor: pointer;">
-                            <?php foreach ($available_roc_years as $roc_year): ?>
-                                <option value="<?php echo $roc_year; ?>" <?php echo $selected_roc_year == $roc_year ? 'selected' : ''; ?>>
-                                    <?php echo $roc_year; ?>學年
-                                </option>
-                            <?php endforeach; ?>
+                        <select id="newStudentViewSelect" onchange="changeNewStudentView(this.value)" style="padding: 8px 12px; border: 1px solid #d9d9d9; border-radius: 6px; background: #fff; color: #333; font-size: 14px; cursor: pointer;">
+                            <option value="active" <?php echo $new_student_view === 'active' ? 'selected' : ''; ?>>新生資料</option>
+                            <option value="previous" <?php echo $new_student_view === 'previous' ? 'selected' : ''; ?>>歷屆學生(113屆)</option>
                         </select>
+                        <?php if ($new_student_view === 'previous' && !empty($available_roc_years)): ?>
+                            <select id="rocYearSelect" onchange="changeRocYear(this.value)" style="padding: 8px 12px; border: 1px solid #d9d9d9; border-radius: 6px; background: #fff; color: #333; font-size: 14px; cursor: pointer;">
+                                <option value="0">全部學年</option>
+                                <?php foreach ($available_roc_years as $roc_year): ?>
+                                    <option value="<?php echo $roc_year; ?>" <?php echo $selected_roc_year == $roc_year ? 'selected' : ''; ?>>
+                                        <?php echo $roc_year; ?>學年
+                                    </option>
+                                <?php endforeach; ?>
+                            </select>
+                        <?php endif; ?>
                     </div>
                 </div>
                 
@@ -4482,13 +4407,20 @@ function resetEnrollmentTabs() {
                         <i class="fas fa-chart-bar"></i> 學校統計
                     </h4>
                     <div style="display: flex; gap: 10px; align-items: center;">
-                        <select id="rocYearSelect" onchange="changeRocYear(this.value)" style="padding: 8px 12px; border: 1px solid #d9d9d9; border-radius: 6px; background: #fff; color: #333; font-size: 14px; cursor: pointer;">
-                            <?php foreach ($available_roc_years as $roc_year): ?>
-                                <option value="<?php echo $roc_year; ?>" <?php echo $selected_roc_year == $roc_year ? 'selected' : ''; ?>>
-                                    <?php echo $roc_year; ?>學年
-                                </option>
-                            <?php endforeach; ?>
+                        <select id="newStudentViewSelect" onchange="changeNewStudentView(this.value)" style="padding: 8px 12px; border: 1px solid #d9d9d9; border-radius: 6px; background: #fff; color: #333; font-size: 14px; cursor: pointer;">
+                            <option value="active" <?php echo $new_student_view === 'active' ? 'selected' : ''; ?>>新生資料</option>
+                            <option value="previous" <?php echo $new_student_view === 'previous' ? 'selected' : ''; ?>>歷屆學生(113屆)</option>
                         </select>
+                        <?php if ($new_student_view === 'previous' && !empty($available_roc_years)): ?>
+                            <select id="rocYearSelect" onchange="changeRocYear(this.value)" style="padding: 8px 12px; border: 1px solid #d9d9d9; border-radius: 6px; background: #fff; color: #333; font-size: 14px; cursor: pointer;">
+                                <option value="0">全部學年</option>
+                                <?php foreach ($available_roc_years as $roc_year): ?>
+                                    <option value="<?php echo $roc_year; ?>" <?php echo $selected_roc_year == $roc_year ? 'selected' : ''; ?>>
+                                        <?php echo $roc_year; ?>學年
+                                    </option>
+                                <?php endforeach; ?>
+                            </select>
+                        <?php endif; ?>
                     </div>
                 </div>
                 
@@ -4667,13 +4599,20 @@ function resetEnrollmentTabs() {
                         <i class="fas fa-layer-group"></i> 科系統計
                     </h4>
                     <div style="display: flex; gap: 10px; align-items: center;">
-                        <select id="rocYearSelect" onchange="changeRocYear(this.value)" style="padding: 8px 12px; border: 1px solid #d9d9d9; border-radius: 6px; background: #fff; color: #333; font-size: 14px; cursor: pointer;">
-                            <?php foreach ($available_roc_years as $roc_year): ?>
-                                <option value="<?php echo $roc_year; ?>" <?php echo $selected_roc_year == $roc_year ? 'selected' : ''; ?>>
-                                    <?php echo $roc_year; ?>學年
-                                </option>
-                            <?php endforeach; ?>
+                        <select id="newStudentViewSelect" onchange="changeNewStudentView(this.value)" style="padding: 8px 12px; border: 1px solid #d9d9d9; border-radius: 6px; background: #fff; color: #333; font-size: 14px; cursor: pointer;">
+                            <option value="active" <?php echo $new_student_view === 'active' ? 'selected' : ''; ?>>新生資料</option>
+                            <option value="previous" <?php echo $new_student_view === 'previous' ? 'selected' : ''; ?>>歷屆學生(113屆)</option>
                         </select>
+                        <?php if ($new_student_view === 'previous' && !empty($available_roc_years)): ?>
+                            <select id="rocYearSelect" onchange="changeRocYear(this.value)" style="padding: 8px 12px; border: 1px solid #d9d9d9; border-radius: 6px; background: #fff; color: #333; font-size: 14px; cursor: pointer;">
+                                <option value="0">全部學年</option>
+                                <?php foreach ($available_roc_years as $roc_year): ?>
+                                    <option value="<?php echo $roc_year; ?>" <?php echo $selected_roc_year == $roc_year ? 'selected' : ''; ?>>
+                                        <?php echo $roc_year; ?>學年
+                                    </option>
+                                <?php endforeach; ?>
+                            </select>
+                        <?php endif; ?>
                     </div>
                 </div>
                 
@@ -4838,12 +4777,9 @@ function resetEnrollmentTabs() {
                         <i class="fas fa-percentage"></i> 招生推薦入學比例
                     </h4>
                     <div style="display: flex; gap: 10px; align-items: center;">
-                        <select id="rocYearSelect" onchange="changeRocYear(this.value)" style="padding: 8px 12px; border: 1px solid #d9d9d9; border-radius: 6px; background: #fff; color: #333; font-size: 14px; cursor: pointer;">
-                            <?php foreach ($available_roc_years as $roc_year): ?>
-                                <option value="<?php echo $roc_year; ?>" <?php echo $selected_roc_year == $roc_year ? 'selected' : ''; ?>>
-                                    <?php echo $roc_year; ?>學年
-                                </option>
-                            <?php endforeach; ?>
+                        <select id="newStudentViewSelect" onchange="changeNewStudentView(this.value)" style="padding: 8px 12px; border: 1px solid #d9d9d9; border-radius: 6px; background: #fff; color: #333; font-size: 14px; cursor: pointer;">
+                            <option value="active" <?php echo $new_student_view === 'active' ? 'selected' : ''; ?>>新生資料</option>
+                            <option value="previous" <?php echo $new_student_view === 'previous' ? 'selected' : ''; ?>>歷屆學生(113屆)</option>
                         </select>
                         <select id="recommendDeptFilterSelect" style="padding: 8px 12px; border: 1px solid #d9d9d9; border-radius: 6px; background: #fff; color: #333; font-size: 14px; cursor: pointer;">
                             <option value="all">顯示全部科系</option>
@@ -4851,6 +4787,16 @@ function resetEnrollmentTabs() {
                                 <option value="${item.department_name}">${item.department_name}</option>
                             `).join('')}
                         </select>
+                        <?php if ($new_student_view === 'previous' && !empty($available_roc_years)): ?>
+                            <select id="rocYearSelect" onchange="changeRocYear(this.value)" style="padding: 8px 12px; border: 1px solid #d9d9d9; border-radius: 6px; background: #fff; color: #333; font-size: 14px; cursor: pointer;">
+                                <option value="0">全部學年</option>
+                                <?php foreach ($available_roc_years as $roc_year): ?>
+                                    <option value="<?php echo $roc_year; ?>" <?php echo $selected_roc_year == $roc_year ? 'selected' : ''; ?>>
+                                        <?php echo $roc_year; ?>學年
+                                    </option>
+                                <?php endforeach; ?>
+                            </select>
+                        <?php endif; ?>
                     </div>
                 </div>
 
@@ -5111,13 +5057,20 @@ function resetEnrollmentTabs() {
                         <i class="fas fa-school"></i> 推薦入學學校占比（占比較高）
                     </h4>
                     <div style="display: flex; gap: 10px; align-items: center;">
-                        <select id="rocYearSelect" onchange="changeRocYear(this.value)" style="padding: 8px 12px; border: 1px solid #d9d9d9; border-radius: 6px; background: #fff; color: #333; font-size: 14px; cursor: pointer;">
-                            <?php foreach ($available_roc_years as $roc_year): ?>
-                                <option value="<?php echo $roc_year; ?>" <?php echo $selected_roc_year == $roc_year ? 'selected' : ''; ?>>
-                                    <?php echo $roc_year; ?>學年
-                                </option>
-                            <?php endforeach; ?>
+                        <select id="newStudentViewSelect" onchange="changeNewStudentView(this.value)" style="padding: 8px 12px; border: 1px solid #d9d9d9; border-radius: 6px; background: #fff; color: #333; font-size: 14px; cursor: pointer;">
+                            <option value="active" <?php echo $new_student_view === 'active' ? 'selected' : ''; ?>>新生資料</option>
+                            <option value="previous" <?php echo $new_student_view === 'previous' ? 'selected' : ''; ?>>歷屆學生(113屆)</option>
                         </select>
+                        <?php if ($new_student_view === 'previous' && !empty($available_roc_years)): ?>
+                            <select id="rocYearSelect" onchange="changeRocYear(this.value)" style="padding: 8px 12px; border: 1px solid #d9d9d9; border-radius: 6px; background: #fff; color: #333; font-size: 14px; cursor: pointer;">
+                                <option value="0">全部學年</option>
+                                <?php foreach ($available_roc_years as $roc_year): ?>
+                                    <option value="<?php echo $roc_year; ?>" <?php echo $selected_roc_year == $roc_year ? 'selected' : ''; ?>>
+                                        <?php echo $roc_year; ?>學年
+                                    </option>
+                                <?php endforeach; ?>
+                            </select>
+                        <?php endif; ?>
                     </div>
                 </div>
 
@@ -5238,16 +5191,27 @@ function resetEnrollmentTabs() {
         }, 80);
     }
     
-    // 已移除舊的 new_student_view 切換函式，改由選擇屆別（roc_year）控制
+    // 變更新生視圖類型（新生或歷屆學生）
+    function changeNewStudentView(viewType) {
+        const url = new URL(window.location.href);
+        url.searchParams.set('new_student_view', viewType);
+        // 清除學年度參數（如果從歷屆切換到新生）
+        if (viewType === 'active') {
+            url.searchParams.delete('roc_year');
+        } else {
+            // 歷屆視圖固定查看 113 屆
+            url.searchParams.set('roc_year', '113');
+        }
+        // 重新載入頁面以更新數據
+        window.location.href = url.toString();
+    }
     
     // 變更學年度篩選
     function changeRocYear(rocYear) {
         const url = new URL(window.location.href);
-        if (rocYear && rocYear !== '0') {
-            url.searchParams.set('roc_year', rocYear);
-        } else {
-            url.searchParams.delete('roc_year');
-        }
+        url.searchParams.set('new_student_view', 'previous');
+        // 歷屆視圖固定查看 113 屆
+        url.searchParams.set('roc_year', '113');
         // 重新載入頁面以更新數據
         window.location.href = url.toString();
     }
@@ -8327,89 +8291,6 @@ function showContinuedAdmissionChoicesStats() {
             content.innerHTML = '<div class="empty-state"><i class="fas fa-university fa-3x" style="margin-bottom: 16px;"></i><h4>點擊「各類型人數長條圖」查看畢業生就讀大學類型統計</h4><p>統計本屆孝班、忠班畢業生就讀國立大學、私立大學、直接就業、軍警學校、國外升學、其他等類型人數</p></div>';
         }
     }
-
-    // 每班國立錄取圖表與 Top5 顯示
-    let perClassNationalChart = null;
-    function showPerClassNationalStats() {
-        const data = window.perClassStats || [];
-        const container = document.getElementById('perClassNationalContent');
-        if (!container) return;
-        if (!Array.isArray(data) || data.length === 0) {
-            container.innerHTML = '<div class="empty-state"><i class="fas fa-users fa-3x" style="margin-bottom: 16px;"></i><h4>尚無每班錄取資料</h4><p>請確認教師是否已填寫畢業生就讀大學資訊。</p></div>';
-            return;
-        }
-        // 準備 labels 與數據
-        const labels = data.map(d => d.class_name);
-        const counts = data.map(d => d.national || 0);
-        const percents = data.map(d => d.percent || 0);
-
-        container.innerHTML = `
-            <div style="margin-bottom:20px;">
-                <h4 style="color:#667eea; margin-bottom:12px;"><i class="fas fa-chart-bar"></i> 各班國立錄取人數</h4>
-                <div class="chart-card"><div class="chart-title">人數長條圖</div><div class="chart-container" style="height:320px;"><canvas id="perClassNationalChartCanvas"></canvas></div></div>
-                <h4 style="color:#667eea; margin-top:20px; margin-bottom:12px;"><i class="fas fa-percentage"></i> 各班國立錄取比例</h4>
-                <div class="chart-card"><div class="chart-title">百分比長條圖</div><div class="chart-container" style="height:320px;"><canvas id="perClassNationalPercentChart"></canvas></div></div>
-            </div>
-        `;
-
-        setTimeout(() => {
-            const c1 = document.getElementById('perClassNationalChartCanvas');
-            const c2 = document.getElementById('perClassNationalPercentChart');
-            if (!c1 || !c2) return;
-            if (perClassNationalChart) { perClassNationalChart.destroy(); perClassNationalChart = null; }
-
-            const ctx1 = c1.getContext('2d');
-            perClassNationalChart = new Chart(ctx1, {
-                type: 'bar',
-                data: { labels: labels, datasets: [{ label: '國立錄取人數', data: counts, backgroundColor: '#667eea' }] },
-                options: { responsive: true, maintainAspectRatio: false, plugins:{ legend:{display:false} }, scales:{ y:{beginAtZero:true, ticks:{stepSize:1}} } }
-            });
-
-            const ctx2 = c2.getContext('2d');
-            new Chart(ctx2, {
-                type: 'bar',
-                data: { labels: labels, datasets: [{ label: '國立錄取比例(%)', data: percents, backgroundColor: '#43e97b' }] },
-                options: { responsive:true, maintainAspectRatio:false, plugins:{ legend:{display:false}, tooltip:{callbacks:{label: function(ctx){ return ctx.parsed.y + ' %'; }}} }, scales:{ y:{ beginAtZero:true, max:100 } } }
-            });
-        }, 80);
-    }
-
-    function showPerClassTopSchools() {
-        const data = window.perClassStats || [];
-        const container = document.getElementById('perClassTopSchoolsContent');
-        if (!container) return;
-        if (!Array.isArray(data) || data.length === 0) {
-            container.innerHTML = '<div class="empty-state"><i class="fas fa-university fa-3x" style="margin-bottom: 16px;"></i><h4>尚無 Top5 大學資料</h4><p>請確認教師是否已填寫畢業生就讀大學資訊。</p></div>';
-            return;
-        }
-        // 生成每班 top5 的表格
-        let html = '<div style="background:#f8f9fa;padding:16px;border-radius:8px;">';
-        data.forEach(d => {
-            html += `<div style="margin-bottom:14px;"><h5 style="margin-bottom:6px;">${d.class_name} — 總人數 ${d.total}，國立 ${d.national} (${d.percent}%)</h5>`;
-            if (d.top5 && Object.keys(d.top5).length > 0) {
-                html += '<ol style="margin-left:18px;">';
-                Object.entries(d.top5).forEach(([school, cnt]) => {
-                    html += `<li>${school}：${cnt} 人</li>`;
-                });
-                html += '</ol>';
-            } else {
-                html += '<div style="color:#666;">無資料</div>';
-            }
-            html += '</div>';
-        });
-        html += '</div>';
-        container.innerHTML = html;
-    }
-
-    function clearPerClassCharts() {
-        const c1 = document.getElementById('perClassNationalContent');
-        const c2 = document.getElementById('perClassTopSchoolsContent');
-        if (c1) c1.innerHTML = '';
-        if (c2) c2.innerHTML = '';
-        if (perClassNationalChart) { perClassNationalChart.destroy(); perClassNationalChart = null; }
-    }
-
-    // 已移除 setNewStudentView；請使用屆別下拉選單（roc_year）進行切換
     
     // 五專入學說明會統計 - 年級分布分析
     function showAdmissionGradeStats() {
