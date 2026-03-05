@@ -4075,33 +4075,35 @@ try {
             tag.style.color = '#262626';
             tag.textContent = duplicateSameDept ? '(推薦人同科系)' : '(推薦人不同科系)';
             dupLine.appendChild(tag);
-            const actionWrap = document.createElement('span');
-            actionWrap.style.display = 'inline-flex';
-            actionWrap.style.alignItems = 'center';
-            actionWrap.style.gap = '8px';
-            actionWrap.style.marginLeft = '10px';
-            actionWrap.style.whiteSpace = 'nowrap';
-            const btn = document.createElement('button');
-            btn.type = 'button';
-            btn.className = 'btn-view';
-            btn.style.padding = '4px 10px';
-            btn.style.fontSize = '13px';
-            btn.textContent = '寄信給被推薦人確認';
-            btn.addEventListener('click', function() {
-                openDuplicateMailPreviewModal(recommendationId, btn);
-            });
-            actionWrap.appendChild(btn);
-            const resultBtn = document.createElement('button');
-            resultBtn.type = 'button';
-            resultBtn.className = 'btn-view';
-            resultBtn.style.padding = '4px 10px';
-            resultBtn.style.fontSize = '13px';
-            resultBtn.textContent = '查看被推薦人選擇結果';
-            resultBtn.addEventListener('click', function() {
-                openDuplicateChoiceResultModal(recommendationId, resultBtn);
-            });
-            actionWrap.appendChild(resultBtn);
-            dupLine.appendChild(actionWrap);
+            if (!duplicateSameDept) {
+                const actionWrap = document.createElement('span');
+                actionWrap.style.display = 'inline-flex';
+                actionWrap.style.alignItems = 'center';
+                actionWrap.style.gap = '8px';
+                actionWrap.style.marginLeft = '10px';
+                actionWrap.style.whiteSpace = 'nowrap';
+                const btn = document.createElement('button');
+                btn.type = 'button';
+                btn.className = 'btn-view';
+                btn.style.padding = '4px 10px';
+                btn.style.fontSize = '13px';
+                btn.textContent = '寄信給被推薦人確認';
+                btn.addEventListener('click', function() {
+                    openDuplicateMailPreviewModal(recommendationId, btn);
+                });
+                actionWrap.appendChild(btn);
+                const resultBtn = document.createElement('button');
+                resultBtn.type = 'button';
+                resultBtn.className = 'btn-view';
+                resultBtn.style.padding = '4px 10px';
+                resultBtn.style.fontSize = '13px';
+                resultBtn.textContent = '查看被推薦人選擇結果';
+                resultBtn.addEventListener('click', function() {
+                    openDuplicateChoiceResultModal(recommendationId, resultBtn);
+                });
+                actionWrap.appendChild(resultBtn);
+                dupLine.appendChild(actionWrap);
+            }
             listEl.appendChild(dupLine);
         } else {
             addLine('未發現重複推薦', false);
