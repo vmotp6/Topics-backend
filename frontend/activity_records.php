@@ -899,6 +899,7 @@ if ($teacher_id > 0) {
     $recommended_ratio_percent = 0.0;
     $recommend_ratio_by_department = [];
     $recommend_ratio_by_school = [];
+    $recommend_bonus_city_distribution = [];
     $has_new_student_department_id = false;
 
     try {
@@ -1485,6 +1486,123 @@ if ($uni_type === 'NATIONAL') {
                             }
                         }
                         $school_ratio_stmt->close();
+                    }
+
+                    // 可發送獎金名單（APD + 已簽核）之被推薦人國中縣市分布
+                    $recommend_bonus_city_distribution = [];
+                    $has_approval_links_table = false;
+                    $approval_table_check = $conn->query("SHOW TABLES LIKE 'recommendation_approval_links'");
+                    if ($approval_table_check && $approval_table_check->num_rows > 0) {
+                        $has_approval_links_table = true;
+                    }
+                    if ($has_approval_links_table) {
+                        $ar_has_student_school_code = false;
+                        $ar_has_student_school = false;
+                        $ar_has_recommender_department_code = false;
+                        $ar_has_recommender_department = false;
+                        $admission_cols = $conn->query("SHOW COLUMNS FROM admission_recommendations");
+                        if ($admission_cols) {
+                            $ac = [];
+                            while ($c = $admission_cols->fetch_assoc()) {
+                                $ac[(string)($c['Field'] ?? '')] = true;
+                            }
+                            $ar_has_student_school_code = isset($ac['student_school_code']);
+                            $ar_has_student_school = isset($ac['student_school']);
+                            $ar_has_recommender_department_code = isset($ac['recommender_department_code']);
+                            $ar_has_recommender_department = isset($ac['recommender_department']);
+                        }
+
+                        $has_recommender_table_city = false;
+                        $recommender_table_check_city = $conn->query("SHOW TABLES LIKE 'recommender'");
+                        if ($recommender_table_check_city && $recommender_table_check_city->num_rows > 0) {
+                            $has_recommender_table_city = true;
+                        }
+                        $has_recommended_table_city = false;
+                        $recommended_table_check_city = $conn->query("SHOW TABLES LIKE 'recommended'");
+                        if ($recommended_table_check_city && $recommended_table_check_city->num_rows > 0) {
+                            $has_recommended_table_city = true;
+                        }
+
+                        $school_expr_city = $has_recommended_table_city
+                            ? ("COALESCE(NULLIF(TRIM(red.school COLLATE utf8mb4_unicode_ci), ''), "
+                                . ($ar_has_student_school_code ? "NULLIF(TRIM(ar.student_school_code COLLATE utf8mb4_unicode_ci), '')" : "NULL")
+                                . ", "
+                                . ($ar_has_student_school ? "NULLIF(TRIM(ar.student_school COLLATE utf8mb4_unicode_ci), '')" : "NULL")
+                                . ", '')")
+                            : ("COALESCE("
+                                . ($ar_has_student_school_code ? "NULLIF(TRIM(ar.student_school_code COLLATE utf8mb4_unicode_ci), '')" : "NULL")
+                                . ", "
+                                . ($ar_has_student_school ? "NULLIF(TRIM(ar.student_school COLLATE utf8mb4_unicode_ci), '')" : "NULL")
+                                . ", '')");
+                        $dept_expr_city = $has_recommender_table_city
+                            ? ("COALESCE(NULLIF(TRIM(rec.department COLLATE utf8mb4_unicode_ci), ''), "
+                                . ($ar_has_recommender_department_code ? "NULLIF(TRIM(ar.recommender_department_code COLLATE utf8mb4_unicode_ci), '')" : "NULL")
+                                . ", "
+                                . ($ar_has_recommender_department ? "NULLIF(TRIM(ar.recommender_department COLLATE utf8mb4_unicode_ci), '')" : "NULL")
+                                . ", '')")
+                            : ("COALESCE("
+                                . ($ar_has_recommender_department_code ? "NULLIF(TRIM(ar.recommender_department_code COLLATE utf8mb4_unicode_ci), '')" : "NULL")
+                                . ", "
+                                . ($ar_has_recommender_department ? "NULLIF(TRIM(ar.recommender_department COLLATE utf8mb4_unicode_ci), '')" : "NULL")
+                                . ", '')");
+
+                        $im_city_filter = '';
+                        if ($is_im_di) {
+                            $im_city_filter = " AND (UPPER($dept_expr_city) = 'IM' OR $dept_expr_city LIKE '%資管%') ";
+                        }
+
+                        $city_sql = "
+                            SELECT
+                                COALESCE(
+                                    NULLIF(
+                                        REPLACE(
+                                            TRIM(COALESCE(sd_code.city, sd_name.city, '') COLLATE utf8mb4_unicode_ci),
+                                            '臺',
+                                            '台'
+                                        ),
+                                        ''
+                                    ),
+                                    '未填寫'
+                                ) AS city,
+                                COUNT(*) AS city_count
+                            FROM admission_recommendations ar
+                            " . ($has_recommended_table_city ? "LEFT JOIN recommended red ON red.recommendations_id = ar.id" : "") . "
+                            " . ($has_recommender_table_city ? "LEFT JOIN recommender rec ON rec.recommendations_id = ar.id" : "") . "
+                            LEFT JOIN school_data sd_code ON $school_expr_city = sd_code.school_code COLLATE utf8mb4_unicode_ci
+                            LEFT JOIN school_data sd_name ON $school_expr_city = sd_name.name COLLATE utf8mb4_unicode_ci
+                            $recommend_where
+                              AND EXISTS (
+                                  SELECT 1
+                                  FROM recommendation_approval_links r1
+                                  WHERE r1.recommendation_id = ar.id
+                                    AND LOWER(COALESCE(r1.status, '')) = 'signed'
+                                    AND r1.id = (
+                                        SELECT MAX(r2.id)
+                                        FROM recommendation_approval_links r2
+                                        WHERE r2.recommendation_id = ar.id
+                                    )
+                              )
+                              $im_city_filter
+                            GROUP BY city
+                            ORDER BY city_count DESC, city ASC
+                        ";
+                        $city_stmt = $conn->prepare($city_sql);
+                        if ($city_stmt) {
+                            if (!empty($recommend_params)) {
+                                $city_stmt->bind_param($recommend_types, ...$recommend_params);
+                            }
+                            $city_stmt->execute();
+                            $city_result = $city_stmt->get_result();
+                            if ($city_result) {
+                                while ($crow = $city_result->fetch_assoc()) {
+                                    $recommend_bonus_city_distribution[] = [
+                                        'city' => (string)($crow['city'] ?? '未填寫'),
+                                        'count' => (int)($crow['city_count'] ?? 0),
+                                    ];
+                                }
+                            }
+                            $city_stmt->close();
+                        }
                     }
                 }
 
@@ -2869,6 +2987,9 @@ $conn->close();
                                             </button>
                                             <button class="btn-view" onclick="showRecommendSchoolRatioChart()">
                                                 <i class="fas fa-school"></i> 推薦入學學校占比
+                                            </button>
+                                            <button class="btn-view" onclick="showRecommendCityDistributionChart()">
+                                                <i class="fas fa-map-marker-alt"></i> 獎金名單縣市分布
                                             </button>
                                             <button class="btn-view" onclick="clearRecommendCharts()" style="background: #dc3545; color: white; border-color: #dc3545;">
                                                 <i class="fas fa-arrow-up"></i> 收回圖表
@@ -5231,6 +5352,10 @@ $conn->close();
                     window.recommendSchoolRatioChartInstance.destroy();
                     window.recommendSchoolRatioChartInstance = null;
                 }
+                if (window.recommendCityDistributionChartInstance) {
+                    window.recommendCityDistributionChartInstance.destroy();
+                    window.recommendCityDistributionChartInstance = null;
+                }
                 if (Array.isArray(window.newStudentRecommendRatioChartInstances)) {
                     window.newStudentRecommendRatioChartInstances.forEach((ins) => {
                         if (ins) ins.destroy();
@@ -5243,7 +5368,7 @@ $conn->close();
             <div class="empty-state">
                 <i class="fas fa-chart-line fa-3x" style="margin-bottom: 16px;"></i>
                 <h4>選擇上方的統計類型來查看詳細分析</h4>
-                <p>提供招生推薦入學比例分析（依科系）</p>
+                <p>提供招生推薦入學比例分析（依科系）、推薦學校占比與獎金名單縣市分布</p>
             </div>
         `;
             }
@@ -5398,6 +5523,156 @@ $conn->close();
                                             return `${value}%`;
                                         }
                                     }
+                                },
+                                x: {
+                                    ticks: {
+                                        maxRotation: 45,
+                                        minRotation: 0
+                                    }
+                                }
+                            }
+                        }
+                    });
+                }, 80);
+            }
+
+            function showRecommendCityDistributionChart() {
+                sessionStorage.setItem('lastNewStudentChartType', 'recommendCityDistribution');
+
+                const cityRaw = <?php echo json_encode($recommend_bonus_city_distribution, JSON_UNESCAPED_UNICODE); ?>;
+                const normalizedMap = {};
+                (Array.isArray(cityRaw) ? cityRaw : []).forEach(item => {
+                    const rawCity = String(item.city || '未填寫').trim();
+                    const city = (rawCity || '未填寫').replace(/臺/g, '台');
+                    const count = parseInt(item.count || 0, 10) || 0;
+                    if (!normalizedMap[city]) normalizedMap[city] = 0;
+                    normalizedMap[city] += count;
+                });
+                const cityList = Object.keys(normalizedMap)
+                    .map(city => ({ city, count: normalizedMap[city] }))
+                    .filter(item => item.count > 0)
+                    .sort((a, b) => b.count - a.count || a.city.localeCompare(b.city, 'zh-Hant'));
+
+                const totalCount = cityList.reduce((sum, item) => sum + item.count, 0);
+                const topCity = cityList.length > 0 ? cityList[0] : null;
+                const content = `
+            <div style="margin-bottom: 20px;">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; flex-wrap: wrap; gap: 10px;">
+                    <h4 style="color: #667eea; margin: 0;">
+                        <i class="fas fa-map-marker-alt"></i> 可發送獎金名單 - 國中縣市分布
+                    </h4>
+                    <div style="display: flex; gap: 10px; align-items: center;">
+                        <select id="rocYearSelect" onchange="changeRocYear(this.value)" style="padding: 8px 12px; border: 1px solid #d9d9d9; border-radius: 6px; background: #fff; color: #333; font-size: 14px; cursor: pointer;">
+                            <?php foreach ($available_roc_years as $roc_year): ?>
+                                <option value="<?php echo $roc_year; ?>" <?php echo $selected_roc_year == $roc_year ? 'selected' : ''; ?>>
+                                    <?php echo $roc_year; ?>學年
+                                </option>
+                            <?php endforeach; ?>
+                        </select>
+                    </div>
+                </div>
+
+                <div style="background: linear-gradient(135deg, #36cfc9 0%, #13c2c2 100%); color: white; padding: 20px; border-radius: 10px; margin-bottom: 20px;">
+                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; text-align: center;">
+                        <div>
+                            <div style="font-size: 2.1em; font-weight: bold;">${cityList.length}</div>
+                            <div style="opacity: 0.92;">縣市數</div>
+                        </div>
+                        <div>
+                            <div style="font-size: 2.1em; font-weight: bold;">${totalCount}</div>
+                            <div style="opacity: 0.92;">可發送獎金名單總數</div>
+                        </div>
+                        <div>
+                            <div style="font-size: 1.3em; font-weight: bold;">${topCity ? topCity.city : '無資料'}</div>
+                            <div style="opacity: 0.92;">最多人數縣市${topCity ? `（${topCity.count}人）` : ''}</div>
+                        </div>
+                    </div>
+                </div>
+
+                ${cityList.length <= 0 ? `
+                    <div style="text-align:center; color:#6c757d; padding: 30px 0;">
+                        <i class="fas fa-inbox fa-2x" style="margin-bottom: 10px;"></i>
+                        <div>目前沒有可用的縣市資料</div>
+                    </div>
+                ` : `
+                    <div class="chart-card">
+                        <div class="chart-title">國中縣市分布</div>
+                        <div class="chart-container" style="height: 420px;">
+                            <canvas id="recommendCityDistributionChart"></canvas>
+                        </div>
+                    </div>
+                    <div style="margin-top:20px;">
+                        <table style="width:100%; border-collapse:collapse; background:#fff;">
+                            <thead>
+                                <tr style="background:#f8f9fa; border-bottom:2px solid #dee2e6;">
+                                    <th style="padding:12px; text-align:left;">縣市</th>
+                                    <th style="padding:12px; text-align:center;">人數</th>
+                                    <th style="padding:12px; text-align:center;">占比</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                ${cityList.map((item, index) => {
+                                    const pct = totalCount > 0 ? ((item.count / totalCount) * 100).toFixed(2) : '0.00';
+                                    return `
+                                    <tr style="border-bottom:1px solid #e9ecef; ${index % 2 === 0 ? 'background:#fff;' : 'background:#f8f9fa;'}">
+                                        <td style="padding:12px; font-weight:500;">${item.city}</td>
+                                        <td style="padding:12px; text-align:center; color:#13c2c2; font-weight:700;">${item.count}</td>
+                                        <td style="padding:12px; text-align:center;">${pct}%</td>
+                                    </tr>`;
+                                }).join('')}
+                            </tbody>
+                        </table>
+                    </div>
+                `}
+            </div>
+        `;
+
+                const recommendContainer = document.getElementById('recommendAnalyticsContent');
+                if (!recommendContainer) return;
+                recommendContainer.innerHTML = content;
+
+                if (window.recommendCityDistributionChartInstance) {
+                    window.recommendCityDistributionChartInstance.destroy();
+                    window.recommendCityDistributionChartInstance = null;
+                }
+                if (cityList.length <= 0) return;
+
+                setTimeout(() => {
+                    const canvas = document.getElementById('recommendCityDistributionChart');
+                    if (!canvas) return;
+                    const ctx = canvas.getContext('2d');
+                    window.recommendCityDistributionChartInstance = new Chart(ctx, {
+                        type: 'bar',
+                        data: {
+                            labels: cityList.map(item => item.city),
+                            datasets: [{
+                                label: '人數',
+                                data: cityList.map(item => item.count),
+                                backgroundColor: '#13c2c2',
+                                borderColor: '#13c2c2',
+                                borderWidth: 1,
+                                borderRadius: 8
+                            }]
+                        },
+                        options: {
+                            responsive: true,
+                            maintainAspectRatio: false,
+                            plugins: {
+                                legend: { display: false },
+                                tooltip: {
+                                    callbacks: {
+                                        label: function(context) {
+                                            const value = context.parsed.y || 0;
+                                            const pct = totalCount > 0 ? ((value / totalCount) * 100).toFixed(2) : '0.00';
+                                            return `人數：${value}（${pct}%）`;
+                                        }
+                                    }
+                                }
+                            },
+                            scales: {
+                                y: {
+                                    beginAtZero: true,
+                                    ticks: { precision: 0 }
                                 },
                                 x: {
                                     ticks: {
@@ -9386,6 +9661,8 @@ window.showSourceDetail = function(schoolNameEnc, sourceDataEnc, gradeLabel) {
                             showNewStudentRecommendRatioChart();
                         } else if (lastChartType === 'recommendSchoolRatio' && typeof showRecommendSchoolRatioChart === 'function') {
                             showRecommendSchoolRatioChart();
+                        } else if (lastChartType === 'recommendCityDistribution' && typeof showRecommendCityDistributionChart === 'function') {
+                            showRecommendCityDistributionChart();
                         } else if (lastChartType === 'schoolStats' && typeof showNewStudentSchoolStats === 'function') {
                             showNewStudentSchoolStats();
                         } else {
