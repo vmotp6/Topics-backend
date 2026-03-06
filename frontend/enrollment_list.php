@@ -329,7 +329,7 @@ if (!in_array(strtolower($sortOrder), ['asc', 'desc'])) {
     $sortOrder = 'asc';
 }
 
-// 基礎 SELECT（是否已聯絡；意願只讀 ei.intention_level，不再子查詢聯絡紀錄以避開 N+1）
+// 基礎 SELECT（是否已聯絡、最後聯絡日；意願只讀 ei.intention_level，不再子查詢聯絡紀錄以避開 N+1）
 $base_select = "
     SELECT 
         ei.*, 
@@ -341,7 +341,8 @@ $base_select = "
         es2.name AS system2_name,
         d3.name AS intention3_name, d3.code AS intention3_code,
         es3.name AS system3_name,
-        (SELECT IF(COUNT(*) > 0, 1, 0) FROM enrollment_contact_logs c WHERE c.enrollment_id = ei.id) AS has_contact
+        (SELECT IF(COUNT(*) > 0, 1, 0) FROM enrollment_contact_logs c WHERE c.enrollment_id = ei.id) AS has_contact,
+        (SELECT MAX(c.contact_date) FROM enrollment_contact_logs c WHERE c.enrollment_id = ei.id) AS last_contact_date
 ";
 
 $base_from_join = "
@@ -454,6 +455,40 @@ function getIntentionColumnDisplay($item) {
         return '<span class="intention-badge intention-low" title="已決定他校、學生無意願、家長反對等">低意願</span>';
     }
     return '';
+}
+
+/**
+ * 列表「是否已聯絡」欄：招生中心顯示「已聯絡/未聯絡」；老師/主任顯示「X天前聯絡/未聯絡」
+ * @param array $item 學生一筆資料（含 has_contact, last_contact_date）
+ * @param bool $is_admission_center 是否為招生中心
+ * @return string HTML
+ */
+function getContactStatusColumnHtml($item, $is_admission_center) {
+    $has = (int)($item['has_contact'] ?? 0) === 1;
+    if (!$has) {
+        return '<span style="color:#999;">未聯絡</span>';
+    }
+    if ($is_admission_center) {
+        return '<span style="color:#52c41a;">已聯絡</span>';
+    }
+    $last = trim((string)($item['last_contact_date'] ?? ''));
+    if ($last === '') {
+        return '<span style="color:#52c41a;">已聯絡</span>';
+    }
+    $ts = strtotime($last);
+    if ($ts === false) {
+        return '<span style="color:#52c41a;">已聯絡</span>';
+    }
+    $days = (int)floor((time() - $ts) / 86400);
+    if ($days <= 0) {
+        $text = '今天聯絡';
+    } elseif ($days === 1) {
+        $text = '1天前聯絡';
+    } else {
+        $text = $days . '天前聯絡';
+    }
+    $color = $days >= 7 ? '#f5222d' : '#52c41a'; // 7 天以上紅字
+    return '<span style="color:' . $color . ';">' . htmlspecialchars($text) . '</span>';
 }
 
 /**
@@ -1151,7 +1186,7 @@ try {
                                             <?php if ($user_role !== 'TEA'): ?>
                                                 <th><?php echo $is_admission_center ? '分配科系 / 負責老師' : '分配狀態'; ?></th>
                                             <?php endif; ?>
-                                            <?php if ($is_admission_center || $is_director): ?><th>是否已聯絡</th><?php endif; ?>
+                                            <?php if ($is_admission_center || $is_director || $user_role === 'TEA'): ?><th>是否已聯絡</th><?php endif; ?>
                                             <th>意願</th>
                                             <th>操作</th>
                                         <?php elseif ($view_mode === 'registered'): ?>
@@ -1162,7 +1197,7 @@ try {
                                             <?php endif; ?>
                                             <th>報名階段</th>
                                             <th>報到狀態</th>
-                                            <?php if ($is_admission_center || $is_director): ?><th>是否已聯絡</th><?php endif; ?>
+                                            <?php if ($is_admission_center || $is_director || $user_role === 'TEA'): ?><th>是否已聯絡</th><?php endif; ?>
                                             <th>意願</th>
                                             <th>操作</th>
                                         <?php else: /* recruit */ ?>
@@ -1172,7 +1207,7 @@ try {
                                                 <th><?php echo $is_admission_center ? '分配科系 / 負責老師' : '分配狀態'; ?></th>
                                             <?php endif; ?>
                                             <?php if ($current_registration_stage): ?><th>報名狀態</th><?php endif; ?>
-                                            <?php if ($is_admission_center || $is_director): ?><th>是否已聯絡</th><?php endif; ?>
+                                            <?php if ($is_admission_center || $is_director || $user_role === 'TEA'): ?><th>是否已聯絡</th><?php endif; ?>
                                             <th>意願</th>
                                             <th>操作</th>
                                         <?php endif; ?>
@@ -1266,8 +1301,8 @@ try {
                                             <?php if ($user_role !== 'TEA'): ?>
                                                 <td><?php echo $assignment_html; ?></td>
                                             <?php endif; ?>
-                                            <?php if ($is_admission_center || $is_director): ?>
-                                                <td><?php echo ((int)($item['has_contact'] ?? 0) === 1) ? '<span style="color:#52c41a;">已聯絡</span>' : '<span style="color:#999;">未聯絡</span>'; ?></td>
+                                            <?php if ($is_admission_center || $is_director || $user_role === 'TEA'): ?>
+                                                <td><?php echo getContactStatusColumnHtml($item, $is_admission_center); ?></td>
                                             <?php endif; ?>
                                             <td><?php $disp = getIntentionColumnDisplay($item); echo $disp !== '' ? $disp : '<span style="color:#999;">—</span>'; ?></td>
                                             <td onclick="event.stopPropagation();">
@@ -1342,8 +1377,8 @@ try {
                                                     echo getCheckInStatusBadgeHtml($check_in_status);
                                                 }
                                             ?></td>
-                                            <?php if ($is_admission_center || $is_director): ?>
-                                                <td><?php echo ((int)($item['has_contact'] ?? 0) === 1) ? '<span style="color:#52c41a;">已聯絡</span>' : '<span style="color:#999;">未聯絡</span>'; ?></td>
+                                            <?php if ($is_admission_center || $is_director || $user_role === 'TEA'): ?>
+                                                <td><?php echo getContactStatusColumnHtml($item, $is_admission_center); ?></td>
                                             <?php endif; ?>
                                             <td><?php $disp = getIntentionColumnDisplay($item); echo $disp !== '' ? $disp : '<span style="color:#999;">—</span>'; ?></td>
                                             <td onclick="event.stopPropagation();">
@@ -1421,8 +1456,8 @@ try {
                                                 ?>
                                             </td>
                                             <?php endif; ?>
-                                            <?php if ($is_admission_center || $is_director): ?>
-                                                <td><?php echo ((int)($item['has_contact'] ?? 0) === 1) ? '<span style="color:#52c41a;">已聯絡</span>' : '<span style="color:#999;">未聯絡</span>'; ?></td>
+                                            <?php if ($is_admission_center || $is_director || $user_role === 'TEA'): ?>
+                                                <td><?php echo getContactStatusColumnHtml($item, $is_admission_center); ?></td>
                                             <?php endif; ?>
                                             <td><?php $disp = getIntentionColumnDisplay($item); echo $disp !== '' ? $disp : '<span style="color:#999;">—</span>'; ?></td>
                                             <td onclick="event.stopPropagation();">
