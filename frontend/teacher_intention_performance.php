@@ -347,6 +347,7 @@ $page_title = '教師經營成效分析';
     .breadcrumb a { color: #1890ff; text-decoration: none; }
     .page-controls { margin-bottom: 16px; }
 </style>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 </head>
 <body>
 <div class="dashboard">
@@ -357,9 +358,6 @@ $page_title = '教師經營成效分析';
             <div class="page-controls">
                 <div class="breadcrumb"><a href="index.php">首頁</a> / <?php echo htmlspecialchars($page_title); ?></div>
             </div>
-
-            <h2 style="margin-bottom: 20px;"><?php echo htmlspecialchars($page_title); ?></h2>
-
             <!-- 區塊一：成效數據總覽 -->
             <div class="card" style="margin-bottom: 24px;">
                 <h3 style="margin: 0 0 16px 0; font-size: 18px;">成效數據總覽</h3>
@@ -382,7 +380,14 @@ $page_title = '教師經營成效分析';
                     </div>
                 </div>
             </div>
-
+            <div class="card" style="margin-bottom: 24px;">
+                <h3 style="margin: 0 0 16px 0; font-size: 18px;">
+                    <i class="fas fa-chart-bar" style="color: #1890ff;"></i> 教師招生績效比較圖
+                </h3>
+                <div style="position: relative; height: 300px; width: 100%;">
+                    <canvas id="performanceChart"></canvas>
+                </div>
+            </div>
             <!-- 區塊二：成功經營統計（入學成果） -->
             <div class="card" style="margin-bottom: 24px;">
                 <h3 style="margin: 0 0 16px 0; font-size: 18px;">成功經營統計（入學成果）</h3>
@@ -490,7 +495,7 @@ $page_title = '教師經營成效分析';
                         </tr>
                         <?php endforeach; ?>
                         <?php if (empty($low_intent_enrolled_rows)): ?>
-                        <tr><td colspan="4" style="text-align:center; color:#999;">目前尚未發現「低意願卻入學」的學生</td></tr>
+                        <tr><td colspan="8" style="text-align:center; color:#999;">目前尚未發現「低意願卻入學」的學生</td></tr>
                         <?php endif; ?>
                     </tbody>
                 </table>
@@ -583,6 +588,71 @@ function openContactLogModal(enrollmentId, studentName) {
             }
         })
         .catch(function() { list.innerHTML = '<p style="color:red;">載入失敗</p>'; });
+}
+//1. 將 PHP 算好的資料轉換給 JavaScript 使用
+const teacherStats = <?php echo json_encode($teacher_stats); ?>;
+
+if (teacherStats.length > 0) {
+    // 2. 準備 X 軸 (老師名字) 與 Y 軸 (數據)
+    const labels = teacherStats.map(ts => ts.teacher_name);
+    const assignedData = teacherStats.map(ts => ts.assigned_count);
+    const successData = teacherStats.map(ts => ts.success_enrolled_count);
+
+    // 3. 渲染 Chart.js 長條圖
+    const ctx = document.getElementById('performanceChart').getContext('2d');
+    new Chart(ctx, {
+        type: 'bar',
+        data: {
+            labels: labels,
+            datasets: [
+                {
+                    label: '分配學生人數 (基數)',
+                    data: assignedData,
+                    backgroundColor: 'rgba(201, 203, 207, 0.6)', // 淺灰色
+                    borderColor: 'rgb(201, 203, 207)',
+                    borderWidth: 1,
+                    borderRadius: 4
+                },
+                {
+                    label: '成功入學人數 (戰果)',
+                    data: successData,
+                    backgroundColor: 'rgba(54, 162, 235, 0.8)', // 亮藍色
+                    borderColor: 'rgb(54, 162, 235)',
+                    borderWidth: 1,
+                    borderRadius: 4
+                }
+            ]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+                legend: { position: 'top' },
+                tooltip: {
+                    callbacks: {
+                        // 在提示框自動幫主任算出轉換率
+                        afterLabel: function(context) {
+                            if (context.datasetIndex === 1) { // 只有成功入學顯示轉換率
+                                const assigned = assignedData[context.dataIndex];
+                                const success = context.raw;
+                                const rate = assigned > 0 ? ((success / assigned) * 100).toFixed(1) : 0;
+                                return `入學轉換率: ${rate}%`;
+                            }
+                            return null;
+                        }
+                    }
+                }
+            },
+            scales: {
+                y: {
+                    beginAtZero: true,
+                    ticks: { stepSize: 1 } // 因為人數是整數
+                }
+            }
+        }
+    });
+} else {
+    document.getElementById('performanceChart').parentElement.innerHTML = '<p style="text-align:center; color:#999; line-height:300px;">尚無資料可供繪圖</p>';
 }
 </script>
 <?php $conn->close(); ?>
