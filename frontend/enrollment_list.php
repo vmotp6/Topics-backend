@@ -33,6 +33,8 @@ if (!file_exists($config_path)) {
 
 require_once $config_path;
 
+require_once __DIR__ . '/includes/run_three_day_reassign_once.php';
+
 if (!function_exists('getDatabaseConnection')) {
     die('錯誤：資料庫連接函數未定義');
 }
@@ -529,6 +531,9 @@ function getCheckInStatusBadgeHtml($check_in_status) {
 try {
     $conn = getDatabaseConnection();
 
+    // 開系統時檢查：若今日尚未執行過，則將「分配後 3 天未聯絡」的學生自動轉到下一意願（每日最多執行一次）
+    run_three_day_reassign_if_needed($conn);
+
     // 用同一連線從 department_quotas 取得續招時間，與科系名額管理設定同步
     $current_registration_stage = getCurrentRegistrationStage($conn);
     $current_stage_display = $current_registration_stage ? ($stage_display_names[$current_registration_stage] ?? '') : null;
@@ -600,14 +605,12 @@ try {
     $bind_types = "";
 
     if ($is_director) {
-        // [主任權限]：
+        // [主任權限]：只顯示「目前分配給本科系」的名單；已轉到其他科系（例如三天未聯絡轉下一意願）則不再顯示
         if (!empty($user_department_code)) {
-            // [修正] 不只看 assigned_department，也要看第一志願 (ec1.department_code)
-            $perm_where .= " AND (UPPER(TRIM(ei.assigned_department)) = UPPER(?) OR UPPER(TRIM(ec1.department_code)) = UPPER(?)) ";
+            $perm_where .= " AND UPPER(TRIM(ei.assigned_department)) = UPPER(?) ";
             $bind_params[] = trim($user_department_code);
-            $bind_params[] = trim($user_department_code);
-            $bind_types .= "ss";
-            $debug_log[] = "應用主任過濾條件: 分配科系 OR 第一志願 = $user_department_code";
+            $bind_types .= "s";
+            $debug_log[] = "應用主任過濾條件: 分配科系 = $user_department_code";
         } else {
             // 是主任但找不到部門代碼 -> 什麼都看不到
             $perm_where .= " AND 1=0 "; 
