@@ -1,7 +1,11 @@
 <?php
 /**
  * 教師經營成效分析（僅主任可見）
- * 區塊一：成效數據總覽 | 區塊二：教師轉換排行榜 | 區塊三：意願異動明細與原因
+ * 區塊一：成效數據總覽
+ * 區塊二：成功經營統計（入學成果）
+ * 區塊三：教師轉換排行榜
+ * 區塊四：意願異動明細與原因
+ * 區塊五：低意願卻入學的學生
  */
 require_once __DIR__ . '/session_config.php';
 checkBackendLogin();
@@ -133,6 +137,54 @@ $st->execute();
 $teacher_rows = $st->get_result()->fetch_all(MYSQLI_ASSOC);
 $st->close();
 
+$teacher_success_map = [];
+try {
+    $t_ts = $conn->query("SHOW TABLES LIKE 'new_student_basic_info'");
+    $has_nsbi_teacher = $t_ts && $t_ts->num_rows > 0;
+} catch (Exception $e) {
+    $has_nsbi_teacher = false;
+}
+if ($has_nsbi_teacher) {
+    $ns_t = function($col) { return "CONVERT(COALESCE(ns.{$col},'') USING utf8mb4) COLLATE utf8mb4_unicode_ci"; };
+    $t_sd_t = $conn->query("SHOW TABLES LIKE 'school_data'");
+    $table_school_t = ($t_sd_t && $t_sd_t->num_rows > 0) ? 'school_data' : null;
+    $school_join_t = '';
+    $school_cond_t = "(" . $ns_t('previous_school') . " = CONVERT(COALESCE(ei.junior_high,'') USING utf8mb4) COLLATE utf8mb4_unicode_ci OR ns.previous_school IS NULL OR TRIM(" . $ns_t('previous_school') . ") = '')";
+    if ($table_school_t) {
+        $school_join_t = " LEFT JOIN " . $table_school_t . " sd_t ON sd_t.school_code = ei.junior_high ";
+        $school_cond_t = "(" . $ns_t('previous_school') . " = CONVERT(COALESCE(ei.junior_high,'') USING utf8mb4) COLLATE utf8mb4_unicode_ci
+            OR (sd_t.school_code IS NOT NULL AND " . $ns_t('previous_school') . " = CONVERT(COALESCE(sd_t.name,'') USING utf8mb4) COLLATE utf8mb4_unicode_ci)
+            OR ns.previous_school IS NULL OR TRIM(" . $ns_t('previous_school') . ") = '')";
+    }
+    $sql_teacher_success = "
+        SELECT 
+            ei.assigned_teacher_id AS teacher_id,
+            COUNT(DISTINCT ei.id) AS success_count
+        " . $base_from . "
+        " . $school_join_t . "
+        INNER JOIN new_student_basic_info ns
+            ON TRIM(" . $ns_t('student_name') . ") = TRIM(CONVERT(COALESCE(ei.name,'') USING utf8mb4) COLLATE utf8mb4_unicode_ci)
+           AND (" . $school_cond_t . ")
+           AND (
+                (ei.phone1 IS NOT NULL AND ei.phone1 <> '' AND TRIM(REPLACE(REPLACE(REPLACE(REPLACE(" . $ns_t('mobile') . ", ' ', ''), '-', ''), '(', ''), ')', '')) = TRIM(REPLACE(REPLACE(REPLACE(REPLACE(CONVERT(COALESCE(ei.phone1,'') USING utf8mb4) COLLATE utf8mb4_unicode_ci, ' ', ''), '-', ''), '(', ''), ')', '')))
+             OR (ei.phone2 IS NOT NULL AND ei.phone2 <> '' AND TRIM(REPLACE(REPLACE(REPLACE(REPLACE(" . $ns_t('mobile') . ", ' ', ''), '-', ''), '(', ''), ')', '')) = TRIM(REPLACE(REPLACE(REPLACE(REPLACE(CONVERT(COALESCE(ei.phone2,'') USING utf8mb4) COLLATE utf8mb4_unicode_ci, ' ', ''), '-', ''), '(', ''), ')', '')))
+           )
+        " . $scope_where . "
+        AND " . $ns_t('status') . " IN ('', '在學')
+        GROUP BY ei.assigned_teacher_id
+    ";
+    $st_ts = $conn->prepare($sql_teacher_success);
+    if ($st_ts) {
+        $st_ts->bind_param("ssssiii", ...array_merge($bind_dept, $bind_year));
+        $st_ts->execute();
+        $ts_rows = $st_ts->get_result()->fetch_all(MYSQLI_ASSOC);
+        $st_ts->close();
+        foreach ($ts_rows as $row) {
+            $teacher_success_map[(int)$row['teacher_id']] = (int)$row['success_count'];
+        }
+    }
+}
+
 $teacher_stats = [];
 foreach ($teacher_rows as $tr) {
     $tid = (int)$tr['teacher_id'];
@@ -145,10 +197,16 @@ foreach ($teacher_rows as $tr) {
     $down_st = $conn->prepare($down_sql); $down_st->bind_param("i", $tid); $down_st->execute();
     $down_c = (int)($down_st->get_result()->fetch_assoc()['c'] ?? 0); $down_st->close();
     $assigned = (int)$tr['assigned_count'];
+    $success = $teacher_success_map[$tid] ?? 0;
+    if ($success < 0) $success = 0;
+    if ($success > $assigned) $success = $assigned;
+    $failed = max(0, $assigned - $success);
     $teacher_stats[] = [
         'teacher_id' => $tid,
         'teacher_name' => $tr['teacher_name'] ?: $tr['teacher_username'] ?: '未知',
         'assigned_count' => $assigned,
+        'success_enrolled_count' => $success,
+        'failed_enrolled_count' => $failed,
         'upgrade_count' => $up_c,
         'downgrade_count' => $down_c
     ];
@@ -289,6 +347,7 @@ $page_title = '教師經營成效分析';
     .breadcrumb a { color: #1890ff; text-decoration: none; }
     .page-controls { margin-bottom: 16px; }
 </style>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 </head>
 <body>
 <div class="dashboard">
@@ -299,9 +358,6 @@ $page_title = '教師經營成效分析';
             <div class="page-controls">
                 <div class="breadcrumb"><a href="index.php">首頁</a> / <?php echo htmlspecialchars($page_title); ?></div>
             </div>
-
-            <h2 style="margin-bottom: 20px;"><?php echo htmlspecialchars($page_title); ?></h2>
-
             <!-- 區塊一：成效數據總覽 -->
             <div class="card" style="margin-bottom: 24px;">
                 <h3 style="margin: 0 0 16px 0; font-size: 18px;">成效數據總覽</h3>
@@ -324,8 +380,43 @@ $page_title = '教師經營成效分析';
                     </div>
                 </div>
             </div>
+            <div class="card" style="margin-bottom: 24px;">
+                <h3 style="margin: 0 0 16px 0; font-size: 18px;">
+                    <i class="fas fa-chart-bar" style="color: #1890ff;"></i> 教師招生績效比較圖
+                </h3>
+                <div style="position: relative; height: 300px; width: 100%;">
+                    <canvas id="performanceChart"></canvas>
+                </div>
+            </div>
+            <!-- 區塊二：成功經營統計（入學成果） -->
+            <div class="card" style="margin-bottom: 24px;">
+                <h3 style="margin: 0 0 16px 0; font-size: 18px;">成功經營統計（入學成果）</h3>
+                <table class="perf-table">
+                    <thead>
+                        <tr>
+                            <th>教師姓名</th>
+                            <th>分配人數</th>
+                            <th>成功入學數</th>
+                            <th>未成功入學數</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <?php foreach ($teacher_stats as $ts): ?>
+                        <tr>
+                            <td><?php echo htmlspecialchars($ts['teacher_name']); ?></td>
+                            <td><?php echo $ts['assigned_count']; ?></td>
+                            <td><?php echo $ts['success_enrolled_count']; ?></td>
+                            <td><?php echo $ts['failed_enrolled_count']; ?></td>
+                        </tr>
+                        <?php endforeach; ?>
+                        <?php if (empty($teacher_stats)): ?>
+                        <tr><td colspan="4" style="text-align:center; color:#999;">尚無分配資料</td></tr>
+                        <?php endif; ?>
+                    </tbody>
+                </table>
+            </div>
 
-            <!-- 區塊二：教師轉換排行榜 -->
+            <!-- 區塊三：教師轉換排行榜 -->
             <div class="card" style="margin-bottom: 24px;">
                 <h3 style="margin: 0 0 16px 0; font-size: 18px;">教師轉換排行榜</h3>
                 <table class="perf-table">
@@ -352,59 +443,9 @@ $page_title = '教師經營成效分析';
                     </tbody>
                 </table>
             </div>
-
-            <!-- 區塊三：意願異動明細與原因 -->
-            <div class="card">
-                <h3 style="margin: 0 0 16px 0; font-size: 18px;">意願異動明細與原因</h3>
-                <div style="margin-bottom: 12px;">
-                    <label>篩選：</label>
-                    <select id="filterType" onchange="window.location.href='teacher_intention_performance.php?filter='+this.value">
-                        <option value="all" <?php echo $filter_type === 'all' ? 'selected' : ''; ?>>全部異動</option>
-                        <option value="upgrade" <?php echo $filter_type === 'upgrade' ? 'selected' : ''; ?>>只看意願提升</option>
-                        <option value="downgrade" <?php echo $filter_type === 'downgrade' ? 'selected' : ''; ?>>只看意願下降</option>
-                    </select>
-                </div>
-                <table class="perf-table">
-                    <thead>
-                        <tr>
-                            <th>學生姓名</th>
-                            <th>負責教師</th>
-                            <th>初始意願</th>
-                            <th>目前意願</th>
-                            <th>關鍵轉折原因 (最新聯絡紀錄)</th>
-                            <th>操作</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        <?php foreach ($detail_rows as $dr): 
-                            $teacher_display = $dr['teacher_name'] ?: $dr['teacher_username'] ?: '—';
-                            $notes = $dr['latest_contact_notes'] ?? '';
-                            $initial = levelLabel($dr['initial_level']);
-                            $current = levelLabel($dr['current_level']);
-                        ?>
-                        <tr>
-                            <td><?php echo htmlspecialchars($dr['student_name']); ?></td>
-                            <td><?php echo htmlspecialchars($teacher_display); ?></td>
-                            <td><?php echo htmlspecialchars($initial); ?></td>
-                            <td><?php echo htmlspecialchars($current); ?></td>
-                            <td><div class="detail-notes"><?php echo nl2br(htmlspecialchars($notes ?: '—')); ?></div></td>
-                            <td>
-                                <button type="button" class="btn-view" onclick="openContactLogModal(<?php echo (int)$dr['id']; ?>, '<?php echo htmlspecialchars(addslashes($dr['student_name'])); ?>')">
-                                    <i class="fas fa-list"></i> 查看完整聯絡軌跡
-                                </button>
-                            </td>
-                        </tr>
-                        <?php endforeach; ?>
-                        <?php if (empty($detail_rows)): ?>
-                        <tr><td colspan="6" style="text-align:center; color:#999;">尚無意願異動明細</td></tr>
-                        <?php endif; ?>
-                    </tbody>
-                </table>
-            </div>
-
-            <!-- 區塊四：低意願卻入學的學生 -->
+            <!-- 區塊三：低意願卻入學的學生 -->
             <div class="card" style="margin-top: 24px;">
-                <h3 style="margin: 0 0 16px 0; font-size: 18px;">低意願卻入學的學生（本系）</h3>
+                <h3 style="margin: 0 0 16px 0; font-size: 18px;">低意願卻入學的學生</h3>
                 <p style="margin: 0 0 12px 0; font-size: 13px; color:#666;">
                     條件：在就讀意願名單中「目前意願為低」，但在新生基本資料中出現為本系新生（姓名＋國中＋電話皆對得上）。
                 </p>
@@ -459,6 +500,54 @@ $page_title = '教師經營成效分析';
                     </tbody>
                 </table>
             </div>
+            <!-- 區塊四：意願異動明細與原因 -->
+            <div class="card">
+                <h3 style="margin: 0 0 16px 0; font-size: 18px;">意願異動明細與原因</h3>
+                <div style="margin-bottom: 12px;">
+                    <label>篩選：</label>
+                    <select id="filterType" onchange="window.location.href='teacher_intention_performance.php?filter='+this.value">
+                        <option value="all" <?php echo $filter_type === 'all' ? 'selected' : ''; ?>>全部異動</option>
+                        <option value="upgrade" <?php echo $filter_type === 'upgrade' ? 'selected' : ''; ?>>只看意願提升</option>
+                        <option value="downgrade" <?php echo $filter_type === 'downgrade' ? 'selected' : ''; ?>>只看意願下降</option>
+                    </select>
+                </div>
+                <table class="perf-table">
+                    <thead>
+                        <tr>
+                            <th>學生姓名</th>
+                            <th>負責教師</th>
+                            <th>初始意願</th>
+                            <th>目前意願</th>
+                            <th>關鍵轉折原因 (最新聯絡紀錄)</th>
+                            <th>操作</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <?php foreach ($detail_rows as $dr): 
+                            $teacher_display = $dr['teacher_name'] ?: $dr['teacher_username'] ?: '—';
+                            $notes = $dr['latest_contact_notes'] ?? '';
+                            $initial = levelLabel($dr['initial_level']);
+                            $current = levelLabel($dr['current_level']);
+                        ?>
+                        <tr>
+                            <td><?php echo htmlspecialchars($dr['student_name']); ?></td>
+                            <td><?php echo htmlspecialchars($teacher_display); ?></td>
+                            <td><?php echo htmlspecialchars($initial); ?></td>
+                            <td><?php echo htmlspecialchars($current); ?></td>
+                            <td><div class="detail-notes"><?php echo nl2br(htmlspecialchars($notes ?: '—')); ?></div></td>
+                            <td>
+                                <button type="button" class="btn-view" onclick="openContactLogModal(<?php echo (int)$dr['id']; ?>, '<?php echo htmlspecialchars(addslashes($dr['student_name'])); ?>')">
+                                    <i class="fas fa-list"></i> 查看完整聯絡軌跡
+                                </button>
+                            </td>
+                        </tr>
+                        <?php endforeach; ?>
+                        <?php if (empty($detail_rows)): ?>
+                        <tr><td colspan="6" style="text-align:center; color:#999;">尚無意願異動明細</td></tr>
+                        <?php endif; ?>
+                    </tbody>
+                </table>
+            </div>
         </div>
     </div>
 </div>
@@ -499,6 +588,71 @@ function openContactLogModal(enrollmentId, studentName) {
             }
         })
         .catch(function() { list.innerHTML = '<p style="color:red;">載入失敗</p>'; });
+}
+//1. 將 PHP 算好的資料轉換給 JavaScript 使用
+const teacherStats = <?php echo json_encode($teacher_stats); ?>;
+
+if (teacherStats.length > 0) {
+    // 2. 準備 X 軸 (老師名字) 與 Y 軸 (數據)
+    const labels = teacherStats.map(ts => ts.teacher_name);
+    const assignedData = teacherStats.map(ts => ts.assigned_count);
+    const successData = teacherStats.map(ts => ts.success_enrolled_count);
+
+    // 3. 渲染 Chart.js 長條圖
+    const ctx = document.getElementById('performanceChart').getContext('2d');
+    new Chart(ctx, {
+        type: 'bar',
+        data: {
+            labels: labels,
+            datasets: [
+                {
+                    label: '分配學生人數 (基數)',
+                    data: assignedData,
+                    backgroundColor: 'rgba(201, 203, 207, 0.6)', // 淺灰色
+                    borderColor: 'rgb(201, 203, 207)',
+                    borderWidth: 1,
+                    borderRadius: 4
+                },
+                {
+                    label: '成功入學人數 (戰果)',
+                    data: successData,
+                    backgroundColor: 'rgba(54, 162, 235, 0.8)', // 亮藍色
+                    borderColor: 'rgb(54, 162, 235)',
+                    borderWidth: 1,
+                    borderRadius: 4
+                }
+            ]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+                legend: { position: 'top' },
+                tooltip: {
+                    callbacks: {
+                        // 在提示框自動幫主任算出轉換率
+                        afterLabel: function(context) {
+                            if (context.datasetIndex === 1) { // 只有成功入學顯示轉換率
+                                const assigned = assignedData[context.dataIndex];
+                                const success = context.raw;
+                                const rate = assigned > 0 ? ((success / assigned) * 100).toFixed(1) : 0;
+                                return `入學轉換率: ${rate}%`;
+                            }
+                            return null;
+                        }
+                    }
+                }
+            },
+            scales: {
+                y: {
+                    beginAtZero: true,
+                    ticks: { stepSize: 1 } // 因為人數是整數
+                }
+            }
+        }
+    });
+} else {
+    document.getElementById('performanceChart').parentElement.innerHTML = '<p style="text-align:center; color:#999; line-height:300px;">尚無資料可供繪圖</p>';
 }
 </script>
 <?php $conn->close(); ?>

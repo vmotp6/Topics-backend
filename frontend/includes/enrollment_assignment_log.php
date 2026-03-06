@@ -33,19 +33,66 @@ function ensure_enrollment_assignment_log_table(mysqli $conn): void {
  * @param string $department_code
  * @param int $choice_order 1=第一意願, 2=第二意願...
  * @param string $source 'initial' | 'reassign' | 'manual'
+ * @param string|null $assigned_at 指定分配時間（Y-m-d H:i:s），null 則用 NOW()
  * @return bool
  */
-function insert_enrollment_assignment_log(mysqli $conn, int $enrollment_id, string $department_code, int $choice_order, string $source = 'initial'): bool {
+function insert_enrollment_assignment_log(mysqli $conn, int $enrollment_id, string $department_code, int $choice_order, string $source = 'initial', ?string $assigned_at = null): bool {
     ensure_enrollment_assignment_log_table($conn);
-    $stmt = $conn->prepare("INSERT INTO enrollment_department_assignment_log (enrollment_id, department_code, choice_order, source, assigned_at) VALUES (?, ?, ?, ?, NOW())");
-    if (!$stmt) {
-        return false;
-    }
     $source = in_array($source, ['initial', 'reassign', 'manual'], true) ? $source : 'initial';
-    $stmt->bind_param("isis", $enrollment_id, $department_code, $choice_order, $source);
+    if ($assigned_at !== null && $assigned_at !== '') {
+        $stmt = $conn->prepare("INSERT INTO enrollment_department_assignment_log (enrollment_id, department_code, choice_order, source, assigned_at) VALUES (?, ?, ?, ?, ?)");
+        if (!$stmt) {
+            return false;
+        }
+        $stmt->bind_param("isiss", $enrollment_id, $department_code, $choice_order, $source, $assigned_at);
+    } else {
+        $stmt = $conn->prepare("INSERT INTO enrollment_department_assignment_log (enrollment_id, department_code, choice_order, source, assigned_at) VALUES (?, ?, ?, ?, NOW())");
+        if (!$stmt) {
+            return false;
+        }
+        $stmt->bind_param("isis", $enrollment_id, $department_code, $choice_order, $source);
+    }
     $ok = $stmt->execute();
     $stmt->close();
     return $ok;
+}
+
+/**
+ * 檢查該筆意願是否已有「此科系」的分配歷程（用於轉派前補登目前意願的分配時間）
+ * @param mysqli $conn
+ * @param int $enrollment_id
+ * @param string $department_code
+ * @return bool
+ */
+function has_assignment_log_for_department(mysqli $conn, int $enrollment_id, string $department_code): bool {
+    $stmt = $conn->prepare("SELECT 1 FROM enrollment_department_assignment_log WHERE enrollment_id = ? AND department_code = ? LIMIT 1");
+    if (!$stmt) {
+        return false;
+    }
+    $stmt->bind_param("is", $enrollment_id, $department_code);
+    $stmt->execute();
+    $has = $stmt->get_result()->num_rows > 0;
+    $stmt->close();
+    return $has;
+}
+
+/**
+ * 取得某科系在該生志願中的順序（1=第一意願...），找不到回傳 0
+ * @param mysqli $conn
+ * @param int $enrollment_id
+ * @param string $department_code
+ * @return int
+ */
+function get_choice_order_for_department(mysqli $conn, int $enrollment_id, string $department_code): int {
+    $stmt = $conn->prepare("SELECT choice_order FROM enrollment_choices WHERE enrollment_id = ? AND UPPER(TRIM(department_code)) = UPPER(TRIM(?)) LIMIT 1");
+    if (!$stmt) {
+        return 0;
+    }
+    $stmt->bind_param("is", $enrollment_id, $department_code);
+    $stmt->execute();
+    $row = $stmt->get_result()->fetch_assoc();
+    $stmt->close();
+    return $row ? (int)$row['choice_order'] : 0;
 }
 
 /**
