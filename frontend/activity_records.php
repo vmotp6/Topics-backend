@@ -900,6 +900,8 @@ if ($teacher_id > 0) {
     $recommend_ratio_by_department = [];
     $recommend_ratio_by_school = [];
     $recommend_bonus_city_distribution = [];
+    $im_teacher_recommend_stats = [];
+    $im_teacher_recommend_detail_map = [];
     $has_new_student_department_id = false;
 
     try {
@@ -1602,6 +1604,155 @@ if ($uni_type === 'NATIONAL') {
                                 }
                             }
                             $city_stmt->close();
+                        }
+                    }
+
+                    // IM(role=DI) 專用：資管科教師招生推薦統計（來源：已發送獎金名單 bonus_send_logs）
+                    if ($is_im_di) {
+                        $im_teacher_recommend_stats = [];
+                        $im_teacher_recommend_detail_map = [];
+                        $has_bonus_logs = false;
+                        $bonus_logs_check = $conn->query("SHOW TABLES LIKE 'bonus_send_logs'");
+                        if ($bonus_logs_check && $bonus_logs_check->num_rows > 0) {
+                            $has_bonus_logs = true;
+                        }
+
+                        if ($has_bonus_logs) {
+                            $has_recommender_table_bonus = false;
+                            $recommender_table_check_bonus = $conn->query("SHOW TABLES LIKE 'recommender'");
+                            if ($recommender_table_check_bonus && $recommender_table_check_bonus->num_rows > 0) {
+                                $has_recommender_table_bonus = true;
+                            }
+
+                            $rec_has_name_bonus = false;
+                            $rec_has_id_bonus = false;
+                            $rec_has_department_bonus = false;
+                            if ($has_recommender_table_bonus) {
+                                $recommender_cols_bonus = $conn->query("SHOW COLUMNS FROM recommender");
+                                if ($recommender_cols_bonus) {
+                                    $rc_bonus = [];
+                                    while ($cc = $recommender_cols_bonus->fetch_assoc()) {
+                                        $rc_bonus[(string)($cc['Field'] ?? '')] = true;
+                                    }
+                                    $rec_has_name_bonus = isset($rc_bonus['name']);
+                                    $rec_has_id_bonus = isset($rc_bonus['id']);
+                                    $rec_has_department_bonus = isset($rc_bonus['department']);
+                                }
+                            }
+
+                            $ar_has_recommender_department_code_bonus = false;
+                            $ar_has_recommender_department_bonus = false;
+                            $admission_cols_bonus = $conn->query("SHOW COLUMNS FROM admission_recommendations");
+                            if ($admission_cols_bonus) {
+                                $ac_bonus = [];
+                                while ($col_bonus = $admission_cols_bonus->fetch_assoc()) {
+                                    $ac_bonus[(string)($col_bonus['Field'] ?? '')] = true;
+                                }
+                                $ar_has_recommender_department_code_bonus = isset($ac_bonus['recommender_department_code']);
+                                $ar_has_recommender_department_bonus = isset($ac_bonus['recommender_department']);
+                            }
+
+                            $time_start = $academic_year['start'];
+                            $time_end = $academic_year['end'];
+                            if ($selected_roc_year > 0) {
+                                $selected_year_range = getAcademicYearRangeByRocYear($selected_roc_year);
+                                $time_start = $selected_year_range['start'];
+                                $time_end = $selected_year_range['end'];
+                            }
+
+                            $rec_name_expr_bonus = $rec_has_name_bonus
+                                ? "NULLIF(TRIM(rec.name COLLATE utf8mb4_unicode_ci), '')"
+                                : "NULL";
+                            $rec_id_expr_bonus = $rec_has_id_bonus
+                                ? "NULLIF(TRIM(rec.id COLLATE utf8mb4_unicode_ci), '')"
+                                : "NULL";
+                            $rec_dept_expr_bonus = $rec_has_department_bonus
+                                ? "NULLIF(TRIM(rec.department COLLATE utf8mb4_unicode_ci), '')"
+                                : "NULL";
+                            $ar_dept_code_expr_bonus = $ar_has_recommender_department_code_bonus
+                                ? "NULLIF(TRIM(ar.recommender_department_code COLLATE utf8mb4_unicode_ci), '')"
+                                : "NULL";
+                            $ar_dept_name_expr_bonus = $ar_has_recommender_department_bonus
+                                ? "NULLIF(TRIM(ar.recommender_department COLLATE utf8mb4_unicode_ci), '')"
+                                : "NULL";
+
+                            $teacher_name_expr_bonus = "COALESCE(NULLIF(TRIM(b.recommender_name COLLATE utf8mb4_unicode_ci), ''), $rec_name_expr_bonus, '未填寫')";
+                            $teacher_id_expr_bonus = "COALESCE(NULLIF(TRIM(b.recommender_student_id COLLATE utf8mb4_unicode_ci), ''), $rec_id_expr_bonus, '')";
+                            $teacher_dept_expr_bonus = "COALESCE($rec_dept_expr_bonus, $ar_dept_code_expr_bonus, $ar_dept_name_expr_bonus, '')";
+
+                            $bonus_stats_sql = "
+                                SELECT
+                                    $teacher_name_expr_bonus AS teacher_name,
+                                    $teacher_id_expr_bonus AS teacher_id,
+                                    COUNT(*) AS sent_count,
+                                    SUM(COALESCE(b.amount, 0)) AS total_amount
+                                FROM bonus_send_logs b
+                                LEFT JOIN admission_recommendations ar ON ar.id = b.recommendation_id
+                                " . ($has_recommender_table_bonus ? "LEFT JOIN recommender rec ON rec.recommendations_id = ar.id" : "") . "
+                                WHERE b.sent_at BETWEEN ? AND ?
+                                  AND (UPPER($teacher_dept_expr_bonus) = 'IM' OR $teacher_dept_expr_bonus LIKE '%資管%')
+                                  AND $teacher_id_expr_bonus REGEXP '^[A-Za-z]'
+                                GROUP BY teacher_name, teacher_id
+                                ORDER BY sent_count DESC, total_amount DESC, teacher_name ASC
+                            ";
+                            $bonus_stats_stmt = $conn->prepare($bonus_stats_sql);
+                            if ($bonus_stats_stmt) {
+                                $bonus_stats_stmt->bind_param('ss', $time_start, $time_end);
+                                $bonus_stats_stmt->execute();
+                                $bonus_stats_result = $bonus_stats_stmt->get_result();
+                                if ($bonus_stats_result) {
+                                    while ($brow = $bonus_stats_result->fetch_assoc()) {
+                                        $im_teacher_recommend_stats[] = [
+                                            'teacher_name' => (string)($brow['teacher_name'] ?? '未填寫'),
+                                            'teacher_id' => (string)($brow['teacher_id'] ?? ''),
+                                            'sent_count' => (int)($brow['sent_count'] ?? 0),
+                                            'total_amount' => (int)($brow['total_amount'] ?? 0),
+                                        ];
+                                    }
+                                }
+                                $bonus_stats_stmt->close();
+                            }
+
+                            // 詳細資料（供「查看詳情」按鈕使用）
+                            $bonus_detail_sql = "
+                                SELECT
+                                    $teacher_name_expr_bonus AS teacher_name,
+                                    $teacher_id_expr_bonus AS teacher_id,
+                                    b.recommendation_id,
+                                    COALESCE(b.amount, 0) AS amount,
+                                    COALESCE(b.sent_by, '') AS sent_by,
+                                    b.sent_at
+                                FROM bonus_send_logs b
+                                LEFT JOIN admission_recommendations ar ON ar.id = b.recommendation_id
+                                " . ($has_recommender_table_bonus ? "LEFT JOIN recommender rec ON rec.recommendations_id = ar.id" : "") . "
+                                WHERE b.sent_at BETWEEN ? AND ?
+                                  AND (UPPER($teacher_dept_expr_bonus) = 'IM' OR $teacher_dept_expr_bonus LIKE '%資管%')
+                                  AND $teacher_id_expr_bonus REGEXP '^[A-Za-z]'
+                                ORDER BY b.sent_at DESC, b.recommendation_id DESC
+                            ";
+                            $bonus_detail_stmt = $conn->prepare($bonus_detail_sql);
+                            if ($bonus_detail_stmt) {
+                                $bonus_detail_stmt->bind_param('ss', $time_start, $time_end);
+                                $bonus_detail_stmt->execute();
+                                $bonus_detail_result = $bonus_detail_stmt->get_result();
+                                if ($bonus_detail_result) {
+                                    while ($drow = $bonus_detail_result->fetch_assoc()) {
+                                        $dname = (string)($drow['teacher_name'] ?? '未填寫');
+                                        $did = (string)($drow['teacher_id'] ?? '');
+                                        $dkey = $did . '||' . $dname;
+                                        if (!isset($im_teacher_recommend_detail_map[$dkey])) {
+                                            $im_teacher_recommend_detail_map[$dkey] = [];
+                                        }
+                                        $im_teacher_recommend_detail_map[$dkey][] = [
+                                            'recommendation_id' => (int)($drow['recommendation_id'] ?? 0),
+                                            'amount' => (int)($drow['amount'] ?? 0),
+                                            'sent_by' => (string)($drow['sent_by'] ?? ''),
+                                            'sent_at' => (string)($drow['sent_at'] ?? ''),
+                                        ];
+                                    }
+                                }
+                                $bonus_detail_stmt->close();
+                            }
                         }
                     }
                 }
@@ -2989,8 +3140,13 @@ $conn->close();
                                                 <i class="fas fa-school"></i> 推薦入學學校占比
                                             </button>
                                             <button class="btn-view" onclick="showRecommendCityDistributionChart()">
-                                                <i class="fas fa-map-marker-alt"></i> 獎金名單縣市分布
+                                                <i class="fas fa-map-marker-alt"></i> 招生推薦縣市分布
                                             </button>
+                                            <?php if ($is_im_di): ?>
+                                            <button class="btn-view" onclick="showImTeacherRecommendStatsChart()">
+                                                <i class="fas fa-chalkboard-teacher"></i> 教師招生推薦統計
+                                            </button>
+                                            <?php endif; ?>
                                             <button class="btn-view" onclick="clearRecommendCharts()" style="background: #dc3545; color: white; border-color: #dc3545;">
                                                 <i class="fas fa-arrow-up"></i> 收回圖表
                                             </button>
@@ -5356,6 +5512,10 @@ $conn->close();
                     window.recommendCityDistributionChartInstance.destroy();
                     window.recommendCityDistributionChartInstance = null;
                 }
+                if (window.imTeacherRecommendStatsChartInstance) {
+                    window.imTeacherRecommendStatsChartInstance.destroy();
+                    window.imTeacherRecommendStatsChartInstance = null;
+                }
                 if (Array.isArray(window.newStudentRecommendRatioChartInstances)) {
                     window.newStudentRecommendRatioChartInstances.forEach((ins) => {
                         if (ins) ins.destroy();
@@ -5368,7 +5528,7 @@ $conn->close();
             <div class="empty-state">
                 <i class="fas fa-chart-line fa-3x" style="margin-bottom: 16px;"></i>
                 <h4>選擇上方的統計類型來查看詳細分析</h4>
-                <p>提供招生推薦入學比例分析（依科系）、推薦學校占比與獎金名單縣市分布</p>
+                <p>提供招生推薦入學比例分析（依科系）、推薦學校占比、獎金名單縣市分布與教師招生推薦統計</p>
             </div>
         `;
             }
@@ -5540,16 +5700,11 @@ $conn->close();
                 sessionStorage.setItem('lastNewStudentChartType', 'recommendCityDistribution');
 
                 const cityRaw = <?php echo json_encode($recommend_bonus_city_distribution, JSON_UNESCAPED_UNICODE); ?>;
-                const normalizedMap = {};
-                (Array.isArray(cityRaw) ? cityRaw : []).forEach(item => {
-                    const rawCity = String(item.city || '未填寫').trim();
-                    const city = (rawCity || '未填寫').replace(/臺/g, '台');
-                    const count = parseInt(item.count || 0, 10) || 0;
-                    if (!normalizedMap[city]) normalizedMap[city] = 0;
-                    normalizedMap[city] += count;
-                });
-                const cityList = Object.keys(normalizedMap)
-                    .map(city => ({ city, count: normalizedMap[city] }))
+                const cityList = (Array.isArray(cityRaw) ? cityRaw : [])
+                    .map(item => ({
+                        city: item.city || '未填寫',
+                        count: parseInt(item.count || 0, 10) || 0
+                    }))
                     .filter(item => item.count > 0)
                     .sort((a, b) => b.count - a.count || a.city.localeCompare(b.city, 'zh-Hant'));
 
@@ -5559,7 +5714,7 @@ $conn->close();
             <div style="margin-bottom: 20px;">
                 <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; flex-wrap: wrap; gap: 10px;">
                     <h4 style="color: #667eea; margin: 0;">
-                        <i class="fas fa-map-marker-alt"></i> 可發送獎金名單 - 國中縣市分布
+                        <i class="fas fa-map-marker-alt"></i> 招生推薦國中縣市分布
                     </h4>
                     <div style="display: flex; gap: 10px; align-items: center;">
                         <select id="rocYearSelect" onchange="changeRocYear(this.value)" style="padding: 8px 12px; border: 1px solid #d9d9d9; border-radius: 6px; background: #fff; color: #333; font-size: 14px; cursor: pointer;">
@@ -5684,6 +5839,232 @@ $conn->close();
                         }
                     });
                 }, 80);
+            }
+
+            function showImTeacherRecommendStatsChart() {
+                sessionStorage.setItem('lastNewStudentChartType', 'imTeacherRecommendStats');
+
+                const statsRaw = <?php echo json_encode($im_teacher_recommend_stats, JSON_UNESCAPED_UNICODE); ?>;
+                const detailMapRaw = <?php echo json_encode($im_teacher_recommend_detail_map, JSON_UNESCAPED_UNICODE); ?>;
+                const detailMap = (detailMapRaw && typeof detailMapRaw === 'object') ? detailMapRaw : {};
+                window.imTeacherRecommendDetailMap = detailMap;
+                const stats = (Array.isArray(statsRaw) ? statsRaw : [])
+                    .map(item => ({
+                        teacher_name: String(item.teacher_name || '未填寫').trim() || '未填寫',
+                        teacher_id: String(item.teacher_id || '').trim(),
+                        sent_count: parseInt(item.sent_count || 0, 10) || 0,
+                        total_amount: parseInt(item.total_amount || 0, 10) || 0
+                    }))
+                    .filter(item => item.sent_count > 0)
+                    .sort((a, b) => b.sent_count - a.sent_count || b.total_amount - a.total_amount || a.teacher_name.localeCompare(b.teacher_name, 'zh-Hant'));
+
+                const totalTeachers = stats.length;
+                const totalSent = stats.reduce((sum, item) => sum + item.sent_count, 0);
+                const totalAmount = stats.reduce((sum, item) => sum + item.total_amount, 0);
+                const topTeacher = stats.length > 0 ? stats[0] : null;
+
+                const content = `
+            <div style="margin-bottom: 20px;">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; flex-wrap: wrap; gap: 10px;">
+                    <h4 style="color: #667eea; margin: 0;">
+                        <i class="fas fa-chalkboard-teacher"></i> 資管科教師招生推薦統計（已發送獎金名單）
+                    </h4>
+                    <div style="display: flex; gap: 10px; align-items: center;">
+                        <select id="rocYearSelect" onchange="changeRocYear(this.value)" style="padding: 8px 12px; border: 1px solid #d9d9d9; border-radius: 6px; background: #fff; color: #333; font-size: 14px; cursor: pointer;">
+                            <?php foreach ($available_roc_years as $roc_year): ?>
+                                <option value="<?php echo $roc_year; ?>" <?php echo $selected_roc_year == $roc_year ? 'selected' : ''; ?>>
+                                    <?php echo $roc_year; ?>學年
+                                </option>
+                            <?php endforeach; ?>
+                        </select>
+                    </div>
+                </div>
+
+                <div style="background: linear-gradient(135deg, #4facfe 0%, #00c6ff 100%); color: white; padding: 20px; border-radius: 10px; margin-bottom: 20px;">
+                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; text-align: center;">
+                        <div>
+                            <div style="font-size: 2.1em; font-weight: bold;">${totalTeachers}</div>
+                            <div style="opacity: 0.92;">統計教師數</div>
+                        </div>
+                        <div>
+                            <div style="font-size: 2.1em; font-weight: bold;">${totalSent}</div>
+                            <div style="opacity: 0.92;">已發送獎金筆數</div>
+                        </div>
+                        <div>
+                            <div style="font-size: 2.1em; font-weight: bold;">$${totalAmount.toLocaleString()}</div>
+                            <div style="opacity: 0.92;">獎金總額</div>
+                        </div>
+                        <div>
+                            <div style="font-size: 1.3em; font-weight: bold;">${topTeacher ? topTeacher.teacher_name : '無資料'}</div>
+                            <div style="opacity: 0.92;">推薦筆數最多教師${topTeacher ? `（${topTeacher.sent_count}筆）` : ''}</div>
+                        </div>
+                    </div>
+                </div>
+
+                ${stats.length <= 0 ? `
+                    <div style="text-align:center; color:#6c757d; padding: 30px 0;">
+                        <i class="fas fa-inbox fa-2x" style="margin-bottom: 10px;"></i>
+                        <div>目前沒有資管科教師招生推薦統計資料</div>
+                    </div>
+                ` : `
+                    <div class="chart-card">
+                        <div class="chart-title">資管科教師招生推薦筆數</div>
+                        <div class="chart-container" style="height: 420px;">
+                            <canvas id="imTeacherRecommendStatsChart"></canvas>
+                        </div>
+                    </div>
+                    <div style="margin-top:20px;">
+                        <table style="width:100%; border-collapse:collapse; background:#fff;">
+                            <thead>
+                                <tr style="background:#f8f9fa; border-bottom:2px solid #dee2e6;">
+                                    <th style="padding:12px; text-align:left;">教師姓名</th>
+                                    <th style="padding:12px; text-align:left;">教師學號/編號</th>
+                                    <th style="padding:12px; text-align:center;">推薦筆數</th>
+                                    <th style="padding:12px; text-align:right;">獎金總額</th>
+                                    <th style="padding:12px; text-align:center;">操作</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                ${stats.map((item, index) => `
+                                    ${(() => { const detailKey = encodeURIComponent((item.teacher_id || '') + '||' + item.teacher_name); return `
+                                    <tr style="border-bottom:1px solid #e9ecef; ${index % 2 === 0 ? 'background:#fff;' : 'background:#f8f9fa;'}">
+                                        <td style="padding:12px; font-weight:500;">${item.teacher_name}</td>
+                                        <td style="padding:12px;">${item.teacher_id || '未填寫'}</td>
+                                        <td style="padding:12px; text-align:center; color:#4facfe; font-weight:700;">${item.sent_count}</td>
+                                        <td style="padding:12px; text-align:right;">$${item.total_amount.toLocaleString()}</td>
+                                        <td style="padding:12px; text-align:center;">
+                                            <button type="button" class="btn-view" style="padding:4px 10px; font-size:12px;" onclick="openImTeacherRecommendDetailModal('${detailKey}')">
+                                                <i class="fas fa-eye"></i> 查看詳情
+                                            </button>
+                                        </td>
+                                    </tr>
+                                    `; })()}
+                                `).join('')}
+                            </tbody>
+                        </table>
+                    </div>
+                `}
+            </div>
+            <div id="imTeacherRecommendDetailModal" class="modal" style="display:none;" onclick="if(event.target===this){closeImTeacherRecommendDetailModal();}">
+                <div class="modal-content" style="max-width: 900px;">
+                    <div class="modal-header">
+                        <h3 id="imTeacherRecommendDetailTitle">教師推薦明細</h3>
+                        <span class="close" onclick="closeImTeacherRecommendDetailModal()">&times;</span>
+                    </div>
+                    <div class="modal-body">
+                        <div id="imTeacherRecommendDetailBody"></div>
+                    </div>
+                    <div class="modal-footer" style="padding: 12px 20px; border-top: 1px solid #f0f0f0; text-align: right;">
+                        <button type="button" class="btn-view" onclick="closeImTeacherRecommendDetailModal()">關閉</button>
+                    </div>
+                </div>
+            </div>
+        `;
+
+                const recommendContainer = document.getElementById('recommendAnalyticsContent');
+                if (!recommendContainer) return;
+                recommendContainer.innerHTML = content;
+
+                if (window.imTeacherRecommendStatsChartInstance) {
+                    window.imTeacherRecommendStatsChartInstance.destroy();
+                    window.imTeacherRecommendStatsChartInstance = null;
+                }
+                if (stats.length <= 0) return;
+
+                setTimeout(() => {
+                    const canvas = document.getElementById('imTeacherRecommendStatsChart');
+                    if (!canvas) return;
+                    const ctx = canvas.getContext('2d');
+                    window.imTeacherRecommendStatsChartInstance = new Chart(ctx, {
+                        type: 'pie',
+                        data: {
+                            labels: stats.map(item => item.teacher_name),
+                            datasets: [{
+                                data: stats.map(item => item.sent_count),
+                                backgroundColor: [
+                                    '#A8D8FF', '#B8F2E6', '#FFD6A5', '#CAFFBF', '#CDB4DB',
+                                    '#FFCAD4', '#BDE0FE', '#D9F99D', '#FDE2E4', '#E4C1F9',
+                                    '#F9F7D9', '#C7F9CC', '#D0EBFF'
+                                ],
+                                borderColor: '#ffffff',
+                                borderWidth: 2,
+                            }]
+                        },
+                        options: {
+                            responsive: true,
+                            maintainAspectRatio: false,
+                            plugins: {
+                                legend: { position: 'bottom' },
+                                tooltip: {
+                                    callbacks: {
+                                        label: function(context) {
+                                            const idx = context.dataIndex;
+                                            const row = stats[idx];
+                                            const value = context.parsed || 0;
+                                            const pct = totalSent > 0 ? ((value / totalSent) * 100).toFixed(2) : '0.00';
+                                            return `${row.teacher_name}：${row.sent_count} 筆（${pct}%），獎金總額：$${row.total_amount.toLocaleString()}`;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    });
+                }, 80);
+            }
+
+            function openImTeacherRecommendDetailModal(encodedKey) {
+                const modal = document.getElementById('imTeacherRecommendDetailModal');
+                const titleEl = document.getElementById('imTeacherRecommendDetailTitle');
+                const bodyEl = document.getElementById('imTeacherRecommendDetailBody');
+                if (!modal || !titleEl || !bodyEl) return;
+
+                const key = decodeURIComponent(String(encodedKey || ''));
+                const map = (window.imTeacherRecommendDetailMap && typeof window.imTeacherRecommendDetailMap === 'object')
+                    ? window.imTeacherRecommendDetailMap
+                    : {};
+                const rows = Array.isArray(map[key]) ? map[key] : [];
+                const parts = key.split('||');
+                const teacherId = (parts[0] || '').trim();
+                const teacherName = (parts[1] || '未填寫').trim() || '未填寫';
+
+                titleEl.textContent = `${teacherName}（${teacherId || '未填寫'}）推薦明細`;
+                if (rows.length <= 0) {
+                    bodyEl.innerHTML = `
+                        <div style="text-align:center; color:#6c757d; padding: 20px 0;">
+                            <i class="fas fa-inbox fa-2x" style="margin-bottom: 10px;"></i>
+                            <div>目前沒有可顯示的詳細資料</div>
+                        </div>
+                    `;
+                } else {
+                    bodyEl.innerHTML = `
+                        <table style="width:100%; border-collapse:collapse; background:#fff;">
+                            <thead>
+                                <tr style="background:#f8f9fa; border-bottom:2px solid #dee2e6;">
+                                    <th style="padding:12px; text-align:left;">推薦ID</th>
+                                    <th style="padding:12px; text-align:right;">獎金金額</th>
+                                    <th style="padding:12px; text-align:left;">發送者</th>
+                                    <th style="padding:12px; text-align:left;">發送時間</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                ${rows.map((row, idx) => `
+                                    <tr style="border-bottom:1px solid #e9ecef; ${idx % 2 === 0 ? 'background:#fff;' : 'background:#f8f9fa;'}">
+                                        <td style="padding:12px; font-weight:500;">${row.recommendation_id || '-'}</td>
+                                        <td style="padding:12px; text-align:right;">$${(parseInt(row.amount || 0, 10) || 0).toLocaleString()}</td>
+                                        <td style="padding:12px;">${row.sent_by || '未填寫'}</td>
+                                        <td style="padding:12px;">${row.sent_at || '未填寫'}</td>
+                                    </tr>
+                                `).join('')}
+                            </tbody>
+                        </table>
+                    `;
+                }
+                modal.style.display = 'flex';
+            }
+
+            function closeImTeacherRecommendDetailModal() {
+                const modal = document.getElementById('imTeacherRecommendDetailModal');
+                if (modal) modal.style.display = 'none';
             }
 
             // 已移除舊的 new_student_view 切換函式，改由選擇屆別（roc_year）控制
@@ -9663,6 +10044,8 @@ window.showSourceDetail = function(schoolNameEnc, sourceDataEnc, gradeLabel) {
                             showRecommendSchoolRatioChart();
                         } else if (lastChartType === 'recommendCityDistribution' && typeof showRecommendCityDistributionChart === 'function') {
                             showRecommendCityDistributionChart();
+                        } else if (lastChartType === 'imTeacherRecommendStats' && typeof showImTeacherRecommendStatsChart === 'function') {
+                            showImTeacherRecommendStatsChart();
                         } else if (lastChartType === 'schoolStats' && typeof showNewStudentSchoolStats === 'function') {
                             showNewStudentSchoolStats();
                         } else {
