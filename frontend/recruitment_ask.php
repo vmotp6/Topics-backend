@@ -53,7 +53,7 @@ if (!$can_ask) {
         }
         .breadcrumb a { color: var(--primary-color); text-decoration: none; }
 
-        .page-header {
+        .pages-header {
             align-items: center;
             justify-content: space-between;
             margin-bottom: 16px;
@@ -217,7 +217,7 @@ if (!$can_ask) {
                 <a href="recruitment_knowledge.php">官方招生知識庫</a> /
                 知識問答
             </div>
-            <div class="page-header" style="display:flex; background-color: #f0f2f5;">
+            <div class="pages-header" style="position:relative !important; display:flex; background-color: #f0f2f5;">
                 <h1 class="page-title">
                     知識問答
                     <i class="fas fa-question-circle help-icon"
@@ -345,28 +345,58 @@ if (!$can_ask) {
             body: JSON.stringify({ question: q })
         })
         .then(function (r) { return r.json(); })
-        .then(function (data) {
-            btnSend.disabled = false;
-            btnSend.innerHTML = '<i class="fas fa-paper-plane"></i>';
+.then(function (data) {
+    btnSend.disabled = false;
+    btnSend.innerHTML = '<i class="fas fa-paper-plane"></i>';
 
-           // 先顯示檔案（獨立處理）
-if (data.files && data.files.length > 0) {
-    addSystemFileMessage(q, data.files);
-}
-
-// 只有在「真的有文字回答」時，才顯示 AI 回覆
-if (data.answer && data.answer.trim() !== '') {
-    var answerText = data.answer;
-
-    if (data.sources && data.sources.length > 0) {
-        var s    = data.sources[0];
-        var who  = s.created_by_name || '未知建立者';
-        var when = s.created_at || '時間未紀錄';
-        answerText += '\n\n— 資料由『' + who + '』於 ' + when + ' 建立';
+    // 先顯示檔案
+    if (data.files && data.files.length > 0) {
+        addSystemFileMessage(q, data.files);
     }
 
-    addMessageTyping('system', answerText);
+    // AI 回答
+if (data.answer && data.answer.trim() !== '') {
+    var aiText =  data.answer;
+    addMessageTyping('system', aiText);
 }
+
+    /* =========================
+       主資料 (第一個聊天框)
+    ==========================*/
+    if (data.main_answer && data.main_answer.trim() !== '') {
+
+        var text = "【主要回答】\n" + data.main_answer;
+
+        if (data.sources && data.sources.length > 0) {
+            var s    = data.sources[0];
+            var who  = s.created_by_name || '未知建立者';
+            var when = s.created_at || '時間未紀錄';
+            text += "\n\n— 資料由『" + who + "』於 " + when + " 建立";
+        }
+
+        addMessageTyping('system', text);
+    }
+
+    /* =========================
+       補充資料 (第二個聊天框)
+    ==========================*/
+    if (data.extra_answers && data.extra_answers.length > 0) {
+
+    var extraText = "【補充資料】\n";
+
+    data.extra_answers.forEach(function(ans){
+        if (!ans.answer) return;
+        var text   = ans.answer;
+        var source = ans.source_label ? "（來源：" + ans.source_label + "）" : "";
+        var who  = ans.created_by_name || '未知建立者';
+        var when = ans.created_at || '時間未紀錄';
+
+        extraText += text + "\n\n— 資料由『" + who + "』於 " + when + " 建立";
+    });
+
+    addMessageTyping('system', extraText);  
+}
+
 
         })
         .catch(function () {
