@@ -249,44 +249,25 @@ if (!$can_ask) {
     var btnClear      = document.getElementById('btnClear');
     var errorEl       = document.getElementById('errorMessage');
 
-   function addMessageTyping(role, content) {
-
+    function addMessageTyping(role, content) {
     var msg  = document.createElement('div');
     msg.className = 'msg ' + (role === 'user' ? 'user' : 'msg-system');
-
     var icon = role === 'user' ? 'fa-user' : 'fa-robot';
-
     var html = '<div class="msg-avatar"><i class="fas ' + icon + '"></i></div>';
     html += '<div><div class="msg-bubble"></div></div>';
-
     msg.innerHTML = html;
     chatArea.appendChild(msg);
+    chatArea.scrollTop = chatArea.scrollHeight;
 
     var bubble = msg.querySelector('.msg-bubble');
-
-    // 將 AI 的文字先轉換格式
-    content = content
-        .replace(/\n/g, "<br>")
-        .replace(/- /g, "<br>• ");
-
     var i = 0;
-    var text = "";
-
     function typeChar() {
-
         if (i < content.length) {
-
-            text += content[i++];
-            bubble.innerHTML = text;
-
+            bubble.innerHTML += content[i++];
             chatArea.scrollTop = chatArea.scrollHeight;
-
-            setTimeout(typeChar, 15);
-
+            setTimeout(typeChar, 20); // 每個字母間隔時間
         }
-
     }
-
     typeChar();
 }
 
@@ -348,73 +329,84 @@ if (!$can_ask) {
     }
 
     function ask() {
-    var q = questionInput.value.trim();
-    if (!q) return;
+        var q = questionInput.value.trim();
+        if (!q) return;
 
-    addMessage('user', q);
-    questionInput.value = '';
-    errorEl.style.display = 'none';
+        addMessage('user', q);
+        questionInput.value = '';
+        errorEl.style.display = 'none';
 
-    btnSend.disabled = true;
-    btnSend.innerHTML = '<i class="fas fa-spinner fa-spin"></i>';
+        btnSend.disabled = true;
+        btnSend.innerHTML = '<i class="fas fa-spinner fa-spin"></i>';
 
-    fetch('recruitment_rag_api.php', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ question: q })
-    })
-    .then(r => r.json())
-    .then(data => {
-        btnSend.disabled = false;
-        btnSend.innerHTML = '<i class="fas fa-paper-plane"></i>';
+        fetch('recruitment_rag_api.php', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ question: q })
+        })
+        .then(function (r) { return r.json(); })
+.then(function (data) {
+    btnSend.disabled = false;
+    btnSend.innerHTML = '<i class="fas fa-paper-plane"></i>';
 
-        // 顯示檔案
-        if (data.files && data.files.length > 0) {
-            addSystemFileMessage(q, data.files);
-        }
+    // 先顯示檔案
+    if (data.files && data.files.length > 0) {
+        addSystemFileMessage(q, data.files);
+    }
 
-        // 主要回答
-        if (data.main_answer && data.main_answer.trim() !== '') {
-            var text = "【主要回答】\n" + data.main_answer;
-            if (data.sources && data.sources.length > 0) {
-                var s = data.sources[0];
-                var when = s.created_at || '時間未紀錄';
-                text += "— 於 " + when + " 建立";
-            }
-            addMessageTyping('system', text);
-        }
-
-        // 補充資料
-        if (data.extra_answers && data.extra_answers.length > 0) {
-            var extraText = "【補充資料】\n";
-            data.extra_answers.forEach(ans => {
-                extraText += ans.answer + "\n";
-                if (ans.source_label) extraText += "（來源：" + ans.source_label + "）";
-                if (ans.created_at) extraText += " - 建立於 " + ans.created_at;
-                extraText += "\n";
-            });
-            addMessageTyping('system', extraText.trim());
-        }
-
-        // AI 回答
-        if (data.ai_answer && data.ai_answer.trim() !== '') {
-            var ai = data.ai_answer.trim()
-            .replace(/\n/g, "<br>")
-            .replace(/•/g, "<br>•");
-
-            addMessageTyping('system', "【AI 回答】<br>" + ai);
-        }
-
-    })
-    .catch(err => {
-        console.error(err);
-        btnSend.disabled = false;
-        btnSend.innerHTML = '<i class="fas fa-paper-plane"></i>';
-        addMessage('system', '網路或伺服器錯誤，請稍後再試。');
-        errorEl.textContent = '網路或伺服器錯誤';
-        errorEl.style.display = 'block';
-    });
+    // AI 回答
+if (data.answer && data.answer.trim() !== '') {
+    var aiText =  data.answer;
+    addMessageTyping('system', aiText);
 }
+
+    /* =========================
+       主資料 (第一個聊天框)
+    ==========================*/
+    if (data.main_answer && data.main_answer.trim() !== '') {
+
+        var text = "【主要回答】\n" + data.main_answer;
+
+        if (data.sources && data.sources.length > 0) {
+            var s    = data.sources[0];
+            var who  = s.created_by_name || '未知建立者';
+            var when = s.created_at || '時間未紀錄';
+            text += "\n\n— 資料由『" + who + "』於 " + when + " 建立";
+        }
+
+        addMessageTyping('system', text);
+    }
+
+    /* =========================
+       補充資料 (第二個聊天框)
+    ==========================*/
+    if (data.extra_answers && data.extra_answers.length > 0) {
+
+    var extraText = "【補充資料】\n";
+
+    data.extra_answers.forEach(function(ans){
+        if (!ans.answer) return;
+        var text   = ans.answer;
+        var source = ans.source_label ? "（來源：" + ans.source_label + "）" : "";
+        var who  = ans.created_by_name || '未知建立者';
+        var when = ans.created_at || '時間未紀錄';
+
+        extraText += text + "\n\n— 資料由『" + who + "』於 " + when + " 建立";
+    });
+
+    addMessageTyping('system', extraText);  
+}
+
+
+        })
+        .catch(function () {
+            btnSend.disabled = false;
+            btnSend.innerHTML = '<i class="fas fa-paper-plane"></i>';
+            addMessage('system', '網路或伺服器錯誤，請稍後再試。');
+            errorEl.textContent = '網路或伺服器錯誤';
+            errorEl.style.display = 'block';
+        });
+    }
 
     btnSend.addEventListener('click', ask);
     questionInput.addEventListener('keydown', function (e) {

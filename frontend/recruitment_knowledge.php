@@ -36,13 +36,34 @@ if (!is_dir($upload_dir)) {
 $message = '';
 $messageType = '';
 
-// 檢查資料表是否存在
+/* 檢查資料表是否存在 */
 $has_tables = false;
 $tr = $conn->query("SHOW TABLES LIKE 'recruitment_knowledge'");
-if ($tr && $tr->num_rows > 0) {
-    $t2 = $conn->query("SHOW TABLES LIKE 'recruitment_knowledge_files'");
-    if ($t2 && $t2->num_rows > 0) {
-        $has_tables = true;
+$t2 = $conn->query("SHOW TABLES LIKE 'recruitment_knowledge_files'");
+if ($tr && $tr->num_rows > 0 && $t2 && $t2->num_rows > 0) {
+    $has_tables = true;
+}
+
+/* 函式：刪除單個附件 */
+function deleteAttachment($conn, $fid, $knowledge_id) {
+    $stmt = $conn->prepare("SELECT file_path FROM recruitment_knowledge_files WHERE id = ? AND knowledge_id = ? LIMIT 1");
+    $stmt->bind_param('ii', $fid, $knowledge_id);
+    $stmt->execute();
+    $res = $stmt->get_result();
+    $row = $res->fetch_assoc();
+    $stmt->close();
+
+    if ($row && !empty($row['file_path'])) {
+        $filepath = __DIR__ . '/' . $row['file_path'];
+        if (file_exists($filepath) && is_file($filepath)) {
+            if (!unlink($filepath)) {
+                throw new Exception("刪除檔案失敗: {$filepath}");
+            }
+        }
+        $del = $conn->prepare("DELETE FROM recruitment_knowledge_files WHERE id = ?");
+        $del->bind_param('i', $fid);
+        $del->execute();
+        $del->close();
     }
 }
 
@@ -51,7 +72,7 @@ if ($has_tables && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action
     try {
         $action = $_POST['action'];
 
-        // 新增一筆 QA
+        // ================= 新增 QA =================
         if ($action === 'add_qa') {
             $question = trim($_POST['question'] ?? '');
             $answer   = trim($_POST['answer'] ?? '');
@@ -82,7 +103,7 @@ if ($has_tables && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action
             $kid = (int)$conn->insert_id;
             $stmt->close();
 
-            // 上傳多個附件
+            // 上傳附件
             $allowed_ext = ['pdf','doc','docx','ppt','pptx','xls','xlsx','txt'];
             if (!empty($_FILES['files']['name'][0])) {
                 $ins = $conn->prepare(
@@ -109,14 +130,13 @@ if ($has_tables && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action
             $message = '已新增一筆知識（問題、回答、附件）。';
             $messageType = 'success';
 
-        // 編輯 QA（問題與回答）- 僅建立者可編輯
+        // ================= 編輯 QA =================
         } elseif ($action === 'edit_qa') {
             $id = (int)($_POST['id'] ?? 0);
             if ($id <= 0) throw new Exception('無效的項目。');
 
-            $chk = $conn->prepare(
-                "SELECT id, created_by FROM recruitment_knowledge WHERE id = ? LIMIT 1"
-            );
+            // 檢查權限
+            $chk = $conn->prepare("SELECT id, created_by FROM recruitment_knowledge WHERE id = ? LIMIT 1");
             $chk->bind_param('i', $id);
             $chk->execute();
             $chkRow = $chk->get_result()->fetch_assoc();
@@ -126,93 +146,101 @@ if ($has_tables && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action
                 throw new Exception('僅建立者可編輯此筆知識。');
             }
             if (!$is_staff && !$is_admin) {
-                $chk2 = $conn->prepare(
-                    "SELECT id FROM recruitment_knowledge WHERE id = ? AND department_code = ? LIMIT 1"
-                );
+                $chk2 = $conn->prepare("SELECT id FROM recruitment_knowledge WHERE id = ? AND department_code = ? LIMIT 1");
                 $chk2->bind_param('is', $id, $user_department);
                 $chk2->execute();
-                if (!$chk2->get_result()->fetch_assoc()) {
-                    throw new Exception('權限不足。');
-                }
+                if (!$chk2->get_result()->fetch_assoc()) throw new Exception('權限不足。');
                 $chk2->close();
             }
 
             $question = trim($_POST['question'] ?? '');
             $answer   = trim($_POST['answer'] ?? '');
-            if ($question === '' || $answer === '') {
-                throw new Exception('請填寫問題與回答。');
+            if ($question === '' || $answer === '') throw new Exception('請填寫問題與回答。');
+
+            // 更新問題與回答
+            $stmt = $conn->prepare("UPDATE recruitment_knowledge SET question = ?, answer = ?, updated_at = NOW() WHERE id = ?");
+            $stmt->bind_param('ssi', $question, $answer, $id);
+            if (!$stmt->execute()) throw new Exception($stmt->error);
+            $stmt->close();
+
+            // 刪除附件
+            if (!empty($_POST['delete_files'])) {
+                foreach ($_POST['delete_files'] as $fid) {
+                    deleteAttachment($conn, (int)$fid, $id);
+                }
             }
 
-            $stmt = $conn->prepare(
-                "UPDATE recruitment_knowledge
-                 SET question = ?, answer = ?, updated_at = NOW()
-                 WHERE id = ?"
-            );
-            $stmt->bind_param('ssi', $question, $answer, $id);
-            if (!$stmt->execute()) {
-                throw new Exception($stmt->error);
+            // 新增附件
+            $allowed_ext = ['pdf','doc','docx','ppt','pptx','xls','xlsx','txt'];
+            if (!empty($_FILES['files']['name'][0])) {
+                $ins = $conn->prepare("INSERT INTO recruitment_knowledge_files (knowledge_id, file_path, file_original_name, file_size) VALUES (?, ?, ?, ?)");
+                foreach ($_FILES['files']['name'] as $i => $name) {
+                    if ($_FILES['files']['error'][$i] !== UPLOAD_ERR_OK || !$name) continue;
+                    $ext = strtolower(pathinfo($name, PATHINFO_EXTENSION));
+                    if (!in_array($ext, $allowed_ext, true)) continue;
+                    $safe = preg_replace('/[^a-zA-Z0-9_\-\.]/', '_', $name);
+                    $filename = date('YmdHis') . '_' . rand(1000,9999) . '_' . $safe;
+                    $path = $upload_dir . $filename;
+                    if (!move_uploaded_file($_FILES['files']['tmp_name'][$i], $path)) continue;
+                    $rel = 'uploads/recruitment/' . $filename;
+                    $size = (int)filesize($path);
+                    $ins->bind_param('issi', $id, $rel, $name, $size);
+                    $ins->execute();
+                }
+                $ins->close();
             }
-            $stmt->close();
+
             $message = '已更新。';
             $messageType = 'success';
 
-        // 刪除 QA（含附件與實體檔案）- 僅建立者可刪除
+        // ================= 刪除 QA =================
         } elseif ($action === 'delete_item') {
             $id = (int)($_POST['id'] ?? 0);
             if ($id <= 0) throw new Exception('無效的項目。');
 
-            $chk = $conn->prepare(
-                "SELECT id, created_by FROM recruitment_knowledge WHERE id = ? LIMIT 1"
-            );
+            // 檢查權限
+            $chk = $conn->prepare("SELECT id, created_by FROM recruitment_knowledge WHERE id = ? LIMIT 1");
             $chk->bind_param('i', $id);
             $chk->execute();
             $chkRow = $chk->get_result()->fetch_assoc();
             $chk->close();
             if (!$chkRow) throw new Exception('無效的項目。');
-            if ((int)$chkRow['created_by'] !== (int)$current_user_id) {
-                throw new Exception('僅建立者可刪除此筆知識。');
-            }
+            if ((int)$chkRow['created_by'] !== (int)$current_user_id) throw new Exception('僅建立者可刪除此筆知識。');
             if (!$is_staff && !$is_admin) {
-                $chk2 = $conn->prepare(
-                    "SELECT id FROM recruitment_knowledge WHERE id = ? AND department_code = ? LIMIT 1"
-                );
+                $chk2 = $conn->prepare("SELECT id FROM recruitment_knowledge WHERE id = ? AND department_code = ? LIMIT 1");
                 $chk2->bind_param('is', $id, $user_department);
                 $chk2->execute();
-                if (!$chk2->get_result()->fetch_assoc()) {
-                    throw new Exception('權限不足。');
-                }
+                if (!$chk2->get_result()->fetch_assoc()) throw new Exception('權限不足。');
                 $chk2->close();
             }
 
-            // 刪除附件實體檔
-            $fres = $conn->query(
-                "SELECT file_path FROM recruitment_knowledge_files WHERE knowledge_id = {$id}"
-            );
-            if ($fres) {
-                while ($f = $fres->fetch_assoc()) {
-                    if (!empty($f['file_path'])) {
-                        $p = __DIR__ . '/' . $f['file_path'];
-                        if (is_file($p)) @unlink($p);
-                    }
-                }
+            // 刪除所有附件
+            $fres = $conn->prepare("SELECT id FROM recruitment_knowledge_files WHERE knowledge_id = ?");
+            $fres->bind_param('i', $id);
+            $fres->execute();
+            $res_files = $fres->get_result();
+            while ($f = $res_files->fetch_assoc()) {
+                deleteAttachment($conn, $f['id'], $id);
             }
+            $fres->close();
 
+            // 刪除 QA
             $del = $conn->prepare("DELETE FROM recruitment_knowledge WHERE id = ?");
             $del->bind_param('i', $id);
-            if (!$del->execute()) {
-                throw new Exception($del->error);
-            }
+            if (!$del->execute()) throw new Exception($del->error);
             $del->close();
+
             $message = '已刪除。';
             $messageType = 'success';
         }
+
     } catch (Exception $e) {
         $message = '操作失敗：' . $e->getMessage();
         $messageType = 'error';
     }
 }
 
-/* 讀取列表資料 */
+/* ================= 讀取列表資料 ================= */
 $items = [];
 if ($has_tables) {
     $where = "k.is_active = 1";
@@ -222,20 +250,24 @@ if ($has_tables) {
     if (!$is_staff && !$is_admin && !empty($user_department)) {
         $where .= " AND (k.source_type = 'staff' OR (k.source_type = 'department' AND k.department_code = ?))";
         $params[] = $user_department;
-        $types   .= 's';
+        $types .= 's';
     }
 
     $sql = "
-        SELECT
-            k.*,
-            d.name AS dept_name,
-            COALESCE(u.name, u.username, '') AS created_by_name,
-            (SELECT COUNT(*) FROM recruitment_knowledge_files f WHERE f.knowledge_id = k.id) AS file_count
-        FROM recruitment_knowledge k
-        LEFT JOIN user u ON u.id = k.created_by
-        LEFT JOIN departments d ON k.department_code = d.code AND k.source_type = 'department'
-        WHERE {$where}
-        ORDER BY k.updated_at DESC, k.id DESC
+    SELECT
+        k.*,
+        d.name AS dept_name,
+        COALESCE(u.name, u.username, '') AS created_by_name,
+        GROUP_CONCAT(f.id ORDER BY f.id SEPARATOR '||') AS file_ids,
+        GROUP_CONCAT(f.file_original_name ORDER BY f.id SEPARATOR '||') AS file_names,
+        GROUP_CONCAT(f.file_path ORDER BY f.id SEPARATOR '||') AS file_paths
+    FROM recruitment_knowledge k
+    LEFT JOIN recruitment_knowledge_files f ON f.knowledge_id = k.id
+    LEFT JOIN user u ON u.id = k.created_by
+    LEFT JOIN departments d ON k.department_code = d.code AND k.source_type = 'department'
+    WHERE {$where}
+    GROUP BY k.id
+    ORDER BY k.updated_at DESC, k.id DESC
     ";
 
     if ($params) {
@@ -246,6 +278,7 @@ if ($has_tables) {
     } else {
         $res = $conn->query($sql);
     }
+
     if ($res) {
         while ($row = $res->fetch_assoc()) {
             $items[] = $row;
@@ -485,7 +518,25 @@ $conn->close();
                                             : ($row['source_label'] ?? '');
                                         echo htmlspecialchars($slabel);
                                     ?></td>
-                                    <td><?php echo (int)($row['file_count'] ?? 0); ?></td>
+                                    <td>
+                                        <?php
+                                            if (!empty($row['file_names'])) {
+                                                $names = explode('||', $row['file_names']);
+                                                $paths = explode('||', $row['file_paths']);
+
+                                                foreach ($names as $i => $name) {
+                                                    $path = $paths[$i] ?? '';
+                                                    echo '<div>';
+                                                    echo '<a href="' . htmlspecialchars($path) . '" target="_blank">';
+                                                    echo '<i class="fas fa-file"></i> ' . htmlspecialchars($name);
+                                                    echo '</a>';
+                                                    echo '</div>';
+                                                }
+                                            } else {
+                                                echo '<span style="color:#8c8c8c">無附件</span>';
+                                            }
+                                        ?>
+                                    </td>
                                     <td><?php echo htmlspecialchars($row['created_by_name'] ?? ''); ?></td>
                                     <td><?php echo htmlspecialchars($row['created_at'] ?? ''); ?></td>
                                     <td>
@@ -567,7 +618,7 @@ $conn->close();
             <h3 class="modal-title">編輯問題與回答</h3>
             <span class="close" onclick="document.getElementById('editQAModal').style.display='none'">&times;</span>
         </div>
-        <form method="POST">
+        <form method="POST"  enctype="multipart/form-data">
             <input type="hidden" name="action" value="edit_qa">
             <input type="hidden" name="id" id="edit_id">
             <div class="modal-body">
@@ -579,6 +630,23 @@ $conn->close();
                     <label class="form-label"><span style="color:#ff4d4f">*</span>官方回答</label>
                     <textarea name="answer" id="edit_answer" class="form-control" rows="6" required></textarea>
                 </div>
+                <div class="form-group">
+<label class="form-label">目前附件</label>
+
+<div id="edit_files"></div>
+
+</div>
+
+<div class="form-group">
+<label class="form-label">新增附件</label>
+
+<input type="file" name="files[]" class="form-control" multiple>
+
+<small style="color:#8c8c8c">
+可新增附件，舊附件可勾選刪除
+</small>
+
+</div>
             </div>
             <div class="modal-footer">
                 <button type="button" class="btn"
@@ -594,7 +662,40 @@ $conn->close();
         document.getElementById('edit_id').value       = row.id || '';
         document.getElementById('edit_question').value = row.question || '';
         document.getElementById('edit_answer').value   = row.answer || '';
-        document.getElementById('editQAModal').style.display = 'block';
+
+        let html = '';
+
+    if (row.file_names && row.file_names.length > 0) {
+
+        let ids   = row.file_ids.split('||');
+        let names = row.file_names.split('||');
+        let paths = row.file_paths.split('||');
+
+        for (let i = 0; i < names.length; i++) {
+
+            html += `
+            <div style="margin-bottom:6px">
+                <label>
+                    <input type="checkbox" name="delete_files[]" value="${ids[i]}">
+                    刪除
+                </label>
+
+                <a href="${paths[i]}" target="_blank">
+                    <i class="fas fa-file"></i> ${names[i]}
+                </a>
+            </div>
+            `;
+        }
+
+    } else {
+
+        html = '<span style="color:#8c8c8c">無附件</span>';
+
+    }
+
+    document.getElementById('edit_files').innerHTML = html;
+
+    document.getElementById('editQAModal').style.display = 'block';
     }
 
     function filterTable() {
