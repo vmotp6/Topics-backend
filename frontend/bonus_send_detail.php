@@ -4,9 +4,9 @@ checkBackendLogin();
 
 header('Content-Type: application/json; charset=utf-8');
 
-// 權限：沿用審核結果可視權限（username=12 & role=STA）
+// 權限：管理員 / 行政 / 主任可查看
 $username = isset($_SESSION['username']) ? $_SESSION['username'] : '';
-$can_view_review_result = (isStaff() || isAdmin());
+$can_view_review_result = (isStaff() || isAdmin() || isDirector());
 if (!$can_view_review_result) {
     http_response_code(403);
     echo json_encode(['success' => false, 'message' => '權限不足'], JSON_UNESCAPED_UNICODE);
@@ -45,6 +45,8 @@ try {
     $joins = "";
     $select = "SELECT ar.id,
         COALESCE(ar.recommendation_reason,'') AS recommendation_reason,
+        COALESCE(ar.additional_info,'') AS additional_info,
+        COALESCE(ar.proof_evidence,'') AS proof_evidence,
         COALESCE(ar.created_at,'') AS created_at";
 
     if ($has_recommender) {
@@ -154,6 +156,8 @@ try {
         'recommender_phone' => $row['recommender_phone'] ?? '',
         'recommender_email' => $row['recommender_email'] ?? '',
         'recommendation_reason' => $row['recommendation_reason'] ?? '',
+        'additional_info' => $row['additional_info'] ?? '',
+        'proof_evidence' => $row['proof_evidence'] ?? '',
         'created_at' => $row['created_at'] ?? '',
     ];
 

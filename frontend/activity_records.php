@@ -5797,42 +5797,32 @@ $conn->close();
                     if (!canvas) return;
                     const ctx = canvas.getContext('2d');
                     window.recommendCityDistributionChartInstance = new Chart(ctx, {
-                        type: 'bar',
+                        type: 'pie',
                         data: {
                             labels: cityList.map(item => item.city),
                             datasets: [{
-                                label: '人數',
                                 data: cityList.map(item => item.count),
-                                backgroundColor: '#13c2c2',
-                                borderColor: '#13c2c2',
-                                borderWidth: 1,
-                                borderRadius: 8
+                                backgroundColor: [
+                                    '#13c2c2', '#4facfe', '#ff9f43', '#10ac84', '#5f27cd',
+                                    '#ee5253', '#00d2d3', '#2e86de', '#e67e22', '#2ecc71',
+                                    '#9b59b6', '#f39c12', '#1abc9c'
+                                ],
+                                borderColor: '#ffffff',
+                                borderWidth: 2
                             }]
                         },
                         options: {
                             responsive: true,
                             maintainAspectRatio: false,
                             plugins: {
-                                legend: { display: false },
+                                legend: { position: 'bottom' },
                                 tooltip: {
                                     callbacks: {
                                         label: function(context) {
-                                            const value = context.parsed.y || 0;
+                                            const value = context.parsed || 0;
                                             const pct = totalCount > 0 ? ((value / totalCount) * 100).toFixed(2) : '0.00';
                                             return `人數：${value}（${pct}%）`;
                                         }
-                                    }
-                                }
-                            },
-                            scales: {
-                                y: {
-                                    beginAtZero: true,
-                                    ticks: { precision: 0 }
-                                },
-                                x: {
-                                    ticks: {
-                                        maxRotation: 45,
-                                        minRotation: 0
                                     }
                                 }
                             }
@@ -5886,14 +5876,7 @@ $conn->close();
                             <div style="font-size: 2.1em; font-weight: bold;">${totalTeachers}</div>
                             <div style="opacity: 0.92;">統計教師數</div>
                         </div>
-                        <div>
-                            <div style="font-size: 2.1em; font-weight: bold;">${totalSent}</div>
-                            <div style="opacity: 0.92;">已發送獎金筆數</div>
-                        </div>
-                        <div>
-                            <div style="font-size: 2.1em; font-weight: bold;">$${totalAmount.toLocaleString()}</div>
-                            <div style="opacity: 0.92;">獎金總額</div>
-                        </div>
+                       
                         <div>
                             <div style="font-size: 1.3em; font-weight: bold;">${topTeacher ? topTeacher.teacher_name : '無資料'}</div>
                             <div style="opacity: 0.92;">推薦筆數最多教師${topTeacher ? `（${topTeacher.sent_count}筆）` : ''}</div>
@@ -5920,7 +5903,7 @@ $conn->close();
                                     <th style="padding:12px; text-align:left;">教師姓名</th>
                                     <th style="padding:12px; text-align:left;">教師學號/編號</th>
                                     <th style="padding:12px; text-align:center;">推薦筆數</th>
-                                    <th style="padding:12px; text-align:right;">獎金總額</th>
+                                    <!--<th style="padding:12px; text-align:right;">獎金總額</th>-->
                                     <th style="padding:12px; text-align:center;">操作</th>
                                 </tr>
                             </thead>
@@ -5931,7 +5914,7 @@ $conn->close();
                                         <td style="padding:12px; font-weight:500;">${item.teacher_name}</td>
                                         <td style="padding:12px;">${item.teacher_id || '未填寫'}</td>
                                         <td style="padding:12px; text-align:center; color:#4facfe; font-weight:700;">${item.sent_count}</td>
-                                        <td style="padding:12px; text-align:right;">$${item.total_amount.toLocaleString()}</td>
+                                       <!-- <td style="padding:12px; text-align:right;">$${item.total_amount.toLocaleString()}</td> -->
                                         <td style="padding:12px; text-align:center;">
                                             <button type="button" class="btn-view" style="padding:4px 10px; font-size:12px;" onclick="openImTeacherRecommendDetailModal('${detailKey}')">
                                                 <i class="fas fa-eye"></i> 查看詳情
@@ -6007,12 +5990,36 @@ $conn->close();
                                     }
                                 }
                             }
-                        }
+                        }   
                     });
                 }, 80);
             }
 
-            function openImTeacherRecommendDetailModal(encodedKey) {
+            function escapeHtml(value) {
+                return String(value === null || value === undefined ? '' : value)
+                    .replace(/&/g, '&amp;')
+                    .replace(/</g, '&lt;')
+                    .replace(/>/g, '&gt;')
+                    .replace(/"/g, '&quot;')
+                    .replace(/'/g, '&#39;');
+            }
+
+            async function fetchBonusRecommendationDetail(recommendationId) {
+                try {
+                    const rid = parseInt(recommendationId || 0, 10) || 0;
+                    if (!rid) return null;
+                    const resp = await fetch(`bonus_send_detail.php?id=${encodeURIComponent(String(rid))}`, {
+                        credentials: 'same-origin'
+                    });
+                    const payload = await resp.json();
+                    if (!payload || !payload.success || !payload.data) return null;
+                    return payload.data;
+                } catch (err) {
+                    return null;
+                }
+            }
+
+            async function openImTeacherRecommendDetailModal(encodedKey) {
                 const modal = document.getElementById('imTeacherRecommendDetailModal');
                 const titleEl = document.getElementById('imTeacherRecommendDetailTitle');
                 const bodyEl = document.getElementById('imTeacherRecommendDetailBody');
@@ -6028,6 +6035,8 @@ $conn->close();
                 const teacherName = (parts[1] || '未填寫').trim() || '未填寫';
 
                 titleEl.textContent = `${teacherName}（${teacherId || '未填寫'}）推薦明細`;
+                modal.style.display = 'flex';
+
                 if (rows.length <= 0) {
                     bodyEl.innerHTML = `
                         <div style="text-align:center; color:#6c757d; padding: 20px 0;">
@@ -6035,31 +6044,95 @@ $conn->close();
                             <div>目前沒有可顯示的詳細資料</div>
                         </div>
                     `;
-                } else {
-                    bodyEl.innerHTML = `
-                        <table style="width:100%; border-collapse:collapse; background:#fff;">
-                            <thead>
-                                <tr style="background:#f8f9fa; border-bottom:2px solid #dee2e6;">
-                                    <th style="padding:12px; text-align:left;">推薦ID</th>
-                                    <th style="padding:12px; text-align:right;">獎金金額</th>
-                                    <th style="padding:12px; text-align:left;">發送者</th>
-                                    <th style="padding:12px; text-align:left;">發送時間</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                ${rows.map((row, idx) => `
-                                    <tr style="border-bottom:1px solid #e9ecef; ${idx % 2 === 0 ? 'background:#fff;' : 'background:#f8f9fa;'}">
-                                        <td style="padding:12px; font-weight:500;">${row.recommendation_id || '-'}</td>
-                                        <td style="padding:12px; text-align:right;">$${(parseInt(row.amount || 0, 10) || 0).toLocaleString()}</td>
-                                        <td style="padding:12px;">${row.sent_by || '未填寫'}</td>
-                                        <td style="padding:12px;">${row.sent_at || '未填寫'}</td>
-                                    </tr>
-                                `).join('')}
-                            </tbody>
-                        </table>
-                    `;
+                    return;
                 }
-                modal.style.display = 'flex';
+
+                bodyEl.innerHTML = `
+                    <div style="text-align:center; color:#6c757d; padding: 20px 0;">
+                        <i class="fas fa-spinner fa-spin fa-2x" style="margin-bottom: 10px;"></i>
+                        <div>載入推薦人/被推薦人資訊中...</div>
+                    </div>
+                `;
+
+                const detailRows = await Promise.all(rows.map(async (row) => {
+                    const detail = await fetchBonusRecommendationDetail(row.recommendation_id);
+                    return { row, detail };
+                }));
+
+                const content = detailRows.map((item, idx) => {
+                    const row = item.row || {};
+                    const d = item.detail || {};
+                    const recommendationId = parseInt(row.recommendation_id || 0, 10) || 0;
+                    const amount = parseInt(row.amount || 0, 10) || 0;
+                    const sentBy = row.sent_by || '未填寫';
+                    const sentAt = row.sent_at || '未填寫';
+                    const hasDetail = !!item.detail;
+                    return `
+                        <div style="border:1px solid #e9ecef; border-radius:8px; margin-bottom:14px; overflow:hidden;">
+                            <div style="padding:10px 12px; background:#f8f9fa; display:flex; justify-content:space-between; gap:10px; flex-wrap:wrap;">
+                                <div><strong>推薦ID：</strong>${escapeHtml(recommendationId || '-')}</div>
+                                <div><strong>獎金金額：</strong>$${amount.toLocaleString()}</div>
+                                <div><strong>發送者：</strong>${escapeHtml(sentBy)}</div>
+                                <div><strong>發送時間：</strong>${escapeHtml(sentAt)}</div>
+                            </div>
+                            ${hasDetail ? `
+                                <div style="padding:12px;">
+                                    <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px;">
+                                        <table style="width:100%; border-collapse:collapse; background:#fff;">
+                                            <thead><tr><th colspan="2" style="padding:8px; text-align:left; background:#f5f7fa;">推薦人資訊</th></tr></thead>
+                                            <tbody>
+                                                <tr><td style="padding:8px; width:120px; color:#666;">姓名</td><td style="padding:8px;">${escapeHtml(d.recommender_name || '未填寫')}</td></tr>
+                                                <tr><td style="padding:8px; color:#666;">學號/編號</td><td style="padding:8px;">${escapeHtml(d.recommender_student_id || '未填寫')}</td></tr>
+                                                <tr><td style="padding:8px; color:#666;">年級</td><td style="padding:8px;">${escapeHtml(d.recommender_grade || '未填寫')}</td></tr>
+                                                <tr><td style="padding:8px; color:#666;">科系</td><td style="padding:8px;">${escapeHtml(d.recommender_department || '未填寫')}</td></tr>
+                                                <tr><td style="padding:8px; color:#666;">電話</td><td style="padding:8px;">${escapeHtml(d.recommender_phone || '未填寫')}</td></tr>
+                                                <tr><td style="padding:8px; color:#666;">Email</td><td style="padding:8px;">${escapeHtml(d.recommender_email || '未填寫')}</td></tr>
+                                            </tbody>
+                                        </table>
+                                        <table style="width:100%; border-collapse:collapse; background:#fff;">
+                                            <thead><tr><th colspan="2" style="padding:8px; text-align:left; background:#f5f7fa;">被推薦人資訊</th></tr></thead>
+                                            <tbody>
+                                                <tr><td style="padding:8px; width:120px; color:#666;">姓名</td><td style="padding:8px;">${escapeHtml(d.student_name || '未填寫')}</td></tr>
+                                                <tr><td style="padding:8px; color:#666;">就讀學校</td><td style="padding:8px;">${escapeHtml(d.student_school || '未填寫')}</td></tr>
+                                                <tr><td style="padding:8px; color:#666;">年級</td><td style="padding:8px;">${escapeHtml(d.student_grade || '未填寫')}</td></tr>
+                                                <tr><td style="padding:8px; color:#666;">電話</td><td style="padding:8px;">${escapeHtml(d.student_phone || '未填寫')}</td></tr>
+                                                <tr><td style="padding:8px; color:#666;">Email</td><td style="padding:8px;">${escapeHtml(d.student_email || '未填寫')}</td></tr>
+                                                <tr><td style="padding:8px; color:#666;">LINE ID</td><td style="padding:8px;">${escapeHtml(d.student_line_id || '未填寫')}</td></tr>
+                                                <tr><td style="padding:8px; color:#666;">學生興趣</td><td style="padding:8px;">${escapeHtml(d.student_interest || '未填寫')}</td></tr>
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                    <div style="margin-top:10px; padding:10px; background:#fafafa; border-radius:6px;">
+                                        <div style="font-weight:600; margin-bottom:4px;">推薦理由</div>
+                                        <div style="white-space:pre-wrap;">${escapeHtml(d.recommendation_reason || '未填寫')}</div>
+                                    </div>
+                                    ${(d.additional_info && String(d.additional_info).trim() !== '') ? `
+                                    <div style="margin-top:10px; padding:10px; background:#fafafa; border-radius:6px;">
+                                        <div style="font-weight:600; margin-bottom:4px;">其他補充資訊</div>
+                                        <div style="white-space:pre-wrap;">${escapeHtml(d.additional_info)}</div>
+                                    </div>` : ''}
+                                    ${(d.proof_evidence && String(d.proof_evidence).trim() !== '') ? `
+                                    <div style="margin-top:10px; padding:10px; background:#fafafa; border-radius:6px;">
+                                        <div style="font-weight:600; margin-bottom:4px;">證明文件</div>
+                                        <a href="${('/Topics-frontend/frontend/' + String(d.proof_evidence).replace(/\\/g, '/'))}" target="_blank" style="color:#1890ff; text-decoration:none;">
+                                            <i class="fas fa-file-download"></i> 查看文件
+                                        </a>
+                                    </div>` : ''}
+                                    <div style="margin-top:10px; color:#666;">推薦時間：${escapeHtml(d.created_at || '未填寫')}</div>
+                                </div>
+                            ` : `
+                                <div style="padding:12px; color:#6c757d;">此筆無法載入推薦人/被推薦人資訊</div>
+                            `}
+                        </div>
+                    `;
+                }).join('');
+
+                bodyEl.innerHTML = content || `
+                    <div style="text-align:center; color:#6c757d; padding: 20px 0;">
+                        <i class="fas fa-inbox fa-2x" style="margin-bottom: 10px;"></i>
+                        <div>目前沒有可顯示的詳細資料</div>
+                    </div>
+                `;
             }
 
             function closeImTeacherRecommendDetailModal() {
