@@ -8184,7 +8184,7 @@ $conn->close();
                         <table style="width: 100%; border-collapse: collapse; background: #fff;">
                             <thead>
                                 <tr style="border-bottom: 2px solid #333;">
-                                    <th style="padding: 15px 10px; text-align: left; font-size: 18px; color: #000; font-weight: bold;">國中名稱</th>
+                                    <th style="padding: 15px 10px; text-align: left; font-size: 18px; color: #000; font-weight: bold; min-width: 140px;">國中名稱</th>
                                     <th style="padding: 15px 10px; text-align: center; font-size: 18px; color: #000; font-weight: bold;">國一</th>
                                     <th style="padding: 15px 10px; text-align: center; font-size: 18px; color: #000; font-weight: bold;">國二</th>
                                     <th style="padding: 15px 10px; text-align: center; font-size: 18px; color: #000; font-weight: bold;">國三</th>
@@ -8201,7 +8201,7 @@ $conn->close();
                                     const g3 = ((s.grades || []).find(gr => gr.grade === '國三') || {}).count || 0;
                                     return `
                                     <tr style="border-bottom: 1px solid #eee; height: 60px;">
-                                        <td style="padding: 10px; font-size: 18px; color: #333;">${(s.name || '未填寫')}</td>
+                                        <td style="padding: 10px; font-size: 18px; color: #333; min-width: 140px; max-width: 320px; white-space: normal; word-break: break-word;">${(s.name || '未填寫')}</td>
                                         <td style="padding: 10px; text-align: center; font-size: 18px; color: #000;">${g1}</td>
                                         <td style="padding: 10px; text-align: center; font-size: 18px; color: #000;">${g2}</td>
                                         <td style="padding: 10px; text-align: center; font-size: 18px; color: #000;">${g3}</td>
@@ -8210,123 +8210,49 @@ $conn->close();
                                             <button type="button" onclick="showSourceDetail('${schoolNameEnc}', '${sourceData}')" style="border: none; background: transparent; color: #666; font-size: 18px; cursor: pointer; text-decoration: underline;">查看</button>
                                         </td>
                                     </tr>`;
-                    }).join('')
-            } <
-            /tbody> <
-            /table> <
-            /div> <
-            /div>` : '<div style="text-align: center; color: #999; padding: 40px; font-size: 18px;">目前沒有資料</div > '} <
-            /div> <
-            /div>
+                                }).join('')}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>` : '<div style="text-align: center; color: #999; padding: 40px; font-size: 18px;">目前沒有資料</div>'}
+            </div>
+        </div>
 
-            <
-            div id = "sourceDetailModal"
-            style = "display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 9999; justify-content: center; align-items: center;" >
-                <
-                div style = "background: #fff; width: 90%; max-width: 400px; border-radius: 8px; padding: 0; box-shadow: 0 4px 12px rgba(0,0,0,0.15);" >
-                <
-                div style = "padding: 20px; border-bottom: 1px solid #eee; display: flex; justify-content: space-between; align-items: center;" >
-                <
-                h3 id = "modalSchoolName"
-            style = "margin: 0; font-size: 20px; color: #333;" > < /h3> <
-                button onclick = "document.getElementById('sourceDetailModal').style.display='none'"
-            style = "border: none; background: none; font-size: 28px; cursor: pointer; color: #999;" > & times; < /button> <
-            /div> <
-            div id = "modalContent"
-            style = "padding: 25px; max-height: 400px; overflow-y: auto;" > < /div> <
-                /div> <
-                /div>
+        <div id="sourceDetailModal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 9999; justify-content: center; align-items: center;">
+            <div style="background: #fff; width: 90%; max-width: 400px; border-radius: 12px; padding: 0; box-shadow: 0 10px 25px rgba(0,0,0,0.2);">
+                <div style="padding: 15px 20px; border-bottom: 1px solid #eee; display: flex; justify-content: space-between; align-items: center;">
+                    <h5 id="modalSchoolName" style="margin: 0; font-size: 18px; color: #333;">來源詳情</h5>
+                    <button type="button" onclick="document.getElementById('sourceDetailModal').style.display='none'" style="border: none; background: none; font-size: 24px; cursor: pointer; color: #999;">&times;</button>
+                </div>
+                <div id="modalContent" style="padding: 20px; max-height: 400px; overflow-y: auto;"></div>
+                <div style="padding: 12px 20px; border-top: 1px solid #eee; text-align: right;">
+                    <button type="button" onclick="document.getElementById('sourceDetailModal').style.display='none'" style="padding: 8px 20px; background: #667eea; color: #fff; border: none; border-radius: 6px; cursor: pointer;">關閉</button>
+                </div>
+            </div>
+        </div>
 
-                <
-                div id = "sourceDetailModal"
-            style = "display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 9999; justify-content: center; align-items: center;" >
-                <
-                div style = "background: #fff; width: 90%; max-width: 400px; border-radius: 12px; padding: 0; box-shadow: 0 10px 25px rgba(0,0,0,0.2);" >
-                <
-                div style = "padding: 15px 20px; border-bottom: 1px solid #eee; display: flex; justify-content: space-between; align-items: center;" >
-                <
-                h5 id = "modalSchoolName"
-            style = "margin: 0; font-size: 18px; color: #333;" > 來源詳情 < /h5> <
-                button onclick = "document.getElementById('sourceDetailModal').style.display='none'"
-            style = "border: none; background: none; font-size: 24px; cursor: pointer; color: #999;" > & times; < /button> <
-            /div> <
-            div id = "modalContent"
-            style = "padding: 20px; max-height: 400px; overflow-y: auto;" > < /div> <
-                div style = "padding: 15px 20px; border-top: 1px solid #eee; text-align: right;" >
-                <
-                button onclick = "document.getElementById('sourceDetailModal').style.display='none'"
-            style = "padding: 8px 20px; background: #667eea; color: #fff; border: none; border-radius: 6px; cursor: pointer; font-size: 15px;" > 關閉 < /button> <
-                /div> <
-                /div> <
-                /div>
+        <div id="channelDetailModal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 9999; justify-content: center; align-items: center;">
+            <div style="background: #fff; width: 90%; max-width: 480px; border-radius: 12px; padding: 0; box-shadow: 0 10px 25px rgba(0,0,0,0.2);">
+                <div style="padding: 16px 20px; border-bottom: 1px solid #eee; display: flex; justify-content: space-between; align-items: center;">
+                    <h5 id="channelDetailTitle" style="margin: 0; font-size: 18px; color: #333; font-weight: bold;"></h5>
+                    <button type="button" onclick="document.getElementById('channelDetailModal').style.display='none'" style="border: none; background: none; font-size: 24px; cursor: pointer; color: #999;">&times;</button>
+                </div>
+                <div id="channelDetailContent" style="padding: 20px; max-height: 400px; overflow-y: auto; font-size: 16px; line-height: 1.8;"></div>
+                <div style="padding: 12px 20px; border-top: 1px solid #eee; text-align: right;">
+                    <button type="button" onclick="document.getElementById('channelDetailModal').style.display='none'" style="padding: 8px 20px; background: #667eea; color: #fff; border: none; border-radius: 6px; cursor: pointer;">關閉</button>
+                </div>
+            </div>
+        </div>
 
-                <
-                div id = "sourceDetailModal"
-            style = "display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 9999; justify-content: center; align-items: center;" >
-                <
-                div style = "background: #fff; width: 90%; max-width: 400px; border-radius: 12px; padding: 0; box-shadow: 0 10px 25px rgba(0,0,0,0.2); animation: fadeIn 0.2s;" >
-                <
-                div style = "padding: 15px 20px; border-bottom: 1px solid #eee; display: flex; justify-content: space-between; align-items: center;" >
-                <
-                h5 id = "modalSchoolName"
-            style = "margin: 0; font-size: 16px; color: #333;" > 來源詳情 < /h5> <
-                button onclick = "document.getElementById('sourceDetailModal').style.display='none'"
-            style = "border: none; background: none; font-size: 20px; cursor: pointer; color: #999;" > & times; < /button> <
-            /div> <
-            div id = "modalContent"
-            style = "padding: 20px; max-height: 400px; overflow-y: auto;" >
-                <
-                /div> <
-                div style = "padding: 12px 20px; border-top: 1px solid #eee; text-align: right;" >
-                <
-                button onclick = "document.getElementById('sourceDetailModal').style.display='none'"
-            style = "padding: 6px 16px; background: #667eea; color: #fff; border: none; border-radius: 6px; cursor: pointer;" > 關閉 < /button> <
-                /div> <
-                /div> <
-                /div>
-
-                <
-                div id = "channelDetailModal"
-            style = "display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 9999; justify-content: center; align-items: center;" >
-                <
-                div style = "background: #fff; width: 90%; max-width: 480px; border-radius: 12px; padding: 0; box-shadow: 0 10px 25px rgba(0,0,0,0.2);" >
-                <
-                div style = "padding: 16px 20px; border-bottom: 1px solid #eee; display: flex; justify-content: space-between; align-items: center;" >
-                <
-                h5 id = "channelDetailTitle"
-            style = "margin: 0; font-size: 18px; color: #333; font-weight: bold;" > < /h5> <
-                button type = "button"
-            onclick = "document.getElementById('channelDetailModal').style.display='none'"
-            style = "border: none; background: none; font-size: 24px; cursor: pointer; color: #999;" > & times; < /button> <
-            /div> <
-            div id = "channelDetailContent"
-            style = "padding: 20px; max-height: 400px; overflow-y: auto; font-size: 16px; line-height: 1.8;" > < /div> <
-                div style = "padding: 12px 20px; border-top: 1px solid #eee; text-align: right;" >
-                <
-                button type = "button"
-            onclick = "document.getElementById('channelDetailModal').style.display='none'"
-            style = "padding: 8px 20px; background: #667eea; color: #fff; border: none; border-radius: 6px; cursor: pointer;" > 關閉 < /button> <
-                /div> <
-                /div> <
-                /div>
-
-                <
-                div id = "tab-channels"
-            class = "dept-tab-content" >
-            <
-            div class = "chart-card" >
-            <
-            div class = "chart-title"
-            style = "text-align: left; margin-bottom: 16px; font-size: 20px; font-weight: bold;" > 學生得知管道統計 < /div> <
-                div class = "chart-container"
-            style = "cursor: pointer;" >
-                <
-                canvas id = "deptChannelChart" > < /canvas> <
-                /div> <
-                p style = "margin: 10px 0 0; font-size: 14px; color: #888;" > 點擊長條可查看該管道各國中人數明細 < /p> <
-                /div> <
-                /div> <
-                /div>
+        <div id="tab-channels" class="dept-tab-content">
+            <div class="chart-card">
+                <div class="chart-title" style="text-align: left; margin-bottom: 16px; font-size: 20px; font-weight: bold;">學生得知管道統計</div>
+                <div class="chart-container" style="cursor: pointer;">
+                    <canvas id="deptChannelChart"></canvas>
+                </div>
+                <p style="margin: 10px 0 0; font-size: 14px; color: #888;">點擊長條可查看該管道各國中人數明細</p>
+            </div>
+        </div>
             `;
 
                 // 更新展開內容
@@ -8503,10 +8429,11 @@ $conn->close();
                                     x: {
                                         stacked: true,
                                         ticks: {
-                                            font: { size: 12 },
-                                            maxRotation: 0,
-                                            minRotation: 0,
-                                            autoSkip: false
+                                            font: { size: 11 },
+                                            maxRotation: 65,
+                                            minRotation: 45,
+                                            autoSkip: true,
+                                            maxTicksLimit: 25
                                         }
                                     },
                                     y: {
@@ -8708,37 +8635,20 @@ window.showSourceDetail = function(schoolNameEnc, sourceDataEnc, gradeLabel) {
     if (sources && sources.length > 0) {
         html += '<ul style="list-style: none; padding: 0; margin: 0;">';
         sources.forEach((src, index) => {
-            // 判斷是否為最後一項 (最後一項不要底線)
             const borderStyle = (index === sources.length - 1) ? '' : 'border-bottom: 1px solid #f0f0f0;';
-            
-            html += ` <
-            li style = "padding: 16px 8px; ${borderStyle} display: flex; justify-content: space-between; align-items: center;" >
-                <
-                span style = "font-size: 18px; color: #333; font-weight: 500;" >
-                $ {
-                    src.name
-                } <
-                /span>
+            html += `<li style="padding: 16px 8px; ${borderStyle} display: flex; justify-content: space-between; align-items: center;">
+                <span style="font-size: 18px; color: #333; font-weight: 500;">${src.name || '未填寫'}</span>
+                <span style="font-size: 20px; font-weight: bold; color: #333;">${src.count || 0}<span style="font-size: 14px; font-weight: normal; color: #888;"> 人</span></span>
+            </li>`;
+        });
+        html += '</ul>';
+    } else {
+        html = '<div style="text-align: center; color: #999; padding: 40px; font-size: 18px;">無來源紀錄</div>';
+    }
 
-                <
-                span style = "font-size: 20px; font-weight: bold; color: #333;" >
-                $ {
-                    src.count
-                } < span style = "font-size: 14px; font-weight: normal; color: #888;" > 人 < /span> <
-                /span> <
-                /li>`;
-            });
-            html += '</ul>';
-            }
-            else {
-                html = '<div style="text-align: center; color: #999; padding: 40px; font-size: 18px;">無來源紀錄</div>';
-            }
-
-            document.getElementById('modalContent').innerHTML = html;
-
-            // 顯示 Modal
-            document.getElementById('sourceDetailModal').style.display = 'flex';
-            };
+    document.getElementById('modalContent').innerHTML = html;
+    document.getElementById('sourceDetailModal').style.display = 'flex';
+};
 
             // 點擊 Modal 背景關閉（僅在元素存在時綁定，避免不同檢視下報錯）
             (function() {

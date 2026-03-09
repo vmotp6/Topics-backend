@@ -70,11 +70,27 @@ $current_month = (int)date('m');
 $current_year = (int)date('Y');
 $this_year_grad = ($current_month >= 8) ? $current_year + 1 : $current_year;
 
-$dept_where = " AND (ec1.department_code = ? OR ec2.department_code = ? OR ec3.department_code = ? OR ei.assigned_department = ?)";
-$year_where = " AND ei.graduation_year IN (?, ?, ?)";
-$bind_dept = [$user_department_code, $user_department_code, $user_department_code, $user_department_code];
-$bind_year = [$this_year_grad, $this_year_grad + 1, $this_year_grad + 2];
+// 分屆：與 activity_records 就讀意願統計分析一致，使用民國學年度（屆別）
+// roc_year=0 或未帶 = 當年度(應屆+國二+國一)；roc_year>0 = 單屆，graduation_year = roc_year + 1912
+$selected_roc_year = isset($_GET['roc_year']) ? (int)$_GET['roc_year'] : 0;
+$current_roc_year = $this_year_grad - 1912; // 國三應屆對應的民國學年（如 2026→114）
 
+$dept_where = " AND (ec1.department_code = ? OR ec2.department_code = ? OR ec3.department_code = ? OR ei.assigned_department = ?)";
+$bind_dept = [$user_department_code, $user_department_code, $user_department_code, $user_department_code];
+
+if ($selected_roc_year > 0) {
+    $year_where = " AND ei.graduation_year = ?";
+    $bind_year = [$selected_roc_year + 1912];
+    $bind_types = "ssssi";
+} else {
+    $year_where = " AND ei.graduation_year IN (?, ?, ?)";
+    $bind_year = [$this_year_grad, $this_year_grad + 1, $this_year_grad + 2];
+    $bind_types = "ssssiii";
+}
+$bind_params = array_merge($bind_dept, $bind_year);
+
+// 可用屆別列表（民國學年），與 activity_records 就讀意願統計分析一致：114學年、113學年…
+$history_years = [];
 $base_from = "
 FROM enrollment_intention ei
 LEFT JOIN enrollment_choices ec1 ON ei.id = ec1.enrollment_id AND ec1.choice_order = 1
@@ -83,10 +99,44 @@ LEFT JOIN enrollment_choices ec3 ON ei.id = ec3.enrollment_id AND ec3.choice_ord
 ";
 $scope_where = " WHERE 1=1 " . $dept_where . $year_where . " AND ei.assigned_teacher_id IS NOT NULL ";
 
+// 成功經營統計／招生績效圖：只算「應屆」（已可入學的那屆），國二國一不算進成功入學
+if ($selected_roc_year > 0) {
+    $scope_where_perf = $scope_where;
+    $bind_params_perf = $bind_params;
+    $bind_types_perf = $bind_types;
+} else {
+    $year_where_perf = " AND ei.graduation_year = ?";
+    $bind_year_perf = [$this_year_grad];
+    $bind_types_perf = "ssssi";
+    $scope_where_perf = " WHERE 1=1 " . $dept_where . $year_where_perf . " AND ei.assigned_teacher_id IS NOT NULL ";
+    $bind_params_perf = array_merge($bind_dept, $bind_year_perf);
+}
+
+$perm_where_years = " WHERE 1=1 " . $dept_where . " AND ei.graduation_year IS NOT NULL AND ei.graduation_year < ?";
+$years_sql = "SELECT DISTINCT (ei.graduation_year - 1) AS academic_year_start " . $base_from . $perm_where_years . " ORDER BY academic_year_start DESC";
+$st_y = $conn->prepare($years_sql);
+if ($st_y) {
+    $st_y->bind_param("ssssi", ...array_merge($bind_dept, [$this_year_grad]));
+    $st_y->execute();
+    $res_y = $st_y->get_result();
+    while ($row_y = $res_y->fetch_assoc()) {
+        if (!empty($row_y['academic_year_start'])) {
+            $history_years[] = (int)$row_y['academic_year_start'];
+        }
+    }
+    $st_y->close();
+}
+// 轉成民國學年度並確保目前屆在列表中（與 activity_records 一致）
+$available_roc_years = array_map(function ($start) { return (int)$start - 1911; }, $history_years);
+if (!in_array($current_roc_year, $available_roc_years, true)) {
+    $available_roc_years[] = $current_roc_year;
+}
+rsort($available_roc_years);
+
 // 區塊一：總分配人數
 $sql_total = "SELECT COUNT(DISTINCT ei.id) AS cnt " . $base_from . $scope_where;
 $st = $conn->prepare($sql_total);
-$st->bind_param("ssssiii", ...array_merge($bind_dept, $bind_year));
+$st->bind_param($bind_types, ...$bind_params);
 $st->execute();
 $total_assigned = (int)($st->get_result()->fetch_assoc()['cnt'] ?? 0);
 $st->close();
@@ -96,7 +146,7 @@ $sql_uncontacted = "SELECT COUNT(DISTINCT ei.id) AS cnt " . $base_from . "
 LEFT JOIN (SELECT enrollment_id FROM enrollment_contact_logs GROUP BY enrollment_id) c ON c.enrollment_id = ei.id
 " . str_replace("AND ei.assigned_teacher_id IS NOT NULL", "AND ei.assigned_teacher_id IS NOT NULL AND c.enrollment_id IS NULL", $scope_where);
 $st = $conn->prepare($sql_uncontacted);
-$st->bind_param("ssssiii", ...array_merge($bind_dept, $bind_year));
+$st->bind_param($bind_types, ...$bind_params);
 $st->execute();
 $uncontacted = (int)($st->get_result()->fetch_assoc()['cnt'] ?? 0);
 $st->close();
@@ -107,7 +157,7 @@ INNER JOIN (SELECT DISTINCT enrollment_id FROM " . INTENTION_CHANGE_LOG_TABLE . 
     WHERE new_level = 'high' AND (old_level IS NULL OR old_level IN ('low','medium'))) ch ON ch.enrollment_id = ei.id
 " . $scope_where . " AND ei.intention_level = 'high'";
 $st = $conn->prepare($sql_up);
-$st->bind_param("ssssiii", ...array_merge($bind_dept, $bind_year));
+$st->bind_param($bind_types, ...$bind_params);
 $st->execute();
 $upgraded_count = (int)($st->get_result()->fetch_assoc()['cnt'] ?? 0);
 $st->close();
@@ -118,12 +168,12 @@ INNER JOIN (SELECT DISTINCT enrollment_id FROM " . INTENTION_CHANGE_LOG_TABLE . 
     WHERE old_level = 'high' AND new_level IN ('low','medium')) ch ON ch.enrollment_id = ei.id
 " . $scope_where . " AND ei.intention_level = 'low'";
 $st = $conn->prepare($sql_down);
-$st->bind_param("ssssiii", ...array_merge($bind_dept, $bind_year));
+$st->bind_param($bind_types, ...$bind_params);
 $st->execute();
 $downgraded_count = (int)($st->get_result()->fetch_assoc()['cnt'] ?? 0);
 $st->close();
 
-// 區塊二：教師轉換排行榜（只統計有分配的名單範圍內的老師）
+// 教師名單（三屆或單屆）：用於教師轉換排行榜
 $sql_teachers = "SELECT ei.assigned_teacher_id AS teacher_id, u.name AS teacher_name, u.username AS teacher_username,
     COUNT(DISTINCT ei.id) AS assigned_count
 " . $base_from . "
@@ -132,10 +182,24 @@ LEFT JOIN user u ON ei.assigned_teacher_id = u.id
 GROUP BY ei.assigned_teacher_id, u.name, u.username
 ORDER BY assigned_count DESC";
 $st = $conn->prepare($sql_teachers);
-$st->bind_param("ssssiii", ...array_merge($bind_dept, $bind_year));
+$st->bind_param($bind_types, ...$bind_params);
 $st->execute();
 $teacher_rows = $st->get_result()->fetch_all(MYSQLI_ASSOC);
 $st->close();
+
+// 績效／成功經營用教師名單：當年度時只算應屆，單屆時同主 scope
+$sql_teachers_perf = "SELECT ei.assigned_teacher_id AS teacher_id, u.name AS teacher_name, u.username AS teacher_username,
+    COUNT(DISTINCT ei.id) AS assigned_count
+" . $base_from . "
+LEFT JOIN user u ON ei.assigned_teacher_id = u.id
+" . $scope_where_perf . "
+GROUP BY ei.assigned_teacher_id, u.name, u.username
+ORDER BY assigned_count DESC";
+$st_p = $conn->prepare($sql_teachers_perf);
+$st_p->bind_param($bind_types_perf, ...$bind_params_perf);
+$st_p->execute();
+$teacher_rows_perf = $st_p->get_result()->fetch_all(MYSQLI_ASSOC);
+$st_p->close();
 
 $teacher_success_map = [];
 try {
@@ -169,13 +233,13 @@ if ($has_nsbi_teacher) {
                 (ei.phone1 IS NOT NULL AND ei.phone1 <> '' AND TRIM(REPLACE(REPLACE(REPLACE(REPLACE(" . $ns_t('mobile') . ", ' ', ''), '-', ''), '(', ''), ')', '')) = TRIM(REPLACE(REPLACE(REPLACE(REPLACE(CONVERT(COALESCE(ei.phone1,'') USING utf8mb4) COLLATE utf8mb4_unicode_ci, ' ', ''), '-', ''), '(', ''), ')', '')))
              OR (ei.phone2 IS NOT NULL AND ei.phone2 <> '' AND TRIM(REPLACE(REPLACE(REPLACE(REPLACE(" . $ns_t('mobile') . ", ' ', ''), '-', ''), '(', ''), ')', '')) = TRIM(REPLACE(REPLACE(REPLACE(REPLACE(CONVERT(COALESCE(ei.phone2,'') USING utf8mb4) COLLATE utf8mb4_unicode_ci, ' ', ''), '-', ''), '(', ''), ')', '')))
            )
-        " . $scope_where . "
+        " . $scope_where_perf . "
         AND " . $ns_t('status') . " IN ('', '在學')
         GROUP BY ei.assigned_teacher_id
     ";
     $st_ts = $conn->prepare($sql_teacher_success);
     if ($st_ts) {
-        $st_ts->bind_param("ssssiii", ...array_merge($bind_dept, $bind_year));
+        $st_ts->bind_param($bind_types_perf, ...$bind_params_perf);
         $st_ts->execute();
         $ts_rows = $st_ts->get_result()->fetch_all(MYSQLI_ASSOC);
         $st_ts->close();
@@ -185,17 +249,10 @@ if ($has_nsbi_teacher) {
     }
 }
 
+// 績效圖＋成功經營表：只算應屆（當年度時）或該屆的分配／成功入學
 $teacher_stats = [];
-foreach ($teacher_rows as $tr) {
+foreach ($teacher_rows_perf as $tr) {
     $tid = (int)$tr['teacher_id'];
-    $up_sql = "SELECT COUNT(DISTINCT enrollment_id) AS c FROM " . INTENTION_CHANGE_LOG_TABLE . " 
-        WHERE teacher_id = ? AND new_level = 'high' AND (old_level IS NULL OR old_level IN ('low','medium'))";
-    $down_sql = "SELECT COUNT(DISTINCT enrollment_id) AS c FROM " . INTENTION_CHANGE_LOG_TABLE . " 
-        WHERE teacher_id = ? AND old_level = 'high' AND new_level IN ('low','medium')";
-    $up_st = $conn->prepare($up_sql); $up_st->bind_param("i", $tid); $up_st->execute();
-    $up_c = (int)($up_st->get_result()->fetch_assoc()['c'] ?? 0); $up_st->close();
-    $down_st = $conn->prepare($down_sql); $down_st->bind_param("i", $tid); $down_st->execute();
-    $down_c = (int)($down_st->get_result()->fetch_assoc()['c'] ?? 0); $down_st->close();
     $assigned = (int)$tr['assigned_count'];
     $success = $teacher_success_map[$tid] ?? 0;
     if ($success < 0) $success = 0;
@@ -207,6 +264,25 @@ foreach ($teacher_rows as $tr) {
         'assigned_count' => $assigned,
         'success_enrolled_count' => $success,
         'failed_enrolled_count' => $failed,
+    ];
+}
+
+// 教師轉換排行榜：三屆或單屆，含成功提升／意願流失
+$teacher_stats_ranking = [];
+foreach ($teacher_rows as $tr) {
+    $tid = (int)$tr['teacher_id'];
+    $up_sql = "SELECT COUNT(DISTINCT enrollment_id) AS c FROM " . INTENTION_CHANGE_LOG_TABLE . " 
+        WHERE teacher_id = ? AND new_level = 'high' AND (old_level IS NULL OR old_level IN ('low','medium'))";
+    $down_sql = "SELECT COUNT(DISTINCT enrollment_id) AS c FROM " . INTENTION_CHANGE_LOG_TABLE . " 
+        WHERE teacher_id = ? AND old_level = 'high' AND new_level IN ('low','medium')";
+    $up_st = $conn->prepare($up_sql); $up_st->bind_param("i", $tid); $up_st->execute();
+    $up_c = (int)($up_st->get_result()->fetch_assoc()['c'] ?? 0); $up_st->close();
+    $down_st = $conn->prepare($down_sql); $down_st->bind_param("i", $tid); $down_st->execute();
+    $down_c = (int)($down_st->get_result()->fetch_assoc()['c'] ?? 0); $down_st->close();
+    $teacher_stats_ranking[] = [
+        'teacher_id' => $tid,
+        'teacher_name' => $tr['teacher_name'] ?: $tr['teacher_username'] ?: '未知',
+        'assigned_count' => (int)$tr['assigned_count'],
         'upgrade_count' => $up_c,
         'downgrade_count' => $down_c
     ];
@@ -236,7 +312,7 @@ if ($filter_type === 'upgrade') {
 }
 $sql_detail .= " ORDER BY ch.last_change_at DESC";
 $st = $conn->prepare($sql_detail);
-$st->bind_param("ssssiii", ...array_merge($bind_dept, $bind_year));
+$st->bind_param($bind_types, ...$bind_params);
 $st->execute();
 $detail_rows = $st->get_result()->fetch_all(MYSQLI_ASSOC);
 $st->close();
@@ -301,7 +377,7 @@ if ($has_nsbi_table) {
     ";
     $st_low = $conn->prepare($sql_low_enrolled);
     if ($st_low) {
-        $st_low->bind_param("ssssiii", ...array_merge($bind_dept, $bind_year));
+        $st_low->bind_param($bind_types, ...$bind_params);
         $st_low->execute();
         $low_intent_enrolled_rows = $st_low->get_result()->fetch_all(MYSQLI_ASSOC);
         $st_low->close();
@@ -316,7 +392,28 @@ function levelLabel($code) {
     return $code;
 }
 
+function formatAcademicYearLabel($startYear, $with_gregorian = true) {
+    $startYear = (int)$startYear;
+    if ($startYear <= 0) return '未提供';
+    $minguo = $startYear - 1911;
+    $endYear = $startYear + 1;
+    if ($with_gregorian) {
+        return $minguo . " 學年 (" . $startYear . "-" . $endYear . ")";
+    }
+    return $minguo . " 學年";
+}
+
 $page_title = '教師經營成效分析';
+$base_url_params = [];
+if (isset($_GET['filter']) && $_GET['filter'] !== 'all') {
+    $base_url_params['filter'] = $_GET['filter'];
+}
+if ($selected_roc_year > 0) {
+    $base_url_params['roc_year'] = $selected_roc_year;
+}
+$base_url = 'teacher_intention_performance.php' . (empty($base_url_params) ? '' : '?' . http_build_query($base_url_params));
+$base_url_with_amp = empty($base_url_params) ? 'teacher_intention_performance.php?' : 'teacher_intention_performance.php?' . http_build_query($base_url_params) . '&';
+$filter_select_base = $selected_roc_year > 0 ? 'teacher_intention_performance.php?roc_year=' . $selected_roc_year . '&' : 'teacher_intention_performance.php?';
 ?>
 <!DOCTYPE html>
 <html lang="zh-TW">
@@ -346,6 +443,15 @@ $page_title = '教師經營成效分析';
     .content { padding: 24px; }
     .breadcrumb a { color: #1890ff; text-decoration: none; }
     .page-controls { margin-bottom: 16px; }
+    .year-select-wrap { margin-top: 12px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+    .year-select-wrap label { font-weight: 600; color: #333; }
+    .year-select-wrap select { padding: 8px 12px; border: 1px solid #d9d9d9; border-radius: 6px; font-size: 14px; min-width: 200px; }
+    .perf-view-tabs { display: flex; gap: 0; margin-bottom: 16px; border-bottom: 1px solid #e8e8e8; }
+    .perf-view-tabs .tab { padding: 10px 20px; cursor: pointer; font-size: 14px; color: #666; border-bottom: 2px solid transparent; margin-bottom: -1px; }
+    .perf-view-tabs .tab:hover { color: #1890ff; }
+    .perf-view-tabs .tab.active { color: #1890ff; font-weight: 600; border-bottom-color: #1890ff; }
+    .perf-view-panel { display: none; }
+    .perf-view-panel.active { display: block; }
 </style>
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 </head>
@@ -357,6 +463,15 @@ $page_title = '教師經營成效分析';
         <div class="content">
             <div class="page-controls">
                 <div class="breadcrumb"><a href="index.php">首頁</a> / <?php echo htmlspecialchars($page_title); ?></div>
+                <div class="year-select-wrap">
+                    <label for="rocYearSelect"><i class="fas fa-graduation-cap" style="color: #1890ff;"></i> 屆別：</label>
+                    <select id="rocYearSelect" onchange="var v=this.value; window.location.href=(v==='' ? 'teacher_intention_performance.php<?php echo isset($_GET['filter']) && $_GET['filter'] !== 'all' ? '?filter=' . urlencode($_GET['filter']) : ''; ?>' : 'teacher_intention_performance.php?roc_year='+v+'<?php echo isset($_GET['filter']) && $_GET['filter'] !== 'all' ? '&filter=' . urlencode($_GET['filter']) : ''; ?>');">
+                        <option value="" <?php echo $selected_roc_year <= 0 ? 'selected' : ''; ?>>當年度</option>
+                        <?php foreach ($available_roc_years as $roc_year): ?>
+                        <option value="<?php echo (int)$roc_year; ?>" <?php echo $selected_roc_year === (int)$roc_year ? 'selected' : ''; ?>><?php echo (int)$roc_year; ?>學年</option>
+                        <?php endforeach; ?>
+                    </select>
+                </div>
             </div>
             <!-- 區塊一：成效數據總覽 -->
             <div class="card" style="margin-bottom: 24px;">
@@ -380,40 +495,45 @@ $page_title = '教師經營成效分析';
                     </div>
                 </div>
             </div>
+            <!-- 教師招生績效比較圖 + 成功經營統計（合併，預設圖表、可切表格） -->
             <div class="card" style="margin-bottom: 24px;">
                 <h3 style="margin: 0 0 16px 0; font-size: 18px;">
-                    <i class="fas fa-chart-bar" style="color: #1890ff;"></i> 教師招生績效比較圖
+                    <i class="fas fa-chart-bar" style="color: #1890ff;"></i> 教師招生績效比較與成功經營統計
                 </h3>
-                <div style="position: relative; height: 300px; width: 100%;">
-                    <canvas id="performanceChart"></canvas>
+                <div class="perf-view-tabs">
+                    <span class="tab active" data-panel="chart" onclick="switchPerfView('chart')"><i class="fas fa-chart-bar"></i> 圖表</span>
+                    <span class="tab" data-panel="table" onclick="switchPerfView('table')"><i class="fas fa-table"></i> 表格</span>
                 </div>
-            </div>
-            <!-- 區塊二：成功經營統計（入學成果） -->
-            <div class="card" style="margin-bottom: 24px;">
-                <h3 style="margin: 0 0 16px 0; font-size: 18px;">成功經營統計（入學成果）</h3>
-                <table class="perf-table">
-                    <thead>
-                        <tr>
-                            <th>教師姓名</th>
-                            <th>分配人數</th>
-                            <th>成功入學數</th>
-                            <th>未成功入學數</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        <?php foreach ($teacher_stats as $ts): ?>
-                        <tr>
-                            <td><?php echo htmlspecialchars($ts['teacher_name']); ?></td>
-                            <td><?php echo $ts['assigned_count']; ?></td>
-                            <td><?php echo $ts['success_enrolled_count']; ?></td>
-                            <td><?php echo $ts['failed_enrolled_count']; ?></td>
-                        </tr>
-                        <?php endforeach; ?>
-                        <?php if (empty($teacher_stats)): ?>
-                        <tr><td colspan="4" style="text-align:center; color:#999;">尚無分配資料</td></tr>
-                        <?php endif; ?>
-                    </tbody>
-                </table>
+                <div id="perfChartPanel" class="perf-view-panel active">
+                    <div style="position: relative; height: 300px; width: 100%;">
+                        <canvas id="performanceChart"></canvas>
+                    </div>
+                </div>
+                <div id="perfTablePanel" class="perf-view-panel">
+                    <table class="perf-table">
+                        <thead>
+                            <tr>
+                                <th>教師姓名</th>
+                                <th>分配人數</th>
+                                <th>成功入學數</th>
+                                <th>未成功入學數</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <?php foreach ($teacher_stats as $ts): ?>
+                            <tr>
+                                <td><?php echo htmlspecialchars($ts['teacher_name']); ?></td>
+                                <td><?php echo $ts['assigned_count']; ?></td>
+                                <td><?php echo $ts['success_enrolled_count']; ?></td>
+                                <td><?php echo $ts['failed_enrolled_count']; ?></td>
+                            </tr>
+                            <?php endforeach; ?>
+                            <?php if (empty($teacher_stats)): ?>
+                            <tr><td colspan="4" style="text-align:center; color:#999;">尚無分配資料</td></tr>
+                            <?php endif; ?>
+                        </tbody>
+                    </table>
+                </div>
             </div>
 
             <!-- 區塊三：教師轉換排行榜 -->
@@ -429,7 +549,7 @@ $page_title = '教師經營成效分析';
                         </tr>
                     </thead>
                     <tbody>
-                        <?php foreach ($teacher_stats as $ts): ?>
+                        <?php foreach ($teacher_stats_ranking as $ts): ?>
                         <tr>
                             <td><?php echo htmlspecialchars($ts['teacher_name']); ?></td>
                             <td><?php echo $ts['assigned_count']; ?></td>
@@ -437,7 +557,7 @@ $page_title = '教師經營成效分析';
                             <td><?php echo $ts['downgrade_count']; ?></td>
                         </tr>
                         <?php endforeach; ?>
-                        <?php if (empty($teacher_stats)): ?>
+                        <?php if (empty($teacher_stats_ranking)): ?>
                         <tr><td colspan="4" style="text-align:center; color:#999;">尚無分配資料</td></tr>
                         <?php endif; ?>
                     </tbody>
@@ -505,7 +625,7 @@ $page_title = '教師經營成效分析';
                 <h3 style="margin: 0 0 16px 0; font-size: 18px;">意願異動明細與原因</h3>
                 <div style="margin-bottom: 12px;">
                     <label>篩選：</label>
-                    <select id="filterType" onchange="window.location.href='teacher_intention_performance.php?filter='+this.value">
+                    <select id="filterType" onchange="window.location.href='<?php echo htmlspecialchars($filter_select_base); ?>filter='+encodeURIComponent(this.value)">
                         <option value="all" <?php echo $filter_type === 'all' ? 'selected' : ''; ?>>全部異動</option>
                         <option value="upgrade" <?php echo $filter_type === 'upgrade' ? 'selected' : ''; ?>>只看意願提升</option>
                         <option value="downgrade" <?php echo $filter_type === 'downgrade' ? 'selected' : ''; ?>>只看意願下降</option>
@@ -566,6 +686,14 @@ $page_title = '教師經營成效分析';
 </div>
 
 <script>
+function switchPerfView(panel) {
+    var tabs = document.querySelectorAll('.perf-view-tabs .tab');
+    var chartPanel = document.getElementById('perfChartPanel');
+    var tablePanel = document.getElementById('perfTablePanel');
+    tabs.forEach(function(t) { t.classList.toggle('active', t.getAttribute('data-panel') === panel); });
+    chartPanel.classList.toggle('active', panel === 'chart');
+    tablePanel.classList.toggle('active', panel === 'table');
+}
 function openContactLogModal(enrollmentId, studentName) {
     document.getElementById('contactLogStudentName').textContent = studentName || '未知';
     document.getElementById('contactLogModal').style.display = 'flex';
