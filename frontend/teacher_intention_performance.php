@@ -3,9 +3,8 @@
  * 教師經營成效分析（僅主任可見）
  * 區塊一：成效數據總覽
  * 區塊二：成功經營統計（入學成果）
- * 區塊三：教師轉換排行榜
- * 區塊四：意願異動明細與原因
- * 區塊五：低意願卻入學的學生
+ * 區塊三：未成功入學原因分析
+ * 區塊四：低意願卻入學的學生
  */
 require_once __DIR__ . '/session_config.php';
 checkBackendLogin();
@@ -173,20 +172,6 @@ $st->execute();
 $downgraded_count = (int)($st->get_result()->fetch_assoc()['cnt'] ?? 0);
 $st->close();
 
-// 教師名單（三屆或單屆）：用於教師轉換排行榜
-$sql_teachers = "SELECT ei.assigned_teacher_id AS teacher_id, u.name AS teacher_name, u.username AS teacher_username,
-    COUNT(DISTINCT ei.id) AS assigned_count
-" . $base_from . "
-LEFT JOIN user u ON ei.assigned_teacher_id = u.id
-" . $scope_where . "
-GROUP BY ei.assigned_teacher_id, u.name, u.username
-ORDER BY assigned_count DESC";
-$st = $conn->prepare($sql_teachers);
-$st->bind_param($bind_types, ...$bind_params);
-$st->execute();
-$teacher_rows = $st->get_result()->fetch_all(MYSQLI_ASSOC);
-$st->close();
-
 // 績效／成功經營用教師名單：當年度時只算應屆，單屆時同主 scope
 $sql_teachers_perf = "SELECT ei.assigned_teacher_id AS teacher_id, u.name AS teacher_name, u.username AS teacher_username,
     COUNT(DISTINCT ei.id) AS assigned_count
@@ -267,55 +252,100 @@ foreach ($teacher_rows_perf as $tr) {
     ];
 }
 
-// 教師轉換排行榜：三屆或單屆，含成功提升／意願流失
-$teacher_stats_ranking = [];
-foreach ($teacher_rows as $tr) {
-    $tid = (int)$tr['teacher_id'];
-    $up_sql = "SELECT COUNT(DISTINCT enrollment_id) AS c FROM " . INTENTION_CHANGE_LOG_TABLE . " 
-        WHERE teacher_id = ? AND new_level = 'high' AND (old_level IS NULL OR old_level IN ('low','medium'))";
-    $down_sql = "SELECT COUNT(DISTINCT enrollment_id) AS c FROM " . INTENTION_CHANGE_LOG_TABLE . " 
-        WHERE teacher_id = ? AND old_level = 'high' AND new_level IN ('low','medium')";
-    $up_st = $conn->prepare($up_sql); $up_st->bind_param("i", $tid); $up_st->execute();
-    $up_c = (int)($up_st->get_result()->fetch_assoc()['c'] ?? 0); $up_st->close();
-    $down_st = $conn->prepare($down_sql); $down_st->bind_param("i", $tid); $down_st->execute();
-    $down_c = (int)($down_st->get_result()->fetch_assoc()['c'] ?? 0); $down_st->close();
-    $teacher_stats_ranking[] = [
-        'teacher_id' => $tid,
-        'teacher_name' => $tr['teacher_name'] ?: $tr['teacher_username'] ?: '未知',
-        'assigned_count' => (int)$tr['assigned_count'],
-        'upgrade_count' => $up_c,
-        'downgrade_count' => $down_c
-    ];
-}
+// 區塊三：未成功入學原因分析（所有確定未入學的學生，不分負責老師，統計為什麼不入學）
+$loss_total_count = 0;
+$loss_with_reason = 0;
+$loss_detail_rows = [];
+$loss_reason_chart = [];
 
-// 區塊三：意願異動明細（有發生過變動的學生，含初始/目前意願、最新聯絡紀錄）
-$filter_type = $_GET['filter'] ?? 'all'; // all | upgrade | downgrade
-$detail_where = " WHERE ei.assigned_teacher_id IS NOT NULL AND (ec1.department_code = ? OR ec2.department_code = ? OR ec3.department_code = ? OR ei.assigned_department = ?) " . $year_where;
-$detail_join = "
-INNER JOIN (SELECT enrollment_id,
-    SUBSTRING_INDEX(GROUP_CONCAT(IFNULL(old_level, new_level) ORDER BY changed_at ASC), ',', 1) AS first_old,
-    MAX(changed_at) AS last_change_at
-    FROM " . INTENTION_CHANGE_LOG_TABLE . " GROUP BY enrollment_id) ch ON ch.enrollment_id = ei.id
-LEFT JOIN user u ON ei.assigned_teacher_id = u.id
+$loss_join = "
+LEFT JOIN user u_loss ON ei.assigned_teacher_id = u_loss.id
 LEFT JOIN (SELECT c.enrollment_id, c.notes FROM enrollment_contact_logs c INNER JOIN (
     SELECT enrollment_id, MAX(id) AS mid FROM enrollment_contact_logs GROUP BY enrollment_id
-) t ON c.enrollment_id = t.enrollment_id AND c.id = t.mid) latest_log ON latest_log.enrollment_id = ei.id
+) t ON c.enrollment_id = t.enrollment_id AND c.id = t.mid) latest_log_loss ON latest_log_loss.enrollment_id = ei.id
 ";
-$sql_detail = "SELECT ei.id, ei.name AS student_name, ei.intention_level AS current_level,
-    ch.first_old AS initial_level, latest_log.notes AS latest_contact_notes,
-    u.name AS teacher_name, u.username AS teacher_username
-" . $base_from . $detail_join . $detail_where;
-if ($filter_type === 'upgrade') {
-    $sql_detail .= " AND ei.intention_level = 'high' AND EXISTS (SELECT 1 FROM " . INTENTION_CHANGE_LOG_TABLE . " x WHERE x.enrollment_id = ei.id AND x.new_level = 'high' AND (x.old_level IS NULL OR x.old_level IN ('low','medium')))";
-} elseif ($filter_type === 'downgrade') {
-    $sql_detail .= " AND ei.intention_level = 'low' AND EXISTS (SELECT 1 FROM " . INTENTION_CHANGE_LOG_TABLE . " x WHERE x.enrollment_id = ei.id AND x.old_level = 'high' AND x.new_level IN ('low','medium'))";
+
+if ($has_nsbi_teacher) {
+    // 未成功入學 = 在 scope_where_perf 內但 LEFT JOIN new_student_basic_info 對不到（ns.id IS NULL）
+    $not_enrolled_join_ns = "
+    LEFT JOIN new_student_basic_info ns ON TRIM(" . $ns_t('student_name') . ") = TRIM(CONVERT(COALESCE(ei.name,'') USING utf8mb4) COLLATE utf8mb4_unicode_ci)
+       AND (" . $school_cond_t . ")
+       AND (
+            (ei.phone1 IS NOT NULL AND ei.phone1 <> '' AND TRIM(REPLACE(REPLACE(REPLACE(REPLACE(" . $ns_t('mobile') . ", ' ', ''), '-', ''), '(', ''), ')', '')) = TRIM(REPLACE(REPLACE(REPLACE(REPLACE(CONVERT(COALESCE(ei.phone1,'') USING utf8mb4) COLLATE utf8mb4_unicode_ci, ' ', ''), '-', ''), '(', ''), ')', '')))
+         OR (ei.phone2 IS NOT NULL AND ei.phone2 <> '' AND TRIM(REPLACE(REPLACE(REPLACE(REPLACE(" . $ns_t('mobile') . ", ' ', ''), '-', ''), '(', ''), ')', '')) = TRIM(REPLACE(REPLACE(REPLACE(REPLACE(CONVERT(COALESCE(ei.phone2,'') USING utf8mb4) COLLATE utf8mb4_unicode_ci, ' ', ''), '-', ''), '(', ''), ')', '')))
+       )
+       AND " . $ns_t('status') . " IN ('', '在學')
+    ";
+    $not_enrolled_where = $scope_where_perf . " AND ns.id IS NULL ";
+
+    // 未入學總數、有填寫原因人數（統計為什麼不入學）
+    $sql_loss_totals = "SELECT
+        COUNT(DISTINCT ei.id) AS total,
+        SUM(CASE WHEN latest_log_loss.notes IS NOT NULL AND TRIM(latest_log_loss.notes) <> '' THEN 1 ELSE 0 END) AS with_reason
+    " . $base_from . $school_join_t . $not_enrolled_join_ns . $loss_join . $not_enrolled_where;
+    $st_lt = $conn->prepare($sql_loss_totals);
+    $st_lt->bind_param($bind_types_perf, ...$bind_params_perf);
+    $st_lt->execute();
+    $loss_totals_row = $st_lt->get_result()->fetch_assoc();
+    $st_lt->close();
+    $loss_total_count = (int)($loss_totals_row['total'] ?? 0);
+    $loss_with_reason = (int)($loss_totals_row['with_reason'] ?? 0);
+
+    // 所有未入學明細（含代表原因），不分老師、依學生姓名排序
+    $sql_loss_detail = "SELECT ei.id, ei.name AS student_name, ei.intention_level AS current_level,
+        latest_log_loss.notes AS latest_contact_notes,
+        u_loss.name AS teacher_name, u_loss.username AS teacher_username
+    " . $base_from . $school_join_t . $not_enrolled_join_ns . $loss_join . $not_enrolled_where . "
+    ORDER BY ei.name";
+    $st_ld = $conn->prepare($sql_loss_detail);
+    $st_ld->bind_param($bind_types_perf, ...$bind_params_perf);
+    $st_ld->execute();
+    $loss_detail_rows = $st_ld->get_result()->fetch_all(MYSQLI_ASSOC);
+    $st_ld->close();
+
+    // 依關鍵字掃描聯絡紀錄，統計未入學原因分類（一筆只歸一類，依關鍵字先後匹配）
+    $loss_reason_keywords = [
+        '選讀他校' => ['選讀他校', '他校', '其他學校', '選別校', '去他校', '就讀他校', '改選', '別校'],
+        '交通因素' => ['交通', '距離', '太遠', '通勤'],
+        '家庭因素' => ['家庭', '家長', '父母', '家人'],
+        '經濟因素' => ['經濟', '學費', '費用'],
+        '興趣志趣' => ['興趣', '志趣', '想讀', '不想讀'],
+        '成績分數' => ['成績', '分數', '會考'],
+        '私校/高職/高中' => ['私校', '高職', '五專', '高中', '綜合高中'],
+    ];
+    $loss_reason_counts = array_fill_keys(array_keys($loss_reason_keywords), 0);
+    $loss_reason_counts['其他'] = 0;
+    $loss_reason_counts['未填寫'] = 0;
+    foreach ($loss_detail_rows as $row) {
+        $notes = trim((string)($row['latest_contact_notes'] ?? ''));
+        if ($notes === '') {
+            $loss_reason_counts['未填寫']++;
+            continue;
+        }
+        $matched = false;
+        foreach ($loss_reason_keywords as $category => $keywords) {
+            foreach ($keywords as $kw) {
+                if (mb_strpos($notes, $kw) !== false) {
+                    $loss_reason_counts[$category]++;
+                    $matched = true;
+                    break;
+                }
+            }
+            if ($matched) break;
+        }
+        if (!$matched) {
+            $loss_reason_counts['其他']++;
+        }
+    }
+    // 只保留有筆數的分類，供長條圖使用（依筆數由多到少排序）
+    $loss_reason_chart = [];
+    foreach ($loss_reason_counts as $label => $cnt) {
+        if ($cnt > 0) {
+            $loss_reason_chart[] = ['label' => $label, 'count' => $cnt];
+        }
+    }
+    usort($loss_reason_chart, function ($a, $b) { return $b['count'] - $a['count']; });
 }
-$sql_detail .= " ORDER BY ch.last_change_at DESC";
-$st = $conn->prepare($sql_detail);
-$st->bind_param($bind_types, ...$bind_params);
-$st->execute();
-$detail_rows = $st->get_result()->fetch_all(MYSQLI_ASSOC);
-$st->close();
 
 // 區塊四：低意願卻入學的學生（比對 new_student_basic_info）
 $low_intent_enrolled_rows = [];
@@ -405,15 +435,10 @@ function formatAcademicYearLabel($startYear, $with_gregorian = true) {
 
 $page_title = '教師經營成效分析';
 $base_url_params = [];
-if (isset($_GET['filter']) && $_GET['filter'] !== 'all') {
-    $base_url_params['filter'] = $_GET['filter'];
-}
 if ($selected_roc_year > 0) {
     $base_url_params['roc_year'] = $selected_roc_year;
 }
 $base_url = 'teacher_intention_performance.php' . (empty($base_url_params) ? '' : '?' . http_build_query($base_url_params));
-$base_url_with_amp = empty($base_url_params) ? 'teacher_intention_performance.php?' : 'teacher_intention_performance.php?' . http_build_query($base_url_params) . '&';
-$filter_select_base = $selected_roc_year > 0 ? 'teacher_intention_performance.php?roc_year=' . $selected_roc_year . '&' : 'teacher_intention_performance.php?';
 ?>
 <!DOCTYPE html>
 <html lang="zh-TW">
@@ -452,6 +477,8 @@ $filter_select_base = $selected_roc_year > 0 ? 'teacher_intention_performance.ph
     .perf-view-tabs .tab.active { color: #1890ff; font-weight: 600; border-bottom-color: #1890ff; }
     .perf-view-panel { display: none; }
     .perf-view-panel.active { display: block; }
+    .loss-view-panel { display: none; }
+    .loss-view-panel.active { display: block; }
 </style>
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 </head>
@@ -465,7 +492,7 @@ $filter_select_base = $selected_roc_year > 0 ? 'teacher_intention_performance.ph
                 <div class="breadcrumb"><a href="index.php">首頁</a> / <?php echo htmlspecialchars($page_title); ?></div>
                 <div class="year-select-wrap">
                     <label for="rocYearSelect"><i class="fas fa-graduation-cap" style="color: #1890ff;"></i> 屆別：</label>
-                    <select id="rocYearSelect" onchange="var v=this.value; window.location.href=(v==='' ? 'teacher_intention_performance.php<?php echo isset($_GET['filter']) && $_GET['filter'] !== 'all' ? '?filter=' . urlencode($_GET['filter']) : ''; ?>' : 'teacher_intention_performance.php?roc_year='+v+'<?php echo isset($_GET['filter']) && $_GET['filter'] !== 'all' ? '&filter=' . urlencode($_GET['filter']) : ''; ?>');">
+                    <select id="rocYearSelect" onchange="var v=this.value; window.location.href=(v==='' ? 'teacher_intention_performance.php' : 'teacher_intention_performance.php?roc_year='+v);">
                         <option value="" <?php echo $selected_roc_year <= 0 ? 'selected' : ''; ?>>當年度</option>
                         <?php foreach ($available_roc_years as $roc_year): ?>
                         <option value="<?php echo (int)$roc_year; ?>" <?php echo $selected_roc_year === (int)$roc_year ? 'selected' : ''; ?>><?php echo (int)$roc_year; ?>學年</option>
@@ -495,11 +522,20 @@ $filter_select_base = $selected_roc_year > 0 ? 'teacher_intention_performance.ph
                     </div>
                 </div>
             </div>
-            <!-- 教師招生績效比較圖 + 成功經營統計（合併，預設圖表、可切表格） -->
+            <!-- 教師招生績效比較圖 + 成功經營統計（合併，預設圖表、可切表格，可篩選老師） -->
             <div class="card" style="margin-bottom: 24px;">
                 <h3 style="margin: 0 0 16px 0; font-size: 18px;">
-                    <i class="fas fa-chart-bar" style="color: #1890ff;"></i> 教師招生績效比較與成功經營統計
+                    <i class="fas fa-chart-bar" style="color: #1890ff;"></i> 教師經營名單成功入學統計
                 </h3>
+                <div style="margin: 8px 0 12px 0; display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+                    <label for="teacherFilter" style="font-size:13px; color:#555;">教師篩選：</label>
+                    <select id="teacherFilter" onchange="filterTeacherPerf(this.value)" style="padding:4px 8px; border-radius:4px; border:1px solid #d9d9d9; font-size:13px; min-width:160px;">
+                        <option value="">全部老師</option>
+                        <?php foreach ($teacher_stats as $ts): ?>
+                        <option value="<?php echo (int)$ts['teacher_id']; ?>"><?php echo htmlspecialchars($ts['teacher_name']); ?></option>
+                        <?php endforeach; ?>
+                    </select>
+                </div>
                 <div class="perf-view-tabs">
                     <span class="tab active" data-panel="chart" onclick="switchPerfView('chart')"><i class="fas fa-chart-bar"></i> 圖表</span>
                     <span class="tab" data-panel="table" onclick="switchPerfView('table')"><i class="fas fa-table"></i> 表格</span>
@@ -516,16 +552,21 @@ $filter_select_base = $selected_roc_year > 0 ? 'teacher_intention_performance.ph
                                 <th>教師姓名</th>
                                 <th>分配人數</th>
                                 <th>成功入學數</th>
-                                <th>未成功入學數</th>
+                                <th>入學成功率</th>
                             </tr>
                         </thead>
                         <tbody>
                             <?php foreach ($teacher_stats as $ts): ?>
-                            <tr>
+                            <?php
+                                $assigned_cnt = (int)($ts['assigned_count'] ?? 0);
+                                $success_cnt = (int)($ts['success_enrolled_count'] ?? 0);
+                                $rate = $assigned_cnt > 0 ? round($success_cnt / $assigned_cnt * 100, 1) : 0;
+                            ?>
+                            <tr data-teacher-id="<?php echo (int)$ts['teacher_id']; ?>">
                                 <td><?php echo htmlspecialchars($ts['teacher_name']); ?></td>
-                                <td><?php echo $ts['assigned_count']; ?></td>
-                                <td><?php echo $ts['success_enrolled_count']; ?></td>
-                                <td><?php echo $ts['failed_enrolled_count']; ?></td>
+                                <td><?php echo $assigned_cnt; ?></td>
+                                <td><?php echo $success_cnt; ?></td>
+                                <td><?php echo $rate; ?>%</td>
                             </tr>
                             <?php endforeach; ?>
                             <?php if (empty($teacher_stats)): ?>
@@ -536,34 +577,45 @@ $filter_select_base = $selected_roc_year > 0 ? 'teacher_intention_performance.ph
                 </div>
             </div>
 
-            <!-- 區塊三：教師轉換排行榜 -->
+            <!-- 區塊三：未成功入學原因分析（所有確定未入學的學生，統計為什麼不入學，可切換圖表／表格） -->
             <div class="card" style="margin-bottom: 24px;">
-                <h3 style="margin: 0 0 16px 0; font-size: 18px;">教師轉換排行榜</h3>
-                <table class="perf-table">
-                    <thead>
-                        <tr>
-                            <th>教師姓名</th>
-                            <th>分配人數</th>
-                            <th>成功提升數 (低/中➔高)</th>
-                            <th>意願流失數 (高➔低)</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        <?php foreach ($teacher_stats_ranking as $ts): ?>
-                        <tr>
-                            <td><?php echo htmlspecialchars($ts['teacher_name']); ?></td>
-                            <td><?php echo $ts['assigned_count']; ?></td>
-                            <td><?php echo $ts['upgrade_count']; ?></td>
-                            <td><?php echo $ts['downgrade_count']; ?></td>
-                        </tr>
-                        <?php endforeach; ?>
-                        <?php if (empty($teacher_stats_ranking)): ?>
-                        <tr><td colspan="4" style="text-align:center; color:#999;">尚無分配資料</td></tr>
-                        <?php endif; ?>
-                    </tbody>
-                </table>
+                <h3 style="margin: 0 0 16px 0; font-size: 18px;">未成功入學原因分析</h3>
+                <?php if (!$has_nsbi_teacher): ?>
+                <p style="margin: 0; font-size: 13px; color:#999;">尚無新生基本資料，無法統計未入學。</p>
+                <?php else: ?>
+                <div class="perf-view-tabs loss-view-tabs">
+                    <span class="tab active" data-panel="loss-chart" onclick="switchLossView('chart')"><i class="fas fa-chart-bar"></i> 圖表</span>
+                    <span class="tab" data-panel="loss-table" onclick="switchLossView('table')"><i class="fas fa-table"></i> 表格</span>
+                </div>
+                <div id="lossChartPanel" class="loss-view-panel active">
+                    <div style="position: relative; height: 280px; width: 100%; margin-bottom: 20px;">
+                        <canvas id="lossReasonChart"></canvas>
+                    </div>
+                </div>
+                <div id="lossTablePanel" class="loss-view-panel">
+                    <table class="perf-table">
+                        <thead>
+                            <tr>
+                                <th>未入學原因分類</th>
+                                <th>人數</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <?php foreach ($loss_reason_chart as $item): ?>
+                            <tr>
+                                <td><?php echo htmlspecialchars($item['label']); ?></td>
+                                <td><?php echo (int)($item['count'] ?? 0); ?></td>
+                            </tr>
+                            <?php endforeach; ?>
+                            <?php if (empty($loss_reason_chart)): ?>
+                            <tr><td colspan="2" style="text-align:center; color:#999;">尚無未入學原因資料</td></tr>
+                            <?php endif; ?>
+                        </tbody>
+                    </table>
+                </div>
+                <?php endif; ?>
             </div>
-            <!-- 區塊三：低意願卻入學的學生 -->
+            <!-- 區塊四：低意願卻入學的學生 -->
             <div class="card" style="margin-top: 24px;">
                 <h3 style="margin: 0 0 16px 0; font-size: 18px;">低意願卻入學的學生</h3>
                 <p style="margin: 0 0 12px 0; font-size: 13px; color:#666;">
@@ -620,54 +672,6 @@ $filter_select_base = $selected_roc_year > 0 ? 'teacher_intention_performance.ph
                     </tbody>
                 </table>
             </div>
-            <!-- 區塊四：意願異動明細與原因 -->
-            <div class="card">
-                <h3 style="margin: 0 0 16px 0; font-size: 18px;">意願異動明細與原因</h3>
-                <div style="margin-bottom: 12px;">
-                    <label>篩選：</label>
-                    <select id="filterType" onchange="window.location.href='<?php echo htmlspecialchars($filter_select_base); ?>filter='+encodeURIComponent(this.value)">
-                        <option value="all" <?php echo $filter_type === 'all' ? 'selected' : ''; ?>>全部異動</option>
-                        <option value="upgrade" <?php echo $filter_type === 'upgrade' ? 'selected' : ''; ?>>只看意願提升</option>
-                        <option value="downgrade" <?php echo $filter_type === 'downgrade' ? 'selected' : ''; ?>>只看意願下降</option>
-                    </select>
-                </div>
-                <table class="perf-table">
-                    <thead>
-                        <tr>
-                            <th>學生姓名</th>
-                            <th>負責教師</th>
-                            <th>初始意願</th>
-                            <th>目前意願</th>
-                            <th>關鍵轉折原因 (最新聯絡紀錄)</th>
-                            <th>操作</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        <?php foreach ($detail_rows as $dr): 
-                            $teacher_display = $dr['teacher_name'] ?: $dr['teacher_username'] ?: '—';
-                            $notes = $dr['latest_contact_notes'] ?? '';
-                            $initial = levelLabel($dr['initial_level']);
-                            $current = levelLabel($dr['current_level']);
-                        ?>
-                        <tr>
-                            <td><?php echo htmlspecialchars($dr['student_name']); ?></td>
-                            <td><?php echo htmlspecialchars($teacher_display); ?></td>
-                            <td><?php echo htmlspecialchars($initial); ?></td>
-                            <td><?php echo htmlspecialchars($current); ?></td>
-                            <td><div class="detail-notes"><?php echo nl2br(htmlspecialchars($notes ?: '—')); ?></div></td>
-                            <td>
-                                <button type="button" class="btn-view" onclick="openContactLogModal(<?php echo (int)$dr['id']; ?>, '<?php echo htmlspecialchars(addslashes($dr['student_name'])); ?>')">
-                                    <i class="fas fa-list"></i> 查看完整聯絡軌跡
-                                </button>
-                            </td>
-                        </tr>
-                        <?php endforeach; ?>
-                        <?php if (empty($detail_rows)): ?>
-                        <tr><td colspan="6" style="text-align:center; color:#999;">尚無意願異動明細</td></tr>
-                        <?php endif; ?>
-                    </tbody>
-                </table>
-            </div>
         </div>
     </div>
 </div>
@@ -691,6 +695,14 @@ function switchPerfView(panel) {
     var chartPanel = document.getElementById('perfChartPanel');
     var tablePanel = document.getElementById('perfTablePanel');
     tabs.forEach(function(t) { t.classList.toggle('active', t.getAttribute('data-panel') === panel); });
+    chartPanel.classList.toggle('active', panel === 'chart');
+    tablePanel.classList.toggle('active', panel === 'table');
+}
+function switchLossView(panel) {
+    var tabs = document.querySelectorAll('.loss-view-tabs .tab');
+    var chartPanel = document.getElementById('lossChartPanel');
+    var tablePanel = document.getElementById('lossTablePanel');
+    tabs.forEach(function(t) { t.classList.toggle('active', t.getAttribute('data-panel') === 'loss-' + panel); });
     chartPanel.classList.toggle('active', panel === 'chart');
     tablePanel.classList.toggle('active', panel === 'table');
 }
@@ -719,23 +731,44 @@ function openContactLogModal(enrollmentId, studentName) {
 }
 //1. 將 PHP 算好的資料轉換給 JavaScript 使用
 const teacherStats = <?php echo json_encode($teacher_stats); ?>;
+let perfChart = null;
 
-if (teacherStats.length > 0) {
-    // 2. 準備 X 軸 (老師名字) 與 Y 軸 (數據)
-    const labels = teacherStats.map(ts => ts.teacher_name);
-    const assignedData = teacherStats.map(ts => ts.assigned_count);
-    const successData = teacherStats.map(ts => ts.success_enrolled_count);
+function buildPerfChartData(teacherId) {
+    let filtered = teacherStats;
+    if (teacherId) {
+        const tid = parseInt(teacherId, 10);
+        filtered = teacherStats.filter(function (ts) { return parseInt(ts.teacher_id, 10) === tid; });
+    }
+    const labels = filtered.map(function(ts) { return ts.teacher_name; });
+    const assignedData = filtered.map(function(ts) { return ts.assigned_count; });
+    const successData = filtered.map(function(ts) { return ts.success_enrolled_count; });
+    return { labels, assignedData, successData };
+}
 
-    // 3. 渲染 Chart.js 長條圖
-    const ctx = document.getElementById('performanceChart').getContext('2d');
-    new Chart(ctx, {
+function renderPerfChart(teacherId) {
+    const canvas = document.getElementById('performanceChart');
+    if (!canvas) return;
+    if (!teacherStats || teacherStats.length === 0) {
+        canvas.parentElement.innerHTML = '<p style="text-align:center; color:#999; line-height:300px;">尚無資料可供繪圖</p>';
+        return;
+    }
+    const ctx = canvas.getContext('2d');
+    const dataObj = buildPerfChartData(teacherId);
+    if (perfChart) {
+        perfChart.data.labels = dataObj.labels;
+        perfChart.data.datasets[0].data = dataObj.assignedData;
+        perfChart.data.datasets[1].data = dataObj.successData;
+        perfChart.update();
+        return;
+    }
+    perfChart = new Chart(ctx, {
         type: 'bar',
         data: {
-            labels: labels,
+            labels: dataObj.labels,
             datasets: [
                 {
                     label: '分配學生人數 (基數)',
-                    data: assignedData,
+                    data: dataObj.assignedData,
                     backgroundColor: 'rgba(201, 203, 207, 0.6)', // 淺灰色
                     borderColor: 'rgb(201, 203, 207)',
                     borderWidth: 1,
@@ -743,7 +776,7 @@ if (teacherStats.length > 0) {
                 },
                 {
                     label: '成功入學人數 (戰果)',
-                    data: successData,
+                    data: dataObj.successData,
                     backgroundColor: 'rgba(54, 162, 235, 0.8)', // 亮藍色
                     borderColor: 'rgb(54, 162, 235)',
                     borderWidth: 1,
@@ -761,7 +794,7 @@ if (teacherStats.length > 0) {
                         // 在提示框自動幫主任算出轉換率
                         afterLabel: function(context) {
                             if (context.datasetIndex === 1) { // 只有成功入學顯示轉換率
-                                const assigned = assignedData[context.dataIndex];
+                                const assigned = dataObj.assignedData[context.dataIndex];
                                 const success = context.raw;
                                 const rate = assigned > 0 ? ((success / assigned) * 100).toFixed(1) : 0;
                                 return `入學轉換率: ${rate}%`;
@@ -779,8 +812,60 @@ if (teacherStats.length > 0) {
             }
         }
     });
-} else {
-    document.getElementById('performanceChart').parentElement.innerHTML = '<p style="text-align:center; color:#999; line-height:300px;">尚無資料可供繪圖</p>';
+}
+
+function filterTeacherPerf(teacherId) {
+    renderPerfChart(teacherId || null);
+    var rows = document.querySelectorAll('#perfTablePanel tbody tr[data-teacher-id]');
+    rows.forEach(function(row) {
+        if (!teacherId) {
+            row.style.display = '';
+        } else {
+            var tid = parseInt(row.getAttribute('data-teacher-id'), 10);
+            row.style.display = (tid === parseInt(teacherId, 10)) ? '' : 'none';
+        }
+    });
+}
+
+// 初始渲染全部老師的績效圖
+renderPerfChart(null);
+
+// 未入學原因統計長條圖（依關鍵字掃描結果）
+const lossReasonChartData = <?php echo json_encode($loss_reason_chart); ?>;
+const lossReasonCanvas = document.getElementById('lossReasonChart');
+if (lossReasonCanvas) {
+    if (lossReasonChartData.length > 0) {
+        const labels = lossReasonChartData.map(function(r) { return r.label; });
+        const counts = lossReasonChartData.map(function(r) { return r.count; });
+        const colors = ['rgba(255, 99, 132, 0.7)', 'rgba(54, 162, 235, 0.7)', 'rgba(255, 206, 86, 0.7)', 'rgba(75, 192, 192, 0.7)', 'rgba(153, 102, 255, 0.7)', 'rgba(255, 159, 64, 0.7)', 'rgba(201, 203, 207, 0.7)', 'rgba(0, 0, 0, 0.2)'];
+        new Chart(lossReasonCanvas.getContext('2d'), {
+            type: 'bar',
+            data: {
+                labels: labels,
+                datasets: [{
+                    label: '人數',
+                    data: counts,
+                    backgroundColor: labels.map(function(_, i) { return colors[i % colors.length]; }),
+                    borderColor: 'rgba(0,0,0,0.1)',
+                    borderWidth: 1,
+                    borderRadius: 4
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: { display: false },
+                    tooltip: {}
+                },
+                scales: {
+                    y: { beginAtZero: true, ticks: { stepSize: 1 } }
+                }
+            }
+        });
+    } else {
+        lossReasonCanvas.parentElement.innerHTML = '<p style="text-align:center; color:#999; line-height:280px;">尚無未入學原因資料可繪圖</p>';
+    }
 }
 </script>
 <?php $conn->close(); ?>
