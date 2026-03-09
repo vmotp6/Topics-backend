@@ -136,22 +136,29 @@ if ($has_tables && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action
             if ($id <= 0) throw new Exception('無效的項目。');
 
             // 檢查權限
-            $chk = $conn->prepare("SELECT id, created_by FROM recruitment_knowledge WHERE id = ? LIMIT 1");
+            $chk = $conn->prepare("SELECT k.created_by, u.status FROM recruitment_knowledge k LEFT JOIN user u ON u.id = k.created_by WHERE k.id = ? LIMIT 1");
             $chk->bind_param('i', $id);
             $chk->execute();
             $chkRow = $chk->get_result()->fetch_assoc();
             $chk->close();
             if (!$chkRow) throw new Exception('無效的項目。');
-            if ((int)$chkRow['created_by'] !== (int)$current_user_id) {
-                throw new Exception('僅建立者可編輯此筆知識。');
-            }
-            if (!$is_staff && !$is_admin) {
-                $chk2 = $conn->prepare("SELECT id FROM recruitment_knowledge WHERE id = ? AND department_code = ? LIMIT 1");
-                $chk2->bind_param('is', $id, $user_department);
-                $chk2->execute();
-                if (!$chk2->get_result()->fetch_assoc()) throw new Exception('權限不足。');
-                $chk2->close();
-            }
+            // 招生中心或管理員可以刪除所有資料
+                $creator_left = (int)$chkRow['status'] === 0;
+
+                if (!$is_staff && !$is_admin) {
+                    if ((int)$chkRow['created_by'] !== (int)$current_user_id && !$creator_left) {
+                        throw new Exception('僅建立者可修改此筆知識。');
+                    }
+                }
+                if (!$is_admin) {
+
+                    if ((int)$chkRow['created_by'] !== (int)$current_user_id) {
+
+                        if (!($is_staff && $creator_left)) {
+                            throw new Exception('權限不足。');
+                        }
+                    }
+                }
 
             $question = trim($_POST['question'] ?? '');
             $answer   = trim($_POST['answer'] ?? '');
@@ -199,13 +206,22 @@ if ($has_tables && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action
             if ($id <= 0) throw new Exception('無效的項目。');
 
             // 檢查權限
-            $chk = $conn->prepare("SELECT id, created_by FROM recruitment_knowledge WHERE id = ? LIMIT 1");
+           $chk = $conn->prepare(" SELECT k.created_by, u.status FROM recruitment_knowledge k LEFT JOIN user u ON u.id = k.created_by WHERE k.id = ? LIMIT 1");
             $chk->bind_param('i', $id);
             $chk->execute();
             $chkRow = $chk->get_result()->fetch_assoc();
             $chk->close();
             if (!$chkRow) throw new Exception('無效的項目。');
-            if ((int)$chkRow['created_by'] !== (int)$current_user_id) throw new Exception('僅建立者可刪除此筆知識。');
+            // 招生中心或管理員可以刪除所有資料
+           $creator_left = (int)$chkRow['status'] === 0;
+
+            if (!$is_staff && !$is_admin) {
+
+                if ((int)$chkRow['created_by'] !== (int)$current_user_id && !$creator_left) {
+                    throw new Exception('僅建立者可刪除此筆知識。');
+                }
+            }
+
             if (!$is_staff && !$is_admin) {
                 $chk2 = $conn->prepare("SELECT id FROM recruitment_knowledge WHERE id = ? AND department_code = ? LIMIT 1");
                 $chk2->bind_param('is', $id, $user_department);
@@ -256,8 +272,13 @@ if ($has_tables) {
     $sql = "
     SELECT
         k.*,
+        u.status AS creator_status,
         d.name AS dept_name,
-        COALESCE(u.name, u.username, '') AS created_by_name,
+        CASE
+        WHEN u.id IS NULL THEN '未知使用者'
+        WHEN u.status = 0 THEN CONCAT(COALESCE(u.name,u.username),'（已離職）')
+        ELSE COALESCE(u.name,u.username)
+    END AS created_by_name,
         GROUP_CONCAT(f.id ORDER BY f.id SEPARATOR '||') AS file_ids,
         GROUP_CONCAT(f.file_original_name ORDER BY f.id SEPARATOR '||') AS file_names,
         GROUP_CONCAT(f.file_path ORDER BY f.id SEPARATOR '||') AS file_paths
@@ -447,9 +468,90 @@ $conn->close();
             justify-content: flex-end;
             gap: 8px;
         }
-        .modal-body { padding: 20px 24px; overflow-y: auto; }
-        .modal-title { font-size: 16px; font-weight: 600; }
-        .close { cursor: pointer; color: var(--text-secondary-color); font-size: 20px; }
+        .user-left{
+            color:#ff7875;
+            font-size:12px;
+            font-weight:500;
+        }
+        .modal-body { 
+            padding: 20px 24px; 
+            overflow-y: auto; 
+        }
+        .modal-title { 
+            font-size: 16px; 
+            font-weight: 600; 
+        }
+        .close { 
+            cursor: pointer; 
+            color: var(--text-secondary-color); 
+            font-size: 20px; 
+        }
+                /* 分頁樣式 */
+        .pagination {
+            padding: 16px 24px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-top: 1px solid var(--border-color);
+            background: #fafafa;
+        }
+
+        .pagination-info {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            color: var(--text-secondary-color);
+            font-size: 14px;
+        }
+
+        .pagination-controls {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .pagination select {
+            padding: 6px 12px;
+            border: 1px solid #d9d9d9;
+            border-radius: 6px;
+            font-size: 14px;
+            background: #fff;
+            cursor: pointer;
+        }
+
+        .pagination select:focus {
+            outline: none;
+            border-color: var(--primary-color);
+            box-shadow: 0 0 0 2px rgba(24,144,255,0.2);
+        }
+
+        .pagination button {
+            padding: 6px 12px;
+            border: 1px solid #d9d9d9;
+            background: #fff;
+            color: #595959;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 14px;
+            transition: all 0.3s;
+        }
+
+        .pagination button:hover:not(:disabled) {
+            border-color: var(--primary-color);
+            color: var(--primary-color);
+        }
+
+        .pagination button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .pagination button.active {
+            background: var(--primary-color);
+            color: white;
+            border-color: var(--primary-color);
+        }
+
     </style>
 </head>
 <body>
@@ -491,13 +593,13 @@ $conn->close();
                         <table class="table" id="dataTable">
                             <thead>
                             <tr>
-                                <th>問題／主題</th>
-                                <th>回答摘要</th>
-                                <th>來源</th>
-                                <th>附件</th>
-                                <th>建立者</th>
-                                <th>建立時間</th>
-                                <th>操作</th>
+                                <th style="width:15%;">問題／主題</th>
+                                <th style="width:28%;">回答摘要</th>
+                                <th style="width:10%;">來源</th>
+                                <th style="width:10%;">附件</th>
+                                <th style="width:10%;">建立者</th>
+                                <th style="width:10%;">建立時間</th>
+                                <th style="width:10%;">操作</th>
                             </tr>
                             </thead>
                             <tbody>
@@ -514,7 +616,7 @@ $conn->close();
                                     </td>
                                     <td><?php
                                         $slabel = (($row['source_type'] ?? '') === 'department' && !empty($row['dept_name']))
-                                            ? $row['dept_name'] . '科主任'
+                                            ? $row['dept_name'] . '主任'
                                             : ($row['source_label'] ?? '');
                                         echo htmlspecialchars($slabel);
                                     ?></td>
@@ -537,10 +639,25 @@ $conn->close();
                                             }
                                         ?>
                                     </td>
-                                    <td><?php echo htmlspecialchars($row['created_by_name'] ?? ''); ?></td>
+                                    <td>
+                                        <?php $name = $row['created_by_name'] ?? '';
+                                            if (str_contains($name, '已離職')) {
+                                                $clean = str_replace('（已離職）', '', $name);
+                                                echo htmlspecialchars($clean) . '<br>';
+                                                echo '<span class="user-left">（已離職）</span>';
+                                            } else {
+                                                echo htmlspecialchars($name);
+                                            }
+                                        ?>
+                                    </td>
                                     <td><?php echo htmlspecialchars($row['created_at'] ?? ''); ?></td>
                                     <td>
-                                        <?php $is_owner = ((int)($row['created_by'] ?? 0) === (int)$current_user_id); ?>
+                                        <?php   $creator_left = (int)($row['creator_status'] ?? 1) === 0;
+                                                $is_owner =
+                                                    (int)$row['created_by'] === (int)$current_user_id
+                                                        || $is_admin
+                                                        || ($is_staff && $creator_left); 
+                                        ?>
                                         <?php if ($is_owner): ?>
                                         <div class="action-buttons">
                                             <button type="button"
@@ -563,6 +680,27 @@ $conn->close();
                             <?php endforeach; ?>
                             </tbody>
                         </table>
+                        <!-- 分頁控制 -->
+                        <?php if (!empty($items)): ?>
+                        <div class="pagination" id="paginationContainer">
+                            <div class="pagination-info">
+                                <span>每頁顯示：</span>
+                                <select id="itemsPerPage" onchange="changeItemsPerPage()">
+                                    <option value="10" selected>10</option>
+                                    <option value="20">20</option>
+                                    <option value="50">50</option>
+                                    <option value="100">100</option>
+                                    <option value="all">全部</option>
+                                </select>
+                                <span id="pageInfo">顯示第 <span id="currentRange">1-10</span> 筆，共 <span id="totalItemsCount"><?php echo count($items); ?></span> 筆</span>
+                            </div>
+                            <div class="pagination-controls">
+                                <button id="prevPage" onclick="changePage(-1)" disabled>上一頁</button>
+                                <span id="pageNumbers"></span>
+                                <button id="nextPage" onclick="changePage(1)">下一頁</button>
+                            </div>
+                        </div>
+                        <?php endif; ?>
                     </div>
                     <?php if (empty($items)): ?>
                         <div class="empty-state">
@@ -710,6 +848,106 @@ $conn->close();
             e.target.style.display = 'none';
         }
     };
+
+    // 分頁相關變數
+    let currentPage = 1;
+    let itemsPerPage = 10;
+    let allRows = [];
+    let filteredRows = [];
+
+    function initPagination() {
+        const table = document.getElementById('dataTable');
+        if (!table) return;
+        const tbody = table.querySelector("tbody");
+        allRows = Array.from(tbody.querySelectorAll("tr"));
+        filteredRows = [...allRows];
+        updatePagination();
+    }
+
+    function updatePagination() {
+
+        let start = (currentPage - 1) * itemsPerPage;
+        let end = start + itemsPerPage;
+
+        if (itemsPerPage === 'all') {
+            start = 0;
+            end = filteredRows.length;
+        }
+        allRows.forEach(row => row.style.display = 'none');
+
+        filteredRows.slice(start, end).forEach(row => {
+            row.style.display = '';
+        });
+        updatePageInfo();
+        renderPageNumbers();
+    }
+
+    function updatePageInfo() {
+        const total = filteredRows.length;
+        let start = (currentPage - 1) * itemsPerPage + 1;
+        let end = Math.min(start + itemsPerPage - 1, total);
+
+        if (itemsPerPage === 'all') {
+            start = 1;
+            end = total;
+        }
+
+        document.getElementById("currentRange").innerText =
+            start + "-" + end;
+
+        document.getElementById("totalItemsCount").innerText =
+            total;
+    }
+
+    function renderPageNumbers() {
+        const container = document.getElementById("pageNumbers");
+        container.innerHTML = "";
+
+        if (itemsPerPage === 'all') return;
+        const totalPages = Math.ceil(filteredRows.length / itemsPerPage);
+
+        for (let i = 1; i <= totalPages; i++) {
+            const btn = document.createElement("button");
+            btn.innerText = i;
+
+            if (i === currentPage) {
+                btn.classList.add("active");
+            }
+
+            btn.onclick = function () {
+                currentPage = i;
+                updatePagination();
+            };
+            container.appendChild(btn);
+        }
+    }
+
+    function changePage(step) {
+        const maxPage = Math.ceil(filteredRows.length / itemsPerPage);
+        currentPage += step;
+
+        if (currentPage < 1) currentPage = 1;
+        if (currentPage > maxPage) currentPage = maxPage;
+        updatePagination();
+    }
+
+    function changeItemsPerPage() {
+
+        const val = document.getElementById("itemsPerPage").value;
+
+        if (val === "all") {
+            itemsPerPage = "all";
+        } else {
+            itemsPerPage = parseInt(val);
+        }
+
+        currentPage = 1;
+        updatePagination();
+    }
+
+    window.onload = function () {
+        initPagination();
+    }
 </script>
 </body>
 </html>

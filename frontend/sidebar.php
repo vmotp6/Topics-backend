@@ -404,13 +404,13 @@ function hasPermission($permission_code, $user_role, $permissions_array) {
                 </a>
             <?php endif; ?>
             
-            <!-- 學校聯絡人 - 僅學校行政和管理員 -->
+            <!-- 學校聯絡人 - 僅學校行政和管理員
             <?php if ($is_staff || $is_admin): ?>
                 <a href="school_contacts.php" class="menu-item <?php echo $current_page === 'school_contacts' ? 'active' : ''; ?>">
                     <i class="fas fa-address-book"></i>
                     <span>學校聯絡人</span>
                 </a>
-            <?php endif; ?>
+            <?php endif; ?> -->
 
             <!-- 新生基本資料管理 - 僅招生中心(學校行政 STA)與管理員 -->
             <?php if ($is_staff || $is_admin): ?>

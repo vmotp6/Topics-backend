@@ -1159,11 +1159,11 @@ $page_title = '出席紀錄管理 - ' . htmlspecialchars($session['session_name'
                             <?php if (!$is_read_only): ?>
                                 <button class="btn btn-primary" onclick="saveAttendance()"><i class="fas fa-save"></i> 儲存變更</button>
                             <?php endif; ?>
-                            <?php if (!$is_read_only): ?>
+                            <!--<?php if (!$is_read_only): ?>
                                 <a href="absent_reminder.php?session_id=<?php echo $session_id; ?>" class="btn" style="background: var(--danger-color); color: white; border-color: var(--danger-color);">
                                     <i class="fas fa-exclamation-triangle"></i> 未到警示
                                 </a>
-                            <?php endif; ?>
+                            <?php endif; ?> -->
                         <?php endif; ?>
                         <a href="settings.php" class="btn btn-secondary"><i class="fas fa-arrow-left"></i> 返回</a>
                     </div>

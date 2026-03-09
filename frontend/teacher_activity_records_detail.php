@@ -811,6 +811,7 @@ $page_title = $department_name . ' - 教師活動紀錄';
             }, 100);
             <?php endif; ?>
         });
+        
     </script>
 </body>
 </html>
