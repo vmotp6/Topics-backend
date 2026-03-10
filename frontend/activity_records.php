@@ -1978,9 +1978,21 @@ try {
         }
         $graduate_university_stats = $graduate_university_stats_by_class['both'];
     }
+
+    // 撈大學類型（與 teacher_student_university_info 一致，供篩選下拉使用）
+    $university_types_list = [];
+    if ($table_ut && $table_ut->num_rows > 0) {
+        $res_ut = $conn->query("SELECT type_code as code, type_name as name FROM university_types ORDER BY id ASC");
+        if ($res_ut) {
+            while ($row = $res_ut->fetch_assoc()) {
+                $university_types_list[] = $row;
+            }
+        }
+    }
 } catch (Exception $e) {
     error_log('畢業生大學類型統計查詢失敗: ' . $e->getMessage());
 }
+if (!isset($university_types_list)) $university_types_list = [];
 
 $conn->close();
 ?>
@@ -3368,6 +3380,16 @@ $conn->close();
                                                     <option value="both" selected>忠+孝</option>
                                                     <option value="zhong">忠班</option>
                                                     <option value="xiao">孝班</option>
+                                                </select>
+                                            </div>
+                                            <div style="display:flex; gap:8px; align-items:center;">
+                                                <label for="graduateTypeFilterSelect" style="color:#666;">大學類型：</label>
+                                                <select id="graduateTypeFilterSelect" onchange="showGraduateUniversityStats()" style="padding:6px 10px; border-radius:6px; border:1px solid #ddd; min-width:120px;">
+                                                    <option value="">全部</option>
+                                                    <?php foreach ($university_types_list as $ut): ?>
+                                                        <option value="<?php echo htmlspecialchars($ut['name'] ?? ''); ?>"><?php echo htmlspecialchars($ut['name'] ?? ''); ?></option>
+                                                    <?php endforeach; ?>
+                                                    <option value="未填寫">未填寫</option>
                                                 </select>
                                             </div>
                                         </div>
@@ -9309,8 +9331,8 @@ window.showSourceDetail = function(schoolNameEnc, sourceDataEnc, gradeLabel) {
             function clearGraduateSecondaryViews() {
                 const c1 = document.getElementById('perClassNationalContent');
                 const c2 = document.getElementById('perClassTopSchoolsContent');
-                if (c1) c1.innerHTML = '';
-                if (c2) c2.innerHTML = '';
+                if (c1) { c1.innerHTML = ''; c1.style.display = 'none'; c1.style.minHeight = '0'; c1.style.marginTop = '0'; }
+                if (c2) { c2.innerHTML = ''; c2.style.display = 'none'; c2.style.minHeight = '0'; c2.style.marginTop = '0'; }
                 if (perClassNationalChart) {
                     perClassNationalChart.destroy();
                     perClassNationalChart = null;
@@ -9333,14 +9355,20 @@ window.showSourceDetail = function(schoolNameEnc, sourceDataEnc, gradeLabel) {
             }
 
             function showGraduateUniversityStats() {
-                updateGraduateIntro('type');
+                const intro = document.getElementById('graduateUniversityIntro');
+                if (intro) intro.style.display = 'none';
                 clearGraduateSecondaryViews();
                 const classSelect = document.getElementById('graduateClassFilterSelect');
+                const typeSelect = document.getElementById('graduateTypeFilterSelect');
                 const selectedClass = classSelect ? String(classSelect.value || 'both') : 'both';
+                const selectedType = typeSelect ? String(typeSelect.value || '').trim() : '';
                 const dataMap = (graduateUniversityStatsByClass && typeof graduateUniversityStatsByClass === 'object')
                     ? graduateUniversityStatsByClass
                     : {};
-                const data = Array.isArray(dataMap[selectedClass]) ? dataMap[selectedClass] : (graduateUniversityStats || []);
+                let data = Array.isArray(dataMap[selectedClass]) ? dataMap[selectedClass] : (graduateUniversityStats || []);
+                if (selectedType !== '') {
+                    data = data.filter(d => String(d.type_name || '').trim() === selectedType);
+                }
                 const classLabel = selectedClass === 'xiao' ? '孝班' : (selectedClass === 'zhong' ? '忠班' : '忠+孝');
                 const content = document.getElementById('graduateUniversityAnalyticsContent');
                 if (!content) return;
@@ -9424,7 +9452,8 @@ window.showSourceDetail = function(schoolNameEnc, sourceDataEnc, gradeLabel) {
             }
 
             function clearGraduateUniversityChart() {
-                updateGraduateIntro('type');
+                const intro = document.getElementById('graduateUniversityIntro');
+                if (intro) { intro.style.display = ''; updateGraduateIntro('type'); }
                 clearGraduateMainView();
                 clearGraduateSecondaryViews();
             }
@@ -9434,11 +9463,19 @@ window.showSourceDetail = function(schoolNameEnc, sourceDataEnc, gradeLabel) {
             let perClassTopSchoolChartInstances = [];
 
             function showPerClassNationalStats() {
+                const intro = document.getElementById('graduateUniversityIntro');
+                if (intro) intro.style.display = 'none';
                 updateGraduateIntro('national');
                 clearGraduateMainView();
-                const data = window.perClassStats || [];
+                const c2 = document.getElementById('perClassTopSchoolsContent');
+                if (c2) { c2.innerHTML = ''; c2.style.display = 'none'; }
+                if (Array.isArray(perClassTopSchoolChartInstances) && perClassTopSchoolChartInstances.length > 0) {
+                    perClassTopSchoolChartInstances.forEach(ins => { if (ins) ins.destroy(); });
+                    perClassTopSchoolChartInstances = [];
+                }
                 const container = document.getElementById('perClassNationalContent');
                 if (!container) return;
+                container.style.display = ''; container.style.minHeight = '200px'; container.style.marginTop = '20px';
                 if (!Array.isArray(data) || data.length === 0) {
                     container.innerHTML = '<div class="empty-state"><i class="fas fa-users fa-3x" style="margin-bottom: 16px;"></i><h4>尚無每班錄取資料</h4><p>請確認教師是否已填寫畢業生就讀大學資訊。</p></div>';
                     return;
@@ -9545,11 +9582,16 @@ window.showSourceDetail = function(schoolNameEnc, sourceDataEnc, gradeLabel) {
             }
 
             function showPerClassTopSchools() {
+                const intro = document.getElementById('graduateUniversityIntro');
+                if (intro) intro.style.display = 'none';
                 updateGraduateIntro('top5');
                 clearGraduateMainView();
-                const data = window.perClassStats || [];
+                const c1 = document.getElementById('perClassNationalContent');
+                if (c1) { c1.innerHTML = ''; c1.style.display = 'none'; }
+                if (perClassNationalChart) { perClassNationalChart.destroy(); perClassNationalChart = null; }
                 const container = document.getElementById('perClassTopSchoolsContent');
                 if (!container) return;
+                container.style.display = ''; container.style.minHeight = '200px'; container.style.marginTop = '20px';
                 if (!Array.isArray(data) || data.length === 0) {
                     container.innerHTML = '<div class="empty-state"><i class="fas fa-university fa-3x" style="margin-bottom: 16px;"></i><h4>尚無 Top5 大學資料</h4><p>請確認教師是否已填寫畢業生就讀大學資訊。</p></div>';
                     return;
