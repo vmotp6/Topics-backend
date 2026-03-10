@@ -1061,8 +1061,9 @@ if ($teacher_id > 0) {
             }
 
             // --- 每班國立錄取與前五大學統計（供前端圖表使用） ---
-            // 口徑對齊 teacher_student_university_info：
-            // 分母=該班所有學生；分子=大學類型為國立大學（type_code = NATIONAL 或文字含國立）
+            // 口徑對齊 teacher_student_university_info.php（畢業生資訊填寫）：
+            // 全班總人數＝該班在畢業生資訊填寫頁面顯示的畢業生人數（同資料表 new_student_basic_info、同屆別、主任視角時同科系）
+            // 分子＝大學類型為國立大學（type_code = NATIONAL 或文字含國立）
             $per_class_stats = []; // 格式: class => ['total'=>int,'national'=>int]
             $per_class_top_schools = []; // 格式: class => [ "school||dept" => count ]
             try {
@@ -1079,7 +1080,36 @@ if ($teacher_id > 0) {
 
                 $per_select_school = $has_uni_school_col ? "ns.university_school" : "'' AS university_school";
                 $per_select_dept = $has_uni_dept_col ? "ns.university_dept" : "'' AS university_dept";
-                $per_sql_base = "SELECT ns.class_name, ns.university, $per_select_school, $per_select_dept FROM new_student_basic_info ns";
+                // 偵測科系欄位（與 teacher_student_university_info 一致）
+                $per_dept_col = null;
+                foreach (['department_id', 'department', 'department_code', 'dept_code', 'dept'] as $dc) {
+                    $chk = $conn->query("SHOW COLUMNS FROM new_student_basic_info LIKE '$dc'");
+                    if ($chk && $chk->num_rows > 0) { $per_dept_col = $dc; break; }
+                }
+                $per_select_dept_col = $per_dept_col ? "ns.{$per_dept_col}" : "''";
+                // 科系篩選與 JOIN（與 teacher_student_university_info 一致）
+                $per_dept_join = '';
+                $per_dept_where = '';
+                $per_select_dept_name = "'' AS dept_display";
+                if ($per_dept_col) {
+                    $dtable = $conn->query("SHOW TABLES LIKE 'departments'");
+                    if ($dtable && $dtable->num_rows > 0) {
+                        $dcode = @$conn->query("SHOW COLUMNS FROM departments LIKE 'code'");
+                        $dname = @$conn->query("SHOW COLUMNS FROM departments LIKE 'name'");
+                        if ($dcode && $dcode->num_rows > 0 && $dname && $dname->num_rows > 0) {
+                            $per_dept_join = " LEFT JOIN departments pd ON ns.{$per_dept_col} COLLATE utf8mb4_unicode_ci = pd.code COLLATE utf8mb4_unicode_ci ";
+                            $per_select_dept_name = "COALESCE(NULLIF(TRIM(pd.name),''), ns.{$per_dept_col}, '') AS dept_display";
+                        }
+                    }
+                }
+                if ($is_director && !$is_stam && !empty($user_department_code) && $per_dept_col) {
+                    if ($per_dept_join !== '') {
+                        $per_dept_where = " AND (ns.{$per_dept_col} = ? OR COALESCE(pd.name,'') = ?)";
+                    } else {
+                        $per_dept_where = " AND ns.{$per_dept_col} = ?";
+                    }
+                }
+                $per_sql_base = "SELECT ns.class_name, ns.university, $per_select_school, $per_select_dept, $per_select_dept_col AS dept_val, $per_select_dept_name FROM new_student_basic_info ns" . $per_dept_join;
                 $per_where = " WHERE (ns.class_name LIKE '%孝%' OR ns.class_name LIKE '%忠%')";
                 $per_params = [];
                 $per_types = '';
@@ -1091,11 +1121,15 @@ if ($teacher_id > 0) {
                 $per_params[] = $per_range['end'];
                 $per_types .= 'ss';
 
-                // 主任視角限制本科系（若有 department_id 欄位）
-                if ($is_director && !$is_stam && !empty($user_department_code) && $has_new_student_department_id) {
-                    $per_where .= " AND ns.department_id = ?";
+                // 主任視角限制本科系（與 teacher_student_university_info 口徑一致）
+                if ($per_dept_where !== '') {
+                    $per_where .= $per_dept_where;
                     $per_params[] = (string)$user_department_code;
                     $per_types .= 's';
+                    if (strpos($per_dept_where, 'COALESCE') !== false) {
+                        $per_params[] = (string)$user_department_code;
+                        $per_types .= 's';
+                    }
                 }
 
                 $fetch_per_class_rows = function ($with_date_filter) use ($conn, $per_sql_base, $per_where, $per_params, $per_types) {
@@ -1136,30 +1170,35 @@ if ($teacher_id > 0) {
                     $per_rows = $fetch_per_class_rows(false);
                 }
 
+                // 依「科系＋班級」分組，與畢業生資訊填寫頁一致（每列＝單一科系該班人數）
                 foreach ($per_rows as $prow) {
                     $cls = trim($prow['class_name'] ?? '') ?: '未分類';
-                    $per_class_stats[$cls]['total'] = ($per_class_stats[$cls]['total'] ?? 0) + 1;
+                    $dept_val = trim((string)($prow['dept_val'] ?? ''));
+                    $dept_display = trim((string)($prow['dept_display'] ?? '')) ?: $dept_val;
+                    $group_key = $dept_val . '|' . $cls;
+                    $per_class_stats[$group_key]['total'] = ($per_class_stats[$group_key]['total'] ?? 0) + 1;
+                    $per_class_stats[$group_key]['dept_display'] = $dept_display;
+                    $per_class_stats[$group_key]['class_name'] = $cls;
 
                     $uni_type = strtoupper(trim((string)($prow['university'] ?? '')));
                     if ($uni_type === 'NATIONAL' || mb_strpos((string)($prow['university'] ?? ''), '國立') !== false) {
-                        $per_class_stats[$cls]['national'] = ($per_class_stats[$cls]['national'] ?? 0) + 1;
+                        $per_class_stats[$group_key]['national'] = ($per_class_stats[$group_key]['national'] ?? 0) + 1;
                     }
 
                     $school = trim((string)($prow['university_school'] ?? ''));
                     $dept = trim((string)($prow['university_dept'] ?? ''));
-                    // 未填寫的學校或科系不列入 Top5 統計
                     if ($school === '' || $dept === '') continue;
                     $school_dept_key = $school . '||' . $dept;
-                    $per_class_top_schools[$cls][$school_dept_key] = ($per_class_top_schools[$cls][$school_dept_key] ?? 0) + 1;
+                    $per_class_top_schools[$group_key][$school_dept_key] = ($per_class_top_schools[$group_key][$school_dept_key] ?? 0) + 1;
                 }
 
                 // 計算百分比並取前五大學
                 $per_class_stats_list = [];
-                foreach ($per_class_stats as $cls => $info) {
+                foreach ($per_class_stats as $group_key => $info) {
                     $total = $info['total'] ?? 0;
                     $national = $info['national'] ?? 0;
                     $percent = $total > 0 ? round(($national / $total) * 100, 1) : 0.0;
-                    $schools = $per_class_top_schools[$cls] ?? [];
+                    $schools = $per_class_top_schools[$group_key] ?? [];
                     arsort($schools);
                     $top5_pairs = array_slice($schools, 0, 5, true);
                     $top5 = [];
@@ -1171,8 +1210,14 @@ if ($teacher_id > 0) {
                             'count' => (int)$cnt
                         ];
                     }
+                    $dept_display = $info['dept_display'] ?? '';
+                    $cls = $info['class_name'] ?? '';
+                    $dept_part = $dept_display ?: trim(explode('|', $group_key, 2)[0] ?? '');
+                    $display_label = $dept_part ? ($dept_part . $cls) : $cls;
                     $per_class_stats_list[] = [
-                        'class_name' => $cls,
+                        'class_name' => $display_label,
+                        'class_name_raw' => $cls,
+                        'dept_display' => $dept_display,
                         'total' => $total,
                         'national' => $national,
                         'percent' => $percent,
@@ -2019,9 +2064,21 @@ try {
         }
         $graduate_university_stats = $graduate_university_stats_by_class['both'];
     }
+
+    // 撈大學類型（與 teacher_student_university_info 一致，供篩選下拉使用）
+    $university_types_list = [];
+    if ($table_ut && $table_ut->num_rows > 0) {
+        $res_ut = $conn->query("SELECT type_code as code, type_name as name FROM university_types ORDER BY id ASC");
+        if ($res_ut) {
+            while ($row = $res_ut->fetch_assoc()) {
+                $university_types_list[] = $row;
+            }
+        }
+    }
 } catch (Exception $e) {
     error_log('畢業生大學類型統計查詢失敗: ' . $e->getMessage());
 }
+if (!isset($university_types_list)) $university_types_list = [];
 
 $conn->close();
 ?>
@@ -3387,7 +3444,7 @@ $conn->close();
                                     </h4>
                                     <div style="display: flex; gap: 12px; margin-bottom: 24px; flex-wrap: wrap; align-items:center;">
                                         <button class="btn-view" onclick="showGraduateUniversityStats()">
-                                            <i class="fas fa-chart-bar"></i> 各類型人數長條圖
+                                            <i class="fas fa-chart-pie"></i> 各類型人數圓餅圖
                                         </button>
                                         <button class="btn-view" onclick="clearGraduateUniversityChart()" style="background: #dc3545; color: white; border-color: #dc3545;">
                                             <i class="fas fa-arrow-up"></i> 收回圖表
@@ -3417,12 +3474,22 @@ $conn->close();
                                                     <option value="xiao">孝班</option>
                                                 </select>
                                             </div>
+                                            <div style="display:flex; gap:8px; align-items:center;">
+                                                <label for="graduateTypeFilterSelect" style="color:#666;">大學類型：</label>
+                                                <select id="graduateTypeFilterSelect" onchange="showGraduateUniversityStats()" style="padding:6px 10px; border-radius:6px; border:1px solid #ddd; min-width:120px;">
+                                                    <option value="">全部</option>
+                                                    <?php foreach ($university_types_list as $ut): ?>
+                                                        <option value="<?php echo htmlspecialchars($ut['name'] ?? ''); ?>"><?php echo htmlspecialchars($ut['name'] ?? ''); ?></option>
+                                                    <?php endforeach; ?>
+                                                    <option value="未填寫">未填寫</option>
+                                                </select>
+                                            </div>
                                         </div>
                                     </div>
 
                                     <div id="graduateUniversityIntro" class="empty-state">
                                         <i class="fas fa-university fa-3x" style="margin-bottom: 16px;"></i>
-                                        <h4>點擊「各類型人數長條圖」查看畢業生就讀大學類型統計</h4>
+                                        <h4>點擊「各類型人數圓餅圖」查看畢業生就讀大學類型統計</h4>
                                         <p>統計本屆孝班、忠班畢業生就讀國立大學、私立大學、直接就業、軍警學校、國外升學、其他等類型人數</p>
                                     </div>
                                     <div id="graduateUniversityAnalyticsContent" style="min-height: 0;"></div>
@@ -9362,7 +9429,7 @@ window.showSourceDetail = function(schoolNameEnc, sourceDataEnc, gradeLabel) {
                 } else {
                     intro.innerHTML = `
                         <i class="fas fa-university fa-3x" style="margin-bottom: 16px;"></i>
-                        <h4>點擊「各類型人數長條圖」查看畢業生就讀大學類型統計</h4>
+                        <h4>點擊「各類型人數圓餅圖」查看畢業生就讀大學類型統計</h4>
                         <p>統計本屆孝班、忠班畢業生就讀國立大學、私立大學、直接就業、軍警學校、國外升學、其他等類型人數</p>
                     `;
                 }
@@ -9371,8 +9438,8 @@ window.showSourceDetail = function(schoolNameEnc, sourceDataEnc, gradeLabel) {
             function clearGraduateSecondaryViews() {
                 const c1 = document.getElementById('perClassNationalContent');
                 const c2 = document.getElementById('perClassTopSchoolsContent');
-                if (c1) c1.innerHTML = '';
-                if (c2) c2.innerHTML = '';
+                if (c1) { c1.innerHTML = ''; c1.style.display = 'none'; c1.style.minHeight = '0'; c1.style.marginTop = '0'; }
+                if (c2) { c2.innerHTML = ''; c2.style.display = 'none'; c2.style.minHeight = '0'; c2.style.marginTop = '0'; }
                 if (perClassNationalChart) {
                     perClassNationalChart.destroy();
                     perClassNationalChart = null;
@@ -9395,42 +9462,68 @@ window.showSourceDetail = function(schoolNameEnc, sourceDataEnc, gradeLabel) {
             }
 
             function showGraduateUniversityStats() {
-                updateGraduateIntro('type');
+                const intro = document.getElementById('graduateUniversityIntro');
+                if (intro) intro.style.display = 'none';
                 clearGraduateSecondaryViews();
                 const classSelect = document.getElementById('graduateClassFilterSelect');
+                const typeSelect = document.getElementById('graduateTypeFilterSelect');
                 const selectedClass = classSelect ? String(classSelect.value || 'both') : 'both';
+                const selectedType = typeSelect ? String(typeSelect.value || '').trim() : '';
                 const dataMap = (graduateUniversityStatsByClass && typeof graduateUniversityStatsByClass === 'object')
                     ? graduateUniversityStatsByClass
                     : {};
-                const data = Array.isArray(dataMap[selectedClass]) ? dataMap[selectedClass] : (graduateUniversityStats || []);
+                let data = Array.isArray(dataMap[selectedClass]) ? dataMap[selectedClass] : (graduateUniversityStats || []);
+                if (selectedType !== '') {
+                    data = data.filter(d => String(d.type_name || '').trim() === selectedType);
+                }
                 const classLabel = selectedClass === 'xiao' ? '孝班' : (selectedClass === 'zhong' ? '忠班' : '忠+孝');
                 const content = document.getElementById('graduateUniversityAnalyticsContent');
                 if (!content) return;
                 if (data.length === 0) {
-                    content.innerHTML = `<div class="empty-state"><i class="fas fa-university fa-3x" style="margin-bottom: 16px;"></i><h4>尚無畢業生大學類型資料</h4><p>目前班級篩選：${classLabel}。請先在「畢業生資訊填寫」由教師填寫學生就讀的大學類型後，此處會顯示統計長條圖。</p></div>`;
+                    content.innerHTML = `<div class="empty-state"><i class="fas fa-university fa-3x" style="margin-bottom: 16px;"></i><h4>尚無畢業生大學類型資料</h4><p>目前班級篩選：${classLabel}。請先在「畢業生資訊填寫」由教師填寫學生就讀的大學類型後，此處會顯示統計圓餅圖。</p></div>`;
                     return;
                 }
                 const labels = data.map(d => d.type_name);
                 const counts = data.map(d => d.cnt);
                 const total = counts.reduce((a, b) => a + b, 0);
+                const summaryHtml = `
+                    <div style="background: #f8f9fa; padding: 20px; border-radius: 10px;">
+                        <h5 style="color: #333; margin-bottom: 15px;">統計摘要</h5>
+                        <p style="margin-bottom: 12px;">總計 <strong>${total}</strong> 人（${classLabel}）</p>
+                        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px;">
+                            ${data.map(d => '<div style="background: white; padding: 12px; border-radius: 8px; border-left: 4px solid #667eea;"><span style="color: #666;">' + d.type_name + '</span><br><strong style="font-size: 1.2em; color: #333;">' + d.cnt + '</strong> 人</div>').join('')}
+                        </div>
+                    </div>
+                `;
+                const chartHtml = `
+                    <div class="chart-card">
+                        <div class="chart-title">各類型畢業生人數</div>
+                        <div class="chart-container" style="height: 320px;">
+                            <canvas id="graduateUniversityChart"></canvas>
+                        </div>
+                    </div>
+                `;
                 content.innerHTML = `
             <div style="margin-bottom: 20px;">
-                <h4 style="color: #667eea; margin-bottom: 15px;"><i class="fas fa-chart-bar"></i> 畢業生就讀大學類型統計（本屆${classLabel}）</h4>
-                <div class="chart-card">
-                    <div class="chart-title">各類型畢業生人數</div>
-                    <div class="chart-container" style="height: 320px;">
-                        <canvas id="graduateUniversityChart"></canvas>
+                <h4 style="color: #667eea; margin-bottom: 15px;"><i class="fas fa-chart-pie"></i> 畢業生就讀大學類型統計（本屆${classLabel}）</h4>
+                <div class="dept-tabs" style="margin-bottom: 20px;">
+                    <button type="button" class="dept-tab-btn active" onclick="switchGraduatePieTab(this, 'summary')">
+                        <i class="fas fa-list-alt"></i> 各類型統計摘要
+                    </button>
+                    <button type="button" class="dept-tab-btn" onclick="switchGraduatePieTab(this, 'chart')">
+                        <i class="fas fa-chart-pie"></i> 畢業生就讀大學類型統計
+                    </button>
+                    <div style="margin-left: auto;">
+                        <button type="button" onclick="clearGraduateUniversityChart()" style="border: none; background: none; color: #dc3545; cursor: pointer; font-size: 14px;">
+                            <i class="fas fa-times"></i> 收回圖表
+                        </button>
                     </div>
                 </div>
-                <div style="background: #f8f9fa; padding: 20px; border-radius: 10px; margin-top: 20px;">
-                    <h5 style="color: #333; margin-bottom: 15px;">統計摘要</h5>
-                    <p style="margin-bottom: 12px;">總計 <strong>${total}</strong> 人（${classLabel}）</p>
-                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px;">
-                        ${data.map(d => '<div style="background: white; padding: 12px; border-radius: 8px; border-left: 4px solid #667eea;"><span style="color: #666;">' + d.type_name + '</span><br><strong style="font-size: 1.2em; color: #333;">' + d.cnt + '</strong> 人</div>').join('')}
-                    </div>
-                </div>
+                <div id="gradPieTabSummary" class="dept-tab-content active">${summaryHtml}</div>
+                <div id="gradPieTabChart" class="dept-tab-content" style="display:none;">${chartHtml}</div>
             </div>
         `;
+                // 建立圓餅圖
                 setTimeout(() => {
                     const canvas = document.getElementById('graduateUniversityChart');
                     if (!canvas) return;
@@ -9440,11 +9533,10 @@ window.showSourceDetail = function(schoolNameEnc, sourceDataEnc, gradeLabel) {
                     }
                     const ctx = canvas.getContext('2d');
                     graduateUniversityChartInstance = new Chart(ctx, {
-                        type: 'bar',
+                        type: 'pie',
                         data: {
                             labels: labels,
                             datasets: [{
-                                label: '人數',
                                 data: counts,
                                 backgroundColor: ['#667eea', '#764ba2', '#f093fb', '#4facfe', '#43e97b', '#fa709a', '#a8edea'],
                                 borderColor: ['#5a6fd8', '#6a3f8f', '#d97ae8', '#3d9ae8', '#3ad366', '#e85a82', '#96ddd8'],
@@ -9456,27 +9548,16 @@ window.showSourceDetail = function(schoolNameEnc, sourceDataEnc, gradeLabel) {
                             maintainAspectRatio: false,
                             plugins: {
                                 legend: {
-                                    display: false
+                                    display: true,
+                                    position: 'bottom'
                                 },
                                 tooltip: {
                                     callbacks: {
                                         label: function(ctx) {
-                                            return ctx.parsed.y + ' 人';
+                                            const v = ctx.parsed || 0;
+                                            const pct = total > 0 ? ((v / total) * 100).toFixed(1) : 0;
+                                            return (ctx.label || '') + '：' + v + ' 人 (' + pct + '%)';
                                         }
-                                    }
-                                }
-                            },
-                            scales: {
-                                y: {
-                                    beginAtZero: true,
-                                    ticks: {
-                                        stepSize: 1
-                                    }
-                                },
-                                x: {
-                                    ticks: {
-                                        maxRotation: 45,
-                                        minRotation: 0
                                     }
                                 }
                             }
@@ -9485,8 +9566,30 @@ window.showSourceDetail = function(schoolNameEnc, sourceDataEnc, gradeLabel) {
                 }, 100);
             }
 
+            function switchGraduatePieTab(btn, type) {
+                const container = btn.closest('.dept-tabs');
+                if (container) {
+                    container.querySelectorAll('.dept-tab-btn').forEach(b => b.classList.remove('active'));
+                    btn.classList.add('active');
+                }
+                const summaryEl = document.getElementById('gradPieTabSummary');
+                const chartEl = document.getElementById('gradPieTabChart');
+                if (summaryEl) {
+                    summaryEl.classList.toggle('active', type === 'summary');
+                    summaryEl.style.display = type === 'summary' ? 'block' : 'none';
+                }
+                if (chartEl) {
+                    chartEl.classList.toggle('active', type === 'chart');
+                    chartEl.style.display = type === 'chart' ? 'block' : 'none';
+                    if (type === 'chart' && graduateUniversityChartInstance) {
+                        setTimeout(() => graduateUniversityChartInstance.resize(), 50);
+                    }
+                }
+            }
+
             function clearGraduateUniversityChart() {
-                updateGraduateIntro('type');
+                const intro = document.getElementById('graduateUniversityIntro');
+                if (intro) { intro.style.display = ''; updateGraduateIntro('type'); }
                 clearGraduateMainView();
                 clearGraduateSecondaryViews();
             }
@@ -9496,90 +9599,115 @@ window.showSourceDetail = function(schoolNameEnc, sourceDataEnc, gradeLabel) {
             let perClassTopSchoolChartInstances = [];
 
             function showPerClassNationalStats() {
+                const intro = document.getElementById('graduateUniversityIntro');
+                if (intro) intro.style.display = 'none';
                 updateGraduateIntro('national');
                 clearGraduateMainView();
-                const data = window.perClassStats || [];
+                const c2 = document.getElementById('perClassTopSchoolsContent');
+                if (c2) { c2.innerHTML = ''; c2.style.display = 'none'; }
+                if (Array.isArray(perClassTopSchoolChartInstances) && perClassTopSchoolChartInstances.length > 0) {
+                    perClassTopSchoolChartInstances.forEach(ins => { if (ins) ins.destroy(); });
+                    perClassTopSchoolChartInstances = [];
+                }
                 const container = document.getElementById('perClassNationalContent');
                 if (!container) return;
+                container.style.display = ''; container.style.minHeight = '200px'; container.style.marginTop = '20px';
+                const data = window.perClassStats || [];
                 if (!Array.isArray(data) || data.length === 0) {
                     container.innerHTML = '<div class="empty-state"><i class="fas fa-users fa-3x" style="margin-bottom: 16px;"></i><h4>尚無每班錄取資料</h4><p>請確認教師是否已填寫畢業生就讀大學資訊。</p></div>';
                     return;
                 }
-                // 準備 labels 與數據（班級名稱統一：孝班/忠班）
-                const normalizeClassLabel = (name) => {
-                    const v = String(name || '').trim();
-                    if (v.indexOf('孝') !== -1) return '孝班';
-                    if (v.indexOf('忠') !== -1) return '忠班';
-                    return v || '未分類';
+                // 班級顯示：class_name 已含科系（如「資訊管理科孝班」），與畢業生資訊填寫一致
+                const getClassColor = (name) => {
+                    const v = String(name || '');
+                    if (v.indexOf('孝') !== -1) return '#36cfc9';
+                    if (v.indexOf('忠') !== -1) return '#4facfe';
+                    return '#91d5ff';
                 };
-                const classColorMap = {
-                    '孝班': '#36cfc9',
-                    '忠班': '#4facfe'
-                };
-                const labels = data.map(d => normalizeClassLabel(d.class_name));
-                const counts = data.map(d => d.national || 0);
+                const labels = data.map(d => d.class_name || '未分類');
+                const totals = data.map(d => d.total || 0);
+                const nationals = data.map(d => d.national || 0);
                 const percents = data.map(d => d.percent || 0);
-                const colors = labels.map(label => classColorMap[label] || '#91d5ff');
+                const colors = labels.map(getClassColor);
+
+                // 圓餅圖：每班兩個區塊（國立錄取 vs 其他），兩種顏色
+                const pieLabels = [];
+                const pieData = [];
+                const pieColors = [];
+                const COLOR_NATIONAL = '#28a745';  // 國立錄取
+                const COLOR_OTHER = '#e9ecef';     // 其他
+                data.forEach((d) => {
+                    const cls = d.class_name || '未分類';
+                    const total = d.total || 0;
+                    const national = d.national || 0;
+                    const other = Math.max(0, total - national);
+                    if (national > 0) {
+                        pieLabels.push(`${cls} 國立錄取`);
+                        pieData.push(national);
+                        pieColors.push(COLOR_NATIONAL);
+                    }
+                    if (other > 0) {
+                        pieLabels.push(`${cls} 其他`);
+                        pieData.push(other);
+                        pieColors.push(COLOR_OTHER);
+                    }
+                });
+
+                // 與就讀意願統計（各科分配人數總覽、月度趨勢分析）相同樣式：圓餅圖 + 下方卡片網格
+                const cardsHtml = data.map((d, index) => {
+                    const cls = d.class_name || '未分類';
+                    const total = d.total || 0;
+                    const national = d.national || 0;
+                    const pct = d.percent || 0;
+                    const color = getClassColor(cls);
+                    return `
+                        <div style="background: white; padding: 15px; border-radius: 8px; border-left: 4px solid ${color};">
+                            <div style="font-weight: bold; color: #333; margin-bottom: 8px;">${cls}</div>
+                            <div style="font-size: 1.2em; color: #333; margin-bottom: 4px;">全班 <strong style="color: ${color};">${total}</strong> 人</div>
+                            <div style="font-size: 1.2em; color: #333; margin-bottom: 4px;">國立錄取 <strong style="color: #28a745;">${national}</strong> 人</div>
+                            <div style="font-size: 0.9em; color: #666;">國立錄取比例 ${pct.toFixed(1)}%</div>
+                        </div>
+                    `;
+                }).join('');
 
                 container.innerHTML = `
-            <div style="margin-bottom:20px;">
-                <h4 style="color:#667eea; margin-bottom:12px;"><i class="fas fa-chart-bar"></i> 各班國立錄取人數</h4>
-                <div class="chart-card"><div class="chart-title">人數長條圖</div><div class="chart-container" style="height:320px;"><canvas id="perClassNationalChartCanvas"></canvas></div></div>
-                <h4 style="color:#667eea; margin-top:20px; margin-bottom:12px;"><i class="fas fa-percentage"></i> 各班國立錄取比例</h4>
-                <div class="chart-card"><div class="chart-title">百分比長條圖</div><div class="chart-container" style="height:320px;"><canvas id="perClassNationalPercentChart"></canvas></div></div>
+            <div style="margin-bottom: 20px;">
+                <h4 style="color: #667eea; margin-bottom: 15px;">
+                    <i class="fas fa-chart-pie"></i> 各班人數與國立錄取統計
+                </h4>
+                <p style="margin-bottom: 15px; color: #666; font-size: 14px;">全班總人數＝<a href="teacher_student_university_info.php" target="_blank" style="color:#667eea;">畢業生資訊填寫</a>頁面該班「共 X 人」；國立錄取比例＝國立大學人數 ÷ 全班總人數</p>
+                <div class="chart-card">
+                    <div class="chart-title">各班人數與國立錄取圓餅圖</div>
+                    <div class="chart-container" style="height: 320px;">
+                        <canvas id="perClassNationalPieCanvas"></canvas>
+                    </div>
+                </div>
+                <div style="background: #f8f9fa; padding: 20px; border-radius: 10px; margin-top: 20px;">
+                    <h5 style="color: #333; margin-bottom: 15px;">各班詳細統計</h5>
+                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px;">
+                        ${cardsHtml}
+                    </div>
+                </div>
             </div>
         `;
 
                 setTimeout(() => {
-                    const c1 = document.getElementById('perClassNationalChartCanvas');
-                    const c2 = document.getElementById('perClassNationalPercentChart');
-                    if (!c1 || !c2) return;
+                    const c1 = document.getElementById('perClassNationalPieCanvas');
+                    if (!c1) return;
                     if (perClassNationalChart) {
                         perClassNationalChart.destroy();
                         perClassNationalChart = null;
                     }
-
+                    if (pieData.length === 0) return;
                     const ctx1 = c1.getContext('2d');
                     perClassNationalChart = new Chart(ctx1, {
-                        type: 'bar',
-                        data: {
-                            labels: labels,
-                            datasets: [{
-                                label: '國立錄取人數',
-                                data: counts,
-                                backgroundColor: colors,
-                                borderColor: colors,
-                                borderWidth: 1
-                            }]
-                        },
-                        options: {
-                            responsive: true,
-                            maintainAspectRatio: false,
-                            plugins: {
-                                legend: {
-                                    display: false
-                                }
-                            },
-                            scales: {
-                                y: {
-                                    beginAtZero: true,
-                                    ticks: {
-                                        stepSize: 1
-                                    }
-                                }
-                            }
-                        }
-                    });
-
-                    const ctx2 = c2.getContext('2d');
-                    new Chart(ctx2, {
                         type: 'pie',
                         data: {
-                            labels: labels,
+                            labels: pieLabels,
                             datasets: [{
-                                label: '國立錄取比例(%)',
-                                data: percents,
-                                backgroundColor: colors,
+                                label: '人數',
+                                data: pieData,
+                                backgroundColor: pieColors,
                                 borderColor: '#ffffff',
                                 borderWidth: 2
                             }]
@@ -9589,14 +9717,32 @@ window.showSourceDetail = function(schoolNameEnc, sourceDataEnc, gradeLabel) {
                             maintainAspectRatio: false,
                             plugins: {
                                 legend: {
-                                    position: 'bottom'
+                                    position: 'bottom',
+                                    labels: {
+                                        generateLabels: function(chart) {
+                                            const ds = chart.data.datasets[0];
+                                            return (chart.data.labels || []).map((label, i) => {
+                                                const val = Number(ds.data[i] || 0);
+                                                return {
+                                                    text: `${label} ${val} 人`,
+                                                    fillStyle: ds.backgroundColor[i] || '#999',
+                                                    strokeStyle: ds.borderColor || '#fff',
+                                                    lineWidth: ds.borderWidth || 2,
+                                                    hidden: false,
+                                                    index: i
+                                                };
+                                            });
+                                        }
+                                    }
                                 },
                                 tooltip: {
                                     callbacks: {
                                         label: function(ctx) {
                                             const label = ctx.label || '';
-                                            const value = Number(ctx.parsed || 0);
-                                            return `${label}：${value.toFixed(1)}%`;
+                                            const val = Number(ctx.parsed || 0);
+                                            const total = pieData.reduce((a, b) => a + b, 0);
+                                            const pct = total > 0 ? ((val / total) * 100).toFixed(1) : '0';
+                                            return `${label}：${val} 人（${pct}%）`;
                                         }
                                     }
                                 }
@@ -9607,11 +9753,17 @@ window.showSourceDetail = function(schoolNameEnc, sourceDataEnc, gradeLabel) {
             }
 
             function showPerClassTopSchools() {
+                const intro = document.getElementById('graduateUniversityIntro');
+                if (intro) intro.style.display = 'none';
                 updateGraduateIntro('top5');
                 clearGraduateMainView();
-                const data = window.perClassStats || [];
+                const c1 = document.getElementById('perClassNationalContent');
+                if (c1) { c1.innerHTML = ''; c1.style.display = 'none'; }
+                if (perClassNationalChart) { perClassNationalChart.destroy(); perClassNationalChart = null; }
                 const container = document.getElementById('perClassTopSchoolsContent');
                 if (!container) return;
+                container.style.display = ''; container.style.minHeight = '200px'; container.style.marginTop = '20px';
+                const data = window.perClassStats || [];
                 if (!Array.isArray(data) || data.length === 0) {
                     container.innerHTML = '<div class="empty-state"><i class="fas fa-university fa-3x" style="margin-bottom: 16px;"></i><h4>尚無 Top5 大學資料</h4><p>請確認教師是否已填寫畢業生就讀大學資訊。</p></div>';
                     return;
@@ -9624,17 +9776,10 @@ window.showSourceDetail = function(schoolNameEnc, sourceDataEnc, gradeLabel) {
                 }
                 perClassTopSchoolChartInstances = [];
 
-                const normalizeClassLabel = (name) => {
-                    const v = String(name || '').trim();
-                    if (v.indexOf('孝') !== -1) return '孝班';
-                    if (v.indexOf('忠') !== -1) return '忠班';
-                    return v || '未分類';
-                };
-
-                // 生成每班 top5 圖表容器
+                // 生成每班 top5 圖表容器（class_name 已含科系，如「資訊管理科孝班」）
                 let html = '<div style="background:#f8f9fa;padding:16px;border-radius:8px;">';
                 data.forEach((d, idx) => {
-                    const classLabel = normalizeClassLabel(d.class_name);
+                    const classLabel = d.class_name || '未分類';
                     html += `
                         <div class="chart-card" style="margin-bottom:16px;">
                             <div class="chart-title">${classLabel} Top5 錄取大學（學校＋科系）</div>
