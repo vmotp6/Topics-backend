@@ -3352,7 +3352,7 @@ $conn->close();
                                     </h4>
                                     <div style="display: flex; gap: 12px; margin-bottom: 24px; flex-wrap: wrap; align-items:center;">
                                         <button class="btn-view" onclick="showGraduateUniversityStats()">
-                                            <i class="fas fa-chart-bar"></i> 各類型人數長條圖
+                                            <i class="fas fa-chart-pie"></i> 各類型人數圓餅圖
                                         </button>
                                         <button class="btn-view" onclick="clearGraduateUniversityChart()" style="background: #dc3545; color: white; border-color: #dc3545;">
                                             <i class="fas fa-arrow-up"></i> 收回圖表
@@ -3397,7 +3397,7 @@ $conn->close();
 
                                     <div id="graduateUniversityIntro" class="empty-state">
                                         <i class="fas fa-university fa-3x" style="margin-bottom: 16px;"></i>
-                                        <h4>點擊「各類型人數長條圖」查看畢業生就讀大學類型統計</h4>
+                                        <h4>點擊「各類型人數圓餅圖」查看畢業生就讀大學類型統計</h4>
                                         <p>統計本屆孝班、忠班畢業生就讀國立大學、私立大學、直接就業、軍警學校、國外升學、其他等類型人數</p>
                                     </div>
                                     <div id="graduateUniversityAnalyticsContent" style="min-height: 0;"></div>
@@ -9322,7 +9322,7 @@ window.showSourceDetail = function(schoolNameEnc, sourceDataEnc, gradeLabel) {
                 } else {
                     intro.innerHTML = `
                         <i class="fas fa-university fa-3x" style="margin-bottom: 16px;"></i>
-                        <h4>點擊「各類型人數長條圖」查看畢業生就讀大學類型統計</h4>
+                        <h4>點擊「各類型人數圓餅圖」查看畢業生就讀大學類型統計</h4>
                         <p>統計本屆孝班、忠班畢業生就讀國立大學、私立大學、直接就業、軍警學校、國外升學、其他等類型人數</p>
                     `;
                 }
@@ -9373,30 +9373,50 @@ window.showSourceDetail = function(schoolNameEnc, sourceDataEnc, gradeLabel) {
                 const content = document.getElementById('graduateUniversityAnalyticsContent');
                 if (!content) return;
                 if (data.length === 0) {
-                    content.innerHTML = `<div class="empty-state"><i class="fas fa-university fa-3x" style="margin-bottom: 16px;"></i><h4>尚無畢業生大學類型資料</h4><p>目前班級篩選：${classLabel}。請先在「畢業生資訊填寫」由教師填寫學生就讀的大學類型後，此處會顯示統計長條圖。</p></div>`;
+                    content.innerHTML = `<div class="empty-state"><i class="fas fa-university fa-3x" style="margin-bottom: 16px;"></i><h4>尚無畢業生大學類型資料</h4><p>目前班級篩選：${classLabel}。請先在「畢業生資訊填寫」由教師填寫學生就讀的大學類型後，此處會顯示統計圓餅圖。</p></div>`;
                     return;
                 }
                 const labels = data.map(d => d.type_name);
                 const counts = data.map(d => d.cnt);
                 const total = counts.reduce((a, b) => a + b, 0);
+                const summaryHtml = `
+                    <div style="background: #f8f9fa; padding: 20px; border-radius: 10px;">
+                        <h5 style="color: #333; margin-bottom: 15px;">統計摘要</h5>
+                        <p style="margin-bottom: 12px;">總計 <strong>${total}</strong> 人（${classLabel}）</p>
+                        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px;">
+                            ${data.map(d => '<div style="background: white; padding: 12px; border-radius: 8px; border-left: 4px solid #667eea;"><span style="color: #666;">' + d.type_name + '</span><br><strong style="font-size: 1.2em; color: #333;">' + d.cnt + '</strong> 人</div>').join('')}
+                        </div>
+                    </div>
+                `;
+                const chartHtml = `
+                    <div class="chart-card">
+                        <div class="chart-title">各類型畢業生人數</div>
+                        <div class="chart-container" style="height: 320px;">
+                            <canvas id="graduateUniversityChart"></canvas>
+                        </div>
+                    </div>
+                `;
                 content.innerHTML = `
             <div style="margin-bottom: 20px;">
-                <h4 style="color: #667eea; margin-bottom: 15px;"><i class="fas fa-chart-bar"></i> 畢業生就讀大學類型統計（本屆${classLabel}）</h4>
-                <div class="chart-card">
-                    <div class="chart-title">各類型畢業生人數</div>
-                    <div class="chart-container" style="height: 320px;">
-                        <canvas id="graduateUniversityChart"></canvas>
+                <h4 style="color: #667eea; margin-bottom: 15px;"><i class="fas fa-chart-pie"></i> 畢業生就讀大學類型統計（本屆${classLabel}）</h4>
+                <div class="dept-tabs" style="margin-bottom: 20px;">
+                    <button type="button" class="dept-tab-btn active" onclick="switchGraduatePieTab(this, 'summary')">
+                        <i class="fas fa-list-alt"></i> 各類型統計摘要
+                    </button>
+                    <button type="button" class="dept-tab-btn" onclick="switchGraduatePieTab(this, 'chart')">
+                        <i class="fas fa-chart-pie"></i> 畢業生就讀大學類型統計
+                    </button>
+                    <div style="margin-left: auto;">
+                        <button type="button" onclick="clearGraduateUniversityChart()" style="border: none; background: none; color: #dc3545; cursor: pointer; font-size: 14px;">
+                            <i class="fas fa-times"></i> 收回圖表
+                        </button>
                     </div>
                 </div>
-                <div style="background: #f8f9fa; padding: 20px; border-radius: 10px; margin-top: 20px;">
-                    <h5 style="color: #333; margin-bottom: 15px;">統計摘要</h5>
-                    <p style="margin-bottom: 12px;">總計 <strong>${total}</strong> 人（${classLabel}）</p>
-                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px;">
-                        ${data.map(d => '<div style="background: white; padding: 12px; border-radius: 8px; border-left: 4px solid #667eea;"><span style="color: #666;">' + d.type_name + '</span><br><strong style="font-size: 1.2em; color: #333;">' + d.cnt + '</strong> 人</div>').join('')}
-                    </div>
-                </div>
+                <div id="gradPieTabSummary" class="dept-tab-content active">${summaryHtml}</div>
+                <div id="gradPieTabChart" class="dept-tab-content" style="display:none;">${chartHtml}</div>
             </div>
         `;
+                // 建立圓餅圖
                 setTimeout(() => {
                     const canvas = document.getElementById('graduateUniversityChart');
                     if (!canvas) return;
@@ -9406,11 +9426,10 @@ window.showSourceDetail = function(schoolNameEnc, sourceDataEnc, gradeLabel) {
                     }
                     const ctx = canvas.getContext('2d');
                     graduateUniversityChartInstance = new Chart(ctx, {
-                        type: 'bar',
+                        type: 'pie',
                         data: {
                             labels: labels,
                             datasets: [{
-                                label: '人數',
                                 data: counts,
                                 backgroundColor: ['#667eea', '#764ba2', '#f093fb', '#4facfe', '#43e97b', '#fa709a', '#a8edea'],
                                 borderColor: ['#5a6fd8', '#6a3f8f', '#d97ae8', '#3d9ae8', '#3ad366', '#e85a82', '#96ddd8'],
@@ -9422,33 +9441,43 @@ window.showSourceDetail = function(schoolNameEnc, sourceDataEnc, gradeLabel) {
                             maintainAspectRatio: false,
                             plugins: {
                                 legend: {
-                                    display: false
+                                    display: true,
+                                    position: 'bottom'
                                 },
                                 tooltip: {
                                     callbacks: {
                                         label: function(ctx) {
-                                            return ctx.parsed.y + ' 人';
+                                            const v = ctx.parsed || 0;
+                                            const pct = total > 0 ? ((v / total) * 100).toFixed(1) : 0;
+                                            return (ctx.label || '') + '：' + v + ' 人 (' + pct + '%)';
                                         }
-                                    }
-                                }
-                            },
-                            scales: {
-                                y: {
-                                    beginAtZero: true,
-                                    ticks: {
-                                        stepSize: 1
-                                    }
-                                },
-                                x: {
-                                    ticks: {
-                                        maxRotation: 45,
-                                        minRotation: 0
                                     }
                                 }
                             }
                         }
                     });
                 }, 100);
+            }
+
+            function switchGraduatePieTab(btn, type) {
+                const container = btn.closest('.dept-tabs');
+                if (container) {
+                    container.querySelectorAll('.dept-tab-btn').forEach(b => b.classList.remove('active'));
+                    btn.classList.add('active');
+                }
+                const summaryEl = document.getElementById('gradPieTabSummary');
+                const chartEl = document.getElementById('gradPieTabChart');
+                if (summaryEl) {
+                    summaryEl.classList.toggle('active', type === 'summary');
+                    summaryEl.style.display = type === 'summary' ? 'block' : 'none';
+                }
+                if (chartEl) {
+                    chartEl.classList.toggle('active', type === 'chart');
+                    chartEl.style.display = type === 'chart' ? 'block' : 'none';
+                    if (type === 'chart' && graduateUniversityChartInstance) {
+                        setTimeout(() => graduateUniversityChartInstance.resize(), 50);
+                    }
+                }
             }
 
             function clearGraduateUniversityChart() {
@@ -9476,6 +9505,7 @@ window.showSourceDetail = function(schoolNameEnc, sourceDataEnc, gradeLabel) {
                 const container = document.getElementById('perClassNationalContent');
                 if (!container) return;
                 container.style.display = ''; container.style.minHeight = '200px'; container.style.marginTop = '20px';
+                const data = window.perClassStats || [];
                 if (!Array.isArray(data) || data.length === 0) {
                     container.innerHTML = '<div class="empty-state"><i class="fas fa-users fa-3x" style="margin-bottom: 16px;"></i><h4>尚無每班錄取資料</h4><p>請確認教師是否已填寫畢業生就讀大學資訊。</p></div>';
                     return;
@@ -9496,12 +9526,33 @@ window.showSourceDetail = function(schoolNameEnc, sourceDataEnc, gradeLabel) {
                 const percents = data.map(d => d.percent || 0);
                 const colors = labels.map(label => classColorMap[label] || '#91d5ff');
 
+                const summaryRows = data.map(d => {
+                    const cls = normalizeClassLabel(d.class_name);
+                    const total = d.total || 0;
+                    const national = d.national || 0;
+                    const pct = d.percent || 0;
+                    return `<tr><td style="padding:10px 14px;">${cls}</td><td style="padding:10px 14px;">${total} 人</td><td style="padding:10px 14px;">${national} 人</td><td style="padding:10px 14px;">${pct.toFixed(1)}%</td></tr>`;
+                }).join('');
+
                 container.innerHTML = `
             <div style="margin-bottom:20px;">
+                <div style="background: #f8f9fa; padding: 20px; border-radius: 10px; margin-bottom: 20px;">
+                    <h5 style="color: #333; margin-bottom: 15px;"><i class="fas fa-list-alt"></i> 各班人數與國立錄取統計</h5>
+                    <p style="margin-bottom: 12px; color: #666;">分母＝該班所有學生；分子＝大學類型為國立大學的人數比例</p>
+                    <table style="width:100%; border-collapse: collapse; background: #fff; border-radius: 8px; overflow: hidden;">
+                        <thead><tr style="background: #667eea; color: #fff;">
+                            <th style="padding: 10px 14px; text-align: left;">班級</th>
+                            <th style="padding: 10px 14px; text-align: left;">全班總人數</th>
+                            <th style="padding: 10px 14px; text-align: left;">國立大學錄取人數</th>
+                            <th style="padding: 10px 14px; text-align: left;">國立錄取比例</th>
+                        </tr></thead>
+                        <tbody>${summaryRows}</tbody>
+                    </table>
+                </div>
                 <h4 style="color:#667eea; margin-bottom:12px;"><i class="fas fa-chart-bar"></i> 各班國立錄取人數</h4>
-                <div class="chart-card"><div class="chart-title">人數長條圖</div><div class="chart-container" style="height:320px;"><canvas id="perClassNationalChartCanvas"></canvas></div></div>
+                <div class="chart-card"><div class="chart-title">國立錄取人數長條圖</div><div class="chart-container" style="height:320px;"><canvas id="perClassNationalChartCanvas"></canvas></div></div>
                 <h4 style="color:#667eea; margin-top:20px; margin-bottom:12px;"><i class="fas fa-percentage"></i> 各班國立錄取比例</h4>
-                <div class="chart-card"><div class="chart-title">百分比長條圖</div><div class="chart-container" style="height:320px;"><canvas id="perClassNationalPercentChart"></canvas></div></div>
+                <div class="chart-card"><div class="chart-title">國立錄取比例（百分比）</div><div class="chart-container" style="height:320px;"><canvas id="perClassNationalPercentChart"></canvas></div></div>
             </div>
         `;
 
