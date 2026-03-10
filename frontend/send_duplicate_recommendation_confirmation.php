@@ -147,6 +147,15 @@ function get_or_create_approval_link($conn, $recommendation_id, $to_email, $grou
     return '';
 }
 
+function is_preliminary_fail_status($status) {
+    $s = trim((string)($status ?? ''));
+    if ($s === '') return false;
+    $s_lower = strtolower($s);
+    return ($s_lower === 'mc' || $s_lower === 'manual'
+        || mb_strpos($s, '初審未通過（待科主任審核）') !== false
+        || mb_strpos($s, '需人工審查') !== false);
+}
+
 function build_mail_payload($targetRow, $allRows, $approval_link = '') {
     $studentNameKey = normalize_text($targetRow['student_name'] ?? '');
     $studentPhoneKey = normalize_phone($targetRow['student_phone'] ?? '');
@@ -205,10 +214,24 @@ function build_mail_payload($targetRow, $allRows, $approval_link = '') {
         $tableRowsText .= "- {$r['recommender_name']} / {$r['recommender_department']}\n";
     }
 
-    $subject = '確認推薦對象';
+    // 初審未通過（待科主任審核）時，請被推薦人審核學生資訊；否則請選擇推薦人
+    $is_prelim_fail = false;
+    foreach ($matched as $row) {
+        if (is_preliminary_fail_status($row['recommendation_status'] ?? '')) {
+            $is_prelim_fail = true;
+            break;
+        }
+    }
+    if (!$is_prelim_fail && is_preliminary_fail_status($targetRow['recommendation_status'] ?? '')) {
+        $is_prelim_fail = true;
+    }
+
+    $promptText = $is_prelim_fail ? '請審核學生資訊是否正確?' : '請選擇哪一個推薦人跟你比較有聯絡?';
+    $subject = $is_prelim_fail ? '請確認學生資訊' : '確認推薦對象';
+    $introText = $is_prelim_fail ? '您的推薦資料需請您確認學生資訊是否正確。' : '有多名推薦人同時推薦你';
     $bodyHtml = "
         <div style='font-family: Arial, sans-serif; line-height: 1.8; color: #333;'>
-            <p>有多名推薦人同時推薦你</p>
+            <p>{$introText}</p>
             <table style='border-collapse: collapse; width: 100%; max-width: 560px;'>
                 <thead>
                     <tr>
@@ -220,11 +243,11 @@ function build_mail_payload($targetRow, $allRows, $approval_link = '') {
                     {$tableRowsHtml}
                 </tbody>
             </table>
-            <p style='margin-top:12px;'>請選擇哪一個推薦人跟你比較有聯絡?</p>
+            <p style='margin-top:12px;'>{$promptText}</p>
             " . ($approval_link !== '' ? ("<p style='margin-top:10px;'>線上簽核連結：<a href='" . htmlspecialchars($approval_link, ENT_QUOTES, 'UTF-8') . "' target='_blank' rel='noopener'>" . htmlspecialchars($approval_link, ENT_QUOTES, 'UTF-8') . "</a></p>") : "") . "
         </div>
     ";
-    $altBody = "有多名推薦人同時推薦你\n推薦人姓名 / 科系：\n{$tableRowsText}請選擇哪一個推薦人跟你比較有聯絡?" . ($approval_link !== '' ? ("\n線上簽核連結：\n" . $approval_link) : '');
+    $altBody = "{$introText}\n推薦人姓名 / 科系：\n{$tableRowsText}{$promptText}" . ($approval_link !== '' ? ("\n線上簽核連結：\n" . $approval_link) : '');
 
     return [
         'subject' => $subject,

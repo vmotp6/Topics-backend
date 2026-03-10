@@ -1284,7 +1284,7 @@ function getEnrollmentStatusClass($status) {
 
 // -----------------------------
 // 獎金：顯示「已發送」狀態/金額（以及提供發送按鈕）
-// 規則：同名且通過者，獎金依人數平分（由 send_bonus.php 計算並寫入 amount）
+// 規則：被推薦人姓名、電話、學校三個都相同且通過者，獎金依人數平分（由 send_bonus.php 計算並寫入 amount）
 // -----------------------------
 $can_send_bonus = (isStaff() || isAdmin());
 $bonus_sent_map = []; // recommendation_id => ['sent_at'=>..., 'sent_by'=>..., 'amount'=>...]
@@ -4279,7 +4279,7 @@ try {
         if (modal) modal.style.display = 'none';
     }
 
-    // 發送獎金（同名且通過者由後端自動平分）
+    // 發送獎金（姓名、電話、學校皆相同且通過者由後端自動平分）
     function sendBonus(recommendationId, btnEl, recommenderSigned) {
         const rid = parseInt(recommendationId || 0, 10) || 0;
         if (!rid) return;
@@ -4288,7 +4288,7 @@ try {
             openBonusGuardModal('推薦人尚未線上簽核，待推薦人簽核後才可發送獎金');
             return;
         }
-        if (!confirm('確認要發送此筆獎金？（同名且通過者會自動平分）')) return;
+        if (!confirm('確認要發送此筆獎金？（姓名、電話、學校皆相同且通過者會自動平分）')) return;
 
         if (btnEl) {
             btnEl.disabled = true;
@@ -4316,7 +4316,7 @@ try {
                 msg += `：$${amount.toLocaleString()}`;
             }
             if (splitCount && splitCount > 1) {
-                msg += `（同名通過共 ${splitCount} 人，已自動平分）`;
+                msg += `（姓名、電話、學校皆相同且通過共 ${splitCount} 人，已自動平分）`;
             }
             if (studentName) {
                 msg += `\n被推薦人：${studentName}`;
