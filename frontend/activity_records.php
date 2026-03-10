@@ -3439,7 +3439,7 @@ $conn->close();
                                     </div>
                                 </div>
 
-                                <!-- 畢業生大學類型統計按鈕組（改為 Tab 分頁，移除收回圖表按鈕） -->
+                                <!-- 畢業生大學類型統計按鈕組（三個統計按鈕 + 收回圖表） -->
                                 <div style="border-top: 1px solid #f0f0f0; padding-top: 20px; margin-top: 20px;">
                                     <h4 style="color: #667eea; margin-bottom: 15px; display: flex; align-items: center; gap: 10px;">
                                         <i class="fas fa-university"></i> 畢業生大學類型統計
@@ -3453,6 +3453,9 @@ $conn->close();
                                         </button>
                                         <button type="button" class="btn-view graduate-uni-btn" onclick="switchGraduateUniTab(this, 'top5')">
                                             <i class="fas fa-graduation-cap"></i> 各班 Top5 錄取大學
+                                        </button>
+                                        <button type="button" class="btn-view" onclick="clearGraduateUniversityChart()" style="margin-left: 10px; background:#dc3545; color:#fff; border-color:#dc3545;">
+                                            <i class="fas fa-arrow-up"></i> 收回圖表
                                         </button>
 
                                         <div style="margin-left: auto; display:flex; flex-direction:column; gap:8px; align-items:flex-end;">
@@ -3470,16 +3473,6 @@ $conn->close();
                                                     <option value="both" selected>忠+孝</option>
                                                     <option value="zhong">忠班</option>
                                                     <option value="xiao">孝班</option>
-                                                </select>
-                                            </div>
-                                            <div style="display:flex; gap:8px; align-items:center;">
-                                                <label for="graduateTypeFilterSelect" style="color:#666;">大學類型：</label>
-                                                <select id="graduateTypeFilterSelect" onchange="showGraduateUniversityStats()" style="padding:6px 10px; border-radius:6px; border:1px solid #ddd; min-width:120px;">
-                                                    <option value="">全部</option>
-                                                    <?php foreach ($university_types_list as $ut): ?>
-                                                        <option value="<?php echo htmlspecialchars($ut['name'] ?? ''); ?>"><?php echo htmlspecialchars($ut['name'] ?? ''); ?></option>
-                                                    <?php endforeach; ?>
-                                                    <option value="未填寫">未填寫</option>
                                                 </select>
                                             </div>
                                         </div>
@@ -9537,11 +9530,6 @@ window.showSourceDetail = function(schoolNameEnc, sourceDataEnc, gradeLabel) {
                     <button type="button" class="dept-tab-btn" onclick="switchGraduatePieTab(this, 'chart')">
                         <i class="fas fa-chart-pie"></i> 畢業生就讀大學類型統計
                     </button>
-                    <div style="margin-left: auto;">
-                        <button type="button" onclick="clearGraduateUniversityChart()" style="border: none; background: none; color: #dc3545; cursor: pointer; font-size: 14px;">
-                            <i class="fas fa-times"></i> 收回圖表
-                        </button>
-                    </div>
                 </div>
                 <div id="gradPieTabSummary" class="dept-tab-content active">${summaryHtml}</div>
                 <div id="gradPieTabChart" class="dept-tab-content" style="display:none;">${chartHtml}</div>
