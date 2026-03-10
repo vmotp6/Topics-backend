@@ -159,6 +159,9 @@ if ($current_user === 'IMD' || $is_im) {
     $department_filter = " AND (t.department = '資訊管理科' OR t.department LIKE '%資管%' OR t.department = 'IM')";
 }
 
+// 就讀意願「各科分配人數總覽」：主任只看自己科時，用於顯示「科系名 - 招生詳情」分頁
+$director_department_name = '';
+
 // 計算當前學年度的開始和結束日期
 // 學年度定義：6月 ~ 隔年6月（例如：2026/06/01 ~ 2027/06/30 為 2026 學年度）
 function getCurrentAcademicYearRange()
@@ -232,6 +235,27 @@ if ($is_director && !$is_stam && $user_department_code && empty($department_filt
     // 使用科系代碼過濾（例如：IM、CS、EE 等）
     $dept_code_escaped = $conn->real_escape_string($user_department_code);
     $department_filter = " AND (t.department = '$dept_code_escaped' OR d.code = '$dept_code_escaped')";
+}
+// 就讀意願：主任只看自己科時，取得科系顯示名稱（用於「科系名 - 招生詳情」分頁）
+if ($is_director && !$is_stam && $user_department_code) {
+    if ($user_department !== '') {
+        $director_department_name = $user_department;
+    } else {
+        $st_dept_name = $conn->prepare("SELECT name FROM departments WHERE code = ? LIMIT 1");
+        if ($st_dept_name) {
+            $st_dept_name->bind_param("s", $user_department_code);
+            $st_dept_name->execute();
+            $res_dn = $st_dept_name->get_result();
+            $row_dn = $res_dn->fetch_assoc();
+            if ($row_dn && !empty(trim($row_dn['name'] ?? ''))) {
+                $director_department_name = trim($row_dn['name']);
+            }
+            $st_dept_name->close();
+        }
+        if ($director_department_name === '') {
+            $director_department_name = $user_department_code;
+        }
+    }
 }
 // 2. 如果是招生中心（STAM）、管理員（ADM）或行政人員（STA），可以查看全部科系
 //    $department_filter 保持為空字串或現有值，不進行額外過濾
@@ -904,7 +928,7 @@ if ($teacher_id > 0) {
         error_log('從已有資料過濾出當前年份場次: ' . count($all_sessions_list) . ' 筆');
     }
 
-    // 獲取新生基本資料統計（學校來源和科系分布）
+            // 獲取新生基本資料統計（學校來源和科系分布）
     $new_student_school_stats = [];
     $new_student_department_stats = [];
     $new_student_total_count = 0;
@@ -927,8 +951,13 @@ if ($teacher_id > 0) {
             }
 
             // 取得所選屆別的時間範圍（8/1～次年7/31）
-            $year_start = ($selected_roc_year + 1911) . '-08-01 00:00:00';
-            $year_end   = ($selected_roc_year + 1912) . '-07-31 23:59:59';
+            // 若未選擇屆別，後續會回退使用 $academic_year 作為預設學年度區間
+            $year_start = $selected_roc_year > 0
+                ? (($selected_roc_year + 1911) . '-08-01 00:00:00')
+                : $academic_year['start'];
+            $year_end   = $selected_roc_year > 0
+                ? (($selected_roc_year + 1912) . '-07-31 23:59:59')
+                : $academic_year['end'];
             // 五專修業 5 年畢業日表達式
             $graduateExpr = "DATE(CONCAT(YEAR(created_at) + 5, '-07-31'))";
 
@@ -994,7 +1023,10 @@ if ($teacher_id > 0) {
                     $new_student_total_types .= 'ss';
                 }
             } else {
-                // 新生：當學年度新生
+                // 新生：依「屆別」或預設學年度範圍過濾
+                // 說明：
+                // - 若有選擇 roc_year，則使用對應屆別的 8/1～次年 7/31 作為招生推薦統計的分界
+                // - 若未選擇 roc_year，則沿用目前學年度 $academic_year
                 $where_condition = " WHERE CURDATE() <= $graduateExpr
                     AND created_at BETWEEN ? AND ?
                     AND ns.previous_school IS NOT NULL AND ns.previous_school != ''";
@@ -1003,10 +1035,13 @@ if ($teacher_id > 0) {
                     AND created_at BETWEEN ? AND ?
                     AND ns.department_id IS NOT NULL AND ns.department_id != ''")
                     : null;
+                // 其他新生統計（學校來源 / 科系分布）仍使用當前學年度區間
                 $where_params = [$academic_year['start'], $academic_year['end']];
                 $where_types = 'ss';
+
+                // 招生推薦統計分析使用的總量分母改為依屆別分界
                 $new_student_total_where = " WHERE CURDATE() <= $graduateExpr AND created_at BETWEEN ? AND ?";
-                $new_student_total_params = [$academic_year['start'], $academic_year['end']];
+                $new_student_total_params = [$year_start, $year_end];
                 $new_student_total_types = 'ss';
             }
 
@@ -1165,8 +1200,14 @@ if ($teacher_id > 0) {
                     $recommend_types .= 'ss';
                 }
             } else {
+                // 新生視圖：依「屆別」或預設學年度範圍統計可發獎金推薦人數
                 $recommend_where = " WHERE ar.created_at BETWEEN ? AND ? ";
-                $recommend_params = [$academic_year['start'], $academic_year['end']];
+                // 若有選擇 roc_year，使用該屆別的 8/1～次年 7/31 作為分界；否則沿用目前學年度
+                if ($selected_roc_year > 0) {
+                    $recommend_params = [$year_start, $year_end];
+                } else {
+                    $recommend_params = [$academic_year['start'], $academic_year['end']];
+                }
                 $recommend_types = 'ss';
             }
             $recommend_where .= " AND (ar.status = 'APD' OR ar.status LIKE '%審核完成%' OR ar.status LIKE '%可發獎金%')";
@@ -3303,9 +3344,15 @@ $conn->close();
                                         </span>
                                     </h4>
                                     <div class="dept-tabs" style="margin-bottom: 20px;">
+                                        <?php if ($is_director && !$is_stam && $director_department_name !== ''): ?>
+                                        <button type="button" class="dept-tab-btn active" onclick="switchEnrollmentTab(this, 'director_dept')">
+                                            <i class="fas fa-chart-bar"></i> <?php echo htmlspecialchars($director_department_name); ?> - 招生詳情
+                                        </button>
+                                        <?php else: ?>
                                         <button type="button" class="dept-tab-btn active" onclick="switchEnrollmentTab(this, 'system')">
                                             <i class="fas fa-chart-bar"></i> 各科分配人數總覽
                                         </button>
+                                        <?php endif; ?>
 
                                         <button type="button" class="dept-tab-btn" onclick="switchEnrollmentTab(this, 'monthly')">
                                             <i class="fas fa-calendar-alt"></i> 月度趨勢分析
@@ -3504,6 +3551,16 @@ $conn->close();
 
                 // 2. 執行邏輯：呼叫原本對應的圖表函式
                 switch (type) {
+                    case 'director_dept':
+                        currentEnrollmentChartType = 'director_dept';
+                        if (typeof showDepartmentStudents === 'function' && directorDepartmentName) {
+                            const enrollmentContent = document.getElementById('enrollmentAnalyticsContent');
+                            if (enrollmentContent) {
+                                enrollmentContent.innerHTML = '<div style="margin-bottom: 20px;"><div id="departmentDetailContainer" style="margin-top: 20px;"></div></div>';
+                            }
+                            showDepartmentStudents(directorDepartmentName);
+                        }
+                        break;
                     case 'system':
                         showEnrollmentSystemStats();
                         break;
@@ -3544,10 +3601,12 @@ $conn->close();
                 console.log('attendanceStatsData 第一筆:', attendanceStatsData[0]);
             }
             const isTeacherListView = <?php echo $teacher_id > 0 ? 'false' : 'true'; ?>;
-            const userDepartment = '<?php echo $user_department; ?>';
+            const userDepartment = '<?php echo addslashes($user_department ?? ''); ?>';
             const currentUser = '<?php echo $current_user; ?>';
             const userRole = '<?php echo $user_role; ?>';
             const isSchoolAdmin = <?php echo $is_school_admin ? 'true' : 'false'; ?>;
+            const isDirectorOnlyDept = <?php echo ($is_director && !$is_stam && $director_department_name !== '') ? 'true' : 'false'; ?>;
+            const directorDepartmentName = <?php echo json_encode($director_department_name ?? ''); ?>;
 
             // 從學校名稱中提取縣市（全局函數，供多處使用）
             function extractCityFromSchoolName(schoolName) {
@@ -3609,7 +3668,14 @@ $conn->close();
                     'system': showEnrollmentSystemStats,
                     'grade': showEnrollmentGradeStats,
                     'monthly': showEnrollmentMonthlyStats,
-                    'school_department': showEnrollmentSchoolDepartmentStats
+                    'school_department': showEnrollmentSchoolDepartmentStats,
+                    'director_dept': function() {
+                        const enrollmentContent = document.getElementById('enrollmentAnalyticsContent');
+                        if (enrollmentContent) {
+                            enrollmentContent.innerHTML = '<div style="margin-bottom: 20px;"><div id="departmentDetailContainer" style="margin-top: 20px;"></div></div>';
+                        }
+                        if (typeof showDepartmentStudents === 'function' && directorDepartmentName) showDepartmentStudents(directorDepartmentName);
+                    }
                 };
                 const fn = fnMap[currentEnrollmentChartType];
                 if (typeof fn === 'function') fn();
@@ -4870,7 +4936,7 @@ $conn->close();
                         <i class="fas fa-school"></i> 國中學校來源統計
                     </h4>
                     <div style="display: flex; gap: 10px; align-items: center;">
-                        <select id="rocYearSelect" onchange="changeRocYear(this.value)" style="padding: 8px 12px; border: 1px solid #d9d9d9; border-radius: 6px; background: #fff; color: #333; font-size: 14px; cursor: pointer;">
+                        <select id="rocYearSelect" onchange="changeRocYear(this.value, 'recommendAnalyticsContent')" style="padding: 8px 12px; border: 1px solid #d9d9d9; border-radius: 6px; background: #fff; color: #333; font-size: 14px; cursor: pointer;">
                             <?php foreach ($available_roc_years as $roc_year): ?>
                                 <option value="<?php echo $roc_year; ?>" <?php echo $selected_roc_year == $roc_year ? 'selected' : ''; ?>>
                                     <?php echo $roc_year; ?>學年
@@ -4994,7 +5060,7 @@ $conn->close();
                         <i class="fas fa-chart-bar"></i> 學校統計
                     </h4>
                     <div style="display: flex; gap: 10px; align-items: center;">
-                        <select id="rocYearSelect" onchange="changeRocYear(this.value)" style="padding: 8px 12px; border: 1px solid #d9d9d9; border-radius: 6px; background: #fff; color: #333; font-size: 14px; cursor: pointer;">
+                        <select id="rocYearSelect" onchange="changeRocYear(this.value, 'recommendAnalyticsContent')" style="padding: 8px 12px; border: 1px solid #d9d9d9; border-radius: 6px; background: #fff; color: #333; font-size: 14px; cursor: pointer;">
                             <?php foreach ($available_roc_years as $roc_year): ?>
                                 <option value="<?php echo $roc_year; ?>" <?php echo $selected_roc_year == $roc_year ? 'selected' : ''; ?>>
                                     <?php echo $roc_year; ?>學年
@@ -5201,7 +5267,7 @@ $conn->close();
                         <i class="fas fa-layer-group"></i> 科系統計
                     </h4>
                     <div style="display: flex; gap: 10px; align-items: center;">
-                        <select id="rocYearSelect" onchange="changeRocYear(this.value)" style="padding: 8px 12px; border: 1px solid #d9d9d9; border-radius: 6px; background: #fff; color: #333; font-size: 14px; cursor: pointer;">
+                        <select id="rocYearSelect" onchange="changeRocYear(this.value, 'recommendAnalyticsContent')" style="padding: 8px 12px; border: 1px solid #d9d9d9; border-radius: 6px; background: #fff; color: #333; font-size: 14px; cursor: pointer;">
                             <?php foreach ($available_roc_years as $roc_year): ?>
                                 <option value="<?php echo $roc_year; ?>" <?php echo $selected_roc_year == $roc_year ? 'selected' : ''; ?>>
                                     <?php echo $roc_year; ?>學年
@@ -5394,7 +5460,7 @@ $conn->close();
                         <i class="fas fa-percentage"></i> 招生推薦入學比例
                     </h4>
                     <div style="display: flex; gap: 10px; align-items: center;">
-                        <select id="rocYearSelect" onchange="changeRocYear(this.value)" style="padding: 8px 12px; border: 1px solid #d9d9d9; border-radius: 6px; background: #fff; color: #333; font-size: 14px; cursor: pointer;">
+                        <select id="rocYearSelect" onchange="changeRocYear(this.value, 'recommendAnalyticsContent')" style="padding: 8px 12px; border: 1px solid #d9d9d9; border-radius: 6px; background: #fff; color: #333; font-size: 14px; cursor: pointer;">
                             <?php foreach ($available_roc_years as $roc_year): ?>
                                 <option value="<?php echo $roc_year; ?>" <?php echo $selected_roc_year == $roc_year ? 'selected' : ''; ?>>
                                     <?php echo $roc_year; ?>學年
@@ -5680,7 +5746,7 @@ $conn->close();
                         <i class="fas fa-school"></i> 推薦入學學校占比（占比較高）
                     </h4>
                     <div style="display: flex; gap: 10px; align-items: center;">
-                        <select id="rocYearSelect" onchange="changeRocYear(this.value)" style="padding: 8px 12px; border: 1px solid #d9d9d9; border-radius: 6px; background: #fff; color: #333; font-size: 14px; cursor: pointer;">
+                        <select id="rocYearSelect" onchange="changeRocYear(this.value, 'recommendAnalyticsContent')" style="padding: 8px 12px; border: 1px solid #d9d9d9; border-radius: 6px; background: #fff; color: #333; font-size: 14px; cursor: pointer;">
                             <?php foreach ($available_roc_years as $roc_year): ?>
                                 <option value="<?php echo $roc_year; ?>" <?php echo $selected_roc_year == $roc_year ? 'selected' : ''; ?>>
                                     <?php echo $roc_year; ?>學年
@@ -5832,7 +5898,7 @@ $conn->close();
                         <i class="fas fa-map-marker-alt"></i> 招生推薦國中縣市分布
                     </h4>
                     <div style="display: flex; gap: 10px; align-items: center;">
-                        <select id="rocYearSelect" onchange="changeRocYear(this.value)" style="padding: 8px 12px; border: 1px solid #d9d9d9; border-radius: 6px; background: #fff; color: #333; font-size: 14px; cursor: pointer;">
+                        <select id="rocYearSelect" onchange="changeRocYear(this.value, 'recommendAnalyticsContent')" style="padding: 8px 12px; border: 1px solid #d9d9d9; border-radius: 6px; background: #fff; color: #333; font-size: 14px; cursor: pointer;">
                             <?php foreach ($available_roc_years as $roc_year): ?>
                                 <option value="<?php echo $roc_year; ?>" <?php echo $selected_roc_year == $roc_year ? 'selected' : ''; ?>>
                                     <?php echo $roc_year; ?>學年
@@ -6258,12 +6324,16 @@ $conn->close();
             // 已移除舊的 new_student_view 切換函式，改由選擇屆別（roc_year）控制
 
             // 變更學年度篩選
-            function changeRocYear(rocYear) {
+            // anchorId 可選，用來在重新載入後自動捲動到指定區塊，避免回到頁面最上方
+            function changeRocYear(rocYear, anchorId) {
                 const url = new URL(window.location.href);
                 if (rocYear && rocYear !== '0') {
                     url.searchParams.set('roc_year', rocYear);
                 } else {
                     url.searchParams.delete('roc_year');
+                }
+                if (anchorId) {
+                    url.hash = anchorId;
                 }
                 // 重新載入頁面以更新數據
                 window.location.href = url.toString();
@@ -8121,18 +8191,18 @@ $conn->close();
         </div>
 
         <div class="dept-tabs">
-            <button type="button" class="dept-tab-btn" onclick="switchDeptTab(this, 'tab-sources')">
+            <button type="button" class="dept-tab-btn active" onclick="switchDeptTab(this, 'tab-sources')">
                 <i class="fas fa-school"></i> 來源學校分析
             </button>
             <button type="button" class="dept-tab-btn" onclick="switchDeptTab(this, 'tab-channels')">
                 <i class="fas fa-bullhorn"></i> 學生得知管道統計
             </button>
-            <button type="button" class="dept-tab-btn active" onclick="switchDeptTab(this, 'tab-overview')">
+            <button type="button" class="dept-tab-btn" onclick="switchDeptTab(this, 'tab-overview')">
                 <i class="fas fa-chart-pie"></i> 目前招生狀況
             </button>
         </div>
 
-        <div id="tab-overview" class="dept-tab-content active">
+        <div id="tab-overview" class="dept-tab-content">
             <div class="chart-card">
                 <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">
                     <div class="chart-title" style="text-align: left; margin-bottom: 0;">
@@ -8149,7 +8219,7 @@ $conn->close();
             </div>
         </div>
 
-        <div id="tab-sources" class="dept-tab-content">
+        <div id="tab-sources" class="dept-tab-content active">
             <div class="chart-card">
                  <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
                     <div class="chart-title" style="text-align: left; margin: 0; font-size: 20px; font-weight: bold;">來源學校分佈</div>
@@ -8167,14 +8237,6 @@ $conn->close();
 
                 ${(schools && schools.length > 0) ? `
                 <div id="deptSchoolChartWrap" style="display: block;">
-                    ${(schools.some(s => s.grades && s.grades.length > 0)) ? `
-                    <div id="deptSchoolGradeFilterWrap" style="margin-bottom: 12px; display: flex; align-items: center; gap: 16px; flex-wrap: wrap;">
-                        <span style="font-weight: 600;">篩選年級：</span>
-                        <label style="cursor: pointer;"><input type="checkbox" id="deptGradeFilter1" class="dept-grade-filter" value="國一" checked> 國一</label>
-                        <label style="cursor: pointer;"><input type="checkbox" id="deptGradeFilter2" class="dept-grade-filter" value="國二" checked> 國二</label>
-                        <label style="cursor: pointer;"><input type="checkbox" id="deptGradeFilter3" class="dept-grade-filter" value="國三" checked> 國三</label>
-                    </div>
-                    ` : ''}
                     <div class="chart-container"><canvas id="deptSchoolChart"></canvas></div>
                     <p style="margin: 8px 0 0; font-size: 14px; color: #888;">點擊長條區塊可查看該國中、該年級的來源明細</p>
                 </div>
