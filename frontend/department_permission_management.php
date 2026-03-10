@@ -29,7 +29,7 @@ if (isset($_GET['debug']) && $_GET['debug'] == '1') {
 }
 
 // 檢查是否為資管科主任
-if ($user_role === 'IM' || $user_role === '資管科主任') {
+if ($user_role === 'IM'  || $user_role === '資管科主任'|| $user_role === 'DI' ) {
     $is_im_director = true;
 } elseif ($user_role === 'DI' && $user_id) {
     // 如果role是DI，檢查部門代碼是否為IM
@@ -114,7 +114,6 @@ if ($im_role_result->num_rows === 0) {
     $insert_im_role->close();
 }
 $check_im_role->close();
-
 // 創建科助權限表（如果不存在）
 $create_permission_table_sql = "
 CREATE TABLE IF NOT EXISTS assistant_permissions (
@@ -248,8 +247,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
 // 獲取所有AS角色的用戶
 $as_users_sql = "
     SELECT u.id, u.username, u.name, u.email, u.role
-    FROM user u
-    WHERE u.role = 'AS'
+    FROM user u  
+    JOIN teacher t ON u.id = t.user_id
+    WHERE u.role = 'AS' AND t.department = 'IM' 
     ORDER BY u.id DESC
 ";
 $as_users_result = $conn->query($as_users_sql);

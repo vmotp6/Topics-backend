@@ -12,9 +12,9 @@ if (!$isAlreadyLoggedIn && isset($_SESSION['logged_in']) && $_SESSION['logged_in
     $allowed_roles = ['ADM', 'STA', 'DI', 'TEA', 'IM', '管理員', '行政人員', '主任', '老師', '資管科主任'];
     if (in_array($user_role, $allowed_roles)) {
         $_SESSION['admin_logged_in'] = true;
-        $isAlreadyLoggedIn = true;
+            $isAlreadyLoggedIn = true;
+        }
     }
-}
 
 if ($isAlreadyLoggedIn) {
     header("Location: index.php");
@@ -28,6 +28,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
     
     // 使用統一的資料庫配置
     require_once '../../Topics-frontend/frontend/config.php';
+
     if ($_SERVER['REQUEST_METHOD'] !== 'POST' && !$isAlreadyLoggedIn) {
     header("Location: /Topics-frontend/frontend/index.php");
     exit;
