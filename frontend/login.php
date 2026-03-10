@@ -28,6 +28,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
     
     // 使用統一的資料庫配置
     require_once '../../Topics-frontend/frontend/config.php';
+    if ($_SERVER['REQUEST_METHOD'] !== 'POST' && !$isAlreadyLoggedIn) {
+    header("Location: /Topics-frontend/frontend/index.php");
+    exit;
+}
 
     try {
         $pdo = new PDO("mysql:host=" . DB_HOST . ";dbname=" . DB_NAME . ";charset=" . DB_CHARSET, DB_USERNAME, DB_PASSWORD);
@@ -215,8 +219,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         }
     </style>
 </head>
-<body>
-    <div class="login-container">
+ <body>
+    <div class="login-container"> 
         <div class="login-logo">招生平台</div>
         <div class="login-subtitle">後台管理系統</div>
         
