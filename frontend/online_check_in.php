@@ -6,6 +6,15 @@
 require_once '../../Topics-frontend/frontend/config.php';
 require_once 'session_config.php';
 
+// 檢查簽到連結是否過期
+if (isset($_GET['expire'])) {
+    $expire = intval($_GET['expire']);
+
+    if (time() > $expire) {
+        die('簽到連結已過期');
+    }
+}
+
 // 獲取場次ID
 $session_id = isset($_GET['session_id']) ? intval($_GET['session_id']) : 0;
 if ($session_id === 0) {
@@ -18,7 +27,15 @@ $force_fill_mode = isset($_GET['fill_mode']) && $_GET['fill_mode'] === '1';
 
 $user_role = $_SESSION['role'] ?? '';
 // 如果強制填寫模式，或者沒有登入，則顯示填寫模式
-$is_admission_center = !$force_fill_mode && !empty($_SESSION['logged_in']) && in_array($user_role, ['STA', 'STAM', 'ADM','DI']);
+$is_logged_in = !empty($_SESSION['logged_in']);
+
+$is_admission_center = $is_logged_in && 
+    in_array($user_role, ['STA','STAM','ADM','DI']);
+
+// 如果是分享連結且未登入
+if ($force_fill_mode && !$is_logged_in) {
+    $is_admission_center = false;
+}
 
 // 建立資料庫連接
 $conn = getDatabaseConnection();
@@ -153,11 +170,17 @@ if ($oc_table && $oc_table->num_rows > 0) {
 // 生成簽到連結（如果還沒有）
 // 連結必須包含 fill_mode=1 參數，確保一般用戶看到的是填寫表單，而不是編輯表單
 if (!$check_in_url) {
-    $protocol = isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on' ? 'https' : 'http';
-    $host = $_SERVER['HTTP_HOST'];
-    $script_path = dirname($_SERVER['SCRIPT_NAME']);
-    // 添加 fill_mode=1 參數，確保顯示填寫模式
-    $check_in_url = $protocol . '://' . $host . $script_path . '/online_check_in.php?session_id=' . $session_id . '&fill_mode=1';
+$protocol = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
+$host = $_SERVER['HTTP_HOST'];
+$script_path = dirname($_SERVER['SCRIPT_NAME']);
+
+// 設定連結
+$expire_time = time();
+
+// 生成簽到連結
+$check_in_url = $protocol . '://' . $host . $script_path .
+'/online_check_in.php?session_id=' . $session_id .
+'&fill_mode=1&expire=' . $expire_time;
 }
 
 $conn->close();

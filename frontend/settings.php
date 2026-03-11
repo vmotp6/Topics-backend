@@ -14,6 +14,9 @@ $page_title = '場次設定';
 $conn = getDatabaseConnection();
 
 $normalized_role = normalizeBackendRole($_SESSION['role'] ?? '');
+// 定義是否為招生中心角色：STA、STAM、ADM
+$is_admission_center = in_array($normalized_role, ['STA', 'STAM', 'ADM'], true);
+
 $is_super_user = isSuperUserRole($normalized_role);
 $current_user_id = getOrFetchCurrentUserId($conn);
 $user_department_code = null;
@@ -35,6 +38,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
         switch ($_POST['action']) {
             // 場次管理
             case 'add_session':
+                // 僅招生中心可以新增場次
+                if (!$is_admission_center) {
+                    throw new Exception("權限不足：僅招生中心可以新增場次");
+                }
                 if (!$current_user_id) {
                     throw new Exception("無法取得使用者資訊，請重新登入後再試。");
                 }
@@ -468,7 +475,9 @@ $conn->close();
                     <div class="table-search">
                         <input type="text" id="tableSearchInput" placeholder="搜尋場次..." onkeyup="filterTable()">
                         <a href="attendance_statistics.php" class="btn btn-secondary"><i class="fas fa-chart-bar"></i> 實到人數統計與預估</a>
+                        <?php if ($is_admission_center): ?>
                         <button class="btn btn-primary" onclick="showModal('addSessionModal')"><i class="fas fa-plus"></i> 新增場次</button>
+                        <?php endif; ?>
                     </div>
                 </div>
 
@@ -586,6 +595,7 @@ $conn->close();
         </div>
     </div>
 
+    <?php if ($is_admission_center): ?>
     <!-- 新增場次 Modal -->
     <div id="addSessionModal" class="modal">
         <div class="modal-content">
@@ -643,6 +653,7 @@ $conn->close();
             </form>
         </div>
     </div>
+    <?php endif; ?>
 
     <!-- 編輯場次 Modal -->
     <div id="editSessionModal" class="modal">

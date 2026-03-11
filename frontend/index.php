@@ -647,7 +647,9 @@ try {
                     <div class="panel">
                         <div class="panel-header">
                             <div class="panel-title"><i class="fas fa-calendar-week" style="color: #722ed1;"></i> 近期說明會</div>
-                            <a href="settings.php" class="btn-sm btn-outline">查看全部</a>
+                            <?php if (!isset($_SESSION['role']) || $_SESSION['role'] !== 'TEA'): ?>
+                                <a href="settings.php" class="btn-sm btn-outline">查看全部</a>
+                            <?php endif; ?>
                         </div>
                         <div class="list-group">
                             <?php if (empty($sessions)): ?>

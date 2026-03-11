@@ -27,9 +27,9 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     exit;
 }
 
-// 檢查是否為招生中心身份
+// 檢查是否為招生中心身份（包括 DI）
 $user_role = $_SESSION['role'] ?? '';
-$is_admission_center = in_array($user_role, ['STA', 'STAM', '行政人員', '招生中心組員', 'ADM', '管理員']);
+$is_admission_center = in_array($user_role, ['STA', 'STAM', '行政人員', '招生中心組員', 'ADM', '管理員', 'DI']);
 
 if (!$is_admission_center) {
     ob_end_clean();
@@ -116,11 +116,13 @@ try {
     }
     
     // 生成簽到連結
-    // 連結必須包含 fill_mode=1 參數，確保一般用戶看到的是填寫表單，而不是編輯表單
+    // 連結必須包含 fill_mode=1 參數以及過期時間 (24小時後過期)
+    // 確保一航用戶看到的是填寶表單，而不是编輯表單
     $protocol = isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on' ? 'https' : 'http';
     $host = $_SERVER['HTTP_HOST'];
     $script_path = dirname($_SERVER['SCRIPT_NAME']);
-    $check_in_url = $protocol . '://' . $host . $script_path . '/online_check_in.php?session_id=' . $session_id . '&fill_mode=1';
+    $expire_time = time() + (30);
+    $check_in_url = $protocol . '://' . $host . $script_path . '/online_check_in.php?session_id=' . $session_id . '&fill_mode=1&expire=' . $expire_time;
     
     // 檢查是否已存在配置
     $check_stmt = $conn->prepare("SELECT id FROM online_check_in_form_config WHERE session_id = ?");

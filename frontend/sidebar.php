@@ -498,7 +498,7 @@ function hasPermission($permission_code, $user_role, $permissions_array) {
             <?php endif; ?>
 
             <!-- 頁面管理 - STAM和AS用戶不顯示 -->
-            <?php if ($is_admin || $is_staff || $is_director || $is_stam): ?>
+            <?php if ($is_admin || $is_staff): ?>
                 <a href="page_management.php" class="menu-item <?php echo $current_page === 'page_management' ? 'active' : ''; ?>">
                     <i class="fas fa-file-alt"></i>
                     <span>頁面管理</span>
