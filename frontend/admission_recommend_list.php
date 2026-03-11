@@ -2114,10 +2114,16 @@ try {
                         <?php
                             // 科系篩選選項（departments.code）
                             $interest_options = (isset($departments_map) && is_array($departments_map)) ? $departments_map : [];
+                            // 移除「招生中心」選項（僅保留實際科系）
                             if (!empty($interest_options)) {
+                                foreach ($interest_options as $code => $name) {
+                                    if (trim((string)$name) === '招生中心') {
+                                        unset($interest_options[$code]);
+                                    }
+                                }
                                 ksort($interest_options);
                             }
-
+                        
                             // 學年度篩選選項（民國年，以每年 8/1 切換）
                             $y_now = (int)date('Y');
                             $m_now = (int)date('n');
