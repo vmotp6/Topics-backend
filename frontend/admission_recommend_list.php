@@ -1015,8 +1015,8 @@ try {
         $status_updated_ts = strtotime($status_updated_at);
         $review_ts = strtotime($director_review_at);
         $is_stale_director_review = ($status_updated_ts !== false && $review_ts !== false && $status_updated_ts > $review_ts);
-        if ($is_stale_director_review) {
-            // 狀態被重新調整後（如 APD -> PE -> APD），舊簽核結果失效，需重新簽核。
+        // 僅「已簽核」在推薦資料後續被修改時視為過期；「放棄獎金」為推薦人明確選擇，不因資料更新而清空
+        if ($is_stale_director_review && $director_review_status === 'signed') {
             $director_review_status = '';
             $it['director_review_status'] = '';
             $it['director_reject_reason'] = '';
@@ -1154,7 +1154,29 @@ try {
         });
     }
 
-    // --- 重複被推薦人清單（姓名 + 學校 + 連絡電話 都一致） ---
+    // --- 科主任簽核「同一人=是」之群組：納入找尋重複被推薦人 ---
+    $director_same_person_map = []; // recommendation_id => 'dir_53_54'
+    if ($has_approval_links_table) {
+        $col_same = $conn->query("SHOW COLUMNS FROM recommendation_approval_links LIKE 'same_person_choice'");
+        if ($col_same && $col_same->num_rows > 0) {
+            $stmt_dir = $conn->query("SELECT recommendation_id, COALESCE(group_ids,'') AS group_ids FROM recommendation_approval_links WHERE status = 'signed' AND COALESCE(same_person_choice,'') = 'yes'");
+            if ($stmt_dir && $stmt_dir->num_rows > 0) {
+                while ($row_dir = $stmt_dir->fetch_assoc()) {
+                    $gids = trim((string)($row_dir['group_ids'] ?? ''));
+                    if ($gids === '') continue;
+                    $id_list = array_values(array_filter(array_map('intval', explode(',', $gids)), function($v){ return $v > 0; }));
+                    if (count($id_list) < 2) continue;
+                    sort($id_list, SORT_NUMERIC);
+                    $dir_key = 'dir_' . implode('_', $id_list);
+                    foreach ($id_list as $rec_id) {
+                        $director_same_person_map[$rec_id] = $dir_key;
+                    }
+                }
+            }
+        }
+    }
+
+    // --- 重複被推薦人清單（姓名 + 學校 + 連絡電話 都一致）＋ 科主任確認同一人群組 ---
     $dup_students = []; // key => ['name'=>..., 'school'=>..., 'phone'=>..., 'count'=>int]
     foreach ($recommendations as $rec) {
         $sname = trim((string)($rec['student_name'] ?? ''));
@@ -1192,6 +1214,45 @@ try {
             return strcmp((string)$a['phone'], (string)$b['phone']);
         });
     }
+    // 科主任確認同一人群組：加入 dup_students，使「找尋重複被推薦人」會顯示這些筆
+    foreach (array_count_values($director_same_person_map) as $dir_key => $cnt) {
+        if ((int)$cnt >= 2 && !isset($dup_students[$dir_key])) {
+            $dup_students[$dir_key] = [
+                'key' => $dir_key,
+                'name' => '（科主任確認同一人）',
+                'school' => '',
+                'phone' => '',
+                'count' => (int)$cnt
+            ];
+        }
+    }
+
+    // 重複被推薦人：每組的推薦人簽核狀態（供前端發送獎金前檢查：須全部簽核才能發）
+    $dup_group_sign_status = [];
+    foreach ($recommendations as $rec) {
+        $rid = (int)($rec['id'] ?? 0);
+        $sname = trim((string)($rec['student_name'] ?? ''));
+        $sschool_code = trim((string)($rec['student_school_code'] ?? ''));
+        $sschool_name = trim((string)($rec['student_school'] ?? ''));
+        $sphone_raw = trim((string)($rec['student_phone'] ?? ''));
+        $sphone_norm = normalize_phone($sphone_raw);
+        $school_key = ($sschool_code !== '') ? $sschool_code : normalize_text($sschool_name);
+        $key = isset($director_same_person_map[$rid]) ? $director_same_person_map[$rid]
+            : (($sname !== '' && $school_key !== '' && $sphone_norm !== '') ? (normalize_text($sname) . '|' . $school_key . '|' . $sphone_norm) : '');
+        if ($key === '') continue;
+        if (!isset($dup_group_sign_status[$key])) $dup_group_sign_status[$key] = [];
+        $status = strtolower(trim((string)($rec['director_review_status'] ?? '')));
+        $signed = ($status === 'signed');
+        $waived = ($status === 'waived');
+        // 「已簽核」或「放棄獎金」皆視為已完成簽核，僅 pending 等才算尚未簽核
+        $completed = $signed || $waived;
+        $dup_group_sign_status[$key][] = [
+            'id' => $rid,
+            'recommender_name' => trim((string)($rec['recommender_name'] ?? '')),
+            'signed' => $completed
+        ];
+    }
+    $dup_group_sign_status = array_filter($dup_group_sign_status, function($arr) { return count($arr) >= 2; });
 
     // 調試信息：檢查總數（僅在開發環境顯示）
     if (isset($_GET['debug']) && $_GET['debug'] == '1') {
@@ -1205,6 +1266,8 @@ try {
 } catch (Exception $e) {
     error_log("獲取招生推薦資料失敗: " . $e->getMessage());
     $recommendations = [];
+    if (!isset($director_same_person_map)) $director_same_person_map = [];
+    if (!isset($dup_group_sign_status)) $dup_group_sign_status = [];
     // 在開發模式下顯示錯誤信息
     if (isset($_GET['debug']) && $_GET['debug'] == '1') {
         echo "<div style='background: #fff2f0; border: 1px solid #ffccc7; padding: 16px; margin: 16px; border-radius: 4px;'>";
@@ -2131,9 +2194,11 @@ try {
                                         $row_student_phone_raw = trim((string)($item['student_phone'] ?? ''));
                                         $row_student_phone_norm = normalize_phone($row_student_phone_raw);
                                         $row_school_key = ($row_student_school_code !== '') ? $row_student_school_code : normalize_text($row_student_school);
-                                        $row_dup_student_key = ($row_student_name !== '' && $row_school_key !== '' && $row_student_phone_norm !== '')
-                                            ? (normalize_text($row_student_name) . '|' . $row_school_key . '|' . $row_student_phone_norm)
-                                            : '';
+                                        $row_dup_student_key = isset($director_same_person_map[(int)$item['id']])
+                                            ? $director_same_person_map[(int)$item['id']]
+                                            : (($row_student_name !== '' && $row_school_key !== '' && $row_student_phone_norm !== '')
+                                                ? (normalize_text($row_student_name) . '|' . $row_school_key . '|' . $row_student_phone_norm)
+                                                : '');
                                     ?>
                                     <tr data-review-result="<?php echo htmlspecialchars($row_review); ?>"
                                         data-student-interest="<?php echo htmlspecialchars((string)($item['student_interest_code'] ?? '')); ?>"
@@ -2283,7 +2348,7 @@ try {
                                                 </button>
                                                 <?php endif; ?>
                                             </div>
-                                            <?php if ($is_bonus_waived): ?>
+                                            <?php if ($is_bonus_waived && $is_approved_for_bonus): ?>
                                                 <div style="margin-top:6px; color:#cf1322; font-size:13px; font-weight:600;">推薦人放棄獎金</div>
                                             <?php endif; ?>
                                         </td>
@@ -2353,7 +2418,7 @@ try {
                                                 </button>
                                                 <?php endif; ?>
                                             </div>
-                                            <?php if ($is_bonus_waived): ?>
+                                            <?php if ($is_bonus_waived && $is_approved_for_bonus): ?>
                                                 <div style="margin-top:6px; color:#cf1322; font-size:13px; font-weight:600;">推薦人放棄獎金</div>
                                             <?php endif; ?>
                                         </td>
@@ -2406,7 +2471,7 @@ try {
                                                 </button>
                                                 <?php endif; ?>
                                             </div>
-                                            <?php if ($is_bonus_waived): ?>
+                                            <?php if ($is_bonus_waived && $is_approved_for_bonus): ?>
                                                 <div style="margin-top:6px; color:#cf1322; font-size:13px; font-weight:600;">推薦人放棄獎金</div>
                                             <?php endif; ?>
                                         </td>
@@ -2786,7 +2851,9 @@ try {
     let itemsPerPage = 10; // 預設每頁顯示 10 筆
     let allRows = [];
     let filteredRows = [];
-    
+    // 重複被推薦人每組簽核狀態（發送獎金時須同組皆已簽核；放在外層供 sendBonus 存取）
+    const dupGroupSignStatus = <?php echo json_encode(isset($dup_group_sign_status) ? $dup_group_sign_status : [], JSON_UNESCAPED_UNICODE); ?>;
+
     // 搜索功能
     document.addEventListener('DOMContentLoaded', function() {
         const searchInput = document.getElementById('searchInput');
@@ -2804,7 +2871,7 @@ try {
         const table = document.getElementById('recommendationTable');
         const dupStudentList = <?php echo json_encode(array_values($dup_students), JSON_UNESCAPED_UNICODE); ?>;
         const dupStudentKeySet = new Set((Array.isArray(dupStudentList) ? dupStudentList : []).map(v => String(v.key || '')));
-        let dupStudentFilterMode = ''; // '' | 'all' | 'single'
+        let dupStudentFilterMode = '';
         let dupStudentFilterKey = '';
 
         if (searchInput && table) {
@@ -2968,6 +3035,17 @@ try {
                     applyFilters();
                 });
             }
+
+            // 若由科主任簽核頁（同一人=是）導向而來，自動啟用「找尋重複被推薦人」
+            try {
+                const urlParams = new URLSearchParams(window.location.search);
+                if (urlParams.get('dup') === '1') {
+                    dupStudentFilterMode = 'all';
+                    dupStudentFilterKey = '';
+                    if (dupStudentToggle) dupStudentToggle.textContent = '取消重複被推薦人';
+                    applyFilters();
+                }
+            } catch (e) {}
         }
 
         // 審核狀態（view=all/pass/manual/fail）：用 URL 參數切換（後端會依 view_mode 載入資料）
@@ -4116,10 +4194,10 @@ try {
             addLine('未填寫就讀意願表單', false);
         }
 
-        // 3) 學生狀態
-        if (noBonus) {
-            const statusText = studentStatus ? ('學生狀態為' + studentStatus + '，無獎金') : '學生狀態為休學/退學，無獎金';
-            addLine(statusText, true);
+        // 3) 學生狀態（依實際狀態顯示：休學/退學才顯示無獎金，在學則顯示可發獎金）
+        const statusNoBonus = (studentStatus === '休學' || studentStatus === '退學');
+        if (statusNoBonus) {
+            addLine('學生狀態為' + studentStatus + '，無獎金', true);
         } else if (!studentStatus) {
             addLine('學生狀態：學生尚未入學', true);
         } else {
@@ -4280,10 +4358,24 @@ try {
     }
 
     // 發送獎金（姓名、電話、學校皆相同且通過者由後端自動平分）
+    // 若為重複被推薦人，同一位被推薦人的所有推薦人都須完成線上簽核才能發送
     function sendBonus(recommendationId, btnEl, recommenderSigned) {
         const rid = parseInt(recommendationId || 0, 10) || 0;
         if (!rid) return;
         const hasSigned = (recommenderSigned === true || recommenderSigned === 1 || recommenderSigned === '1' || recommenderSigned === 'true');
+
+        // 重複被推薦人：同組所有推薦人都須已簽核
+        const dupKey = (btnEl && btnEl.closest && btnEl.closest('tr')) ? (btnEl.closest('tr').dataset && btnEl.closest('tr').dataset.dupStudentKey) || '' : '';
+        if (dupKey && typeof dupGroupSignStatus !== 'undefined' && dupGroupSignStatus[dupKey]) {
+            const group = dupGroupSignStatus[dupKey];
+            const notSignedNames = (group || []).filter(function(m) { return !m.signed; }).map(function(m) { return m.recommender_name || '推薦人'; });
+            if (notSignedNames.length > 0) {
+                const msg = '推薦人' + notSignedNames.join('、') + '還尚未簽核';
+                openBonusGuardModal(msg);
+                return;
+            }
+        }
+
         if (!hasSigned) {
             openBonusGuardModal('推薦人尚未線上簽核，待推薦人簽核後才可發送獎金');
             return;

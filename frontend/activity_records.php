@@ -3462,15 +3462,19 @@ $conn->close();
                                         <div style="margin-left: auto; display:flex; flex-direction:column; gap:8px; align-items:flex-end;">
                                             <div style="display:flex; gap:8px; align-items:center;">
                                                 <label for="graduateRocYearSelect" style="color:#666;">屆別：</label>
-                                                <select id="graduateRocYearSelect" onchange="changeRocYear(this.value)" style="padding:6px 10px; border-radius:6px; border:1px solid #ddd; min-width:110px;">
-                                                    <?php foreach ($available_roc_years as $roc_year): ?>
-                                                        <option value="<?php echo $roc_year; ?>" <?php echo $selected_roc_year == $roc_year ? 'selected' : ''; ?>><?php echo $roc_year; ?>學年</option>
+                                                <select id="graduateRocYearSelect" onchange="onGraduateRocYearChange()" style="padding:6px 10px; border-radius:6px; border:1px solid #ddd; min-width:110px;">
+                                                    <?php
+                                                    if (!isset($available_roc_years) || !is_array($available_roc_years)) $available_roc_years = [];
+                                                    if (empty($available_roc_years) && isset($current_roc_year)) $available_roc_years = [$current_roc_year];
+                                                    foreach ($available_roc_years as $roc_year):
+                                                    ?>
+                                                        <option value="<?php echo (int)$roc_year; ?>" <?php echo (int)$selected_roc_year === (int)$roc_year ? 'selected' : ''; ?>><?php echo (int)$roc_year; ?>學年</option>
                                                     <?php endforeach; ?>
                                                 </select>
                                             </div>
                                             <div style="display:flex; gap:8px; align-items:center;">
                                                 <label for="graduateClassFilterSelect" style="color:#666;">班級：</label>
-                                                <select id="graduateClassFilterSelect" onchange="showGraduateUniversityStats()" style="padding:6px 10px; border-radius:6px; border:1px solid #ddd; min-width:110px;">
+                                                <select id="graduateClassFilterSelect" onchange="onGraduateClassFilterChange()" style="padding:6px 10px; border-radius:6px; border:1px solid #ddd; min-width:110px;">
                                                     <option value="both" selected>忠+孝</option>
                                                     <option value="zhong">忠班</option>
                                                     <option value="xiao">孝班</option>
@@ -3645,12 +3649,14 @@ $conn->close();
                 // 可以選擇是否要讓第一個 Tab 回復預設，或是全部不選
                 // 這裡示範全部不選，代表收合狀態
             }
-            // 將 PHP 數據傳遞給 JavaScript
+            // 將 PHP 數據傳遞給 JavaScript（畢業生統計使用可變物件，供屆別切換時 API 更新）
             const activityRecords = <?php echo json_encode($all_activity_records ?? []); ?>;
             const attendanceStatsData = <?php echo json_encode(isset($attendance_stats_data) ? $attendance_stats_data : []); ?>;
             const allSessionsList = <?php echo json_encode(isset($all_sessions_list) ? $all_sessions_list : []); ?>;
-            const graduateUniversityStats = <?php echo json_encode(isset($graduate_university_stats) ? $graduate_university_stats : []); ?>;
-            const graduateUniversityStatsByClass = <?php echo json_encode(isset($graduate_university_stats_by_class) ? $graduate_university_stats_by_class : ['both'=>[], 'xiao'=>[], 'zhong'=>[]], JSON_UNESCAPED_UNICODE); ?>;
+            let graduateData = {
+                stats: <?php echo json_encode(isset($graduate_university_stats) ? $graduate_university_stats : []); ?>,
+                byClass: <?php echo json_encode(isset($graduate_university_stats_by_class) ? $graduate_university_stats_by_class : ['both'=>[], 'xiao'=>[], 'zhong'=>[]], JSON_UNESCAPED_UNICODE); ?>
+            };
 
             // 調試：輸出資料到控制台
             console.log('=== 出席統計資料調試 ===');
@@ -9455,6 +9461,7 @@ window.showSourceDetail = function(schoolNameEnc, sourceDataEnc, gradeLabel) {
 
             // 畢業生大學類型統計：頂部 Tab 切換（大學類型／各班國立／Top5）
             function switchGraduateUniTab(btn, mode) {
+                currentGraduateUniTab = mode || 'type';
                 const tabs = document.getElementById('graduateUniTabs');
                 if (tabs) {
                     const buttons = tabs.querySelectorAll('.graduate-uni-btn');
@@ -9479,26 +9486,97 @@ window.showSourceDetail = function(schoolNameEnc, sourceDataEnc, gradeLabel) {
                 }
             }
 
+            // 目前畢業生大學類型區顯示的 Tab（與就讀意願 currentEnrollmentChartType 一致，供班級篩選變更時刷新對應內容）
+            let currentGraduateUniTab = 'type';
+
+            // 班級篩選變更時，依目前顯示的 Tab 重新載入對應內容（不捲動到頁面頂端，與就讀意願切換方式一致）
+            function onGraduateClassFilterChange() {
+                if (currentGraduateUniTab === 'national') {
+                    showPerClassNationalStats();
+                } else if (currentGraduateUniTab === 'top5') {
+                    showPerClassTopSchools();
+                } else {
+                    showGraduateUniversityStats();
+                }
+            }
+
+            // 取得畢業生統計 API 的基底路徑（與目前頁面同目錄的 api/，避免屆別切換時請求到錯誤網址）
+            function getGraduateStatsApiBase() {
+                var path = window.location.pathname || '';
+                var lastSlash = path.lastIndexOf('/');
+                if (lastSlash !== -1) path = path.substring(0, lastSlash + 1);
+                return path + 'api/graduate_stats_api.php';
+            }
+            // 屆別切換時以 API 取得資料並更新畫面，不重新整理（與就讀意願統計分析一致）
+            function onGraduateRocYearChange() {
+                const rocSelect = document.getElementById('graduateRocYearSelect');
+                const rocYear = rocSelect ? String(rocSelect.value || '').trim() : '';
+                if (!rocYear) return;
+                let apiUrl = getGraduateStatsApiBase() + '?roc_year=' + encodeURIComponent(rocYear);
+                if (typeof userDepartment !== 'undefined' && userDepartment) apiUrl += '&department=' + encodeURIComponent(userDepartment);
+                var contentEl = document.getElementById('graduateUniversityAnalyticsContent');
+                var perNationalEl = document.getElementById('perClassNationalContent');
+                var perTop5El = document.getElementById('perClassTopSchoolsContent');
+                function showLoading() {
+                    if (contentEl) contentEl.innerHTML = '<div class="empty-state" style="padding:24px;"><i class="fas fa-spinner fa-spin fa-2x" style="margin-bottom:12px;"></i><p>正在載入 ' + rocYear + ' 學年資料…</p></div>';
+                    if (perNationalEl) { perNationalEl.innerHTML = ''; perNationalEl.style.display = 'none'; }
+                    if (perTop5El) { perTop5El.innerHTML = ''; perTop5El.style.display = 'none'; }
+                }
+                function showError(msg) {
+                    if (contentEl) contentEl.innerHTML = '<div class="empty-state" style="padding:24px; color:#c00;"><i class="fas fa-exclamation-triangle fa-2x" style="margin-bottom:12px;"></i><p>' + (msg || '載入失敗') + '</p><p style="font-size:0.9em; color:#666;">請檢查網路或稍後再試。</p></div>';
+                }
+                showLoading();
+                fetch(apiUrl)
+                    .then(function(r) {
+                        if (!r.ok) throw new Error('HTTP ' + r.status);
+                        return r.json();
+                    })
+                    .then(function(data) {
+                        if (!data || data.error) {
+                            showError(data && data.error ? data.error : '無回應');
+                            console.warn('畢業生統計 API 錯誤:', data ? data.error : '無回應');
+                            return;
+                        }
+                        if (data.graduate_university_stats) graduateData.stats = data.graduate_university_stats;
+                        if (data.graduate_university_stats_by_class) graduateData.byClass = data.graduate_university_stats_by_class;
+                        if (Array.isArray(data.per_class_stats_list)) window.perClassStats = data.per_class_stats_list;
+                        if (currentGraduateUniTab === 'national') {
+                            showPerClassNationalStats();
+                        } else if (currentGraduateUniTab === 'top5') {
+                            showPerClassTopSchools();
+                        } else {
+                            showGraduateUniversityStats();
+                        }
+                    })
+                    .catch(function(err) {
+                        showError('屆別資料載入失敗：' + (err && err.message ? err.message : String(err)));
+                        console.warn('畢業生統計載入失敗:', err);
+                    });
+            }
+
             function showGraduateUniversityStats() {
                 const intro = document.getElementById('graduateUniversityIntro');
                 if (intro) intro.style.display = 'none';
                 clearGraduateSecondaryViews();
+                const rocSelect = document.getElementById('graduateRocYearSelect');
                 const classSelect = document.getElementById('graduateClassFilterSelect');
                 const typeSelect = document.getElementById('graduateTypeFilterSelect');
+                const selectedRocYear = rocSelect ? String(rocSelect.value || '').trim() : '';
                 const selectedClass = classSelect ? String(classSelect.value || 'both') : 'both';
                 const selectedType = typeSelect ? String(typeSelect.value || '').trim() : '';
-                const dataMap = (graduateUniversityStatsByClass && typeof graduateUniversityStatsByClass === 'object')
-                    ? graduateUniversityStatsByClass
+                const dataMap = (graduateData.byClass && typeof graduateData.byClass === 'object')
+                    ? graduateData.byClass
                     : {};
-                let data = Array.isArray(dataMap[selectedClass]) ? dataMap[selectedClass] : (graduateUniversityStats || []);
+                let data = Array.isArray(dataMap[selectedClass]) ? dataMap[selectedClass] : (graduateData.stats || []);
                 if (selectedType !== '') {
                     data = data.filter(d => String(d.type_name || '').trim() === selectedType);
                 }
+                const rocLabel = selectedRocYear ? selectedRocYear + '學年' : '本屆';
                 const classLabel = selectedClass === 'xiao' ? '孝班' : (selectedClass === 'zhong' ? '忠班' : '忠+孝');
                 const content = document.getElementById('graduateUniversityAnalyticsContent');
                 if (!content) return;
                 if (data.length === 0) {
-                    content.innerHTML = `<div class="empty-state"><i class="fas fa-university fa-3x" style="margin-bottom: 16px;"></i><h4>尚無畢業生大學類型資料</h4><p>目前班級篩選：${classLabel}。請先在「畢業生資訊填寫」由教師填寫學生就讀的大學類型後，此處會顯示統計圓餅圖。</p></div>`;
+                    content.innerHTML = `<div class="empty-state"><i class="fas fa-university fa-3x" style="margin-bottom: 16px;"></i><h4>尚無畢業生大學類型資料</h4><p>目前篩選：${rocLabel} ${classLabel}。請先在「畢業生資訊填寫」由教師填寫學生就讀的大學類型後，此處會顯示統計圓餅圖。</p></div>`;
                     return;
                 }
                 const labels = data.map(d => d.type_name);
@@ -9506,8 +9584,8 @@ window.showSourceDetail = function(schoolNameEnc, sourceDataEnc, gradeLabel) {
                 const total = counts.reduce((a, b) => a + b, 0);
                 const summaryHtml = `
                     <div style="background: #f8f9fa; padding: 20px; border-radius: 10px;">
-                        <h5 style="color: #333; margin-bottom: 15px;">統計摘要</h5>
-                        <p style="margin-bottom: 12px;">總計 <strong>${total}</strong> 人（${classLabel}）</p>
+                        <h5 style="color: #333; margin-bottom: 15px;">統計摘要（${rocLabel} ${classLabel}）</h5>
+                        <p style="margin-bottom: 12px;">總計 <strong>${total}</strong> 人</p>
                         <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px;">
                             ${data.map(d => '<div style="background: white; padding: 12px; border-radius: 8px; border-left: 4px solid #667eea;"><span style="color: #666;">' + d.type_name + '</span><br><strong style="font-size: 1.2em; color: #333;">' + d.cnt + '</strong> 人</div>').join('')}
                         </div>
@@ -9515,7 +9593,7 @@ window.showSourceDetail = function(schoolNameEnc, sourceDataEnc, gradeLabel) {
                 `;
                 const chartHtml = `
                     <div class="chart-card">
-                        <div class="chart-title">各類型畢業生人數</div>
+                        <div class="chart-title">各類型畢業生人數（${rocLabel} ${classLabel}）</div>
                         <div class="chart-container" style="height: 320px;">
                             <canvas id="graduateUniversityChart"></canvas>
                         </div>
@@ -9523,7 +9601,7 @@ window.showSourceDetail = function(schoolNameEnc, sourceDataEnc, gradeLabel) {
                 `;
                 content.innerHTML = `
             <div style="margin-bottom: 20px;">
-                <h4 style="color: #667eea; margin-bottom: 15px;"><i class="fas fa-chart-pie"></i> 畢業生就讀大學類型統計（本屆${classLabel}）</h4>
+                <h4 style="color: #667eea; margin-bottom: 15px;"><i class="fas fa-chart-pie"></i> 畢業生就讀大學類型統計（${rocLabel} ${classLabel}）</h4>
                 <div class="dept-tabs" style="margin-bottom: 20px;">
                     <button type="button" class="dept-tab-btn active" onclick="switchGraduatePieTab(this, 'summary')">
                         <i class="fas fa-list-alt"></i> 各類型統計摘要
@@ -9647,9 +9725,14 @@ window.showSourceDetail = function(schoolNameEnc, sourceDataEnc, gradeLabel) {
                 const container = document.getElementById('perClassNationalContent');
                 if (!container) return;
                 container.style.display = ''; container.style.minHeight = '200px'; container.style.marginTop = '20px';
-                const data = window.perClassStats || [];
+                let data = Array.isArray(window.perClassStats) ? window.perClassStats : [];
+                // 依班級篩選（忠+孝／忠班／孝班）過濾每班資料
+                const classSelect = document.getElementById('graduateClassFilterSelect');
+                const classMode = classSelect ? String(classSelect.value || 'both') : 'both';
+                if (classMode === 'xiao') data = data.filter(d => String(d.class_name || d.class_name_raw || '').indexOf('孝') !== -1);
+                else if (classMode === 'zhong') data = data.filter(d => String(d.class_name || d.class_name_raw || '').indexOf('忠') !== -1);
                 if (!Array.isArray(data) || data.length === 0) {
-                    container.innerHTML = '<div class="empty-state"><i class="fas fa-users fa-3x" style="margin-bottom: 16px;"></i><h4>尚無每班錄取資料</h4><p>請確認教師是否已填寫畢業生就讀大學資訊。</p></div>';
+                    container.innerHTML = '<div class="empty-state"><i class="fas fa-users fa-3x" style="margin-bottom: 16px;"></i><h4>尚無每班錄取資料</h4><p>請確認教師是否已填寫畢業生就讀大學資訊，或嘗試切換班級篩選。</p></div>';
                     return;
                 }
                 // 班級顯示：class_name 已含科系（如「資訊管理科孝班」），與畢業生資訊填寫一致
@@ -9705,10 +9788,13 @@ window.showSourceDetail = function(schoolNameEnc, sourceDataEnc, gradeLabel) {
                     `;
                 }).join('');
 
+                const rocSelectForPerClass = document.getElementById('graduateRocYearSelect');
+                const rocYearLabel = rocSelectForPerClass && rocSelectForPerClass.value ? (rocSelectForPerClass.value + '學年') : '本屆';
+                const classLabel = classMode === 'xiao' ? '孝班' : (classMode === 'zhong' ? '忠班' : '忠+孝');
                 container.innerHTML = `
             <div style="margin-bottom: 20px;">
                 <h4 style="color: #667eea; margin-bottom: 15px;">
-                    <i class="fas fa-chart-pie"></i> 各班人數與國立錄取統計
+                    <i class="fas fa-chart-pie"></i> 各班人數與國立錄取統計（${rocYearLabel} ${classLabel}）
                 </h4>
                 
                 <div class="dept-tabs" style="margin-bottom: 16px;">
@@ -9810,9 +9896,14 @@ window.showSourceDetail = function(schoolNameEnc, sourceDataEnc, gradeLabel) {
                 const container = document.getElementById('perClassTopSchoolsContent');
                 if (!container) return;
                 container.style.display = ''; container.style.minHeight = '200px'; container.style.marginTop = '20px';
-                const data = window.perClassStats || [];
+                let data = Array.isArray(window.perClassStats) ? window.perClassStats : [];
+                // 依班級篩選（忠+孝／忠班／孝班）過濾每班資料
+                const classSelect = document.getElementById('graduateClassFilterSelect');
+                const classMode = classSelect ? String(classSelect.value || 'both') : 'both';
+                if (classMode === 'xiao') data = data.filter(d => String(d.class_name || d.class_name_raw || '').indexOf('孝') !== -1);
+                else if (classMode === 'zhong') data = data.filter(d => String(d.class_name || d.class_name_raw || '').indexOf('忠') !== -1);
                 if (!Array.isArray(data) || data.length === 0) {
-                    container.innerHTML = '<div class="empty-state"><i class="fas fa-university fa-3x" style="margin-bottom: 16px;"></i><h4>尚無 Top5 大學資料</h4><p>請確認教師是否已填寫畢業生就讀大學資訊。</p></div>';
+                    container.innerHTML = '<div class="empty-state"><i class="fas fa-university fa-3x" style="margin-bottom: 16px;"></i><h4>尚無 Top5 大學資料</h4><p>請確認教師是否已填寫畢業生就讀大學資訊，或嘗試切換班級篩選。</p></div>';
                     return;
                 }
                 // 清理舊圖表
@@ -9823,8 +9914,12 @@ window.showSourceDetail = function(schoolNameEnc, sourceDataEnc, gradeLabel) {
                 }
                 perClassTopSchoolChartInstances = [];
 
+                const rocSelectTop5 = document.getElementById('graduateRocYearSelect');
+                const rocYearLabelTop5 = rocSelectTop5 && rocSelectTop5.value ? (rocSelectTop5.value + '學年') : '本屆';
+                const classLabelTop5 = classMode === 'xiao' ? '孝班' : (classMode === 'zhong' ? '忠班' : '忠+孝');
                 // 生成每班 top5 圖表容器（class_name 已含科系，如「資訊管理科孝班」）
-                let html = '<div style="background:#f8f9fa;padding:16px;border-radius:8px;">';
+                let html = '<div style="margin-bottom: 12px; color: #666;">目前篩選：' + rocYearLabelTop5 + ' ' + classLabelTop5 + '</div>';
+                html += '<div style="background:#f8f9fa;padding:16px;border-radius:8px;">';
                 data.forEach((d, idx) => {
                     const classLabel = d.class_name || '未分類';
                     html += `
@@ -10568,23 +10663,15 @@ window.showSourceDetail = function(schoolNameEnc, sourceDataEnc, gradeLabel) {
 
                 // 載入就讀意願屆別選單選項
                 loadEnrollmentRocYearOptions();
-                // 自動顯示就讀意願統計的各科分配人數總覽
-                // 頁面載入後立即執行
-                document.addEventListener('DOMContentLoaded', function() {
-                    // 稍微延遲 50ms 確保 HTML 元素已渲染
-                    setTimeout(() => {
-                        // 1. 嘗試切換到第一個 Tab (會觸發顯示)
-                        const firstTab = document.querySelector('.dept-tabs .dept-tab-btn');
-                        if (firstTab) {
-                            firstTab.click();
-                        } else {
-                            // 2. 如果沒有 Tab，直接呼叫函式
-                            if (typeof showEnrollmentSystemStats === 'function') {
-                                showEnrollmentSystemStats();
-                            }
+                // 預設顯示畢業生大學類型統計的「各類型人數圓餅圖」
+                if (isTeacherListView) {
+                    setTimeout(function() {
+                        const graduateBtn = document.querySelector('#graduateUniversitySection .graduate-uni-btn');
+                        if (graduateBtn && typeof switchGraduateUniTab === 'function') {
+                            switchGraduateUniTab(graduateBtn, 'type');
                         }
-                    }, 50);
-                });
+                    }, 100);
+                }
 
                 // 自動顯示續招報名統計的志願選擇分析
                 setTimeout(() => {

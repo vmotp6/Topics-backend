@@ -3,13 +3,20 @@ require_once __DIR__ . '/session_config.php';
 checkBackendLogin();
 
 header('Content-Type: application/json; charset=utf-8');
+ob_start();
 require_once __DIR__ . '/recommendation_review_email.php';
+
+// 確保只輸出 JSON，避免 include 或 PHP 錯誤產生 HTML 導致前端解析失敗
+function _send_bonus_json($data) {
+    if (ob_get_length()) ob_clean();
+    echo json_encode($data, JSON_UNESCAPED_UNICODE);
+    exit;
+}
 
 // 僅允許 POST
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     http_response_code(405);
-    echo json_encode(['success' => false, 'message' => '不支援的請求方法'], JSON_UNESCAPED_UNICODE);
-    exit;
+    _send_bonus_json(['success' => false, 'message' => '不支援的請求方法']);
 }
 
 // 權限：沿用審核結果可視權限（username=12 & role=STA）
@@ -17,14 +24,12 @@ $username = isset($_SESSION['username']) ? $_SESSION['username'] : '';
 $can_view_review_result = (isStaff() || isAdmin());
 if (!$can_view_review_result) {
     http_response_code(403);
-    echo json_encode(['success' => false, 'message' => '權限不足'], JSON_UNESCAPED_UNICODE);
-    exit;
+    _send_bonus_json(['success' => false, 'message' => '權限不足']);
 }
 
 $recommendation_id = isset($_POST['recommendation_id']) ? intval($_POST['recommendation_id']) : 0;
 if ($recommendation_id <= 0) {
-    echo json_encode(['success' => false, 'message' => '無效的推薦ID'], JSON_UNESCAPED_UNICODE);
-    exit;
+    _send_bonus_json(['success' => false, 'message' => '無效的推薦ID']);
 }
 
 require_once '../../Topics-frontend/frontend/config.php';
@@ -186,8 +191,7 @@ try {
     $stmt->close();
 
     if (!$row) {
-        echo json_encode(['success' => false, 'message' => '找不到指定的推薦記錄'], JSON_UNESCAPED_UNICODE);
-        exit;
+        _send_bonus_json(['success' => false, 'message' => '找不到指定的推薦記錄']);
     }
 
     $recommender_name = trim((string)($row['recommender_name'] ?? ''));
@@ -202,8 +206,7 @@ try {
 
     // 只允許「審核完成（可發獎金）」(APD) 發送
     if (!in_array($status, ['APD'], true)) {
-        echo json_encode(['success' => false, 'message' => '僅審核完成名單可發送獎金'], JSON_UNESCAPED_UNICODE);
-        exit;
+        _send_bonus_json(['success' => false, 'message' => '僅審核完成名單可發送獎金']);
     }
 
     // 確保 same_person_choice 欄位存在（與 recommendation_approval_submit 同步）
@@ -256,12 +259,105 @@ try {
         $approval_status = '';
     }
     if ($approval_status === 'waived') {
-        echo json_encode(['success' => false, 'message' => '推薦人已放棄獎金，無法發送'], JSON_UNESCAPED_UNICODE);
-        exit;
+        _send_bonus_json(['success' => false, 'message' => '推薦人已放棄獎金，無法發送']);
     }
     if ($approval_status !== 'signed') {
-        echo json_encode(['success' => false, 'message' => '推薦人尚未線上簽核，暫不可發送獎金'], JSON_UNESCAPED_UNICODE);
-        exit;
+        _send_bonus_json(['success' => false, 'message' => '推薦人尚未線上簽核，暫不可發送獎金']);
+    }
+
+    // 重複被推薦人：同一位被推薦人的所有推薦人都須已線上簽核才能發送獎金
+    $duplicate_group_ids = [];
+    if (strtolower($same_person_choice) === 'yes' && $link_group_ids !== '') {
+        $duplicate_group_ids = array_values(array_filter(array_map('intval', explode(',', $link_group_ids)), function($v) { return $v > 0; }));
+    } else {
+        // 依姓名+電話+學校找出同一位被推薦人的所有推薦筆數（APD）
+        $approval_join_dup = "LEFT JOIN (
+                SELECT r1.recommendation_id, COALESCE(r1.status,'') AS latest_status, COALESCE(r1.signed_at, r1.created_at) AS latest_review_at
+                FROM recommendation_approval_links r1
+                INNER JOIN (SELECT recommendation_id, MAX(id) AS max_id FROM recommendation_approval_links GROUP BY recommendation_id) r2 ON r1.id = r2.max_id
+            ) ral ON ral.recommendation_id = ar.id";
+        if ($has_recommended_table) {
+            $r_phone_sel = isset($red_cols['phone']) ? "COALESCE(red.phone,'')" : "''";
+            $r_school_code_sel = isset($red_cols['school']) ? "COALESCE(red.school,'')" : "''";
+            $r_school_sel_dup = $ar_school;
+            $q_dup = $conn->prepare("SELECT ar.id, COALESCE(red.name,'') AS r_name, $r_phone_sel AS r_phone, $r_school_code_sel AS r_school_code, $r_school_sel_dup AS r_school
+                FROM admission_recommendations ar
+                LEFT JOIN recommended red ON ar.id = red.recommendations_id {$approval_join_dup}
+                WHERE red.name = ? AND ar.status = 'APD' ORDER BY ar.id ASC");
+            if ($q_dup) {
+                $q_dup->bind_param('s', $student_name);
+                $q_dup->execute();
+                $res_dup = $q_dup->get_result();
+                if ($res_dup) {
+                    while ($rd = $res_dup->fetch_assoc()) {
+                        $r_phone_norm = $normalize_phone($rd['r_phone'] ?? '');
+                        $r_school_code_t = trim((string)($rd['r_school_code'] ?? ''));
+                        $r_school_key = ($r_school_code_t !== '') ? $r_school_code_t : $normalize_text($rd['r_school'] ?? '');
+                        $r_match = $normalize_text($rd['r_name'] ?? '') . '|' . $r_phone_norm . '|' . $r_school_key;
+                        if ($r_match === $current_match_key) $duplicate_group_ids[] = (int)$rd['id'];
+                    }
+                    $q_dup->close();
+                }
+            }
+        } else {
+            $q_dup = $conn->prepare("SELECT ar.id, COALESCE(ar.student_name,'') AS r_name, $ar_phone AS r_phone, $ar_school_code AS r_school_code, $ar_school AS r_school
+                FROM admission_recommendations ar {$approval_join_dup}
+                WHERE ar.student_name = ? AND ar.status = 'APD' ORDER BY ar.id ASC");
+            if ($q_dup) {
+                $q_dup->bind_param('s', $student_name);
+                $q_dup->execute();
+                $res_dup = $q_dup->get_result();
+                if ($res_dup) {
+                    while ($rd = $res_dup->fetch_assoc()) {
+                        $r_phone_norm = $normalize_phone($rd['r_phone'] ?? '');
+                        $r_school_code_t = trim((string)($rd['r_school_code'] ?? ''));
+                        $r_school_key = ($r_school_code_t !== '') ? $r_school_code_t : $normalize_text($rd['r_school'] ?? '');
+                        $r_match = $normalize_text($rd['r_name'] ?? '') . '|' . $r_phone_norm . '|' . $r_school_key;
+                        if ($r_match === $current_match_key) $duplicate_group_ids[] = (int)$rd['id'];
+                    }
+                    $q_dup->close();
+                }
+            }
+        }
+    }
+    $duplicate_group_ids = array_values(array_unique($duplicate_group_ids));
+    if (count($duplicate_group_ids) >= 2) {
+        $approval_sub = "SELECT recommendation_id, COALESCE(status,'') AS status, COALESCE(signed_at, created_at) AS review_at FROM recommendation_approval_links r1
+            INNER JOIN (SELECT recommendation_id, MAX(id) AS max_id FROM recommendation_approval_links GROUP BY recommendation_id) r2 ON r1.id = r2.max_id";
+        $ids_placeholders = implode(',', array_fill(0, count($duplicate_group_ids), '?'));
+        $types = str_repeat('i', count($duplicate_group_ids));
+        $rname_sel = $has_recommender_table
+            ? "COALESCE(rec.name, ar.recommender_name, '')"
+            : "COALESCE(ar.recommender_name, '')";
+        $join_rec = $has_recommender_table ? "LEFT JOIN recommender rec ON ar.id = rec.recommendations_id" : "";
+        $stmt_group = $conn->prepare("SELECT ar.id, {$rname_sel} AS rname, COALESCE(ar.updated_at,'') AS updated_at, COALESCE(ral.status,'') AS link_status, COALESCE(ral.review_at,'') AS review_at
+            FROM admission_recommendations ar
+            {$join_rec}
+            LEFT JOIN ({$approval_sub}) ral ON ar.id = ral.recommendation_id
+            WHERE ar.id IN ({$ids_placeholders})");
+        if ($stmt_group) {
+            $stmt_group->bind_param($types, ...$duplicate_group_ids);
+            $stmt_group->execute();
+            $res_group = $stmt_group->get_result();
+            $not_signed_names = [];
+            if ($res_group) {
+                while (($gr = $res_group->fetch_assoc()) !== false) {
+                    $link_status = strtolower(trim((string)($gr['link_status'] ?? '')));
+                    $updated_ts = strtotime((string)($gr['updated_at'] ?? ''));
+                    $review_ts = strtotime((string)($gr['review_at'] ?? ''));
+                    $stale = ($updated_ts !== false && $review_ts !== false && $updated_ts > $review_ts);
+                    if ($link_status === 'waived') continue;
+                    if ($link_status !== 'signed' || $stale) {
+                        $rn = trim((string)($gr['rname'] ?? ''));
+                        if ($rn !== '' && !in_array($rn, $not_signed_names, true)) $not_signed_names[] = $rn;
+                    }
+                }
+            }
+            $stmt_group->close();
+            if (!empty($not_signed_names)) {
+                _send_bonus_json(['success' => false, 'message' => '推薦人' . implode('、', $not_signed_names) . '還尚未簽核']);
+            }
+        }
     }
 
     // 若已存在則拒絕重複發送
@@ -272,13 +368,12 @@ try {
     if ($chkRes && $chkRes->num_rows > 0) {
         $exist = $chkRes->fetch_assoc();
         $check->close();
-        echo json_encode([
+        _send_bonus_json([
             'success' => false,
             'message' => '此筆已發送過獎金，不能重複發送',
             'recommender_name' => $recommender_name,
             'sent_at' => $exist['sent_at'] ?? ''
-        ], JSON_UNESCAPED_UNICODE);
-        exit;
+        ]);
     }
     $check->close();
 
@@ -416,17 +511,17 @@ try {
         @send_bonus_sent_email_once($conn, $recommendation_id, $final_amount, $split_count, $username);
     }
 
-    echo json_encode([
+    _send_bonus_json([
         'success' => true,
         'message' => '獎金已標記為發送',
         'recommender_name' => $recommender_name,
         'amount' => $final_amount,
         'split_count' => $split_count,
         'student_name' => $student_name
-    ], JSON_UNESCAPED_UNICODE);
+    ]);
 
     $conn->close();
 } catch (Exception $e) {
-    echo json_encode(['success' => false, 'message' => '系統錯誤：' . $e->getMessage()], JSON_UNESCAPED_UNICODE);
+    _send_bonus_json(['success' => false, 'message' => '系統錯誤：' . $e->getMessage()]);
 }
 
