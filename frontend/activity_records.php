@@ -46,13 +46,17 @@ if (isset($role_map[$user_role])) {
     $user_role = $role_map[$user_role];
 }
 
+if($user_role ==='TEA' || $user_role === 'AS') {
+    header('Location: /Topics-frontend/frontend/index.php');
+    exit();
+}
+
 // 判斷是否為管理員：角色為 ADM（管理員）或 STA（行政人員），或舊的中文角色名稱
 // 也檢查後台登入狀態和用戶名
-$is_admin = ($user_role === 'ADM' || $user_role === '管理員' || $user_role === 'admin' ||
-    $current_user === 'admin' || $current_user === 'admin1' ||
+$is_admin = ($user_role === 'ADM' ||
     (isset($_SESSION['admin_logged_in']) && $_SESSION['admin_logged_in'] &&
-        ($user_role === 'ADM' || $user_role === '管理員' || $current_user === 'admin')));
-$is_school_admin = ($user_role === '學校行政人員' || $user_role === '行政人員' || $user_role === 'STA' ||
+        ($user_role === 'ADM')));
+$is_school_admin = ( $user_role === 'STA' ||
     $current_user === 'IMD' || $is_admin);
 $is_director = ($user_role === 'DI');
 $is_stam = ($user_role === 'STAM');
@@ -2815,9 +2819,6 @@ $conn->close();
                                             <button type="button" class="btn-view" id="btnSchoolViewFeedback" onclick="showSchoolView('feedback')">
                                                 2️⃣ 各國中就讀意願平均（長條圖）
                                             </button>
-                                            <button type="button" class="btn-view" id="btnSchoolViewGrade" onclick="showSchoolView('grade')">
-                                                3️⃣ 學校 × 年級學期（堆疊長條圖）
-                                            </button>
                                             <?php if ($is_staff): ?>
                                                 <button type="button" class="btn-view" id="btnSchoolViewMatrix" onclick="showSchoolView('matrix')">
                                                     4️⃣ 參與科系 × 學校（矩陣表）
@@ -3366,12 +3367,12 @@ $conn->close();
                                     </div>
                                 </div>
 
-                                <h4 style="color: #667eea; margin-bottom: 15px; display: flex; align-items: center; gap: 10px;">
+                                <h4 style="color: #667eea;  display: flex; align-items: center; gap:10px;  padding:20px;">
                                     <i class="fas fa-chart-bar"></i> 招生活動統計分析
                                 </h4>
 
                                 <!-- 招生活動統計按鈕組 -->
-                                <div style="display: flex; gap: 12px; margin-bottom: 24px; flex-wrap: wrap;">
+                                <div style="display: flex; gap: 12px;  flex-wrap: wrap; padding:20px;">
                                     <button class="btn-view" onclick="showTeacherStats()"><i class="fas fa-users"></i> 教師活動統計</button>
                                     <button class="btn-view" onclick="showActivityTypeStats()"><i class="fas fa-chart-pie"></i> 活動類型分析</button>
                                     <button class="btn-view" onclick="showTimeStats()"><i class="fas fa-calendar-alt"></i> 時間分布分析</button>
@@ -3382,7 +3383,7 @@ $conn->close();
                                 </div>
 
                                 <!-- 招生活動統計內容區域 -->
-                                <div id="activityAnalyticsContent" style="min-height: 200px;">
+                                <div id="activityAnalyticsContent" style="min-height: 200px; padding:20px;">
                                     <div class="empty-state">
                                         <i class="fas fa-chart-line fa-3x" style="margin-bottom: 16px;"></i>
                                         <h4>選擇上方的統計類型來查看詳細分析</h4>
@@ -3391,10 +3392,10 @@ $conn->close();
                                 </div>
 
                                 <!-- 就讀意願統計按鈕組 -->
-                                <div style="border-top: 1px solid #f0f0f0; padding-top: 20px; margin-top: 20px;">
-                                    <h4 style="color: #667eea; margin-bottom: 15px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
+                                <div style="border-top: 1px solid #f0f0f0; padding-top: 20px; margin-top: 20px; padding-right:20px;">
+                                    <h4 style="color: #667eea; margin-bottom: 15px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding-left:20px;">
                                         <i class="fas fa-graduation-cap"></i> 就讀意願統計分析
-                                        <span style="font-weight: normal; font-size: 0.9em;">
+                                        <span style="font-weight: normal; font-size: 0.9em; padding-right:20px;">
                                             <label for="enrollmentRocYearSelect" style="margin-left: 8px; color: #666;">屆別：</label>
                                             <select id="enrollmentRocYearSelect" onchange="onEnrollmentRocYearChange()" style="padding: 6px 10px; border-radius: 6px; border: 1px solid #ddd; min-width: 100px;">
                                                 <option value="">全部</option>
@@ -3402,7 +3403,7 @@ $conn->close();
                                             </select>
                                         </span>
                                     </h4>
-                                    <div class="dept-tabs" style="margin-bottom: 20px;">
+                                    <div class="dept-tabs" style="margin-bottom: 20px; padding-left:20px;">
                                         <?php if ($is_director && !$is_stam && $director_department_name !== ''): ?>
                                         <button type="button" class="dept-tab-btn active" onclick="switchEnrollmentTab(this, 'director_dept')">
                                             <i class="fas fa-chart-bar"></i> <?php echo htmlspecialchars($director_department_name); ?> - 招生詳情
@@ -3432,7 +3433,7 @@ $conn->close();
                                 </div>
 
                                 <!-- 就讀意願統計內容區域 -->
-                                <div id="enrollmentAnalyticsContent" style="min-height: 200px;">
+                                <div id="enrollmentAnalyticsContent" style="min-height: 200px; padding-left:20px;">
                                     <div class="empty-state">
                                         <i class="fas fa-chart-line fa-3x" style="margin-bottom: 16px;"></i>
                                         <h4>選擇上方的統計類型來查看詳細分析</h4>
@@ -3440,11 +3441,11 @@ $conn->close();
                                 </div>
 
                                 <!-- 畢業生大學類型統計按鈕組（三個統計按鈕 + 收回圖表） -->
-                                <div id="graduateUniversitySection" style="border-top: 1px solid #f0f0f0; padding-top: 20px; margin-top: 20px;">
+                                <div style="border-top: 1px solid #f0f0f0; padding-top: 20px; margin-top: 20px; padding:20px;">
                                     <h4 style="color: #667eea; margin-bottom: 15px; display: flex; align-items: center; gap: 10px;">
                                         <i class="fas fa-university"></i> 畢業生大學類型統計
                                     </h4>
-                                    <div id="graduateUniTabs" style="display: flex; gap: 12px; margin-bottom: 24px; flex-wrap: wrap; align-items:center;">
+                                    <div id="graduateUniTabs" style="display: flex; gap: 12px; margin-bottom: 24px; flex-wrap: wrap; align-items:center; padding-right:20px;">
                                         <button type="button" class="btn-view graduate-uni-btn" onclick="switchGraduateUniTab(this, 'type')">
                                             <i class="fas fa-chart-pie"></i> 各類型人數圓餅圖
                                         </button>
@@ -3496,10 +3497,10 @@ $conn->close();
 
                                 <!-- 續招報名統計按鈕組 -->
                                 <div style="border-top: 1px solid #f0f0f0; padding-top: 20px; margin-top: 20px;">
-                                    <h4 style="color: #667eea; margin-bottom: 15px; display: flex; align-items: center; gap: 10px;">
+                                    <h4 style="color: #667eea; margin-bottom: 15px; display: flex; align-items: center; gap: 10px; padding-left:20px;">
                                         <i class="fas fa-file-alt"></i> 續招報名統計分析
                                     </h4>
-                                    <div style="display: flex; gap: 12px; margin-bottom: 24px; flex-wrap: wrap;">
+                                    <div style="display: flex; gap: 12px; margin-bottom: 24px; flex-wrap: wrap; padding-left:20px;">
                                         <button class="btn-view" onclick="showContinuedAdmissionGenderStats()">
                                             <i class="fas fa-venus-mars"></i> 性別分布分析
                                         </button>
@@ -3516,7 +3517,7 @@ $conn->close();
                                 </div>
 
                                 <!-- 續招報名統計內容區域 -->
-                                <div id="continuedAdmissionAnalyticsContent" style="min-height: 200px; margin-left: 15px; margin-right: 15px;">
+                                <div id="continuedAdmissionAnalyticsContent" style="min-height: 200px; margin-left: 15px; margin-right: 15px; padding-right:20px;">
                                     <div style="margin-bottom: 20px;">
                                         <h4 style="color: #667eea; margin-bottom: 15px;">
                                             <i class="fas fa-list-ol"></i> 志願選擇分析
@@ -7439,7 +7440,7 @@ $conn->close();
 
                         const content = `
                     <div style="margin-bottom: 20px;">
-                        <h4 style="color: #667eea; margin-bottom: 15px;">
+                        <h4 style="color: #667eea; margin-bottom: 15px; padding-right:20px;">
                             <i class="fas fa-calendar-alt"></i> 月度趨勢分析
                         </h4>
                         
@@ -7629,7 +7630,7 @@ $conn->close();
                 if (!filterContainer) {
                     const fullContent = `
                 <div style="margin-bottom: 20px;">
-                    <h4 style="color: #667eea; margin-bottom: 15px;">
+                    <h4 style="color: #667eea; margin-bottom: 15px; padding-right:20px;">
                         <i class="fas fa-school"></i> 國中選擇科系分析
                     </h4>
                     
