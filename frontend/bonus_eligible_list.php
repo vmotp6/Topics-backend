@@ -115,6 +115,8 @@ $ar_has_recommender_department = $hasColumn('admission_recommendations', 'recomm
 $ar_has_recommender_department_code = $hasColumn('admission_recommendations', 'recommender_department_code');
 $ar_has_student_name = $hasColumn('admission_recommendations', 'student_name');
 $ar_has_status = $hasColumn('admission_recommendations', 'status');
+$ar_has_academic_year = $hasColumn('admission_recommendations', 'academic_year');
+$academic_year_expr = $ar_has_academic_year ? "COALESCE(CAST(ar.academic_year AS CHAR), '')" : "''";
 
 $rec_name_expr = $has_recommender_table
     ? "COALESCE(rec.name, " . ($ar_has_recommender_name ? "ar.recommender_name" : "''") . ", '')"
@@ -148,6 +150,7 @@ try {
     $sql = "SELECT
         ar.id,
         {$status_expr} AS status,
+        {$academic_year_expr} AS academic_year,
         {$student_name_expr} AS student_name,
         {$rec_name_expr} AS recommender_name,
         {$rec_sid_expr} AS recommender_student_id,
@@ -176,13 +179,18 @@ try {
 }
 
 $dept_options = [];
+$year_options_eligible = [];
 foreach ($rows as $r) {
     $d = trim((string)($r['recommender_department'] ?? ''));
-    if ($d === '') continue;
-    $dept_options[$d] = true;
+    if ($d !== '') $dept_options[$d] = true;
+    $ay = trim((string)($r['academic_year'] ?? ''));
+    if ($ay !== '') $year_options_eligible[(int)$ay] = true;
 }
 $dept_options = array_keys($dept_options);
 sort($dept_options);
+$year_options_eligible = array_keys($year_options_eligible);
+rsort($year_options_eligible, SORT_NUMERIC);
+$total_count_eligible = count($rows);
 
 if (isset($_GET['export']) && $_GET['export'] === '1') {
     $export_rows = [[
@@ -259,8 +267,15 @@ if (isset($_GET['export']) && $_GET['export'] === '1') {
     .table-wrapper { background:var(--card-background-color); border-radius:8px; box-shadow:0 1px 2px rgba(0,0,0,0.03); border:1px solid var(--border-color); }
     .toolbar { display:flex; justify-content:space-between; align-items:center; gap:12px; padding:16px 18px; border-bottom:1px solid var(--border-color); }
     .toolbar-right { display:flex; align-items:center; gap:10px; flex-wrap:wrap; justify-content:flex-end; }
+    .toolbar-label { font-size:14px; color:var(--text-color); white-space:nowrap; margin-right:4px; }
     .count { color:var(--text-secondary-color); font-size:14px; }
-    .search-input, .search-select { padding:8px 10px; border:1px solid #d9d9d9; border-radius:8px; font-size:14px; min-width:190px; }
+    .search-input, .search-select { padding:8px 10px; border:1px solid #d9d9d9; border-radius:8px; font-size:14px; min-width:120px; }
+    .search-select { min-width:140px; }
+    .pagination-bar { display:flex; justify-content:space-between; align-items:center; padding:12px 18px; border-top:1px solid var(--border-color); font-size:14px; color:var(--text-secondary-color); }
+    .pagination-bar .page-info { font-weight:500; color:var(--text-color); }
+    .pagination-bar button { padding:6px 12px; margin:0 4px; border:1px solid #d9d9d9; border-radius:6px; background:#fff; cursor:pointer; font-size:14px; }
+    .pagination-bar button:hover:not(:disabled) { border-color:#1890ff; color:#1890ff; }
+    .pagination-bar button:disabled { opacity:0.5; cursor:not-allowed; }
     .search-input:focus, .search-select:focus { outline:none; border-color:#1890ff; box-shadow:0 0 0 2px rgba(24,144,255,0.15); }
     .table-container { overflow-x:auto; }
     table { width:100%; border-collapse:collapse; }
@@ -295,6 +310,13 @@ if (isset($_GET['export']) && $_GET['export'] === '1') {
               <strong>可發送獎金名單（審核完成且已線上簽核）</strong>
             </div>
             <div class="toolbar-right">
+              <span class="toolbar-label">年度篩選</span>
+              <select id="filterYear" class="search-select">
+                <option value="">全部學年度</option>
+                <?php foreach ($year_options_eligible as $y): ?>
+                  <option value="<?php echo (int)$y; ?>"><?php echo (int)$y; ?></option>
+                <?php endforeach; ?>
+              </select>
               <input type="text" id="filterRecommenderName" class="search-input" placeholder="查詢推薦人姓名">
               <input type="text" id="filterRecommenderId" class="search-input" placeholder="查詢推薦人學號/編號">
               <select id="filterDepartment" class="search-select">
@@ -305,7 +327,7 @@ if (isset($_GET['export']) && $_GET['export'] === '1') {
               </select>
               <button type="button" class="btn-view" id="btnQuery"><i class="fas fa-search"></i> 查詢</button>
               <button type="button" class="btn-view btn-secondary" id="btnClear"><i class="fas fa-eraser"></i> 清除</button>
-              <div class="count" id="eligibleCount">共 <?php echo count($rows); ?> 筆</div>
+              <div class="count" id="eligibleCount">共 <?php echo $total_count_eligible; ?> 筆，每頁顯示 10 筆</div>
             </div>
           </div>
           <div class="table-container">
@@ -333,7 +355,8 @@ if (isset($_GET['export']) && $_GET['export'] === '1') {
                     <tr class="eligible-row"
                         data-recommender-name="<?php echo htmlspecialchars((string)($r['recommender_name'] ?? '')); ?>"
                         data-recommender-id="<?php echo htmlspecialchars((string)($r['recommender_student_id'] ?? '')); ?>"
-                        data-recommender-dept="<?php echo htmlspecialchars((string)($r['recommender_department'] ?? '')); ?>">
+                        data-recommender-dept="<?php echo htmlspecialchars((string)($r['recommender_department'] ?? '')); ?>"
+                        data-academic-year="<?php echo htmlspecialchars((string)($r['academic_year'] ?? '')); ?>">
                       <td><?php echo htmlspecialchars((string)($r['id'] ?? '')); ?></td>
                       <td><?php echo htmlspecialchars((string)($r['student_name'] ?? '')); ?></td>
                       <td><?php echo htmlspecialchars((string)($r['recommender_name'] ?? '')); ?></td>
@@ -348,37 +371,78 @@ if (isset($_GET['export']) && $_GET['export'] === '1') {
               </table>
             <?php endif; ?>
           </div>
+          <?php if (!empty($rows)): ?>
+          <div class="pagination-bar" id="eligiblePaginationBar">
+            <span class="page-info" id="eligiblePageInfo">第 1–10 筆</span>
+            <div>
+              <button type="button" id="eligiblePrevPage" title="上一頁">上一頁</button>
+              <button type="button" id="eligibleNextPage" title="下一頁">下一頁</button>
+            </div>
+          </div>
+          <?php endif; ?>
         </div>
       </div>
     </div>
   </div>
 
   <script>
+    const ELIGIBLE_PAGE_SIZE = 10;
+    let eligibleCurrentPage = 1;
+
     function applyEligibleFilters() {
+      const yearVal = (document.getElementById('filterYear')?.value || '').trim();
       const nameVal = (document.getElementById('filterRecommenderName')?.value || '').trim().toLowerCase();
       const idVal = (document.getElementById('filterRecommenderId')?.value || '').trim().toLowerCase();
       const deptVal = (document.getElementById('filterDepartment')?.value || '').trim().toLowerCase();
       const rows = Array.from(document.querySelectorAll('tr.eligible-row'));
-      let visible = 0;
       rows.forEach(tr => {
+        const yr = (tr.getAttribute('data-academic-year') || '').toString();
         const nm = (tr.getAttribute('data-recommender-name') || '').toLowerCase();
         const rid = (tr.getAttribute('data-recommender-id') || '').toLowerCase();
         const dept = (tr.getAttribute('data-recommender-dept') || '').toLowerCase();
         let ok = true;
+        if (yearVal && yr !== yearVal) ok = false;
         if (nameVal && nm.indexOf(nameVal) === -1) ok = false;
         if (idVal && rid.indexOf(idVal) === -1) ok = false;
         if (deptVal && dept !== deptVal) ok = false;
         tr.style.display = ok ? '' : 'none';
-        if (ok) visible++;
+        tr.dataset.visible = ok ? '1' : '0';
       });
+      eligibleCurrentPage = 1;
+      updateEligiblePagination();
+    }
+
+    function updateEligiblePagination() {
+      const rows = Array.from(document.querySelectorAll('tr.eligible-row'));
+      const visibleRows = rows.filter(tr => tr.dataset.visible !== '0');
+      const total = visibleRows.length;
+      const totalPages = Math.max(1, Math.ceil(total / ELIGIBLE_PAGE_SIZE));
+      const start = (eligibleCurrentPage - 1) * ELIGIBLE_PAGE_SIZE;
+      const end = Math.min(start + ELIGIBLE_PAGE_SIZE, total);
+
+      rows.forEach(tr => { tr.style.display = 'none'; });
+      visibleRows.forEach((tr, idx) => {
+        if (idx >= start && idx < end) tr.style.display = '';
+      });
+
       const cnt = document.getElementById('eligibleCount');
-      if (cnt) cnt.textContent = `共 ${visible} 筆`;
+      if (cnt) cnt.textContent = '共 ' + total + ' 筆，每頁顯示 ' + ELIGIBLE_PAGE_SIZE + ' 筆';
+
+      const pageInfo = document.getElementById('eligiblePageInfo');
+      if (pageInfo) pageInfo.textContent = total === 0 ? '第 0 筆' : '第 ' + (start + 1) + '–' + end + ' 筆';
+
+      const prevBtn = document.getElementById('eligiblePrevPage');
+      const nextBtn = document.getElementById('eligibleNextPage');
+      if (prevBtn) prevBtn.disabled = eligibleCurrentPage <= 1;
+      if (nextBtn) nextBtn.disabled = eligibleCurrentPage >= totalPages;
     }
 
     function clearEligibleFilters() {
+      const y = document.getElementById('filterYear');
       const n = document.getElementById('filterRecommenderName');
       const i = document.getElementById('filterRecommenderId');
       const d = document.getElementById('filterDepartment');
+      if (y) y.value = '';
       if (n) n.value = '';
       if (i) i.value = '';
       if (d) d.value = '';
@@ -386,8 +450,13 @@ if (isset($_GET['export']) && $_GET['export'] === '1') {
     }
 
     document.addEventListener('DOMContentLoaded', function() {
+      const rows = document.querySelectorAll('tr.eligible-row');
+      rows.forEach(tr => { tr.dataset.visible = '1'; });
+      updateEligiblePagination();
+
       document.getElementById('btnQuery')?.addEventListener('click', applyEligibleFilters);
       document.getElementById('btnClear')?.addEventListener('click', clearEligibleFilters);
+      document.getElementById('filterYear')?.addEventListener('change', applyEligibleFilters);
       ['filterRecommenderName', 'filterRecommenderId'].forEach(id => {
         const el = document.getElementById(id);
         if (!el) return;
@@ -396,6 +465,18 @@ if (isset($_GET['export']) && $_GET['export'] === '1') {
         });
       });
       document.getElementById('filterDepartment')?.addEventListener('change', applyEligibleFilters);
+
+      document.getElementById('eligiblePrevPage')?.addEventListener('click', function() {
+        if (eligibleCurrentPage > 1) { eligibleCurrentPage--; updateEligiblePagination(); }
+      });
+      document.getElementById('eligibleNextPage')?.addEventListener('click', function() {
+        const rows = document.querySelectorAll('tr.eligible-row');
+        const visibleCount = Array.from(rows).filter(tr => tr.dataset.visible !== '0').length;
+        if (eligibleCurrentPage < Math.ceil(visibleCount / ELIGIBLE_PAGE_SIZE)) {
+          eligibleCurrentPage++;
+          updateEligiblePagination();
+        }
+      });
     });
   </script>
 </body>

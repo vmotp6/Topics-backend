@@ -87,6 +87,25 @@ try {
     $rows = [];
 }
 
+// 學年度選項（由發送時間換算：8月為新學年開始，民國年）
+$year_options = [];
+foreach ($rows as $r) {
+    $sent_at = trim((string)($r['sent_at'] ?? ''));
+    if ($sent_at !== '') {
+        $ts = strtotime($sent_at);
+        if ($ts !== false) {
+            $y = (int)date('Y', $ts);
+            $m = (int)date('n', $ts);
+            $roc = $y - 1911;
+            $ay = ($m >= 8) ? $roc + 1 : $roc;
+            if ($ay > 0) $year_options[$ay] = true;
+        }
+    }
+}
+$year_options = array_keys($year_options);
+rsort($year_options, SORT_NUMERIC);
+$total_count = count($rows);
+
 ?>
 <!DOCTYPE html>
 <html lang="zh-TW">
@@ -154,6 +173,7 @@ try {
       border-bottom: 1px solid var(--border-color);
     }
     .toolbar .count { color: var(--text-secondary-color); font-size: 14px; }
+    .toolbar-label { font-size: 14px; color: var(--text-color); white-space: nowrap; margin-right: 4px; }
     .toolbar-right {
       display:flex;
       align-items:center;
@@ -199,6 +219,27 @@ try {
       text-align: center;
       color: var(--text-secondary-color);
     }
+    .pagination-bar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 12px 18px;
+      border-top: 1px solid var(--border-color);
+      font-size: 14px;
+      color: var(--text-secondary-color);
+    }
+    .pagination-bar .page-info { font-weight: 500; color: var(--text-color); }
+    .pagination-bar button {
+      padding: 6px 12px;
+      margin: 0 4px;
+      border: 1px solid #d9d9d9;
+      border-radius: 6px;
+      background: #fff;
+      cursor: pointer;
+      font-size: 14px;
+    }
+    .pagination-bar button:hover:not(:disabled) { border-color: #1890ff; color: #1890ff; }
+    .pagination-bar button:disabled { opacity: 0.5; cursor: not-allowed; }
 
     /* 置中彈窗（沿用 admission_recommend_list.php 的風格） */
     .modal {
@@ -301,11 +342,18 @@ try {
               <strong>已發送獎金名單</strong>
             </div>
             <div class="toolbar-right">
+              <span class="toolbar-label">年度篩選</span>
+              <select id="filterYear" class="search-input" style="width:130px;">
+                <option value="">全部學年度</option>
+                <?php foreach ($year_options as $y): ?>
+                  <option value="<?php echo (int)$y; ?>"><?php echo (int)$y; ?></option>
+                <?php endforeach; ?>
+              </select>
               <input type="text" id="filterRecommenderName" class="search-input" placeholder="查詢推薦人姓名">
               <input type="text" id="filterRecommenderId" class="search-input" placeholder="查詢推薦人學號/編號">
               <button type="button" class="btn-view" id="btnBonusQuery"><i class="fas fa-search"></i> 查詢</button>
               <button type="button" class="btn-view btn-secondary" id="btnBonusClear"><i class="fas fa-eraser"></i> 清除</button>
-              <div class="count" id="bonusCount">共 <?php echo count($rows); ?> 筆</div>
+              <div class="count" id="bonusCount">共 <?php echo $total_count; ?> 筆，每頁顯示 10 筆</div>
             </div>
           </div>
           <div class="table-container">
@@ -329,11 +377,23 @@ try {
                   </tr>
                 </thead>
                 <tbody>
-                  <?php foreach ($rows as $r): ?>
-                    <tr>
-                      <tr class="bonus-row"
-                          data-recommender-name="<?php echo htmlspecialchars((string)($r['recommender_name'] ?? '')); ?>"
-                          data-recommender-id="<?php echo htmlspecialchars((string)($r['recommender_student_id'] ?? '')); ?>">
+                  <?php foreach ($rows as $r):
+                    $sent_at = (string)($r['sent_at'] ?? '');
+                    $academic_year = '';
+                    if ($sent_at !== '') {
+                        $ts = @strtotime($sent_at);
+                        if ($ts !== false) {
+                            $y = (int)date('Y', $ts);
+                            $m = (int)date('n', $ts);
+                            $roc = $y - 1911;
+                            $academic_year = (string)(($m >= 8) ? $roc + 1 : $roc);
+                        }
+                    }
+                  ?>
+                    <tr class="bonus-row"
+                        data-recommender-name="<?php echo htmlspecialchars((string)($r['recommender_name'] ?? '')); ?>"
+                        data-recommender-id="<?php echo htmlspecialchars((string)($r['recommender_student_id'] ?? '')); ?>"
+                        data-academic-year="<?php echo $academic_year !== '' ? (int)$academic_year : ''; ?>">
                       <td><?php echo htmlspecialchars($r['recommendation_id'] ?? ''); ?></td>
                       <td><?php echo htmlspecialchars($r['recommender_name'] ?? ''); ?></td>
                       <td><?php echo htmlspecialchars($r['recommender_student_id'] ?? ''); ?></td>
@@ -346,12 +406,21 @@ try {
                           <i class="fas fa-eye"></i> 查看詳情
                         </button>
                       </td>
-                      </tr>
+                    </tr>
                   <?php endforeach; ?>
                 </tbody>
               </table>
             <?php endif; ?>
           </div>
+          <?php if (!empty($rows)): ?>
+          <div class="pagination-bar" id="bonusPaginationBar">
+            <span class="page-info" id="bonusPageInfo">第 1–10 筆</span>
+            <div>
+              <button type="button" id="bonusPrevPage" title="上一頁">上一頁</button>
+              <button type="button" id="bonusNextPage" title="下一頁">下一頁</button>
+            </div>
+          </div>
+          <?php endif; ?>
         </div>
       </div>
     </div>
@@ -405,28 +474,62 @@ try {
   </div>
 
   <script>
-    // 已發送獎金名單：查詢/清除（前端過濾，不重新查 DB）
+    // 已發送獎金名單：年度 + 查詢/清除（前端過濾），每頁 10 筆
+    const BONUS_PAGE_SIZE = 10;
+    let bonusCurrentPage = 1;
+
     function applyBonusFilters() {
+      const yearVal = (document.getElementById('filterYear')?.value || '').trim();
       const nameVal = (document.getElementById('filterRecommenderName')?.value || '').trim().toLowerCase();
       const idVal = (document.getElementById('filterRecommenderId')?.value || '').trim().toLowerCase();
       const rows = Array.from(document.querySelectorAll('tr.bonus-row'));
-      let visible = 0;
       rows.forEach(tr => {
         const nm = (tr.getAttribute('data-recommender-name') || '').toLowerCase();
         const rid = (tr.getAttribute('data-recommender-id') || '').toLowerCase();
+        const yr = (tr.getAttribute('data-academic-year') || '').toString();
         let ok = true;
+        if (yearVal && yr !== yearVal) ok = false;
         if (nameVal && nm.indexOf(nameVal) === -1) ok = false;
         if (idVal && rid.indexOf(idVal) === -1) ok = false;
         tr.style.display = ok ? '' : 'none';
-        if (ok) visible++;
+        tr.dataset.visible = ok ? '1' : '0';
       });
+      bonusCurrentPage = 1;
+      updateBonusPagination();
+    }
+
+    function updateBonusPagination() {
+      const rows = Array.from(document.querySelectorAll('tr.bonus-row'));
+      const visibleRows = rows.filter(tr => tr.dataset.visible !== '0');
+      const total = visibleRows.length;
+      const totalPages = Math.max(1, Math.ceil(total / BONUS_PAGE_SIZE));
+      const start = (bonusCurrentPage - 1) * BONUS_PAGE_SIZE;
+      const end = Math.min(start + BONUS_PAGE_SIZE, total);
+
+      rows.forEach(tr => { tr.style.display = 'none'; });
+      visibleRows.forEach((tr, idx) => {
+        if (idx >= start && idx < end) tr.style.display = '';
+      });
+
       const cnt = document.getElementById('bonusCount');
-      if (cnt) cnt.textContent = `共 ${visible} 筆`;
+      if (cnt) cnt.textContent = `共 ${total} 筆，每頁顯示 ${BONUS_PAGE_SIZE} 筆`;
+
+      const pageInfo = document.getElementById('bonusPageInfo');
+      if (pageInfo) {
+        if (total === 0) pageInfo.textContent = '第 0 筆';
+        else pageInfo.textContent = `第 ${start + 1}–${end} 筆`;
+      }
+      const prevBtn = document.getElementById('bonusPrevPage');
+      const nextBtn = document.getElementById('bonusNextPage');
+      if (prevBtn) prevBtn.disabled = bonusCurrentPage <= 1;
+      if (nextBtn) nextBtn.disabled = bonusCurrentPage >= totalPages;
     }
 
     function clearBonusFilters() {
+      const y = document.getElementById('filterYear');
       const n = document.getElementById('filterRecommenderName');
       const i = document.getElementById('filterRecommenderId');
+      if (y) y.value = '';
       if (n) n.value = '';
       if (i) i.value = '';
       applyBonusFilters();
@@ -504,20 +607,37 @@ try {
       });
     }
 
-    // 綁定查詢/清除
+    // 綁定查詢/清除/分頁
     document.addEventListener('DOMContentLoaded', function() {
+      const rows = document.querySelectorAll('tr.bonus-row');
+      rows.forEach(tr => { tr.dataset.visible = '1'; });
+      updateBonusPagination();
+
       const btnQ = document.getElementById('btnBonusQuery');
       const btnC = document.getElementById('btnBonusClear');
       const n = document.getElementById('filterRecommenderName');
       const i = document.getElementById('filterRecommenderId');
+      const y = document.getElementById('filterYear');
       if (btnQ) btnQ.addEventListener('click', applyBonusFilters);
       if (btnC) btnC.addEventListener('click', clearBonusFilters);
-      // Enter 觸發查詢
+      if (y) y.addEventListener('change', applyBonusFilters);
       [n, i].forEach(el => {
         if (!el) return;
         el.addEventListener('keyup', function(e) {
           if (e.key === 'Enter') applyBonusFilters();
         });
+      });
+
+      document.getElementById('bonusPrevPage')?.addEventListener('click', function() {
+        if (bonusCurrentPage > 1) { bonusCurrentPage--; updateBonusPagination(); }
+      });
+      document.getElementById('bonusNextPage')?.addEventListener('click', function() {
+        const rows = document.querySelectorAll('tr.bonus-row');
+        const visibleCount = Array.from(rows).filter(tr => tr.dataset.visible !== '0').length;
+        if (bonusCurrentPage < Math.ceil(visibleCount / BONUS_PAGE_SIZE)) {
+          bonusCurrentPage++;
+          updateBonusPagination();
+        }
       });
     });
   </script>
