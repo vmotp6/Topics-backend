@@ -1,20 +1,89 @@
 <?php
 require_once __DIR__ . '/session_config.php';
+require_once __DIR__ . '/includes/department_session_access.php';
 
-// 檢查登入狀態和角色權限
+// 檢查登入
 checkBackendLogin();
 
-// 獲取使用者資訊
+/* =========================
+   取得角色
+========================= */
+
+$user_role = $_SESSION['role'] ?? '';
+
+$role_map = [
+    '管理員' => 'ADM',
+    'admin' => 'ADM',
+    'Admin' => 'ADM',
+
+    '行政人員' => 'STA',
+    '學校行政人員' => 'STA',
+    'staff' => 'STA',
+
+    '主任' => 'DI',
+    'director' => 'DI',
+
+    '老師' => 'TEA',
+    'teacher' => 'TEA',
+
+    '招生中心組員' => 'STAM',
+
+    '科助' => 'AS',
+    'assistant' => 'AS',
+
+    'ADM' => 'ADM',
+    'STA' => 'STA',
+    'DI' => 'DI',
+    'TEA' => 'TEA',
+    'STAM' => 'STAM',
+    'AS' => 'AS'
+];
+
+if (isset($role_map[$user_role])) {
+    $user_role = $role_map[$user_role];
+}
+
+/* =========================
+   權限判斷
+========================= */
+
+$is_admin = ($user_role === 'ADM');
+$is_staff = ($user_role === 'STA');
+$is_director = ($user_role === 'DI');
+$is_teacher = ($user_role === 'TEA');
+$is_stam = ($user_role === 'STAM');
+$is_as = ($user_role === 'AS');
+$is_stu =($user_role === 'STU');
+
+/* =========================
+   電子簽章權限
+========================= */
+
+if (!$is_admin && !$is_director ) {
+    die("您沒有權限使用電子簽章功能");
+}
+
+/* =========================
+   使用者資訊
+========================= */
+
 $user_id = $_SESSION['user_id'] ?? 0;
 $username = $_SESSION['username'] ?? '';
 $user_name = $_SESSION['name'] ?? $username;
 
-// 獲取可選的文件ID（用於關聯簽名）
+/* =========================
+   文件資訊
+========================= */
+
 $document_id = isset($_GET['document_id']) ? (int)$_GET['document_id'] : null;
-$document_type = $_GET['document_type'] ?? 'general'; // 文件類型：general, admission, etc.
+$document_type = $_GET['document_type'] ?? 'general';
+
 $embed = (isset($_GET['embed']) && $_GET['embed'] === '1');
 
-// 設置頁面標題
+/* =========================
+   頁面設定
+========================= */
+
 $page_title = '電子簽章';
 $current_page = 'signature';
 ?>
