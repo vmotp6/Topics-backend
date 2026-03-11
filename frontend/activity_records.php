@@ -1212,8 +1212,10 @@ if ($teacher_id > 0) {
                     }
                     $dept_display = $info['dept_display'] ?? '';
                     $cls = $info['class_name'] ?? '';
+                    // 班級名稱統一：資一孝/資一孝班→孝班、資一忠/資一忠班→忠班
+                    $cls_display = str_replace(['資一孝班', '資一孝', '資一忠班', '資一忠'], ['孝班', '孝班', '忠班', '忠班'], $cls);
                     $dept_part = $dept_display ?: trim(explode('|', $group_key, 2)[0] ?? '');
-                    $display_label = $dept_part ? ($dept_part . $cls) : $cls;
+                    $display_label = $dept_part ? ($dept_part . $cls_display) : $cls_display;
                     $per_class_stats_list[] = [
                         'class_name' => $display_label,
                         'class_name_raw' => $cls,
@@ -3437,24 +3439,23 @@ $conn->close();
                                     </div>
                                 </div>
 
-                                <!-- 畢業生大學類型統計按鈕組 -->
+                                <!-- 畢業生大學類型統計按鈕組（三個統計按鈕 + 收回圖表） -->
                                 <div style="border-top: 1px solid #f0f0f0; padding-top: 20px; margin-top: 20px;">
                                     <h4 style="color: #667eea; margin-bottom: 15px; display: flex; align-items: center; gap: 10px;">
                                         <i class="fas fa-university"></i> 畢業生大學類型統計
                                     </h4>
-                                    <div style="display: flex; gap: 12px; margin-bottom: 24px; flex-wrap: wrap; align-items:center;">
-                                        <button class="btn-view" onclick="showGraduateUniversityStats()">
+                                    <div id="graduateUniTabs" style="display: flex; gap: 12px; margin-bottom: 24px; flex-wrap: wrap; align-items:center;">
+                                        <button type="button" class="btn-view graduate-uni-btn" onclick="switchGraduateUniTab(this, 'type')">
                                             <i class="fas fa-chart-pie"></i> 各類型人數圓餅圖
                                         </button>
-                                        <button class="btn-view" onclick="clearGraduateUniversityChart()" style="background: #dc3545; color: white; border-color: #dc3545;">
-                                            <i class="fas fa-arrow-up"></i> 收回圖表
-                                        </button>
-
-                                        <button class="btn-view" onclick="showPerClassNationalStats()">
+                                        <button type="button" class="btn-view graduate-uni-btn" onclick="switchGraduateUniTab(this, 'national')">
                                             <i class="fas fa-chart-bar"></i> 各班國立錄取人數／百分比
                                         </button>
-                                        <button class="btn-view" onclick="showPerClassTopSchools()">
+                                        <button type="button" class="btn-view graduate-uni-btn" onclick="switchGraduateUniTab(this, 'top5')">
                                             <i class="fas fa-graduation-cap"></i> 各班 Top5 錄取大學
+                                        </button>
+                                        <button type="button" class="btn-view" onclick="clearGraduateUniversityChart()" style="margin-left: 10px; background:#dc3545; color:#fff; border-color:#dc3545;">
+                                            <i class="fas fa-arrow-up"></i> 收回圖表
                                         </button>
 
                                         <div style="margin-left: auto; display:flex; flex-direction:column; gap:8px; align-items:flex-end;">
@@ -3472,16 +3473,6 @@ $conn->close();
                                                     <option value="both" selected>忠+孝</option>
                                                     <option value="zhong">忠班</option>
                                                     <option value="xiao">孝班</option>
-                                                </select>
-                                            </div>
-                                            <div style="display:flex; gap:8px; align-items:center;">
-                                                <label for="graduateTypeFilterSelect" style="color:#666;">大學類型：</label>
-                                                <select id="graduateTypeFilterSelect" onchange="showGraduateUniversityStats()" style="padding:6px 10px; border-radius:6px; border:1px solid #ddd; min-width:120px;">
-                                                    <option value="">全部</option>
-                                                    <?php foreach ($university_types_list as $ut): ?>
-                                                        <option value="<?php echo htmlspecialchars($ut['name'] ?? ''); ?>"><?php echo htmlspecialchars($ut['name'] ?? ''); ?></option>
-                                                    <?php endforeach; ?>
-                                                    <option value="未填寫">未填寫</option>
                                                 </select>
                                             </div>
                                         </div>
@@ -9461,6 +9452,32 @@ window.showSourceDetail = function(schoolNameEnc, sourceDataEnc, gradeLabel) {
                 if (content) content.innerHTML = '';
             }
 
+            // 畢業生大學類型統計：頂部 Tab 切換（大學類型／各班國立／Top5）
+            function switchGraduateUniTab(btn, mode) {
+                const tabs = document.getElementById('graduateUniTabs');
+                if (tabs) {
+                    const buttons = tabs.querySelectorAll('.graduate-uni-btn');
+                    buttons.forEach(function (b) { b.classList.remove('active'); });
+                }
+                if (btn) {
+                    btn.classList.add('active');
+                }
+
+                if (mode === 'type') {
+                    clearGraduateMainView();
+                    updateGraduateIntro('type');
+                    showGraduateUniversityStats();
+                } else if (mode === 'national') {
+                    clearGraduateMainView();
+                    updateGraduateIntro('national');
+                    showPerClassNationalStats();
+                } else if (mode === 'top5') {
+                    clearGraduateMainView();
+                    updateGraduateIntro('top5');
+                    showPerClassTopSchools();
+                }
+            }
+
             function showGraduateUniversityStats() {
                 const intro = document.getElementById('graduateUniversityIntro');
                 if (intro) intro.style.display = 'none';
@@ -9513,11 +9530,6 @@ window.showSourceDetail = function(schoolNameEnc, sourceDataEnc, gradeLabel) {
                     <button type="button" class="dept-tab-btn" onclick="switchGraduatePieTab(this, 'chart')">
                         <i class="fas fa-chart-pie"></i> 畢業生就讀大學類型統計
                     </button>
-                    <div style="margin-left: auto;">
-                        <button type="button" onclick="clearGraduateUniversityChart()" style="border: none; background: none; color: #dc3545; cursor: pointer; font-size: 14px;">
-                            <i class="fas fa-times"></i> 收回圖表
-                        </button>
-                    </div>
                 </div>
                 <div id="gradPieTabSummary" class="dept-tab-content active">${summaryHtml}</div>
                 <div id="gradPieTabChart" class="dept-tab-content" style="display:none;">${chartHtml}</div>
@@ -9598,6 +9610,28 @@ window.showSourceDetail = function(schoolNameEnc, sourceDataEnc, gradeLabel) {
             let perClassNationalChart = null;
             let perClassTopSchoolChartInstances = [];
 
+            // 各班國立錄取：內部 Tab（統計摘要 / 圓餅圖）切換
+            function switchPerClassNationalTab(btn, type) {
+                const container = btn.closest('.dept-tabs');
+                if (container) {
+                    container.querySelectorAll('.dept-tab-btn').forEach(b => b.classList.remove('active'));
+                    btn.classList.add('active');
+                }
+                const summaryEl = document.getElementById('perClassNationalSummary');
+                const chartEl = document.getElementById('perClassNationalChartWrap');
+                if (summaryEl) {
+                    summaryEl.classList.toggle('active', type === 'summary');
+                    summaryEl.style.display = type === 'summary' ? 'block' : 'none';
+                }
+                if (chartEl) {
+                    chartEl.classList.toggle('active', type === 'chart');
+                    chartEl.style.display = type === 'chart' ? 'block' : 'none';
+                    if (type === 'chart' && perClassNationalChart) {
+                        setTimeout(() => perClassNationalChart.resize(), 50);
+                    }
+                }
+            }
+
             function showPerClassNationalStats() {
                 const intro = document.getElementById('graduateUniversityIntro');
                 if (intro) intro.style.display = 'none';
@@ -9653,7 +9687,7 @@ window.showSourceDetail = function(schoolNameEnc, sourceDataEnc, gradeLabel) {
                     }
                 });
 
-                // 與就讀意願統計（各科分配人數總覽、月度趨勢分析）相同樣式：圓餅圖 + 下方卡片網格
+                // 與就讀意願統計（各科分配人數總覽、月度趨勢分析）相同樣式：Tab + 圓餅圖 + 下方卡片網格
                 const cardsHtml = data.map((d, index) => {
                     const cls = d.class_name || '未分類';
                     const total = d.total || 0;
@@ -9664,7 +9698,7 @@ window.showSourceDetail = function(schoolNameEnc, sourceDataEnc, gradeLabel) {
                         <div style="background: white; padding: 15px; border-radius: 8px; border-left: 4px solid ${color};">
                             <div style="font-weight: bold; color: #333; margin-bottom: 8px;">${cls}</div>
                             <div style="font-size: 1.2em; color: #333; margin-bottom: 4px;">全班 <strong style="color: ${color};">${total}</strong> 人</div>
-                            <div style="font-size: 1.2em; color: #333; margin-bottom: 4px;">國立錄取 <strong style="color: #28a745;">${national}</strong> 人</div>
+                            <div style="font-size: 1.2em; color: #333; margin-bottom: 4px;">國立大學錄取 <strong style="color: #28a745;">${national}</strong> 人</div>
                             <div style="font-size: 0.9em; color: #666;">國立錄取比例 ${pct.toFixed(1)}%</div>
                         </div>
                     `;
@@ -9675,17 +9709,29 @@ window.showSourceDetail = function(schoolNameEnc, sourceDataEnc, gradeLabel) {
                 <h4 style="color: #667eea; margin-bottom: 15px;">
                     <i class="fas fa-chart-pie"></i> 各班人數與國立錄取統計
                 </h4>
-                <p style="margin-bottom: 15px; color: #666; font-size: 14px;">全班總人數＝<a href="teacher_student_university_info.php" target="_blank" style="color:#667eea;">畢業生資訊填寫</a>頁面該班「共 X 人」；國立錄取比例＝國立大學人數 ÷ 全班總人數</p>
-                <div class="chart-card">
-                    <div class="chart-title">各班人數與國立錄取圓餅圖</div>
-                    <div class="chart-container" style="height: 320px;">
-                        <canvas id="perClassNationalPieCanvas"></canvas>
+                
+                <div class="dept-tabs" style="margin-bottom: 16px;">
+                    <button type="button" class="dept-tab-btn active" onclick="switchPerClassNationalTab(this, 'summary')">
+                        <i class="fas fa-list-alt"></i> 各班國立錄取統計摘要
+                    </button>
+                    <button type="button" class="dept-tab-btn" onclick="switchPerClassNationalTab(this, 'chart')">
+                        <i class="fas fa-chart-pie"></i> 各班國立錄取圓餅圖
+                    </button>
+                </div>
+                <div id="perClassNationalSummary" class="dept-tab-content active">
+                    <div style="background: #f8f9fa; padding: 20px; border-radius: 10px;">
+                        <h5 style="color: #333; margin-bottom: 15px;">各班詳細統計</h5>
+                        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px;">
+                            ${cardsHtml}
+                        </div>
                     </div>
                 </div>
-                <div style="background: #f8f9fa; padding: 20px; border-radius: 10px; margin-top: 20px;">
-                    <h5 style="color: #333; margin-bottom: 15px;">各班詳細統計</h5>
-                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px;">
-                        ${cardsHtml}
+                <div id="perClassNationalChartWrap" class="dept-tab-content" style="display:none;">
+                    <div class="chart-card" style="margin-top: 10px;">
+                        <div class="chart-title">各班人數與國立錄取圓餅圖</div>
+                        <div class="chart-container" style="height: 320px;">
+                            <canvas id="perClassNationalPieCanvas"></canvas>
+                        </div>
                     </div>
                 </div>
             </div>
