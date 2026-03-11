@@ -690,6 +690,66 @@ try {
         $recommendations = $filtered_teacher;
     }
 
+    // IM(role=DI) 只能查看自己推薦的招生紀錄（比對推薦人 = 當前登入者）
+    if ($is_im_di) {
+        $di_identity_candidates = [];
+        $di_identity_candidates[] = trim((string)$username);
+        $di_identity_candidates[] = trim((string)($_SESSION['name'] ?? ''));
+        try {
+            if ($user_id > 0) {
+                $teacher_cols = [];
+                $tc = $conn->query("SHOW COLUMNS FROM teacher");
+                if ($tc) {
+                    while ($crow = $tc->fetch_assoc()) {
+                        $teacher_cols[] = (string)$crow['Field'];
+                    }
+                }
+                if (!empty($teacher_cols)) {
+                    $pick = [];
+                    $common = ['name', 'teacher_id', 'employee_no', 'teacher_no', 'number', 'username', 'id', 'user_id'];
+                    foreach ($common as $c) {
+                        if (in_array($c, $teacher_cols, true)) $pick[] = $c;
+                    }
+                    if (!empty($pick)) {
+                        $sql_pick = "SELECT " . implode(', ', $pick) . " FROM teacher WHERE user_id = ? LIMIT 1";
+                        $stmt_di = $conn->prepare($sql_pick);
+                        if ($stmt_di) {
+                            $stmt_di->bind_param("i", $user_id);
+                            if ($stmt_di->execute()) {
+                                $res_di = $stmt_di->get_result();
+                                if ($res_di && ($di_row = $res_di->fetch_assoc())) {
+                                    foreach ($pick as $k) {
+                                        $v = trim((string)($di_row[$k] ?? ''));
+                                        if ($v !== '') $di_identity_candidates[] = $v;
+                                    }
+                                }
+                            }
+                            $stmt_di->close();
+                        }
+                    }
+                }
+            }
+        } catch (Exception $e) {
+            error_log('DI 讀取身分資訊失敗: ' . $e->getMessage());
+        }
+        $di_identity_norm = [];
+        foreach ($di_identity_candidates as $v) {
+            $nv = normalize_text($v);
+            if ($nv !== '') $di_identity_norm[$nv] = true;
+        }
+        $filtered_di = [];
+        foreach ($recommendations as $rec_item) {
+            $rec_sid_text = normalize_text((string)($rec_item['recommender_student_id'] ?? ''));
+            $rec_name_text = normalize_text((string)($rec_item['recommender_name'] ?? ''));
+            $match_sid = ($rec_sid_text !== '' && isset($di_identity_norm[$rec_sid_text]));
+            $match_name = ($rec_name_text !== '' && isset($di_identity_norm[$rec_name_text]));
+            if ($match_sid || $match_name) {
+                $filtered_di[] = $rec_item;
+            }
+        }
+        $recommendations = $filtered_di;
+    }
+
     // 取得 departments 對照（用於 student_interest CSV 顯示成名稱）
     $departments_map = [];
     try {
@@ -2176,7 +2236,9 @@ try {
                                         <?php if ($is_admission_center && !$is_teacher_user): ?>
                                         <th>操作</th>
                                         <?php elseif ($is_department_user): ?>
+                                        <?php if (!$is_im_di): ?>
                                         <th>分配狀態</th>
+                                        <?php endif; ?>
                                         <th>操作</th>
                                         <?php else: ?>
                                         <th>操作</th>
@@ -2353,6 +2415,7 @@ try {
                                             <?php endif; ?>
                                         </td>
                                         <?php elseif ($is_department_user): ?>
+                                        <?php if (!$is_im_di): ?>
                                         <td>
                                             <?php if (!empty($item['assigned_teacher_id'])): ?>
                                                 <span style="color: #52c41a;">
@@ -2365,6 +2428,7 @@ try {
                                                 </span>
                                             <?php endif; ?>
                                         </td>
+                                        <?php endif; ?>
                                         <td>
                                             <div style="display: flex; gap: 8px; flex-wrap: wrap;">
                                                 <button type="button" 
@@ -2482,7 +2546,7 @@ try {
                                             if ($is_admission_center && !$is_teacher_user) {
                                                 $detail_colspan = 8;
                                             } elseif ($is_department_user) {
-                                                $detail_colspan = 9;
+                                                $detail_colspan = $is_im_di ? 8 : 9;
                                             } else {
                                                 $detail_colspan = 8;
                                             }
