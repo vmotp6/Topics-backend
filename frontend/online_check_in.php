@@ -18,7 +18,7 @@ $force_fill_mode = isset($_GET['fill_mode']) && $_GET['fill_mode'] === '1';
 
 $user_role = $_SESSION['role'] ?? '';
 // 如果強制填寫模式，或者沒有登入，則顯示填寫模式
-$is_admission_center = !$force_fill_mode && !empty($_SESSION['logged_in']) && in_array($user_role, ['STA', 'STAM', '行政人員', '招生中心組員', 'ADM', '管理員']);
+$is_admission_center = !$force_fill_mode && !empty($_SESSION['logged_in']) && in_array($user_role, ['STA', 'STAM', 'ADM','DI']);
 
 // 建立資料庫連接
 $conn = getDatabaseConnection();
