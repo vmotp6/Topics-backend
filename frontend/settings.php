@@ -192,39 +192,29 @@ if ($is_department_director && $current_user_id && $user_department_code) {
         FROM admission_sessions s
         LEFT JOIN admission_applications a ON s.id = a.session_id 
         LEFT JOIN attendance_records ar ON s.id = ar.session_id AND a.id = ar.application_id
-        WHERE (
-            s.created_by = ?
-            OR EXISTS (
-                SELECT 1
-                FROM admission_applications aa2
-                WHERE aa2.session_id = s.id
-                  AND YEAR(aa2.created_at) = YEAR(s.session_date)
-                  AND (aa2.course_priority_1 = ? OR aa2.course_priority_2 = ?)
-                LIMIT 1
-            )
-        )
+        WHERE YEAR(s.session_date) = YEAR(CURDATE())
         GROUP BY s.id 
         ORDER BY s.$sortBy $sortOrder";
-    $stmt_sessions = $conn->prepare($sessions_sql);
-    if (!$stmt_sessions) {
-        $sessions = [];
-    } else {
+        $stmt_sessions = $conn->prepare($sessions_sql);
+
+        if (!$stmt_sessions) {
+            $sessions = [];
+        } else {
         $dept = $user_department_code;
-        $uid = (int)$current_user_id;
+
         $stmt_sessions->bind_param(
-            "ssssssiss",
+            "ssssss",
             $dept, $dept,
             $dept, $dept,
-            $dept, $dept,
-            $uid,
             $dept, $dept
         );
+
         $stmt_sessions->execute();
         $sessions = $stmt_sessions->get_result()->fetch_all(MYSQLI_ASSOC);
         $stmt_sessions->close();
-    }
+}
 } else {
-    $sessions_sql = "
+     $sessions_sql = "
         SELECT s.*, 
                COUNT(DISTINCT CASE WHEN YEAR(a.created_at) = YEAR(s.session_date) THEN a.id END) as registration_count,
                (s.max_participants - COUNT(DISTINCT CASE WHEN YEAR(a.created_at) = YEAR(s.session_date) THEN a.id END)) as remaining_slots,
@@ -232,6 +222,7 @@ if ($is_department_director && $current_user_id && $user_department_code) {
         FROM admission_sessions s
         LEFT JOIN admission_applications a ON s.id = a.session_id 
         LEFT JOIN attendance_records ar ON s.id = ar.session_id AND a.id = ar.application_id
+        WHERE YEAR(s.session_date) = YEAR(CURDATE())
         GROUP BY s.id 
         ORDER BY s.$sortBy $sortOrder";
     $sessions = $conn->query($sessions_sql)->fetch_all(MYSQLI_ASSOC);

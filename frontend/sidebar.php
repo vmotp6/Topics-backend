@@ -311,7 +311,7 @@ function hasPermission($permission_code, $user_role, $permissions_array) {
             <?php endif; ?>
             
             <!-- 統計分析 - 所有角色都可以看到，STAM和AS需要權限 -->
-            <?php if ((!$is_stam && !$is_as) || ($is_stam && hasPermission('activity_records', $user_role, $stam_permissions)) || ($is_as && hasPermission('activity_records', $user_role, $as_permissions))): ?>
+            <?php if ((!$is_stam && !$is_as &&!$is_teacher) || ($is_stam && hasPermission('activity_records', $user_role, $stam_permissions)) || ($is_as && hasPermission('activity_records', $user_role, $as_permissions))): ?>
                 <a href="activity_records.php" class="menu-item <?php echo $current_page === 'activity_records' ? 'active' : ''; ?>">
                     <i class="fas fa-tasks"></i>
                     <span>統計分析</span>
@@ -392,7 +392,7 @@ function hasPermission($permission_code, $user_role, $permissions_array) {
             <?php if ($is_staff || $is_admin || $is_director): ?>
                 <a href="recruitment_knowledge.php" class="menu-item <?php echo $current_page === 'recruitment_knowledge' ? 'active' : ''; ?>">
                     <i class="fas fa-database"></i>
-                    <span>官方招生知識庫 (KM)</span>
+                    <span>官方招生知識庫</span>
                 </a>
             <?php endif; ?>
 
@@ -400,7 +400,7 @@ function hasPermission($permission_code, $user_role, $permissions_array) {
             <?php if ($is_teacher || $is_staff || $is_admin || $is_director): ?>
                 <a href="recruitment_ask.php" class="menu-item <?php echo $current_page === 'recruitment_ask' ? 'active' : ''; ?>">
                     <i class="fas fa-robot"></i>
-                    <span>知識問答 (AI Search for KM)</span>
+                    <span>知識問答</span>
                 </a>
             <?php endif; ?>
             
@@ -464,11 +464,11 @@ function hasPermission($permission_code, $user_role, $permissions_array) {
                     <i class="fas fa-user-shield"></i>
                     <span>科助權限管理</span>
                 </a>
-                <a href="student_contact_management_im.php" class="menu-item <?php echo $current_page === 'student_contact_management_im' ? 'active' : ''; ?>">
+                <!--<a href="student_contact_management_im.php" class="menu-item <?php echo $current_page === 'student_contact_management_im' ? 'active' : ''; ?>">
                     <i class="fas fa-address-book"></i>
                     <span>學生聯絡管理</span>
                 </a>
-            <?php else: ?>
+            <?php else: ?>-->
                 <!-- 調試：如果角色是IM但菜單沒顯示，這裡會看到調試信息 -->
                 <?php if ($user_role === 'IM' && isset($_GET['show_debug']) && $_GET['show_debug'] == '1'): ?>
                     <div style="background: #ffdddd; border: 2px solid #ff0000; padding: 10px; margin: 10px; border-radius: 4px; font-size: 12px; color: #ff0000;">
@@ -481,13 +481,13 @@ function hasPermission($permission_code, $user_role, $permissions_array) {
                 <?php endif; ?>
             <?php endif; ?>
             
-            <!-- 國中招生申請名單 - 僅學校行政和管理員，STAM需要權限 -->
+            <!-- 國中招生申請名單 - 僅學校行政和管理員，STAM需要權限
             <?php if (($is_staff || $is_admin) || ($is_stam && hasPermission('mobile_junior_B', $user_role, $stam_permissions))): ?>
                 <a href="mobile_junior_B.php" class="menu-item <?php echo $current_page === 'mobile_junior_B' ? 'active' : ''; ?>">
                     <i class="fas fa-school"></i>
                     <span>國中招生申請名單</span>
                 </a>
-            <?php endif; ?>
+            <?php endif; ?> -->
             
             <!-- 聯絡人與群組管理 - 僅管理員 -->
             <?php if ($is_admin): ?>
@@ -498,7 +498,7 @@ function hasPermission($permission_code, $user_role, $permissions_array) {
             <?php endif; ?>
 
             <!-- 頁面管理 - STAM和AS用戶不顯示 -->
-            <?php if (!$is_stam && !$is_as): ?>
+            <?php if ($is_admin || $is_staff || $is_director || $is_stam): ?>
                 <a href="page_management.php" class="menu-item <?php echo $current_page === 'page_management' ? 'active' : ''; ?>">
                     <i class="fas fa-file-alt"></i>
                     <span>頁面管理</span>
