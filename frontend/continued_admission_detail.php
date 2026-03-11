@@ -1,6 +1,6 @@
 <?php
+date_default_timezone_set('Asia/Taipei');
 require_once __DIR__ . '/session_config.php';
-
 checkBackendLogin();
 
 require_once '../../Topics-frontend/frontend/config.php';
