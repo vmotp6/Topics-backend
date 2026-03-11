@@ -3,7 +3,7 @@ require_once __DIR__ . '/session_config.php';
 require_once __DIR__ . '/includes/department_session_access.php';
 
 // 檢查登入
-checkBackendLogin();
+
 
 /* =========================
    取得角色
@@ -59,9 +59,9 @@ $is_stu =($user_role === 'STU');
    電子簽章權限
 ========================= */
 
-if (!$is_admin && !$is_director ) {
+/*if (!$is_admin && !$is_director &&!$is_stu) {
     die("您沒有權限使用電子簽章功能");
-}
+}*/
 
 /* =========================
    使用者資訊
