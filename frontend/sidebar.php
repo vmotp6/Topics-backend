@@ -467,8 +467,8 @@ function hasPermission($permission_code, $user_role, $permissions_array) {
                 <!--<a href="student_contact_management_im.php" class="menu-item <?php echo $current_page === 'student_contact_management_im' ? 'active' : ''; ?>">
                     <i class="fas fa-address-book"></i>
                     <span>學生聯絡管理</span>
-                </a>
-            <?php else: ?>-->
+                </a>-->
+            <?php else: ?>
                 <!-- 調試：如果角色是IM但菜單沒顯示，這裡會看到調試信息 -->
                 <?php if ($user_role === 'IM' && isset($_GET['show_debug']) && $_GET['show_debug'] == '1'): ?>
                     <div style="background: #ffdddd; border: 2px solid #ff0000; padding: 10px; margin: 10px; border-radius: 4px; font-size: 12px; color: #ff0000;">
