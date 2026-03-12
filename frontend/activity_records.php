@@ -3464,7 +3464,7 @@ $conn->close();
                                             <i class="fas fa-chart-bar"></i> 各班國立錄取人數／百分比
                                         </button>
                                         <button type="button" class="btn-view graduate-uni-btn" onclick="switchGraduateUniTab(this, 'top5')">
-                                            <i class="fas fa-graduation-cap"></i> 各班 Top5 錄取大學
+                                            <i class="fas fa-graduation-cap"></i> Top5 錄取大學
                                         </button>
                                         <button type="button" class="btn-view" onclick="clearGraduateUniversityChart()" style="margin-left: 10px; background:#dc3545; color:#fff; border-color:#dc3545;">
                                             <i class="fas fa-arrow-up"></i> 收回圖表
@@ -9432,8 +9432,8 @@ window.showSourceDetail = function(schoolNameEnc, sourceDataEnc, gradeLabel) {
                 } else if (type === 'top5') {
                     intro.innerHTML = `
                         <i class="fas fa-graduation-cap fa-3x" style="margin-bottom: 16px;"></i>
-                        <h4>各班 Top5 錄取大學</h4>
-                        <p>顯示五年級（資五孝、資五忠）最多人選擇的大學（學校名稱＋科系）。</p>
+                        <h4>Top5 錄取大學</h4>
+                        <p>忠+孝為兩班混合；選孝班或忠班為單一班級。顯示最多人選擇的大學（學校＋科系）。</p>
                     `;
                 } else {
                     intro.innerHTML = `
@@ -9928,96 +9928,88 @@ window.showSourceDetail = function(schoolNameEnc, sourceDataEnc, gradeLabel) {
                 const rocSelectTop5 = document.getElementById('graduateRocYearSelect');
                 const rocYearLabelTop5 = rocSelectTop5 && rocSelectTop5.value ? (rocSelectTop5.value + '學年') : '本屆';
                 const classLabelTop5 = classMode === 'xiao' ? '孝班' : (classMode === 'zhong' ? '忠班' : '忠+孝');
-                // 生成每班 top5 圖表容器（class_name 已含科系，如「資訊管理科孝班」）
+                // 忠+孝＝兩班混合一個圖；孝班／忠班＝單一班級一個圖。合併所選資料的 top5 後取 Top5
+                const merged = {};
+                let totalSum = 0, nationalSum = 0;
+                data.forEach(d => {
+                    totalSum += parseInt(d.total || 0, 10) || 0;
+                    nationalSum += parseInt(d.national || 0, 10) || 0;
+                    let items = [];
+                    if (Array.isArray(d.top5) && d.top5.length > 0) {
+                        items = d.top5
+                            .filter(item => (item.school || '').trim() && (item.department || '').trim())
+                            .filter(item => item.school !== '未填寫' && item.department !== '未填寫')
+                            .map(item => ({ key: (item.school || '') + '||' + (item.department || ''), label: (item.school || '') + '｜' + (item.department || ''), count: parseInt(item.count || 0, 10) || 0 }));
+                    } else if (d.top5 && typeof d.top5 === 'object' && Object.keys(d.top5).length > 0) {
+                        items = Object.entries(d.top5)
+                            .filter(([label]) => !label.includes('未填寫'))
+                            .map(([school, cnt]) => ({ key: school, label: school, count: parseInt(cnt || 0, 10) || 0 }));
+                    }
+                    items.forEach(it => {
+                        merged[it.key] = (merged[it.key] || { label: it.label, count: 0 });
+                        merged[it.key].count += it.count;
+                    });
+                });
+                const sorted = Object.values(merged).sort((a, b) => b.count - a.count);
+                const topItems = sorted.slice(0, 5);
+                const percentSum = totalSum > 0 ? Math.round((nationalSum / totalSum) * 1000) / 10 : 0;
+
                 let html = '<div style="margin-bottom: 12px; color: #666;">目前篩選：' + rocYearLabelTop5 + ' ' + classLabelTop5 + '</div>';
                 html += '<div style="background:#f8f9fa;padding:16px;border-radius:8px;">';
-                data.forEach((d, idx) => {
-                    const classLabel = d.class_name || '未分類';
-                    html += `
-                        <div class="chart-card" style="margin-bottom:16px;">
-                            <div class="chart-title">${classLabel} Top5 錄取大學（學校＋科系）</div>
-                            <div style="padding:0 16px 8px 16px; color:#666;">總人數 ${d.total}，國立 ${d.national}（${d.percent}%）</div>
-                            <div class="chart-container" style="height:280px;">
-                                <canvas id="perClassTopSchoolChart-${idx}"></canvas>
-                            </div>
-                        </div>
-                    `;
-                });
-                html += '</div>';
+                html += '<div class="chart-card" style="margin-bottom:16px;">';
+                html += '<div class="chart-title">' + classLabelTop5 + ' Top5 錄取大學（學校＋科系）</div>';
+                html += '<div style="padding:0 16px 8px 16px; color:#666;">總人數 ' + totalSum + '，國立 ' + nationalSum + '（' + percentSum + '%）</div>';
+                html += '<div class="chart-container" style="height:280px;"><canvas id="perClassTopSchoolChart-0"></canvas></div>';
+                html += '</div></div>';
                 container.innerHTML = html;
 
                 setTimeout(() => {
-                    data.forEach((d, idx) => {
-                        const canvas = document.getElementById(`perClassTopSchoolChart-${idx}`);
-                        if (!canvas) return;
-
-                        let topItems = [];
-                        if (Array.isArray(d.top5) && d.top5.length > 0) {
-                            topItems = d.top5
-                                .filter(item => (item.school || '').trim() && (item.department || '').trim())
-                                .filter(item => item.school !== '未填寫' && item.department !== '未填寫')
-                                .map(item => ({
-                                    label: `${item.school}｜${item.department}`,
-                                    count: parseInt(item.count || 0, 10) || 0
-                                }));
-                        } else if (d.top5 && typeof d.top5 === 'object' && Object.keys(d.top5).length > 0) {
-                            topItems = Object.entries(d.top5)
-                                .filter(([label]) => !label.includes('未填寫'))
-                                .map(([school, cnt]) => ({
-                                    label: school,
-                                    count: parseInt(cnt || 0, 10) || 0
-                                }));
-                        }
-
-                        if (topItems.length === 0) {
-                            const wrap = canvas.parentElement;
-                            if (wrap) {
-                                wrap.innerHTML = '<div style="text-align:center; color:#666; padding-top:90px;">無資料</div>';
-                            }
-                            return;
-                        }
-
-                        const ctx = canvas.getContext('2d');
-                        const chart = new Chart(ctx, {
-                            type: 'bar',
-                            data: {
-                                labels: topItems.map(t => t.label),
-                                datasets: [{
-                                    label: '人數',
-                                    data: topItems.map(t => t.count),
-                                    backgroundColor: '#4facfe',
-                                    borderColor: '#4facfe',
-                                    borderWidth: 1,
-                                    borderRadius: 6
-                                }]
-                            },
-                            options: {
-                                indexAxis: 'y',
-                                responsive: true,
-                                maintainAspectRatio: false,
-                                plugins: {
-                                    legend: { display: false },
-                                    tooltip: {
-                                        callbacks: {
-                                            label: function(ctx) {
-                                                return `${ctx.parsed.x} 人`;
-                                            }
+                    const canvas = document.getElementById('perClassTopSchoolChart-0');
+                    if (!canvas) return;
+                    if (topItems.length === 0) {
+                        canvas.parentElement.innerHTML = '<div style="text-align:center; color:#666; padding-top:90px;">無資料</div>';
+                        return;
+                    }
+                    const ctx = canvas.getContext('2d');
+                    const chart = new Chart(ctx, {
+                        type: 'bar',
+                        data: {
+                            labels: topItems.map(t => t.label),
+                            datasets: [{
+                                label: '人數',
+                                data: topItems.map(t => t.count),
+                                backgroundColor: '#4facfe',
+                                borderColor: '#4facfe',
+                                borderWidth: 1,
+                                borderRadius: 6
+                            }]
+                        },
+                        options: {
+                            indexAxis: 'y',
+                            responsive: true,
+                            maintainAspectRatio: false,
+                            plugins: {
+                                legend: { display: false },
+                                tooltip: {
+                                    callbacks: {
+                                        label: function(ctx) {
+                                            return ctx.parsed.x + ' 人';
                                         }
                                     }
+                                }
+                            },
+                            scales: {
+                                x: {
+                                    beginAtZero: true,
+                                    ticks: { precision: 0 }
                                 },
-                                scales: {
-                                    x: {
-                                        beginAtZero: true,
-                                        ticks: { precision: 0 }
-                                    },
-                                    y: {
-                                        ticks: { autoSkip: false }
-                                    }
+                                y: {
+                                    ticks: { autoSkip: false }
                                 }
                             }
-                        });
-                        perClassTopSchoolChartInstances.push(chart);
+                        }
                     });
+                    perClassTopSchoolChartInstances.push(chart);
                 }, 80);
             }
 
