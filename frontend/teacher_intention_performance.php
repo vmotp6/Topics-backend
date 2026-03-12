@@ -686,6 +686,19 @@ $base_url = 'teacher_intention_performance.php' . (empty($base_url_params) ? '' 
     </div>
 </div>
 
+<!-- 成功入學學生明細 Modal -->
+<div id="successStudentsModal" class="modal" style="display:none;">
+    <div class="modal-content" style="max-width: 720px;">
+        <div class="modal-header">
+            <h3> <span id="successModalTitle">成功入學學生明細</span></h3>
+            <span class="close" onclick="document.getElementById('successStudentsModal').style.display='none'">&times;</span>
+        </div>
+        <div class="modal-body">
+            <div id="successStudentsList">載入中...</div>
+        </div>
+    </div>
+</div>
+
 <script>
 function switchPerfView(panel) {
     var tabs = document.querySelectorAll('.perf-view-tabs .tab');
@@ -728,17 +741,20 @@ function openContactLogModal(enrollmentId, studentName) {
 }
 //1. 將 PHP 算好的資料轉換給 JavaScript 使用
 const teacherStats = <?php echo json_encode($teacher_stats); ?>;
+const selectedRocYear = <?php echo (int)$selected_roc_year; ?>;
 let perfChart = null;
 
+function getFilteredTeacherStats(teacherId) {
+    if (!teacherId) return teacherStats;
+    var tid = parseInt(teacherId, 10);
+    return teacherStats.filter(function(ts) { return parseInt(ts.teacher_id, 10) === tid; });
+}
+
 function buildPerfChartData(teacherId) {
-    let filtered = teacherStats;
-    if (teacherId) {
-        const tid = parseInt(teacherId, 10);
-        filtered = teacherStats.filter(function (ts) { return parseInt(ts.teacher_id, 10) === tid; });
-    }
-    const labels = filtered.map(function(ts) { return ts.teacher_name; });
-    const assignedData = filtered.map(function(ts) { return ts.assigned_count; });
-    const successData = filtered.map(function(ts) { return ts.success_enrolled_count; });
+    var filtered = getFilteredTeacherStats(teacherId);
+    var labels = filtered.map(function(ts) { return ts.teacher_name; });
+    var assignedData = filtered.map(function(ts) { return ts.assigned_count; });
+    var successData = filtered.map(function(ts) { return ts.success_enrolled_count; });
     return { labels, assignedData, successData };
 }
 
@@ -784,6 +800,18 @@ function renderPerfChart(teacherId) {
         options: {
             responsive: true,
             maintainAspectRatio: false,
+            onClick: function(event, elements) {
+                if (elements.length === 0) return;
+                var el = elements[0];
+                var dsIdx = el.datasetIndex;
+                var idx = el.index;
+                var filterVal = document.getElementById('teacherFilter').value;
+                var filtered = getFilteredTeacherStats(filterVal || null);
+                var teacher = filtered[idx];
+                if (teacher && dsIdx === 1) {
+                    openSuccessModal(teacher.teacher_id, teacher.teacher_name);
+                }
+            },
             plugins: {
                 legend: { position: 'top' },
                 tooltip: {
@@ -822,6 +850,40 @@ function filterTeacherPerf(teacherId) {
             row.style.display = (tid === parseInt(teacherId, 10)) ? '' : 'none';
         }
     });
+}
+
+function openSuccessModal(teacherId, teacherName) {
+    document.getElementById('successModalTitle').textContent = (teacherName || '老師') + ' - 成功入學學生明細';
+    document.getElementById('successStudentsModal').style.display = 'flex';
+    var listEl = document.getElementById('successStudentsList');
+    listEl.innerHTML = '載入中...';
+    var url = 'get_teacher_performance_students.php?teacher_id=' + encodeURIComponent(teacherId) + '&roc_year=' + encodeURIComponent(selectedRocYear);
+    fetch(url)
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            if (!data.success) {
+                listEl.innerHTML = '<p style="color:#ff4d4f;">' + (data.message || '載入失敗') + '</p>';
+                return;
+            }
+            var students = data.students || [];
+            if (students.length === 0) {
+                listEl.innerHTML = '<p style="color:#999;">尚無成功入學學生資料</p>';
+                return;
+            }
+            var rows = students.map(function(s) {
+                var phones = [];
+                if (s.phone1) phones.push(s.phone1);
+                if (s.phone2 && s.phone2 !== s.phone1) phones.push(s.phone2);
+                var phoneStr = phones.length ? phones.join(' / ') : '—';
+                var classNo = [s.class_name, s.student_no].filter(Boolean).join('／') || '—';
+                var enrolledAt = s.enrolled_at ? s.enrolled_at.replace(/^(\d{4}-\d{2}-\d{2}).*/, '$1') : '—';
+                return '<tr><td>' + (s.student_name ? s.student_name.replace(/</g,'&lt;') : '—') + '</td><td>' + (s.junior_high ? s.junior_high.replace(/</g,'&lt;') : '—') + '</td><td>' + phoneStr.replace(/</g,'&lt;') + '</td><td>' + classNo.replace(/</g,'&lt;') + '</td></tr>';
+            }).join('');
+            listEl.innerHTML = '<table class="perf-table"><thead><tr><th>學生姓名</th><th>原就讀國中</th><th>聯絡電話</th><th>新生班級／學號</th></tr></thead><tbody>' + rows + '</tbody></table>';
+        })
+        .catch(function() {
+            listEl.innerHTML = '<p style="color:#ff4d4f;">載入失敗</p>';
+        });
 }
 
 // 初始渲染全部老師的績效圖
