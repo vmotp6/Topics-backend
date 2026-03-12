@@ -500,7 +500,7 @@ $base_url = 'teacher_intention_performance.php' . (empty($base_url_params) ? '' 
                     </select>
                 </div>
             </div>
-            <!-- 區塊一：成效數據總覽 -->
+            <!-- 區塊一：成效數據總覽 
             <div class="card" style="margin-bottom: 24px;">
                 <h3 style="margin: 0 0 16px 0; font-size: 18px;">成效數據總覽</h3>
                 <div>
@@ -521,7 +521,7 @@ $base_url = 'teacher_intention_performance.php' . (empty($base_url_params) ? '' 
                         <div class="label">尚未聯絡數</div>
                     </div>
                 </div>
-            </div>
+            </div>-->
             <!-- 教師招生績效比較圖 + 成功經營統計（合併，預設圖表、可切表格，可篩選老師） -->
             <div class="card" style="margin-bottom: 24px;">
                 <h3 style="margin: 0 0 16px 0; font-size: 18px;">
@@ -618,9 +618,6 @@ $base_url = 'teacher_intention_performance.php' . (empty($base_url_params) ? '' 
             <!-- 區塊四：低意願卻入學的學生 -->
             <div class="card" style="margin-top: 24px;">
                 <h3 style="margin: 0 0 16px 0; font-size: 18px;">低意願卻入學的學生</h3>
-                <p style="margin: 0 0 12px 0; font-size: 13px; color:#666;">
-                    條件：在就讀意願名單中「目前意願為低」，但在新生基本資料中出現為本系新生（姓名＋國中＋電話皆對得上）。
-                </p>
                 <table class="perf-table">
                     <thead>
                         <tr>
