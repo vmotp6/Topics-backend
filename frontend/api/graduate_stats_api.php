@@ -51,9 +51,13 @@ try {
 
     $graduate_university_stats_by_class = ['both' => [], 'xiao' => [], 'zhong' => []];
 
+    // 學號前三碼＝入學屆（畢業屆－4，例：114學年畢業＝110學年入學）
+    $roc_str = (string)($roc_year - 4);
+    $student_no_prefix = " AND LEFT(TRIM(COALESCE(s.student_no,'')), 3) = ? ";
     $table_ns = $pdo->query("SHOW TABLES LIKE 'new_student_basic_info'");
     $table_ut = $pdo->query("SHOW TABLES LIKE 'university_types'");
     if ($table_ns && $table_ns->rowCount() > 0 && $table_ut && $table_ut->rowCount() > 0) {
+        // 只驗證學號，班級用孝/忠分頁
         $class_modes = [
             'both' => "(s.class_name LIKE '%孝%' OR s.class_name LIKE '%忠%')",
             'xiao' => "s.class_name LIKE '%孝%'",
@@ -64,11 +68,12 @@ try {
                     FROM new_student_basic_info s
                     LEFT JOIN university_types u ON TRIM(UPPER(TRIM(COALESCE(s.university,'')))) = TRIM(UPPER(u.type_code))
                     WHERE s.created_at >= ? AND s.created_at <= ? AND $class_where
+                      $student_no_prefix
                       AND TRIM(COALESCE(s.university, '')) <> ''
                     GROUP BY u.type_code, u.type_name
                     ORDER BY (CASE WHEN u.id IS NULL THEN 999 ELSE u.id END), cnt DESC";
             $stmt = $pdo->prepare($sql);
-            $stmt->execute([$year_start, $year_end]);
+            $stmt->execute([$year_start, $year_end, $roc_str]);
             $rows = [];
             while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
                 $rows[] = ['type_name' => (string)($row['type_name'] ?? '未填寫'), 'cnt' => (int)($row['cnt'] ?? 0)];
@@ -77,10 +82,11 @@ try {
                 $sql_no_date = "SELECT COALESCE(u.type_name, '未填寫') AS type_name, COUNT(*) AS cnt
                     FROM new_student_basic_info s
                     LEFT JOIN university_types u ON TRIM(UPPER(TRIM(COALESCE(s.university,'')))) = TRIM(UPPER(u.type_code))
-                    WHERE $class_where AND TRIM(COALESCE(s.university, '')) <> ''
+                    WHERE $class_where $student_no_prefix AND TRIM(COALESCE(s.university, '')) <> ''
                     GROUP BY u.type_code, u.type_name
                     ORDER BY (CASE WHEN u.id IS NULL THEN 999 ELSE u.id END), cnt DESC";
-                $stmt2 = $pdo->query($sql_no_date);
+                $stmt2 = $pdo->prepare($sql_no_date);
+                $stmt2->execute([$roc_str]);
                 while ($row = $stmt2->fetch(PDO::FETCH_ASSOC)) {
                     $rows[] = ['type_name' => (string)($row['type_name'] ?? '未填寫'), 'cnt' => (int)($row['cnt'] ?? 0)];
                 }
@@ -119,12 +125,15 @@ try {
             }
         }
 
+        // 只驗證學號，學號前三碼＝入學屆（畢業屆－4）
+        $per_roc_str = (string)($roc_year - 4);
         $per_sql = "SELECT ns.class_name, ns.university, $per_select_school, $per_select_dept, $per_select_dept_col AS dept_val, $per_select_dept_name 
                     FROM new_student_basic_info ns $per_dept_join 
-                    WHERE (ns.class_name LIKE '%孝%' OR ns.class_name LIKE '%忠%') AND ns.created_at >= :start AND ns.created_at <= :end $per_dept_where";
+                    WHERE ns.created_at >= :start AND ns.created_at <= :end AND LEFT(TRIM(COALESCE(ns.student_no,'')), 3) = :roc $per_dept_where";
         $stmt = $pdo->prepare($per_sql);
         $stmt->bindValue(':start', $year_start);
         $stmt->bindValue(':end', $year_end);
+        $stmt->bindValue(':roc', $per_roc_str);
         if ($department_filter !== '' && $per_dept_where !== '') {
             $stmt->bindValue(':dept', $department_filter);
             $stmt->bindValue(':dept2', $department_filter);
@@ -135,8 +144,9 @@ try {
         if (empty($per_rows)) {
             $per_sql_fallback = "SELECT ns.class_name, ns.university, $per_select_school, $per_select_dept, $per_select_dept_col AS dept_val, $per_select_dept_name 
                                 FROM new_student_basic_info ns $per_dept_join 
-                                WHERE (ns.class_name LIKE '%孝%' OR ns.class_name LIKE '%忠%') $per_dept_where";
+                                WHERE LEFT(TRIM(COALESCE(ns.student_no,'')), 3) = :roc $per_dept_where";
             $stmt2 = $pdo->prepare($per_sql_fallback);
+            $stmt2->bindValue(':roc', $per_roc_str);
             if ($department_filter !== '' && $per_dept_where !== '') {
                 $stmt2->bindValue(':dept', $department_filter);
                 $stmt2->bindValue(':dept2', $department_filter);
@@ -183,7 +193,8 @@ try {
                 ];
             }
             $cls = $info['class_name'] ?? '';
-            $cls_display = str_replace(['資一孝班', '資一孝', '資一忠班', '資一忠'], ['孝班', '孝班', '忠班', '忠班'], $cls);
+            // 班級顯示為五年級：有孝→五孝班、有忠→五忠班（畢業生統計皆為五年級）
+            $cls_display = (mb_strpos($cls, '孝') !== false) ? '五孝班' : ((mb_strpos($cls, '忠') !== false) ? '五忠班' : $cls);
             $dept_part = ($info['dept_display'] ?? '') ?: trim(explode('|', $group_key, 2)[0] ?? '');
             $display_label = $dept_part ? ($dept_part . $cls_display) : $cls_display;
             $per_class_stats_list[] = [

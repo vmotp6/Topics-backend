@@ -1114,16 +1114,21 @@ if ($teacher_id > 0) {
                     }
                 }
                 $per_sql_base = "SELECT ns.class_name, ns.university, $per_select_school, $per_select_dept, $per_select_dept_col AS dept_val, $per_select_dept_name FROM new_student_basic_info ns" . $per_dept_join;
-                $per_where = " WHERE (ns.class_name LIKE '%孝%' OR ns.class_name LIKE '%忠%')";
+                // 每班國立／Top5：只驗證學號，學號前三碼＝入學屆（畢業屆－4）
+                $per_where = " WHERE 1=1 ";
                 $per_params = [];
                 $per_types = '';
 
                 // 與畢業生資訊填寫頁一致：用畢業屆別回推入學建檔區間
                 $per_range = getGraduateInputRangeByGraduationRocYear($selected_roc_year > 0 ? $selected_roc_year : $current_roc_year);
+                $per_roc_str = (string)(($selected_roc_year > 0 ? $selected_roc_year : $current_roc_year) - 4);
                 $per_where .= " AND ns.created_at >= ? AND ns.created_at <= ?";
                 $per_params[] = $per_range['start'];
                 $per_params[] = $per_range['end'];
                 $per_types .= 'ss';
+                $per_where .= " AND LEFT(TRIM(COALESCE(ns.student_no,'')), 3) = ?";
+                $per_params[] = $per_roc_str;
+                $per_types .= 's';
 
                 // 主任視角限制本科系（與 teacher_student_university_info 口徑一致）
                 if ($per_dept_where !== '') {
@@ -1216,8 +1221,8 @@ if ($teacher_id > 0) {
                     }
                     $dept_display = $info['dept_display'] ?? '';
                     $cls = $info['class_name'] ?? '';
-                    // 班級名稱統一：資一孝/資一孝班→孝班、資一忠/資一忠班→忠班
-                    $cls_display = str_replace(['資一孝班', '資一孝', '資一忠班', '資一忠'], ['孝班', '孝班', '忠班', '忠班'], $cls);
+                    // 班級顯示為五年級：有孝→五孝班、有忠→五忠班（畢業生統計皆為五年級）
+                    $cls_display = (mb_strpos($cls, '孝') !== false) ? '五孝班' : ((mb_strpos($cls, '忠') !== false) ? '五忠班' : $cls);
                     $dept_part = $dept_display ?: trim(explode('|', $group_key, 2)[0] ?? '');
                     $display_label = $dept_part ? ($dept_part . $cls_display) : $cls_display;
                     $per_class_stats_list[] = [
@@ -2021,19 +2026,23 @@ try {
         $year_start = $range['start'];
         $year_end = $range['end'];
 
-        $fetch_graduate_stats = function ($class_mode, $with_date) use ($conn, $year_start, $year_end) {
+        // 畢業生大學類型統計與各班 Top5：只驗證學號，學號前三碼＝入學屆（畢業屆－4，例：114學年畢業＝110學年入學）
+        $query_roc_str = (string)($query_roc - 4);
+        $fetch_graduate_stats = function ($class_mode, $with_date) use ($conn, $year_start, $year_end, $query_roc_str) {
             $class_where = "(s.class_name LIKE '%孝%' OR s.class_name LIKE '%忠%')";
             if ($class_mode === 'xiao') {
                 $class_where = "s.class_name LIKE '%孝%'";
             } elseif ($class_mode === 'zhong') {
                 $class_where = "s.class_name LIKE '%忠%'";
             }
+            $student_no_prefix = " AND LEFT(TRIM(COALESCE(s.student_no,'')), 3) = ? ";
 
             $sql = "SELECT COALESCE(u.type_name, '未填寫') AS type_name, COUNT(*) AS cnt
                     FROM new_student_basic_info s
                     LEFT JOIN university_types u ON TRIM(UPPER(TRIM(COALESCE(s.university,'')))) = TRIM(UPPER(u.type_code))
                     WHERE " . ($with_date ? "s.created_at >= ? AND s.created_at <= ? AND " : "") . "
                       $class_where
+                      $student_no_prefix
                       AND TRIM(COALESCE(s.university, '')) <> ''
                     GROUP BY u.type_code, u.type_name
                     ORDER BY (CASE WHEN u.id IS NULL THEN 999 ELSE u.id END), cnt DESC";
@@ -2042,7 +2051,9 @@ try {
             $stmt = $conn->prepare($sql);
             if ($stmt) {
                 if ($with_date) {
-                    $stmt->bind_param('ss', $year_start, $year_end);
+                    $stmt->bind_param('sss', $year_start, $year_end, $query_roc_str);
+                } else {
+                    $stmt->bind_param('s', $query_roc_str);
                 }
                 $stmt->execute();
                 $res = $stmt->get_result();
@@ -3486,7 +3497,7 @@ $conn->close();
                                     <div id="graduateUniversityIntro" class="empty-state">
                                         <i class="fas fa-university fa-3x" style="margin-bottom: 16px;"></i>
                                         <h4>點擊「各類型人數圓餅圖」查看畢業生就讀大學類型統計</h4>
-                                        <p>統計本屆孝班、忠班畢業生就讀國立大學、私立大學、直接就業、軍警學校、國外升學、其他等類型人數</p>
+                                        <p>統計本屆五年級（資五孝、資五忠）畢業生就讀國立大學、私立大學、直接就業、軍警學校、國外升學、其他等類型人數</p>
                                     </div>
                                     <div id="graduateUniversityAnalyticsContent" style="min-height: 0;"></div>
 
@@ -9416,19 +9427,19 @@ window.showSourceDetail = function(schoolNameEnc, sourceDataEnc, gradeLabel) {
                     intro.innerHTML = `
                         <i class="fas fa-percent fa-3x" style="margin-bottom: 16px;"></i>
                         <h4>各班國立錄取人數／百分比</h4>
-                        <p>顯示孝班、忠班的總人數、國立錄取人數與國立錄取比例。</p>
+                        <p>顯示五年級（資五孝、資五忠）的總人數、國立錄取人數與國立錄取比例。</p>
                     `;
                 } else if (type === 'top5') {
                     intro.innerHTML = `
                         <i class="fas fa-graduation-cap fa-3x" style="margin-bottom: 16px;"></i>
                         <h4>各班 Top5 錄取大學</h4>
-                        <p>顯示孝班、忠班最多人選擇的大學（學校名稱＋科系）。</p>
+                        <p>顯示五年級（資五孝、資五忠）最多人選擇的大學（學校名稱＋科系）。</p>
                     `;
                 } else {
                     intro.innerHTML = `
                         <i class="fas fa-university fa-3x" style="margin-bottom: 16px;"></i>
                         <h4>點擊「各類型人數圓餅圖」查看畢業生就讀大學類型統計</h4>
-                        <p>統計本屆孝班、忠班畢業生就讀國立大學、私立大學、直接就業、軍警學校、國外升學、其他等類型人數</p>
+                        <p>統計本屆五年級（資五孝、資五忠）畢業生就讀國立大學、私立大學、直接就業、軍警學校、國外升學、其他等類型人數</p>
                     `;
                 }
             }
